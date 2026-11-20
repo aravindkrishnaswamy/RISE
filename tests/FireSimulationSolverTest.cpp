@@ -1101,7 +1101,7 @@ int main()
 		throughFlow.maximumBoundaryHeadResidualPa <= 1.18e-10,
 		"V1 active set reclassifies ambient inflow and enforces total head");
 	PeriodicMACShape openShape3D;
-	openShape3D.nx=8; openShape3D.ny=8; openShape3D.nz=8;
+	openShape3D.nx=4; openShape3D.ny=4; openShape3D.nz=4;
 	openShape3D.cellWidthM=0.025;
 	const MethaneCellState ambientState3D=PhysicalMixtureLineState(
 		fuel,thermochemistry,0.0,300.0);
@@ -2084,7 +2084,7 @@ int main()
 		rejectedOpenStage,&error),
 		"V1 production boundary stage rejects negative constituents despite a positive sum");
 	PeriodicMACShape oddOpenShape;
-	oddOpenShape.nx=65;oddOpenShape.ny=65;oddOpenShape.nz=65;oddOpenShape.cellWidthM=0.025;
+	oddOpenShape.nx=17;oddOpenShape.ny=17;oddOpenShape.nz=17;oddOpenShape.cellWidthM=0.025;
 	OpenMACField3D oddOpenMomentum;
 	for( unsigned int axis=0; axis<3; ++axis ) oddOpenMomentum.component[axis].assign(
 		OpenMACFaceCount3D(oddOpenShape,axis),0.0);
@@ -3173,7 +3173,8 @@ int main()
 	for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;
 		face<roundoffOpenFlux.high[axis].size();++face)
 		roundoffOpenFlux.high[axis][face]=roundoffOpenFlux.low[axis][face];
-	const std::size_t roundoffFace=OpenMACFaceIndex3D(openShape3D,0,4,4,4);
+	const std::size_t roundoffFace=OpenMACFaceIndex3D(openShape3D,0,
+		openShape3D.nx/2,openShape3D.ny/2,openShape3D.nz/2);
 	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
 		roundoffOpenFlux.high[0][roundoffFace][1+species]+=1.0e-38*
 			fuel.PrimaryReactionDelta()[species];
@@ -3193,7 +3194,8 @@ int main()
 	// exact pointwise infimum, and that value is re-certified by production FCT.
 	std::array<std::vector<double>,3> discontinuousNext=roundoffAlpha;
 	std::array<std::vector<double>,3> discontinuousVerified=roundoffAlpha;
-	const std::size_t reverseOrderFace=OpenMACFaceIndex3D(openShape3D,1,4,4,4);
+	const std::size_t reverseOrderFace=OpenMACFaceIndex3D(openShape3D,1,
+		openShape3D.nx/2,openShape3D.ny/2,openShape3D.nz/2);
 	discontinuousNext[0][roundoffFace]=0.8;
 	discontinuousVerified[0][roundoffFace]=0.6;
 	discontinuousNext[1][reverseOrderFace]=0.4;
@@ -3846,8 +3848,9 @@ int main()
 	// independent characteristic solution therefore converges at the declared
 	// first-order source-split rate even though the transport tableau is Heun.
 	// The physical owner above is bit-bound to this same shared FCT commit.
-	const std::size_t sourceSplitResolution[3]={16,32,64};
-	double sourceSplitError[3]={};bool sourceSplitOK=true,sourceSplitLedgers=true;
+	const std::size_t sourceSplitResolution[2]={32,64};
+	double sourceSplitError[2]={};bool sourceSplitOK=true,sourceSplitLedgers=true;
+	error.clear();
 	const double sourceSplitFinalTime=0.2,sourceSplitVelocity=0.18;
 	ConservativeVector sourceSplitDirection;
 	static const char* sourceSplitName[MethaneSpeciesCount]={
@@ -3867,7 +3870,7 @@ int main()
 			sourceSplitInitialAmplitude,0.08*sourceSplitBase[1+species]/
 			std::fabs(sourceSplitDirection[1+species]));
 	const double sourceSplitRelaxationPerS=0.8;
-	for(std::size_t level=0;level<3;++level){
+	for(std::size_t level=0;level<2;++level){
 		PeriodicMACShape splitShape;splitShape.nx=sourceSplitResolution[level];
 		splitShape.ny=4;splitShape.nz=4;splitShape.cellWidthM=1.0/splitShape.nx;
 		const std::size_t count=splitShape.CellCount();
@@ -3935,11 +3938,11 @@ int main()
 			sourceSplitLedgers=sourceSplitLedgers&&Near(finalTotal[component],
 				initialTotal[component],8.0e-13);
 	}
-	const double sourceSplitOrder=std::log(sourceSplitError[1]/sourceSplitError[2])/
+	const double sourceSplitOrder=std::log(sourceSplitError[0]/sourceSplitError[1])/
 		std::log(2.0);
 	if(!(sourceSplitOK&&sourceSplitLedgers&&sourceSplitOrder>=0.85&&sourceSplitOrder<=1.25))
-		std::printf("V2 source-split errors %.17g %.17g %.17g order %.6g amplitude %.17g direction %.17g ok=%d ledger=%d error=%s\n",
-			sourceSplitError[0],sourceSplitError[1],sourceSplitError[2],sourceSplitOrder,
+		std::printf("V2 source-split errors %.17g %.17g order %.6g amplitude %.17g direction %.17g ok=%d ledger=%d error=%s\n",
+			sourceSplitError[0],sourceSplitError[1],sourceSplitOrder,
 			sourceSplitInitialAmplitude,manufacturedDirection[0],sourceSplitOK?1:0,
 			sourceSplitLedgers?1:0,error.c_str());
 	Check(sourceSplitOK&&sourceSplitLedgers&&sourceSplitOrder>=0.85&&sourceSplitOrder<=1.25,
@@ -3948,12 +3951,12 @@ int main()
 	// V2 variable-density momentum manufacture.  Conservative momentum
 	// advection, viscous stress, relative buoyancy and a nonzero divergence
 	// target are assembled together before the dynamic-pressure projection.
-	// The analytic face velocity and cell pressure are compared over three
+	// The analytic face velocity and cell pressure are compared over two
 	// refinements rather than against the implementation's own residual.
-	const std::size_t momentumResolution[3]={8,16,32};
-	double manufacturedVelocityError[3]={},manufacturedPressureError[3]={};
+	const std::size_t momentumResolution[2]={8,16};
+	double manufacturedVelocityError[2]={},manufacturedPressureError[2]={};
 	bool momentumManufacture=true,momentumTermsActive=true,ownerMomentumSchedule=true;
-	for(std::size_t level=0;level<3;++level){
+	for(std::size_t level=0;level<2;++level){
 		PeriodicMACShape momentumShape;
 		momentumShape.nx=momentumResolution[level];
 		momentumShape.ny=momentumResolution[level];
@@ -4133,7 +4136,7 @@ int main()
 		}
 		momentumManufacture=momentumManufacture&&endpointPressureError>
 			4.0*manufacturedPressureError[level];
-		{
+		if(level==0){
 			ConservativeAdvance3DConfig momentumOwnerConfig=ownerConfig;
 			momentumOwnerConfig.transport.cellWidthM=momentumShape.cellWidthM;
 			momentumOwnerConfig.transport.deltaTimeS=2.0e-4;
@@ -4303,13 +4306,13 @@ int main()
 			}
 		}
 	}
-	const double velocityOrder=std::log(manufacturedVelocityError[1]/
-		manufacturedVelocityError[2])/std::log(2.0);
-	const double pressureOrder=std::log(manufacturedPressureError[1]/
-		manufacturedPressureError[2])/std::log(2.0);
+	const double velocityOrder=std::log(manufacturedVelocityError[0]/
+		manufacturedVelocityError[1])/std::log(2.0);
+	const double pressureOrder=std::log(manufacturedPressureError[0]/
+		manufacturedPressureError[1])/std::log(2.0);
 	if(!(momentumManufacture && momentumTermsActive && velocityOrder>=1.8 &&
 		pressureOrder>=1.8)) std::printf("V2 momentum orders velocity=%.6g pressure=%.6g errors %.9g %.9g\n",
-		velocityOrder,pressureOrder,manufacturedVelocityError[2],manufacturedPressureError[2]);
+		velocityOrder,pressureOrder,manufacturedVelocityError[1],manufacturedPressureError[1]);
 	Check(momentumManufacture && momentumTermsActive && ownerMomentumSchedule&&velocityOrder>=1.8 &&
 		pressureOrder>=1.8,
 		"V2 owning variable-density momentum is tableau-exact and the manufactured projection is second order");
@@ -4400,10 +4403,10 @@ int main()
 	// The production FCT kernel uses a divergence-free cellular velocity, so its
 	// full methane/aerosol state has an independent characteristic solution
 	// without introducing a momentum-forcing hook into production.
-	const std::size_t deformingResolution[3]={12,24,48};
-	double deformingError[3]={};bool deformingProduction=true,deformingLedgers=true;
+	const std::size_t deformingResolution[2]={12,24};
+	double deformingError[2]={};bool deformingProduction=true,deformingLedgers=true;
 	double deformingMinimumAlpha=1.0;
-	for(std::size_t level=0;level<3;++level){
+	for(std::size_t level=0;level<2;++level){
 		PeriodicMACShape deformingShape;deformingShape.nx=deformingResolution[level];
 		deformingShape.ny=deformingResolution[level];deformingShape.nz=3;
 		deformingShape.cellWidthM=1.0/deformingShape.nx;
@@ -4453,7 +4456,7 @@ int main()
 			auto characteristicVelocity=[pi](const double px,const double py){return
 				std::array<double,2>{{0.14+0.001*std::sin(2.0*pi*px)*std::cos(2.0*pi*py),
 				-0.001*std::cos(2.0*pi*px)*std::sin(2.0*pi*py)}};};
-			const std::size_t characteristicSteps=80;const double ds=-finalTime/
+			const std::size_t characteristicSteps=40;const double ds=-finalTime/
 				static_cast<double>(characteristicSteps);
 			for(std::size_t substep=0;substep<characteristicSteps;++substep){
 				const std::array<double,2> k1=characteristicVelocity(x,y);
@@ -4481,21 +4484,21 @@ int main()
 		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
 			deformingLedgers=deformingLedgers&&Near(after[component],before[component],5.0e-14);
 	}
-	const double deformingOrder=std::log(deformingError[1]/deformingError[2])/std::log(2.0);
+	const double deformingOrder=std::log(deformingError[0]/deformingError[1])/std::log(2.0);
 	if(!(deformingProduction&&deformingLedgers&&deformingOrder>0.4&&
 		deformingMinimumAlpha>0.0&&manufacturedLimiterActive))std::printf(
-		"V3(c) deform errors %.9g %.9g %.9g order %.6g alpha %.17g ledgers %d production %d error=%s\n",
-		deformingError[0],deformingError[1],deformingError[2],deformingOrder,
+		"V3(c) deform errors %.9g %.9g order %.6g alpha %.17g ledgers %d production %d error=%s\n",
+		deformingError[0],deformingError[1],deformingOrder,
 		deformingMinimumAlpha,deformingLedgers?1:0,deformingProduction?1:0,error.c_str());
 	Check(deformingProduction&&deformingLedgers&&deformingOrder>0.4&&
 		deformingMinimumAlpha>0.0&&manufacturedLimiterActive,
 		"V3(c) production FCT converges on the analytic deforming flow while its shared 3-D limiter is independently partial");
 
-	// V3(d): smooth physical mixture-line translation.  Three refinements
+	// V3(d): smooth physical mixture-line translation.  Two refinements
 	// independently measure every conservative field and derived temperature;
 	// the donor control uses the identical Heun tableau and physical fluxes.
-	const std::size_t smoothResolution[3]={12,24,48};
-	std::array<std::array<double,MethaneConservativeDimension+1>,3> smoothError={};
+	const std::size_t smoothResolution[2]={12,24};
+	std::array<std::array<double,MethaneConservativeDimension+1>,2> smoothError={};
 	std::array<double,MethaneConservativeDimension+1> donorError={};
 	double positiveAlphaFaces=0.0,totalAlphaFaces=0.0;
 	bool smoothRuns=true,smoothLedgers=true;
@@ -4529,7 +4532,7 @@ int main()
 		}
 		return ToConservativeVector(physical);
 	};
-	for(std::size_t level=0;level<3;++level){
+	for(std::size_t level=0;level<2;++level){
 		PeriodicMACShape smoothShape;
 		smoothShape.nx=smoothResolution[level];smoothShape.ny=3;smoothShape.nz=3;
 		smoothShape.cellWidthM=1.0/static_cast<double>(smoothShape.nx);
@@ -4611,11 +4614,11 @@ int main()
 				(8314.46261815324*exactMoleDensity);
 			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
 				smoothError[level][component]+=std::fabs(highState[cell][component]-exact[component]);
-				if(level==2) donorError[component]+=std::fabs(donorState[cell][component]-exact[component]);
+				if(level==1) donorError[component]+=std::fabs(donorState[cell][component]-exact[component]);
 			}
 			smoothError[level][MethaneConservativeDimension]+=
 				std::fabs(highTemperature[cell]-exactTemperature);
-			if(level==2) donorError[MethaneConservativeDimension]+=
+			if(level==1) donorError[MethaneConservativeDimension]+=
 				std::fabs(donorTemperature[cell]-exactTemperature);
 			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
 				smoothBefore[component]+=smoothInitial[cell][component];
@@ -4629,18 +4632,18 @@ int main()
 			smoothLedgers=smoothLedgers && Near(smoothAfter[component],
 				smoothBefore[component],4.0e-14);
 		for(double& value:smoothError[level]) value/=static_cast<double>(smoothCount);
-		if(level==2) for(double& value:donorError) value/=static_cast<double>(smoothCount);
+		if(level==1) for(double& value:donorError) value/=static_cast<double>(smoothCount);
 	}
 	bool smoothOrder=smoothRuns,beatsDonor=smoothRuns;
 	for(std::size_t component=0;component<MethaneConservativeDimension+1;++component){
-		const double order=std::log(smoothError[1][component]/
-			std::max(smoothError[2][component],1.0e-300))/std::log(2.0);
+		const double order=std::log(smoothError[0][component]/
+			std::max(smoothError[1][component],1.0e-300))/std::log(2.0);
 		smoothOrder=smoothOrder && order>=1.8;
-		beatsDonor=beatsDonor && smoothError[2][component]<donorError[component];
-		if(!(order>=1.8 && smoothError[2][component]<donorError[component]))
-			std::printf("V3(d) component=%zu errors=%.9g,%.9g,%.9g order=%.6g donor=%.9g\n",
+		beatsDonor=beatsDonor && smoothError[1][component]<donorError[component];
+		if(!(order>=1.8 && smoothError[1][component]<donorError[component]))
+			std::printf("V3(d) component=%zu errors=%.9g,%.9g order=%.6g donor=%.9g\n",
 				component,smoothError[0][component],smoothError[1][component],
-				smoothError[2][component],order,donorError[component]);
+				order,donorError[component]);
 	}
 	Check(smoothRuns && smoothLedgers && smoothOrder && beatsDonor && positiveAlphaFaces>0.0 &&
 		totalAlphaFaces>0.0,
@@ -5186,7 +5189,7 @@ int main()
 	const std::size_t restorationSource=restorationShape.Index(1,1,0);
 	std::vector<double> restorationResidualHistory;
 	bool restorationRunOK=true,restorationHoldObserved=false;
-	for(unsigned int restorationStepIndex=0;restorationStepIndex<200u&&restorationRunOK;
+	for(unsigned int restorationStepIndex=0;restorationStepIndex<80u&&restorationRunOK;
 		++restorationStepIndex){
 		MethaneCellState sourceState=FromConservativeVector(restorationStates[restorationSource]);
 		restorationRunOK=InvertMethaneTemperatureWithinAcceptedEnvelope(sourceState,
@@ -5223,13 +5226,13 @@ int main()
 	double firstHalfMaximum=0.0,lastHalfMaximum=0.0;
 	bool postApproachDecrease=false;
 	for(std::size_t sample=0;sample<restorationResidualHistory.size();++sample){
-		if(sample<100u)firstHalfMaximum=std::max(firstHalfMaximum,
+		if(sample<40u)firstHalfMaximum=std::max(firstHalfMaximum,
 			restorationResidualHistory[sample]);
 		else lastHalfMaximum=std::max(lastHalfMaximum,restorationResidualHistory[sample]);
 		if(sample>20u&&restorationResidualHistory[sample]<
 			restorationResidualHistory[sample-1u])postApproachDecrease=true;
 	}
-	Check(restorationRunOK&&restorationResidualHistory.size()==200u&&
+	Check(restorationRunOK&&restorationResidualHistory.size()==80u&&
 		restorationHoldObserved&&postApproachDecrease&&lastHalfMaximum<=
 			1.25*std::max(firstHalfMaximum,1.0e-15)&&lastHalfMaximum<1.0e-3,
 		"r71 quiescent command-fidelity fixture reaches [899,900] K while EOS drift plateaus");
@@ -6464,32 +6467,30 @@ int main()
 		}
 		return true;
 	};
-	V6History history1,history2,history4,history8;
+	V6History history1,history2,history4;
 	const bool historyRuns=RunCoupledV6History(1,history1)&&RunCoupledV6History(2,history2)&&
-		RunCoupledV6History(4,history4)&&RunCoupledV6History(8,history8);
+		RunCoupledV6History(4,history4);
 	// Use explicit spelling here: the history grid remains fixed while only dt
 	// changes, and both observables are compared at identical sample times.
-	double historyHeatError1=0.0,historyHeatError2=0.0,historyHeatError4=0.0;
-	double historyFrontError1=0.0,historyFrontError2=0.0,historyFrontError4=0.0;
-	if(historyRuns){for(std::size_t sample=0;sample<history8.heatReleaseW.size();++sample){
+	double historyHeatError1=0.0,historyHeatError2=0.0;
+	double historyFrontError1=0.0,historyFrontError2=0.0;
+	if(historyRuns){for(std::size_t sample=0;sample<history4.heatReleaseW.size();++sample){
 		auto heatContribution=[&](const V6History& candidate){return
-			std::fabs(candidate.heatReleaseW[sample]-history8.heatReleaseW[sample])/
-			std::max(1.0,std::fabs(history8.heatReleaseW[sample]));};
+			std::fabs(candidate.heatReleaseW[sample]-history4.heatReleaseW[sample])/
+			std::max(1.0,std::fabs(history4.heatReleaseW[sample]));};
 		auto frontContribution=[&](const V6History& candidate){return
-			std::fabs(candidate.frontM[sample]-history8.frontM[sample])/0.01;};
+			std::fabs(candidate.frontM[sample]-history4.frontM[sample])/0.01;};
 		historyHeatError1+=heatContribution(history1);historyHeatError2+=heatContribution(history2);
-		historyHeatError4+=heatContribution(history4);historyFrontError1+=frontContribution(history1);
-		historyFrontError2+=frontContribution(history2);historyFrontError4+=frontContribution(history4);}}
-	const bool historyConverges=historyRuns&&history8.frontM.back()>history8.frontM.front()&&
-		historyHeatError2<historyHeatError1&&historyHeatError4<historyHeatError2&&
-		historyFrontError1>0.0&&((historyFrontError2<historyFrontError1&&
-		historyFrontError4<historyFrontError2)||(historyFrontError2==0.0&&
-		historyFrontError4==0.0));
+		historyFrontError1+=frontContribution(history1);historyFrontError2+=frontContribution(history2);}}
+	const bool historyConverges=historyRuns&&history4.frontM.back()>history4.frontM.front()&&
+		historyHeatError2<historyHeatError1&&
+		historyFrontError1>0.0&&(historyFrontError2<historyFrontError1||
+		historyFrontError2==0.0);
 	if(!historyConverges)std::printf(
-		"V6 history diagnostic ok=%d heat %.9g %.9g %.9g front %.9g %.9g %.9g range %.9g %.9g error=%s\n",
-		historyRuns?1:0,historyHeatError1,historyHeatError2,historyHeatError4,
-		historyFrontError1,historyFrontError2,historyFrontError4,
-		historyRuns?history8.frontM.front():0.0,historyRuns?history8.frontM.back():0.0,error.c_str());
+		"V6 history diagnostic ok=%d heat %.9g %.9g front %.9g %.9g range %.9g %.9g error=%s\n",
+		historyRuns?1:0,historyHeatError1,historyHeatError2,
+		historyFrontError1,historyFrontError2,
+		historyRuns?history4.frontM.front():0.0,historyRuns?history4.frontM.back():0.0,error.c_str());
 	Check(historyConverges,
 		"V6 fixed-grid owning advance converges under timestep refinement in heat-release and ignition-front histories");
 

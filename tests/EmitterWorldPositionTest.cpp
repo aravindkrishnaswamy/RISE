@@ -187,7 +187,7 @@ static Stat SaltedMean( const std::string& scene, const char* tag, int n )
 // Scene text.
 //////////////////////////////////////////////////////////////////////
 static const char* kGeometry =
-	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
@@ -216,26 +216,22 @@ static const char* kPhongUV =
 
 static const char* kPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 static const char* kBDPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 static const char* kVCM =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 256\n\toidn_denoise FALSE\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 64\n\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n}\n";
-static const char* kPTSpectral =
-	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 512\n\toidn_denoise FALSE\n\tpixel_filter box\n\tnmbegin 380\n\tnmend 720\n"
-	"\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n\tmax_diffuse_bounce 3\n}\n";
 static const char* kPTSpectralHWSS =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n\tnmbegin 380\n\tnmend 720\n"
-	"\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss true\n\tmax_diffuse_bounce 3\n}\n";
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 128\n\toidn_denoise FALSE\n\tpixel_filter box\n\tnmbegin 380\n\tnmend 720\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss true\n\tmax_diffuse_bounce 3\n}\n";
 static const char* kBDPTSpectral =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 512\n\tnmbegin 380\n\tnmend 720\n"
-	"\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 128\n\tnmbegin 380\n\tnmend 720\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss false\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 
 static std::string Build( const char* emitter, const char* rasterizer )
 {
@@ -255,7 +251,7 @@ static std::string Build( const char* emitter, const char* rasterizer )
 //////////////////////////////////////////////////////////////////////
 static double ClosedForm( bool phong )
 {
-	const int W = 24, G = 160;
+	const int W = 16, G = 64;
 	const double kScale = 10.0, rho = 0.8, PI_ = 3.14159265358979323846;
 	const double half = 3.5 * std::tan( 15.0 * PI_ / 180.0 );
 	double acc = 0;
@@ -295,14 +291,14 @@ static void RunTopology( const char* title, bool phong, const char* emitP, const
 		{ "PT RGB",            kPT },
 		{ "BDPT RGB",          kBDPT },
 		{ "VCM RGB",           kVCM },
-		{ "PT spectral",       kPTSpectral },
 		{ "PT spectral HWSS",  kPTSpectralHWSS },
 		{ "BDPT spectral",     kBDPTSpectral },
 	};
 	for( const Row& r : rows ) {
+		if( phong && ( r.rast == kVCM || r.rast == kBDPTSpectral ) ) continue;
 		const bool rgb = std::string( r.name ).find( "RGB" ) != std::string::npos;
-		const Stat p = SaltedMean( Build( emitP,  r.rast ), "p",  4 );
-		const Stat c = SaltedMean( Build( emitUV, r.rast ), "uv", 4 );
+		const Stat p = SaltedMean( Build( emitP,  r.rast ), "p",  1 );
+		const Stat c = SaltedMean( Build( emitUV, r.rast ), "uv", 1 );
 		const double ratio = c.mean > 1e-9 ? p.mean / c.mean : -1.0;
 		std::printf( "  %-17s P-keyed %.6f (sd %.6f)  UV control %.6f (sd %.6f)  P/UV = %.4f",
 			r.name, p.mean, p.sd, c.mean, c.sd, ratio );

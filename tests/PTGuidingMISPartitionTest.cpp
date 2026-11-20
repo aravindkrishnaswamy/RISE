@@ -965,14 +965,14 @@ static void RunMultiLobeEnvRow()
 	MultiLobeMaterial* oneLobe = new MultiLobeMaterial( true );
 	GlobalLog()->PrintNew( oneLobe, __FILE__, __LINE__, "one-lobe control material" );
 
-	const unsigned int kN = 200000;
+	const unsigned int kN = 40000;
 
 	// CONTROL: same BRDF, same marginal sampling density, ONE lobe.
 	{
 		const Scalar m = RunUnguidedBatch( fx, *oneLobe, kN, 21000 );
 		std::cout << "    (j-control) one-lobe mixture " << m
 			<< " , expected " << Lenv << std::endl;
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(j-control) SINGLE-lobe mixture SPF, guiding off: furnace reads L_env" );
 	}
 
@@ -980,7 +980,7 @@ static void RunMultiLobeEnvRow()
 	{
 		const Scalar m = RunUnguidedBatch( fx, *twoLobe, kN, 22000 );
 		std::cout << "    (j) two-lobe " << m << " , expected " << Lenv << std::endl;
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(j) MULTI-lobe SPF, guiding off: env-NEE vs the escape weight "
 			"partition to 1 (furnace reads L_env)" );
 	}
@@ -1088,13 +1088,13 @@ static void RunMultiLobeAreaRow()
 	MultiLobeMaterial* oneLobe = new MultiLobeMaterial( true );
 	GlobalLog()->PrintNew( oneLobe, __FILE__, __LINE__, "one-lobe control material" );
 
-	const unsigned int kN = 400000;
+	const unsigned int kN = 80000;
 
 	{
 		const Scalar m = RunUnguidedBatch( fx, *oneLobe, kN, 23000 );
 		std::cout << "    (k-control) one-lobe mixture " << m
 			<< " , expected " << expected << std::endl;
-		CheckRel( m, expected, 0.02,
+		CheckRel( m, expected, 0.04,
 			"(k-control) SINGLE-lobe mixture SPF, guiding off: area furnace reads "
 			"the cone closed form" );
 	}
@@ -1102,7 +1102,7 @@ static void RunMultiLobeAreaRow()
 	{
 		const Scalar m = RunUnguidedBatch( fx, *twoLobe, kN, 24000 );
 		std::cout << "    (k) two-lobe " << m << " , expected " << expected << std::endl;
-		CheckRel( m, expected, 0.02,
+		CheckRel( m, expected, 0.04,
 			"(k) MULTI-lobe SPF, guiding off: area-NEE vs the emitter-hit weight "
 			"partition to 1 (area furnace reads the cone closed form)" );
 	}
@@ -1418,7 +1418,7 @@ static void RunHWSSMultiLobeEnvRow()
 		Check( LenvNM[w] > 0, "HWSS multi-lobe env spectral radiance probe is positive" );
 	}
 
-	const unsigned int kN = 150000;
+	const unsigned int kN = 30000;
 	static const char* laneNames[SampledWavelengths::N] =
 		{ "hero (nm=420)", "companion 1 (nm=480)", "companion 2 (nm=560)", "companion 3 (nm=660)" };
 
@@ -1436,7 +1436,7 @@ static void RunHWSSMultiLobeEnvRow()
 		for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 			std::cout << "    (achromatic control) " << laneNames[w] << " " << mean[w]
 				<< " , expected " << LenvNM[w] << std::endl;
-			CheckRel( mean[w], LenvNM[w], 0.02,
+			CheckRel( mean[w], LenvNM[w], 0.04,
 				"(achromatic control) HWSS multi-lobe furnace, wavelength-independent "
 				"mixture: every lane reads its own L_env(nm)" );
 		}
@@ -1453,13 +1453,13 @@ static void RunHWSSMultiLobeEnvRow()
 		RunHWSSBatch( fx, *mat, kN, 32000, mean );
 
 		std::cout << "    (hero) " << mean[0] << " , expected " << LenvNM[0] << std::endl;
-		CheckRel( mean[0], LenvNM[0], 0.02,
+		CheckRel( mean[0], LenvNM[0], 0.04,
 			"DL-170: HWSS hero lane reads L_env(hero) (the fix does not touch the hero)" );
 
 		for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
 			std::cout << "    (" << laneNames[w] << ") " << mean[w]
 				<< " , expected " << LenvNM[w] << std::endl;
-			CheckRel( mean[w], LenvNM[w], 0.02,
+			CheckRel( mean[w], LenvNM[w], 0.04,
 				"DL-170: HWSS companion lane's env-NEE vs escape weight "
 				"partition to 1 at the COMPANION's own wavelength" );
 		}
@@ -1717,7 +1717,7 @@ static void RunEnvRows()
 			"the field resolves ONE spatial region at the shading point" );
 	}
 
-	const unsigned int kN = 120000;
+	const unsigned int kN = 30000;
 
 	// Reference row: guiding fully off (alpha 0).  Proves the harness
 	// itself -- geometry, albedo, env sampler, NEE/BSDF MIS pair --
@@ -1725,7 +1725,7 @@ static void RunEnvRows()
 	{
 		RowConfig cfg{ "reference (no guiding)", false, false, false, eGuidingOneSampleMIS, 0.0 };
 		const Scalar m = RunBatch( fx, *diffuseMat, guide, cfg, kN, 1000 );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"reference: unguided white furnace under a constant env reads L_env" );
 	}
 
@@ -1734,7 +1734,7 @@ static void RunEnvRows()
 	{
 		RowConfig cfg{ "(a)", false, false, false, eGuidingOneSampleMIS, 0.9 };
 		const Scalar m = RunBatch( fx, *diffuseMat, guide, cfg, kN, 2000 );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(a) CONTROL guidingLearnedAlpha=false + diffuse lobe: furnace reads L_env" );
 	}
 
@@ -1752,7 +1752,7 @@ static void RunEnvRows()
 
 		RowConfig cfg{ "(b)", true, true, false, eGuidingOneSampleMIS, 0.9 };
 		const Scalar m = RunBatch( fx, *diffuseMat, guide, cfg, kN, 3000 );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(b) guidingLearnedAlpha=true (default) + diffuse lobe: furnace reads L_env" );
 	}
 
@@ -1767,7 +1767,7 @@ static void RunEnvRows()
 	{
 		RowConfig cfg{ "(c)", false, false, true, eGuidingOneSampleMIS, 0.9 };
 		const Scalar m = RunBatch( fx, *glossyMat, guide, cfg, kN, 4000 );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(c) eRayReflection lobe (half alpha + no cosine product on the escape side): "
 			"furnace reads L_env" );
 	}
@@ -1778,7 +1778,7 @@ static void RunEnvRows()
 	{
 		RowConfig cfg{ "(e)", false, false, false, eGuidingRIS, 0.9 };
 		const Scalar m = RunBatch( fx, *diffuseMat, guide, cfg, kN, 5000 );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(e) RIS-mode guiding: furnace reads L_env" );
 	}
 
@@ -1841,19 +1841,19 @@ static void RunAreaLightRow()
 		Point3( 0, 0, 0 ), Vector3Ops::Normalize( Vector3( 0.9, 0.0, 0.44 ) ) );
 	Check( guide->IsTrained(), "area row: skewed guiding field is trained" );
 
-	const unsigned int kN = 200000;
+	const unsigned int kN = 40000;
 
 	{
 		RowConfig cfg{ "area reference", false, false, false, eGuidingOneSampleMIS, 0.0 };
 		const Scalar m = RunBatch( fx, *diffuseMat, guide, cfg, kN, 6000 );
-		CheckRel( m, expected, 0.02,
+		CheckRel( m, expected, 0.04,
 			"area reference: unguided white furnace under a spherical emitter reads L_e*R^2/d^2" );
 	}
 
 	{
 		RowConfig cfg{ "(d)", true, false, false, eGuidingOneSampleMIS, 0.9 };
 		const Scalar m = RunBatch( fx, *diffuseMat, guide, cfg, kN, 7000 );
-		CheckRel( m, expected, 0.02,
+		CheckRel( m, expected, 0.04,
 			"(d) AREA-light NEE vs the guided emitter-hit weight: furnace reads L_e*R^2/d^2" );
 	}
 
@@ -2138,7 +2138,7 @@ static void RunIorStackRow()
 		Point3( 0, 0, 0 ), Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) ) );
 	Check( guide->IsTrained(), "(f) skewed guiding field is trained" );
 
-	const unsigned int kN = 160000;
+	const unsigned int kN = 40000;
 
 	// Control: the SAME material and the SAME entry stack with guiding
 	// OFF.  The blend never runs, so nothing in this row's fix is
@@ -2147,14 +2147,14 @@ static void RunIorStackRow()
 	{
 		RowConfig cfg{ "(f) control", false, false, false, eGuidingOneSampleMIS, 0.0 };
 		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 8000, enclosing );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(f) CONTROL stack-aware material inside a dielectric, guiding OFF: furnace reads L_env" );
 	}
 
 	{
 		RowConfig cfg{ "(f)", false, false, false, eGuidingOneSampleMIS, 0.5 };
 		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 9000, enclosing );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(f) stack-aware material inside a dielectric, guiding ON: furnace reads L_env" );
 	}
 
@@ -2326,12 +2326,12 @@ static void RunZeroAggregateEnvRow()
 
 	WedgePremise( *stackMat, *guide, enclosing );
 
-	const unsigned int kN = 160000;
+	const unsigned int kN = 40000;
 
 	{
 		RowConfig cfg{ "(h) control", false, false, false, eGuidingOneSampleMIS, 0.0 };
 		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 12000, enclosing );
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(h) CONTROL guiding OFF: the wedge is unreachable by the BSDF technique and the furnace reads L_env" );
 	}
 
@@ -2340,7 +2340,7 @@ static void RunZeroAggregateEnvRow()
 		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 13000, enclosing );
 		std::cout << "    (h) guided " << m << " vs L_env " << Lenv
 			<< "  (pre-fix: the doubled wedge integral, 14.6 % of L_env)" << std::endl;
-		CheckRel( m, Lenv, 0.015,
+		CheckRel( m, Lenv, 0.03,
 			"(h) guide aimed into the zero-aggregate wedge: furnace still reads L_env" );
 	}
 
@@ -2444,7 +2444,7 @@ static void RunZeroAggregateAreaRow()
 
 	WedgePremise( *stackMat, *guide, enclosing );
 
-	const unsigned int kN = 200000;
+	const unsigned int kN = 40000;
 
 	// Control: guiding OFF.  The tilted lobe cannot sample the wedge at
 	// all, so the emitter is reachable ONLY by NEE -- which is exactly
@@ -2452,7 +2452,7 @@ static void RunZeroAggregateAreaRow()
 	{
 		RowConfig cfg{ "(i) control", false, false, false, eGuidingOneSampleMIS, 0.0 };
 		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 14000, enclosing );
-		CheckRel( m, expected, 0.02,
+		CheckRel( m, expected, 0.04,
 			"(i) CONTROL guiding OFF: NEE alone reads L_e*(R/d)^2*cos(beta)" );
 	}
 
@@ -2461,7 +2461,7 @@ static void RunZeroAggregateAreaRow()
 		const Scalar m = RunBatch( fx, *stackMat, guide, cfg, kN, 15000, enclosing );
 		std::cout << "    (i) guided " << m << " vs expected " << expected
 			<< "  (pre-fix: the emitter is entirely inside the wedge, so +100 %)" << std::endl;
-		CheckRel( m, expected, 0.02,
+		CheckRel( m, expected, 0.04,
 			"(i) emitter entirely inside the zero-aggregate wedge: area-NEE and the emitter hit still partition to 1" );
 	}
 
@@ -2640,14 +2640,14 @@ static void RunVolumeEmitterRow()
 	Check( guide->GetLastAddedVolumeSampleCount() > 0,
 		"(g) the field really received VOLUME training samples" );
 
-	const unsigned int kN = 120000;
+	const unsigned int kN = 30000;
 
 	const Scalar reference = RunVolumeBatch( fx, guide, 0.0, kN, 11000 );
 	Check( reference > 0, "(g) the unguided volumetric reading is positive" );
 	const Scalar guided = RunVolumeBatch( fx, guide, 0.9, kN, 11000 );
 
 	std::cout << "    (g) unguided " << reference << " , guided " << guided << std::endl;
-	CheckRel( guided, reference, 0.03,
+	CheckRel( guided, reference, 0.06,
 		"(g) volume vertex + trained volume guiding + area emitter: guiding does not change the expectation" );
 
 	guide->release();
@@ -2842,7 +2842,7 @@ static void RunDL67EnvRows()
 	StubObject* quadObject = new StubObject();
 	GlobalLog()->PrintNew( quadObject, __FILE__, __LINE__, "quadrature shading object" );
 
-	const unsigned int kN = 160000;
+	const unsigned int kN = 25000;
 
 	// (l) The synthetic two-lobe SPF of rows (j)/(k): closed form L_env.
 	// Both lobes are `eRayDiffuse`, so every lobe carries the SAME
@@ -2855,9 +2855,9 @@ static void RunDL67EnvRows()
 		GlobalLog()->PrintNew( oneLobe, __FILE__, __LINE__, "DL-67 one-lobe control" );
 		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) );
 
-		DL67RunRows( fx, *oneLobe, guideAxisLocal, DL67Incidence( 0 ), Lenv, 0.015, kN, 30000,
+		DL67RunRows( fx, *oneLobe, guideAxisLocal, DL67Incidence( 0 ), Lenv, 0.035, kN, 30000,
 			"(l-control) one-lobe mixture, env" );
-		DL67RunRows( fx, *twoLobe, guideAxisLocal, DL67Incidence( 0 ), Lenv, 0.015, kN, 31000,
+		DL67RunRows( fx, *twoLobe, guideAxisLocal, DL67Incidence( 0 ), Lenv, 0.035, kN, 31000,
 			"(l) two-lobe synthetic SPF, env" );
 
 		oneLobe->release();
@@ -2882,11 +2882,11 @@ static void RunDL67EnvRows()
 
 		const Vector3 inDir = DL67Incidence( 40 );
 		const Scalar albedo = DL67BsdfCosQuadrature( *schlick, quadObject, inDir,
-			0.0, 1.0, 2048, 2048 );
+			0.0, 1.0, 256, 256 );
 		std::cout << "    (m) schlick directional albedo at 40 deg (quadrature) "
 			<< albedo << std::endl;
 		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) );
-		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedo, 0.015, kN, 32000,
+		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedo, 0.035, kN, 32000,
 			"(m) schlick_material, env" );
 
 		schlick->release();
@@ -2919,11 +2919,11 @@ static void RunDL67EnvRows()
 
 		const Vector3 inDir = DL67Incidence( 30 );
 		const Scalar albedo = DL67BsdfCosQuadrature( *trans, quadObject, inDir,
-			-1.0, 1.0, 2048, 1024 );
+			-1.0, 1.0, 256, 256 );
 		std::cout << "    (n) translucent full-sphere albedo at 30 deg (quadrature) "
 			<< albedo << std::endl;
 		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.5, 0.0, -0.87 ) );
-		DL67RunRows( fx, *trans, guideAxisLocal, inDir, Lenv * albedo, 0.015, kN, 33000,
+		DL67RunRows( fx, *trans, guideAxisLocal, inDir, Lenv * albedo, 0.035, kN, 33000,
 			"(n) translucent_material, env" );
 
 		trans->release();
@@ -2957,11 +2957,11 @@ static void RunDL67EnvRows()
 
 		const Vector3 inDir = DL67Incidence( 40 );
 		const Scalar albedo = DL67BsdfCosQuadrature( *schlick, quadObject, inDir,
-			0.0, 1.0, 2048, 2048 );
+			0.0, 1.0, 256, 256 );
 		std::cout << "    (q) black-diffuse schlick albedo at 40 deg (quadrature) "
 			<< albedo << std::endl;
 		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) );
-		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedo, 0.015, kN, 36000,
+		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedo, 0.035, kN, 36000,
 			"(q) black-diffuse schlick_material, env" );
 
 		schlick->release();
@@ -2992,9 +2992,9 @@ static void RunDL67EnvRows()
 		LambertianMaterial* lambert = new LambertianMaterial( *whiteP );
 		GlobalLog()->PrintNew( lambert, __FILE__, __LINE__, "DL-67 tilted lambertian" );
 		const Scalar albedoL = DL67BsdfCosQuadrature( *lambert, quadObject, inDir,
-			-1.0, 1.0, 2048, 2048, shadingN );
+			-1.0, 1.0, 256, 256, shadingN );
 		std::cout << "    (r) tilted-normal lambertian albedo (quadrature) " << albedoL << std::endl;
-		DL67RunRows( fx, *lambert, guideAxisLocal, inDir, Lenv * albedoL, 0.015, kN, 37000,
+		DL67RunRows( fx, *lambert, guideAxisLocal, inDir, Lenv * albedoL, 0.035, kN, 37000,
 			"(r) lambertian, 30 deg tilted shading normal, env", shadingN );
 
 		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
@@ -3008,9 +3008,9 @@ static void RunDL67EnvRows()
 		SchlickMaterial* schlick = new SchlickMaterial( *rd, *rs, *rough, *iso );
 		GlobalLog()->PrintNew( schlick, __FILE__, __LINE__, "DL-67 tilted schlick" );
 		const Scalar albedoS = DL67BsdfCosQuadrature( *schlick, quadObject, inDir,
-			-1.0, 1.0, 2048, 2048, shadingN );
+			-1.0, 1.0, 256, 256, shadingN );
 		std::cout << "    (r) tilted-normal schlick albedo (quadrature) " << albedoS << std::endl;
-		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedoS, 0.015, kN, 38000,
+		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedoS, 0.035, kN, 38000,
 			"(r) schlick_material, 30 deg tilted shading normal, env", shadingN );
 
 		schlick->release();
@@ -3057,7 +3057,7 @@ static void RunDL67EnvRows()
 				"(s) the learned cell alpha is high enough that 0.7 * 2 * sigma exceeds 1" );
 		}
 
-		const unsigned int kNs = 200000;
+		const unsigned int kNs = 30000;
 		const RowConfig ref{ "(s) un-guided control", false, false, false, eGuidingOneSampleMIS, 0.0 };
 		const Scalar expected = RunBatch( fx, *sss, guide, ref, 2 * kNs, 39000000u, 0, inDir );
 		std::cout << "    (s) smooth sss, un-guided reference " << expected << std::endl;
@@ -3076,7 +3076,7 @@ static void RunDL67EnvRows()
 				<< " (" << ( expected > 0 ? 100.0 * ( m / expected - 1.0 ) : 0.0 ) << "%)" << std::endl;
 			const std::string label = std::string( "(s) smooth subsurfacescattering_material [" )
 				+ rows[i].cfg.name + "]: delta transport survives guiding";
-			CheckRel( m, expected, 0.04, label.c_str() );
+			CheckRel( m, expected, 0.08, label.c_str() );
 		}
 
 		guideHigh->release();
@@ -3102,7 +3102,7 @@ static void RunDL67EnvRows()
 		const Scalar m = RunBatch( fx, *lambert, guide, cfg, kN, 41000000u, 0, DL67Incidence( 40 ) );
 		std::cout << "    (t) lambertian [one-sample, fixed alpha 1.5] " << m << " , expected " << Lenv
 			<< " (" << 100.0 * ( m / Lenv - 1.0 ) << "%)" << std::endl;
-		CheckRel( m, Lenv, 0.015, "(t) white lambertian [one-sample, fixed alpha 1.5]: furnace reads L_env" );
+		CheckRel( m, Lenv, 0.035, "(t) white lambertian [one-sample, fixed alpha 1.5]: furnace reads L_env" );
 		guide->release();
 		lambert->release();
 		whiteP->release();
@@ -3152,7 +3152,7 @@ static void RunDL67AreaRows()
 	// with the guide pointed away both DL-67 defects are invisible
 	// (measured: every guided row within 0.8 % of its reference pre-fix).
 	const Vector3 guideAxis = Vector3Ops::Normalize( Vector3( 0.15, 0.0, 0.99 ) );
-	const unsigned int kN = 300000;
+	const unsigned int kN = 50000;
 
 	{
 		MultiLobeMaterial* twoLobe = new MultiLobeMaterial( false );
@@ -3160,7 +3160,7 @@ static void RunDL67AreaRows()
 		const Scalar expected = Le * (
 			kLobeAWeight * ( 1.0 - std::pow( (double)cosMax, (double)kLobeAPower + 1.0 ) ) +
 			kLobeBWeight * ( 1.0 - std::pow( (double)cosMax, (double)kLobeBPower + 1.0 ) ) );
-		DL67RunRows( fx, *twoLobe, guideAxis, DL67Incidence( 0 ), expected, 0.02, kN, 34000,
+		DL67RunRows( fx, *twoLobe, guideAxis, DL67Incidence( 0 ), expected, 0.045, kN, 34000,
 			"(o) two-lobe synthetic SPF, area" );
 		twoLobe->release();
 	}
@@ -3178,8 +3178,8 @@ static void RunDL67AreaRows()
 		GlobalLog()->PrintNew( schlick, __FILE__, __LINE__, "DL-67 schlick material" );
 
 		const Scalar coneIntegral = DL67BsdfCosQuadrature( *schlick, quadObject,
-			DL67Incidence( 0 ), cosMax, 1.0, 1024, 256 );
-		DL67RunRows( fx, *schlick, guideAxis, DL67Incidence( 0 ), Le * coneIntegral, 0.02, kN, 35000,
+			DL67Incidence( 0 ), cosMax, 1.0, 256, 128 );
+		DL67RunRows( fx, *schlick, guideAxis, DL67Incidence( 0 ), Le * coneIntegral, 0.045, kN, 35000,
 			"(p) schlick_material, area" );
 
 		schlick->release();

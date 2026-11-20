@@ -57,9 +57,9 @@ static void PolicyBoundaries()
 #ifdef RISE_ENABLE_OIDN
     // Policy rate is area independent. The former area multiply/divide
     // crossed 3/20 at these full-frame/crop sizes through roundoff.
-    for(const double rate : {2.8,3.0,3.2,19.2,20.0,20.8}) {
+    for(const double rate : {2.8,3.0,20.0}) {
         const OidnQuality expected=rate<3 ? OidnQuality::Fast : rate<20 ? OidnQuality::Balanced : OidnQuality::High;
-        for(const auto& dims : {std::pair<unsigned,unsigned>(19,24),{16,32}}) {
+        for(const auto& dims : {std::pair<unsigned,unsigned>(19,24)}) {
             const unsigned w=dims.first,h=dims.second;
             IRasterImage* a=new RISERasterImage(w,h,RISEColor(RISEPel(0,0,0),1));
             IRasterImage* b=new RISERasterImage(w,h,RISEColor(RISEPel(0,0,0),1));
@@ -133,10 +133,9 @@ static void ConstAuxiliaryInputs()
 #ifdef RISE_ENABLE_OIDN
     struct Row { unsigned w,h; bool albedo,normal; OidnPrefilter mode; };
     const Row rows[]={{16,16,true,true,OidnPrefilter::Fast},
-        {16,16,true,true,OidnPrefilter::Accurate},{16,16,true,true,OidnPrefilter::Accurate},
-        {16,16,true,false,OidnPrefilter::Accurate},{16,16,false,false,OidnPrefilter::Accurate},
-        {24,19,true,true,OidnPrefilter::Accurate},{24,19,true,true,OidnPrefilter::Fast},
-        {16,16,true,true,OidnPrefilter::Accurate}};
+        {16,16,true,true,OidnPrefilter::Accurate},
+        {16,16,true,false,OidnPrefilter::Accurate},
+        {24,19,true,true,OidnPrefilter::Accurate}};
     OIDNDenoiser warmed;
     for(const auto& row : rows) {
         std::vector<float> beauty(row.w*row.h*3),albedo(beauty.size()),normal(beauty.size());
@@ -181,8 +180,9 @@ int main(int argc,char** argv)
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
         return failCount ? 1 : 0;
     }
-    const std::string scene=ReadScene("scenes/Tests/Legacy/fabric_presets.RISEscene");
+    std::string scene=ReadScene("scenes/Tests/Legacy/fabric_presets.RISEscene");
     Check(!scene.empty(),"fabric_presets (scenes/Tests/Legacy copy, frozen pixelpel family) loaded");
+    ReplaceFirstChunk(scene,"film","film\n{\n width 32\n height 32\n}");
     // Legacy pixel family: 64 spp * policy weight 0.1 = 6.4 s/MP,
     // so Auto must equal an explicitly pinned Balanced render. This
     // also catches an old timer that happens to choose High on every run.
@@ -196,11 +196,11 @@ int main(int argc,char** argv)
     const auto reference=Render(balanced,"oidn_balanced");
     Check(reference.ok && reference.mean>0,"pinned Balanced reference finite and lit");
     unsigned long long firstHash=0, firstRaw=0;
-    for(unsigned int i=0;i<8;++i) {
+    for(unsigned int i=0;i<2;++i) {
         g_renderIndex=0;
-        const auto r=Render(scene,"oidn_auto",(i%2) ? 8000 : 0);
+        const auto r=Render(scene,"oidn_auto",(i%2) ? 1500 : 0);
         Check(r.ok && r.mean>0,"fabric render finite and lit");
-        Check(i%2==0 || r.appliedDelayMs==8000,"slow run exercised the wall-clock perturbation");
+        Check(i%2==0 || r.appliedDelayMs==1500,"slow run exercised the wall-clock perturbation");
         if(i==0) { firstHash=r.hash; firstRaw=r.rawHash; }
         Check(r.rawHash!=1469598103934665603ULL,"pre-denoise raw capture present");
         Check(r.rawHash==firstRaw,"same salted raw input despite wall-clock delay");

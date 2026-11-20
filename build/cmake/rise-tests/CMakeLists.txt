@@ -29,7 +29,7 @@
 # Usage (from this directory):
 #   cmake -B _out -G "Visual Studio 17 2022" -A x64
 #   cmake --build _out --config Release          # builds all tests
-#   cmake --build _out --config Release --target Math3DTest   # one test
+#   cmake --build _out --config Release --target PolynomialTest   # one test
 #
 # Test outputs:
 #   bin/tests/<TestName>.exe   (Release)
@@ -305,7 +305,7 @@ foreach(test_src ${TEST_SOURCES})
 
     target_include_directories(${test_name} PRIVATE
         "${RISE_LIB_INCLUDE}"
-        "${RISE_TESTS_DIR}"        # ProceduralTestHelpers.h, StandaloneTestReporting.h, etc.
+        "${RISE_TESTS_DIR}"        # ProceduralTestHelpers.h, TestTempDir.h, etc.
         "${VCPKG_INCLUDE}"
         "${VCPKG_INCLUDE}/OpenEXR" # EXRReader.h includes <ImfHeader.h> etc. (matches Library.vcxproj)
         "${VCPKG_INCLUDE}/Imath"   # OpenEXR 3.x split Imath headers (matches Library.vcxproj)

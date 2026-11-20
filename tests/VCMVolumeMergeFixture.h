@@ -97,11 +97,11 @@ namespace
 	}
 
 	//! Rows A / C: fog in an index-1.0 delta box, optionally around a sphere.
-	inline std::string FogBoxScene( bool vcm, unsigned int spp, bool sphere )
+	inline std::string FogBoxScene( bool vcm, unsigned int spp, bool sphere, unsigned int res = 16 )
 	{
 		std::ostringstream o;
 		o << "RISE ASCII SCENE 7\n";
-		o << "film\n{\n\twidth 24\n\theight 24\n}\n\n";
+		o << "film\n{\n\twidth " << res << "\n\theight " << res << "\n}\n\n";
 		o << "pinhole_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 18\n}\n\n";
 		o << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n";
 		if( sphere ) {
@@ -121,9 +121,9 @@ namespace
 	//! Row E: A's fog box with a Lambertian floor inside it, so one store
 	//! holds surface vertices (which set the firefly-clamp thresholds) and
 	//! medium vertices (the fog seen through the wall is merge-only).
-	inline std::string FogFloorBoxScene( bool vcm, unsigned int spp )
+	inline std::string FogFloorBoxScene( bool vcm, unsigned int spp, unsigned int res = 16 )
 	{
-		std::string s = FogBoxScene( vcm, spp, false );
+		std::string s = FogBoxScene( vcm, spp, false, res );
 		const std::string floorChunks =
 			"uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 			"lambertian_material\n{\n\tname fl\n\treflectance grey\n}\n\n"
@@ -135,11 +135,11 @@ namespace
 	}
 
 	//! Row B: global medium over a floor; VCM surface merging forced on.
-	inline std::string GlobalFogScene( bool vcm, unsigned int spp )
+	inline std::string GlobalFogScene( bool vcm, unsigned int spp, unsigned int res = 16 )
 	{
 		std::ostringstream o;
 		o << "RISE ASCII SCENE 7\n";
-		o << "film\n{\n\twidth 24\n\theight 24\n}\n\n";
+		o << "film\n{\n\twidth " << res << "\n\theight " << res << "\n}\n\n";
 		o << "pinhole_camera\n{\n\tlocation 0 1 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30\n}\n\n";
 		o << "uniformcolor_painter\n{\n\tname grey\n\tcolor 0.8 0.8 0.8\n\tcolorspace Rec709RGB_Linear\n}\n\n";
 		o << "lambertian_material\n{\n\tname fl\n\treflectance grey\n}\n\n";

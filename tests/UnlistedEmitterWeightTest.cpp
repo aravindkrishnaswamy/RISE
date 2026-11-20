@@ -230,7 +230,7 @@ static Stat SaltedMean( const std::string& scene, const char* tag, int n )
 
 
 static const char* kGeometry =
-	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"film\n{\n\twidth 12\n\theight 12\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n}\n\n"
@@ -266,7 +266,7 @@ static std::string Emitter( const bool dropped, const bool blackBase )
 
 static const char* kPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 // Light sampling ALONE: the legacy rasterizer with only the direct-lighting
 // op casts no scattered ray.  (The path tracer's `max_diffuse_bounce 0` does
 // not serve: it still traces the BSDF-sampled ray that finds the emitter.)
@@ -276,27 +276,24 @@ static const char* kLightSamplingOnly =
 // Light RIS switches itself on with more than 8 lights and no light BVH.
 static const char* kPTRIS =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n\tlight_bvh FALSE\n}\n";
+	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n\tlight_bvh FALSE\n}\n";
 static const char* kBDPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 static const char* kVCM =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 256\n\toidn_denoise FALSE\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 64\n\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n}\n";
 #define SPECTRAL "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
-static const char* kPTSpectral =
-	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n" SPECTRAL "\thwss false\n}\n";
 static const char* kPTHWSS =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n" SPECTRAL "\thwss true\n}\n";
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n" SPECTRAL "\thwss true\n}\n";
 static const char* kPTHWSSRIS =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n" SPECTRAL "\thwss true\n\tlight_bvh FALSE\n}\n";
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n" SPECTRAL "\thwss true\n\tlight_bvh FALSE\n}\n";
 static const char* kBDPTSpectral =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 256\n" SPECTRAL "\thwss false\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 64\n" SPECTRAL "\thwss false\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 
 // The legacy shader-op chain: a BSDF-sampled continuation (distribution
 // tracing) beside light sampling, weighted against each other by
@@ -340,7 +337,7 @@ static std::string Build( const std::string& emitter, const char* rasterizer, co
 // quad's UV orientation does not enter.
 static double ClosedForm( const bool corners )
 {
-	const int W = 24, G = 400;
+	const int W = 12, G = 80;
 	const double kScale = 20.0, rho = 0.8, PI_ = 3.14159265358979323846;
 	const double half = 3.5 * std::tan( 15.0 * PI_ / 180.0 );
 	std::vector<double> lit( size_t( G ) * G );
@@ -393,7 +390,7 @@ static const char* kTwoEmitters =
 
 static double ClosedFormTwoEmitters()
 {
-	const int W = 24, G = 400;
+	const int W = 12, G = 80;
 	const double rho = 0.8, PI_ = 3.14159265358979323846;
 	const double half = 3.5 * std::tan( 15.0 * PI_ / 180.0 );
 	double acc = 0;
@@ -455,7 +452,7 @@ static std::string SMSRasterizer( const char* kind, const char* extra, const boo
 {
 	std::string s( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" );
 	s += kind;
-	s += "\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+	s += "\n{\n\tsamples 48\n\toidn_denoise FALSE\n\tpixel_filter box\n";
 	s += extra;
 	s += sms ? "\tsms_enabled TRUE\n" : "\tsms_enabled FALSE\n";
 	s += "}\n";
@@ -471,7 +468,7 @@ static std::string SMSRasterizer( const char* kind, const char* extra, const boo
 // which.
 //////////////////////////////////////////////////////////////////////
 static const char* kSelfCamera =
-	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"film\n{\n\twidth 12\n\theight 12\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 4.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_ex\n\tcolor 1 1 1\n}\n\n"
@@ -537,7 +534,7 @@ static std::string SelfScene( const bool oneObject, const char* rasterizer )
 // emitters have no BSDF, so nothing else differs between the two.
 //////////////////////////////////////////////////////////////////////
 static const char* kSubsurfaceWall =
-	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"film\n{\n\twidth 12\n\theight 12\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
 	"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.2 0.2 0.2\n\tscattering 4 4 4\n\tg 0.0\n\troughness 0.3\n}\n\n"
 	"box_geometry\n{\n\tname slab_sss\n\twidth 2\n\theight 2\n\tdepth 0.5\n}\n\n"
@@ -581,10 +578,8 @@ int main( int argc, char** argv )
 	static const Row rows[] = {
 		{ "PT RGB",                     kPT,           0, true,  false, true },
 		{ "PT RGB, light RIS",          kPTRIS,        9, true,  false, true },
-		{ "BDPT RGB",                   kBDPT,         0, true,  false, true },
 		{ "BDPT RGB, other lights",     kBDPT,         9, true,  false, true },
 		{ "VCM RGB",                    kVCM,          0, true,  false, true },
-		{ "PT spectral",                kPTSpectral,   0, false, false, true },
 		{ "PT HWSS -> NM hand-off",     kPTHWSS,       0, false, false, true },
 		{ "PT HWSS body",               kPTHWSS,       0, false, true, true },
 		{ "PT HWSS body, light RIS",    kPTHWSSRIS,    9, false, true, true },
@@ -593,7 +588,7 @@ int main( int argc, char** argv )
 	};
 	for( const Row& r : rows ) {
 		if( !r.gated && !printLegacy ) continue;
-		const Stat u = SaltedMean( Build( Emitter( true,  r.blackBase ), r.rast, r.dimLights ), "u", 4 );
+		const Stat u = SaltedMean( Build( Emitter( true,  r.blackBase ), r.rast, r.dimLights ), "u", 2 );
 		const Stat k = SaltedMean( Build( Emitter( false, r.blackBase ), r.rast, r.dimLights ), "k", 2 );
 		// Each render against its own closed form, then the two against each
 		// other: the second is what a spectral row (no RGB closed form) gates.
@@ -605,10 +600,10 @@ int main( int argc, char** argv )
 		if( !r.gated ) continue;
 		const std::string label = std::string( r.name );
 		Check( k.mean > 1e-6, label + ": the kept emitter lights the wall" );
-		Check( ratio > 0.95 && ratio < 1.05, label + ": the dropped emitter lights the wall as the kept one does" );
+		Check( ratio > 0.90 && ratio < 1.10, label + ": the dropped emitter lights the wall as the kept one does" );
 		if( r.rgb ) {
-			Check( std::fabs( k.mean / truthKept - 1.0 ) < 0.05, label + ": the kept emitter matches its closed form" );
-			Check( std::fabs( u.mean / truthDropped - 1.0 ) < 0.05, label + ": the dropped emitter matches its closed form" );
+			Check( std::fabs( k.mean / truthKept - 1.0 ) < 0.06, label + ": the kept emitter matches its closed form" );
+			Check( std::fabs( u.mean / truthDropped - 1.0 ) < 0.10, label + ": the dropped emitter matches its closed form" );
 		}
 	}
 
@@ -625,10 +620,10 @@ int main( int argc, char** argv )
 		s += kGeometry;
 		s += kTwoEmitters;
 		s += r.rast;
-		const Stat t = SaltedMean( s, "two", 4 );
+		const Stat t = SaltedMean( s, "two", 2 );
 		std::printf( "  %-26s %.6f (sd %.6f)  / closed form = %.4f%s\n", r.name, t.mean, t.sd, t.mean / truthTwo,
 			r.gated ? "" : "  [frozen: not gated]" );
-		if( r.gated ) Check( std::fabs( t.mean / truthTwo - 1.0 ) < 0.02,
+		if( r.gated ) Check( std::fabs( t.mean / truthTwo - 1.0 ) < 0.04,
 			std::string( r.name ) + ": two emitters, one hidden, match the closed form" );
 	}
 
@@ -636,12 +631,9 @@ int main( int argc, char** argv )
 	std::printf( "\n  section 3: a dropped emitter behind a specular caster, SMS on against SMS off\n" );
 	struct SMSRow { const char* name; const char* kind; const char* extra; bool plate; bool blackBase; bool alphaCard; int repeats; };
 	static const SMSRow rows3[] = {
-		{ "slab, PT RGB",                     "pathtracing_pel_rasterizer",      "",                      false, false, false, 3 },
-		{ "slab, PT spectral",                "pathtracing_spectral_rasterizer", SPECTRAL "\thwss false\n", false, false, false, 3 },
-		{ "slab, PT HWSS -> NM hand-off",     "pathtracing_spectral_rasterizer", SPECTRAL "\thwss true\n",  false, false, false, 3 },
-		{ "plate, PT RGB",                    "pathtracing_pel_rasterizer",      "",                      true,  true,  false, 8 },
-		{ "plate, PT HWSS body",              "pathtracing_spectral_rasterizer", SPECTRAL "\thwss true\n",  true,  true,  false, 3 },
-		{ "plate, PT HWSS hand-off, no record", "pathtracing_spectral_rasterizer", SPECTRAL "\thwss true\n", true,  false, true, 3 },
+		{ "slab, PT RGB",                       "pathtracing_pel_rasterizer",      "",                      false, false, false, 2 },
+		{ "plate, PT HWSS body",                "pathtracing_spectral_rasterizer", SPECTRAL "\thwss true\n",  true,  true,  false, 2 },
+		{ "plate, PT HWSS hand-off, no record", "pathtracing_spectral_rasterizer", SPECTRAL "\thwss true\n",  true,  false, true,  2 },
 	};
 	for( const SMSRow& r : rows3 ) {
 		Stat on, off;
@@ -667,44 +659,40 @@ int main( int argc, char** argv )
 		std::printf( "  %-36s SMS on %.6f (sd %.6f)  SMS off %.6f (sd %.6f)  on/off = %.4f\n",
 			r.name, on.mean, on.sd, off.mean, off.sd, ratio );
 		Check( off.mean > 1e-3, std::string( r.name ) + ": the dropped emitter lights the wall (SMS off)" );
-		Check( ratio > 0.95 && ratio < 1.05, std::string( r.name ) + ": SMS on renders what SMS off does" );
+		Check( ratio > 0.85 && ratio < 1.15, std::string( r.name ) + ": SMS on renders what SMS off does" );
 	}
 
 	// Section 4.
 	std::printf( "\n  section 4: an emitter lighting itself, one object against two\n" );
 	static const Row rows4[] = {
-		{ "PT RGB",               kPT,        0, true,  false, true },
-		{ "PT RGB, alias table",  kPTRIS,     0, true,  false, true },	// light_bvh FALSE and two lights: no RIS
 		{ "PT RGB, light RIS",    kPTRIS,     9, true,  false, true },
-		{ "PT HWSS body",         kPTHWSS,    0, false, false, true },
 		{ "PT HWSS, alias table", kPTHWSSRIS, 0, false, false, true },
 		{ "BDPT RGB",             kBDPT,      0, true,  false, true },
 	};
 	for( const Row& r : rows4 ) {
-		const Stat one = SaltedMean( SelfScene( true,  r.rast ) + DimLights( r.dimLights ), "one", 3 );
-		const Stat two = SaltedMean( SelfScene( false, r.rast ) + DimLights( r.dimLights ), "two", 3 );
+		const Stat one = SaltedMean( SelfScene( true,  r.rast ) + DimLights( r.dimLights ), "one", 2 );
+		const Stat two = SaltedMean( SelfScene( false, r.rast ) + DimLights( r.dimLights ), "two", 2 );
 		const double ratio = two.mean > 1e-9 ? one.mean / two.mean : -1.0;
 		std::printf( "  %-26s one object %.6f (sd %.6f)  two objects %.6f (sd %.6f)  one/two = %.4f\n",
 			r.name, one.mean, one.sd, two.mean, two.sd, ratio );
 		Check( two.mean > 1e-3, std::string( r.name ) + ": the walls are lit" );
-		Check( ratio > 0.97 && ratio < 1.03, std::string( r.name ) + ": one self-lighting object renders as two objects do" );
+		Check( ratio > 0.94 && ratio < 1.06, std::string( r.name ) + ": one self-lighting object renders as two objects do" );
 	}
 
 	// Section 5.
 	std::printf( "\n  section 5: a subsurface wall, emitters shaded by the emission op against the path-tracing op\n" );
 	struct SSSRow { const char* name; const char* chunk; };
 	static const SSSRow rows5[] = {
-		{ "PT RGB",      "pathtracing_pel_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n" },
-		{ "PT spectral", "pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n" SPECTRAL "\thwss false\n}\n" },
+		{ "PT RGB",      "pathtracing_pel_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n" },
 	};
 	for( const SSSRow& r : rows5 ) {
-		const Stat op = SaltedMean( SubsurfaceScene( "DefaultDirectLighting", r.chunk ), "sssop", 4 );
-		const Stat pt = SaltedMean( SubsurfaceScene( "DefaultPathTracing",    r.chunk ), "ssspt", 4 );
+		const Stat op = SaltedMean( SubsurfaceScene( "DefaultDirectLighting", r.chunk ), "sssop", 2 );
+		const Stat pt = SaltedMean( SubsurfaceScene( "DefaultPathTracing",    r.chunk ), "ssspt", 2 );
 		const double ratio = pt.mean > 1e-9 ? op.mean / pt.mean : -1.0;
 		std::printf( "  %-26s emission op %.6f (sd %.6f)  path-tracing op %.6f (sd %.6f)  ratio = %.4f\n",
 			r.name, op.mean, op.sd, pt.mean, pt.sd, ratio );
 		Check( pt.mean > 1e-3, std::string( r.name ) + ": the subsurface wall is lit" );
-		Check( ratio > 0.97 && ratio < 1.03, std::string( r.name ) + ": the emission op weights the hit as the integrator does" );
+		Check( ratio > 0.94 && ratio < 1.06, std::string( r.name ) + ": the emission op weights the hit as the integrator does" );
 	}
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";

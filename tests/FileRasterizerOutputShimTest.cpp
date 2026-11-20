@@ -30,6 +30,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -62,6 +63,7 @@
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/RasterSanityScan.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Job.h"
 #include "TestTempDir.h"
@@ -3603,6 +3605,84 @@ namespace
 			j->release();
 		}
 	}
+
+	void TestRasterSanityScan()
+	{
+		auto isClose = []( double a, double b, double eps = 1e-9 ) {
+			return std::fabs( a - b ) < eps;
+		};
+
+		// 1. Clean image yields zero negatives.
+		{
+			auto* img = new RasterImage_Template<RISEPel>( 4, 4, RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+			const RasterSanityReport r = ScanRasterImageForPathologicalPixels( *img );
+			Check( r.negativeCount == 0 && r.maxNegativeMagnitude == 0.0,
+				"[sanity-scan] clean image reports zero negatives" );
+			img->release();
+		}
+
+		// 2. Single negative channel pixel counted once with exact magnitude.
+		{
+			auto* img = new RasterImage_Template<RISEPel>( 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+			img->SetPEL( 1, 2, RISEColor( RISEPel( 0.3, -0.25, 0.1 ), 1.0 ) );
+			const RasterSanityReport r = ScanRasterImageForPathologicalPixels( *img );
+			Check( r.negativeCount == 1 && isClose( r.maxNegativeMagnitude, 0.25 ),
+				"[sanity-scan] single negative pixel counted once with magnitude 0.25" );
+			img->release();
+		}
+
+		// 3. Multiple negative channels on one pixel still count as one pixel.
+		{
+			auto* img = new RasterImage_Template<RISEPel>( 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+			img->SetPEL( 0, 0, RISEColor( RISEPel( -0.1, -0.5, 0.2 ), 1.0 ) );
+			const RasterSanityReport r = ScanRasterImageForPathologicalPixels( *img );
+			Check( r.negativeCount == 1 && isClose( r.maxNegativeMagnitude, 0.5 ),
+				"[sanity-scan] multi-channel negative pixel counted once with max magnitude 0.5" );
+			img->release();
+		}
+
+		// 4. Multiple distinct negative pixels counted separately with global max magnitude.
+		{
+			auto* img = new RasterImage_Template<RISEPel>( 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+			img->SetPEL( 0, 0, RISEColor( RISEPel( -0.05, 0.2, 0.2 ), 1.0 ) );
+			img->SetPEL( 2, 3, RISEColor( RISEPel( 0.1, -0.3, 0.1 ), 1.0 ) );
+			img->SetPEL( 3, 0, RISEColor( RISEPel( 0.0, 0.0, -0.01 ), 1.0 ) );
+			const RasterSanityReport r = ScanRasterImageForPathologicalPixels( *img );
+			Check( r.negativeCount == 3 && isClose( r.maxNegativeMagnitude, 0.3 ),
+				"[sanity-scan] multiple negative pixels counted per-pixel with max magnitude 0.3" );
+			img->release();
+		}
+
+		// 5. Alpha channel negatives are ignored.
+		{
+			auto* img = new RasterImage_Template<RISEPel>( 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+			img->SetPEL( 1, 1, RISEColor( RISEPel( 0.1, 0.1, 0.1 ), -0.5 ) );
+			const RasterSanityReport r = ScanRasterImageForPathologicalPixels( *img );
+			Check( r.negativeCount == 0,
+				"[sanity-scan] negative alpha channel is ignored" );
+			img->release();
+		}
+
+		// 6. Tiny negative value is still counted truthfully.
+		{
+			auto* img = new RasterImage_Template<RISEPel>( 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+			img->SetPEL( 0, 0, RISEColor( RISEPel( -1e-15, 0.1, 0.1 ), 1.0 ) );
+			const RasterSanityReport r = ScanRasterImageForPathologicalPixels( *img );
+			Check( r.negativeCount == 1 && r.maxNegativeMagnitude > 0.0,
+				"[sanity-scan] tiny negative -1e-15 is counted" );
+			img->release();
+		}
+
+		// 7. Large magnitude negative is reported accurately.
+		{
+			auto* img = new RasterImage_Template<RISEPel>( 4, 4, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+			img->SetPEL( 2, 2, RISEColor( RISEPel( -42.0, 0.0, 0.0 ), 1.0 ) );
+			const RasterSanityReport r = ScanRasterImageForPathologicalPixels( *img );
+			Check( r.negativeCount == 1 && isClose( r.maxNegativeMagnitude, 42.0 ),
+				"[sanity-scan] large negative magnitude -42.0 reported accurately" );
+			img->release();
+		}
+	}
 }
 
 int main()
@@ -3654,6 +3734,7 @@ int main()
 	#endif
 	TestAutomaticRecoveryNames();
 	TestFireFidelityProvenanceOutput();
+	TestRasterSanityScan();
 
 	std::cout << "----------------------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

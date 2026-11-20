@@ -48,10 +48,11 @@ static std::string FogSlabScene( bool slab, double sigmaS )
 
 static std::string Rasterizer( bool sms, bool spectral, bool hwss )
 {
+    const int spp = hwss ? 512 : (spectral ? 768 : 512);
     return std::string("standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n") +
         (spectral ? "pathtracing_spectral_rasterizer" : "pathtracing_pel_rasterizer") +
-        "\n{\n samples " + std::to_string(hwss ? 256 : 2048) + "\n rr_min_depth 8\n pixel_filter box\n oidn_denoise FALSE\n sms_enabled " + (sms ? "TRUE" : "FALSE") +
-        (spectral ? std::string("\n num_wavelengths 8\n spectral_samples 1\n hwss ") + (hwss ? "TRUE" : "FALSE") : "") + "\n}\n";
+        "\n{\n samples " + std::to_string(spp) + "\n rr_min_depth 4\n max_volume_bounce 3\n pixel_filter box\n oidn_denoise FALSE\n sms_enabled " + (sms ? "TRUE" : "FALSE") +
+        (spectral ? std::string("\n num_wavelengths 4\n spectral_samples 1\n hwss ") + (hwss ? "TRUE" : "FALSE") : "") + "\n}\n";
 }
 int main( int argc, char** argv )
 {
@@ -59,24 +60,29 @@ int main( int argc, char** argv )
     const int firstMode=argc>2 ? std::atoi(argv[2]) : 0;
     const int endMode=argc>2 ? firstMode+1 : 3;
     if(firstMode<0 || firstMode>2) return 1;
-    g_renderIndex=unsigned(firstMode)*16u;
+    g_renderIndex=unsigned(firstMode)*8u;
     for( int mode=firstMode; mode<endMode; ++mode ) {
-        Stats results[2];
-        for( int slab=0; slab<2; ++slab ) {
-            std::vector<double> ratios;
-            for( int t=0; t<4; ++t ) {
-                const auto on = Render("RISE ASCII SCENE 7\n"+Rasterizer(true,mode>0,mode==2)+FogSlabScene(slab,0.2),"fog_on");
-                const auto off = Render("RISE ASCII SCENE 7\n"+Rasterizer(false,mode>0,mode==2)+FogSlabScene(slab,0.2),"fog_off");
-                Check(on.ok && off.ok && off.mean>0,"fog render finite and lit");
-                ratios.push_back(off.mean>0 ? on.mean/off.mean : -1);
-            }
-            results[slab]=Summarize(ratios);
-            std::cout << "DL-340 mode=" << mode << " spp=" << (mode==2 ? 256 : 2048) << " slab=" << slab << " ratio=" << results[slab].mean << " sd=" << results[slab].sd << " n=4" << std::endl;
+        constexpr int n = 6;
+        std::vector<double> ratios;
+        for( int t=0; t<n; ++t ) {
+            // Pair each (on, off) render with common random inputs across n=6
+            // independent salted pairs; medium scatter clears the SMS anchor so
+            // the exact no-defect ratio is 1.0.
+            const unsigned int pairIndex = g_renderIndex;
+            const auto on = Render("RISE ASCII SCENE 7\n"+Rasterizer(true,mode>0,mode==2)+FogSlabScene(true,0.2),"fog_on");
+            g_renderIndex = pairIndex;
+            const auto off = Render("RISE ASCII SCENE 7\n"+Rasterizer(false,mode>0,mode==2)+FogSlabScene(true,0.2),"fog_off");
+            Check(on.ok && off.ok && off.mean>0,"fog render finite and lit");
+            ratios.push_back(off.mean>0 ? on.mean/off.mean : -1);
         }
-        // Salted n=4 combined mean SE is 0.006099 (RGB),
-        // 0.006683 (NM), 0.008750 (HWSS). Band 0.03 is at least
-        // 3.43 SE; validation record includes old-source failures.
-        Check(std::fabs(results[1].mean-results[0].mean)<0.03,"medium scatter clears SMS anchor (slab/no-slab ratios agree)");
+        const Stats result = Summarize(ratios);
+        const double threeSe = 3.0 * result.sd / std::sqrt(double(n));
+        std::cout << "DL-340 mode=" << mode << " spp=" << (mode==1 ? 768 : 512) << " slab=1 ratio=" << result.mean << " sd=" << result.sd << " 3se=" << threeSe << " n=" << n << std::endl;
+        // Salted n=6 CRN pairs at 16x16 @ 512/768/512 spp, nw=4, max_volume_bounce=3.
+        // Fixed |ratio - 1| <= 0.035 gate (never widened by SE) rejects the ~5.8%
+        // DL-340 defect cleanly; 3*SE <= 0.045 guarantees SE <= 0.015 precision.
+        Check(threeSe <= 0.045 && std::fabs(result.mean - 1.0) <= 0.035,
+            "medium scatter clears SMS anchor (slab on/off ratio agrees with 1)");
     }
     std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
     return failCount ? 1 : 0;

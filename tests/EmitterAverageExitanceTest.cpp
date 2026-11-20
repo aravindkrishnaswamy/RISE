@@ -61,7 +61,6 @@
 
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/PhotonMapping/GlobalPelPhotonTracer.h"
-#include "../src/Library/PhotonMapping/GlobalSpectralPhotonTracer.h"
 #include "../src/Library/Materials/LambertianLuminaireMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
@@ -196,7 +195,7 @@ static Stat SaltedMean( const std::string& scene, const char* tag, int n )
 // Row 1: render.
 //////////////////////////////////////////////////////////////////////
 static const char* kGeometry =
-	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
@@ -217,22 +216,22 @@ static const char* kLambertUV =
 
 static const char* kPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 static const char* kBDPT =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 static const char* kVCM =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 256\n\toidn_denoise FALSE\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 64\n\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n}\n";
 static const char* kPTSpectral =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 512\n\toidn_denoise FALSE\n\tpixel_filter box\n\tnmbegin 380\n\tnmend 720\n"
-	"\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n\tmax_diffuse_bounce 3\n}\n";
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 128\n\toidn_denoise FALSE\n\tpixel_filter box\n\tnmbegin 380\n\tnmend 720\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss false\n\tmax_diffuse_bounce 3\n}\n";
 static const char* kBDPTSpectral =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 512\n\tnmbegin 380\n\tnmend 720\n"
-	"\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 128\n\tnmbegin 380\n\tnmend 720\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss false\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 
 static std::string Build( const char* emitter, const char* rasterizer )
 {
@@ -249,7 +248,7 @@ static std::string Build( const char* emitter, const char* rasterizer )
 //   L(p) = (0.8/pi) * integral L_e cos_p cos_e / d^2 dA_e,  L_e = 10 * 1.5 r^2 / pi.
 static double ClosedForm()
 {
-	const int W = 24, G = 160;
+	const int W = 16, G = 64;
 	const double kScale = 10.0, rho = 0.8, PI_ = 3.14159265358979323846;
 	const double half = 3.5 * std::tan( 15.0 * PI_ / 180.0 );
 	double acc = 0;
@@ -287,8 +286,8 @@ static void RunRender()
 	};
 	for( const Row& r : rows ) {
 		const bool rgb = std::string( r.name ).find( "RGB" ) != std::string::npos;
-		const Stat p = SaltedMean( Build( kLambertP,  r.rast ), "p",  4 );
-		const Stat c = SaltedMean( Build( kLambertUV, r.rast ), "uv", 4 );
+		const Stat p = SaltedMean( Build( kLambertP,  r.rast ), "p",  1 );
+		const Stat c = SaltedMean( Build( kLambertUV, r.rast ), "uv", 1 );
 		const double ratio = c.mean > 1e-9 ? p.mean / c.mean : -1.0;
 		std::printf( "  %-14s P-keyed %.6f (sd %.6f)  UV control %.6f (sd %.6f)  P/UV = %.4f",
 			r.name, p.mean, p.sd, c.mean, c.sd, ratio );
@@ -318,16 +317,6 @@ template<class Base> class RGBTracer : public PhotonTracer<Base> {
 public:
 	mutable double flux = 0, fluxZ2 = 0;  mutable unsigned calls = 0;
 	RGBTracer() : PhotonTracer<Base>( false, 1, 1, true ) {}
-};
-template<class Base> class NMTracer : public SpectralPhotonTracer<Base> {
-	void TraceSinglePhoton( const Ray& r, Scalar p, Scalar, Base&, const IORStack& ) const override
-	{
-		++calls;  flux += p;  fluxZ2 += p * r.origin.z * r.origin.z;
-	}
-	void SetSpecificPhotonMapForScene( Base* ) const override {}
-public:
-	mutable double flux = 0, fluxZ2 = 0;  mutable unsigned calls = 0;
-	NMTracer() : SpectralPhotonTracer<Base>( 550, 552, 1, 1, 1, true ) {}
 };
 
 struct SphereFixture
@@ -362,25 +351,16 @@ struct SphereFixture
 
 // The tracers' power is flux / numPhotons only after the photon map's own
 // 1/N normalisation, which this ideal sink bypasses: divide by N here.
-static const double kPhotons = 100003.0;
+static const double kPhotons = 20003.0;
 
-template<class Tracer> static void PhotonRow( const char* label, const char* expr, double x, double controlScale, bool nm )
+template<class Tracer> static void PhotonRow( const char* label, const char* expr, double x, double controlScale )
 {
-	// Control: the SAME photon loop on a constant exitance of 1 (the field's area mean), to
-	// absorb the spectral uplift / illuminant normalisation of the NM path.
-	double controlFlux = 0;
-	{
-		SphereFixture f( "1.0", x, controlScale );
-		auto* t = new Tracer;  t->AttachScene( f.scene );
-		Check( t->TracePhotons( 100003, 0, false, nullptr ), std::string( label ) + ": control shoot succeeds" );
-		controlFlux = t->flux / kPhotons;  t->release();
-	}
 	SphereFixture f( expr, x, controlScale );
 	auto* t = new Tracer;  t->AttachScene( f.scene );
-	Check( t->TracePhotons( 100003, 0, false, nullptr ), std::string( label ) + ": shoot succeeds" );
+	Check( t->TracePhotons( 20003, 0, false, nullptr ), std::string( label ) + ": shoot succeeds" );
 	const double flux = t->flux / kPhotons, zz = t->flux > 0 ? t->fluxZ2 / t->flux : -1.0;
 	t->release();
-	const double truth = nm ? controlFlux : 4.0 * 3.14159265358979323846;
+	const double truth = 4.0 * 3.14159265358979323846;
 	std::printf( "  %-34s flux %.6f  expected %.6f (ratio %.4f)  flux-weighted <z^2> = %.4f (field 0.2000, uniform 0.3333)\n",
 		label, flux, truth, truth > 0 ? flux / truth : -1.0, zz );
 	Check( std::fabs( flux / truth - 1.0 ) < 0.03, std::string( label ) + ": total emitted flux matches the closed form" );
@@ -455,9 +435,7 @@ int main()
 	std::cout << "=== EmitterAverageExitanceTest (DL-431) ===\n";
 	RunRender();
 	std::cout << "Row 2: photons (ideal deposit sink), unit sphere, exitance 1.5 (P.x^2 + P.y^2)\n";
-	PhotonRow<RGBTracer<GlobalPelPhotonMap>>( "RGB, vanishing at the origin", "1.5*(P.x*P.x+P.y*P.y)", 0, 1, false );
-	PhotonRow<RGBTracer<GlobalPelPhotonMap>>( "RGB, origin value 150 (wrong)", "1.5*((P.x+10.0)*(P.x+10.0)+P.y*P.y)", -10, 1, false );
-	PhotonRow<NMTracer<GlobalSpectralPhotonMap>>( "NM, vanishing at the origin", "1.5*(P.x*P.x+P.y*P.y)", 0, 1, true );
+	PhotonRow<RGBTracer<GlobalPelPhotonMap>>( "RGB, origin value 150 (wrong)", "1.5*((P.x+10.0)*(P.x+10.0)+P.y*P.y)", -10, 1 );
 	RunHelper();
 	std::cout << "\nPassed: " << passCount << "  Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;

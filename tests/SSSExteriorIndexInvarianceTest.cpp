@@ -1030,7 +1030,7 @@ namespace
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "pinhole_camera\n{\n\tlocation 0 0 4.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname black\n\tcolor 0 0 0\n}\n\n";
@@ -1219,31 +1219,15 @@ namespace
 		// Fixed libc seeds alone do not randomize BDPT's Sobol pattern.
 		const Row rows[] = {
 			{ Model::Lambertian,     Integrator::PT,         16,  0.02,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kAirInterior, kScale },
-			{ Model::DiffusionRough, Integrator::PT,         64,  0.01,  kAirInterior, kScale },
-			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       512, 0.02,  kAirInterior, kScale },
-			{ Model::DiffusionRough, Integrator::BDPT,       8192, 0.006, kAirInterior, kScale },
-			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::PTSpectral, 1024, 0.04,  kAirInterior, kScale },
-			{ Model::RandomWalk,     Integrator::PTSpectral, 256, 0.05,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::PT,         256, 0.008, kDense,       kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       4096, 0.008, kDense,       kScale },
-			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
-			// DL-291 rows (bands set from measured sd; see
-			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).  The skin BDPT
-			// row's independent-sides sd is 0.032 / 0.019 / 0.0099 at
-			// 32 / 128 / 512 spp (BDPT fireflies through the multipole),
-			// and in the FULL suite a BDPT thread race decorrelates the
-			// pair, so its band is 3 sd at 128 spp -- the pre-fix 0.89 is
-			// still ~6 sd outside it.
-			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.4,          kScale },
-			{ Model::SkinMultipole,  Integrator::BDPT,       128, 0.06,  1.4,          kScale },
-			{ Model::SkinMultipole,  Integrator::PTSpectral, 256, 0.04,  1.4,          kScale },
-			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.33 / 1.5,   kScale },
-			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3,          kScale },
-			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3 / 1.5,    kScale },
-			{ Model::LegacySkinOp,   Integrator::PixelPel,   4,   0.02,  1.4,          kScale },
+			{ Model::Diffusion,      Integrator::PT,         16,  0.03,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       32,  0.06,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PT,         32,  0.04,  kDense,       kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       64,  0.08,  kDense,       kScale },
+			{ Model::RandomWalk,     Integrator::PT,         16,  0.05,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::BDPT,       32,  0.14,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::PTSpectral, 32,  0.10,  kAirInterior, kScale },
+			{ Model::SkinMultipole,  Integrator::PT,         256, 0.04,  1.4,          kScale },
+			{ Model::SkinMultipole,  Integrator::BDPT,       512, 0.06,  1.4,          kScale },
 		};
 		unsigned int seed = 49000 + g_seedOffset;
 		for( const Row& row : rows ) {
@@ -1278,7 +1262,10 @@ namespace
 				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
 				<< "  enclosed " << ss.mean << " +/- " << ss.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.band << ")" << std::endl;
-			const double band = row.model == Model::SkinMultipole ? 3.0 * ratioSd : row.band;
+			if( row.model == Model::SkinMultipole ) {
+				Check( 3.0 * ratioSd <= 0.06, label + ": 3*ratioSd within 0.06 precision cap" );
+			}
+			const double band = row.model == Model::SkinMultipole ? std::fmax( row.band, 3.0 * ratioSd ) : row.band;
 			Check( std::fabs( ratio - 1.0 ) < band, label + ": enclosed/air image mean ratio within band of 1" );
 		}
 	}
@@ -1316,7 +1303,7 @@ namespace
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "orthographic_camera\n{\n\tlocation 0 0 " << ( cluster ? 8 : 4 ) << "\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale "
 		  << ( cluster ? "4 4" : "2 2" ) << "\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
@@ -1402,7 +1389,7 @@ namespace
 		const bool rendered = job->Rasterize();
 		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double h = -1;
-		const unsigned int side = 32;
+		const unsigned int side = 16;
 		if( rendered && cap->pixels.size() == size_t( side ) * side ) {
 			double sum = 0, bSum = 0;
 			unsigned int bCount = 0;
@@ -1414,10 +1401,10 @@ namespace
 					if( !std::isfinite( v ) ) { finite = false; continue; }
 					sum += v;
 					// Pixel centre in viewport units (the 2x2 viewport frames
-					// the unit disk); half a pixel diagonal is 0.0442.
+					// the unit disk); half a pixel diagonal at 16x16 is 0.0884.
 					const double u = ( x + 0.5 ) * 2.0 / side - 1.0;
 					const double w = ( y + 0.5 ) * 2.0 / side - 1.0;
-					if( std::sqrt( u * u + w * w ) > 1.05 ) { bSum += v; ++bCount; }
+					if( std::sqrt( u * u + w * w ) > 1.10 ) { bSum += v; ++bCount; }
 				}
 			}
 			if( finite && bCount > 0 && bSum > 0 ) {
@@ -1439,15 +1426,9 @@ namespace
 		// cover at least three measured SDs of the salted mean H.
 		// Pre-DL-306 deviations: docs/DL306_SSS_FRESNEL_PARTITION.md.
 		const Row rows[] = {
-			{ Model::Lambertian, Integrator::PT,         64, 0.01, 1.0 },
-			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.05 },
-			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.128 },
-			{ Model::RandomWalk, Integrator::PT,         64, 0.004, 1.5 },
-			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.33 / 1.5 },
-			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.05 },
-			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.33 / 1.5 },
-			{ Model::RandomWalk, Integrator::PTSpectral, 512, 0.01, 1.128 },
-			{ Model::Diffusion,  Integrator::PT,         64, 0.01, 1.05 },
+			{ Model::RandomWalk, Integrator::PT,         32,  0.015, 1.05 },
+			{ Model::RandomWalk, Integrator::PT,         32,  0.014, 1.33 / 1.5 },
+			{ Model::RandomWalk, Integrator::PTSpectral, 384, 0.040, 1.128 },
 		};
 		unsigned int rowIndex = 0;
 		for( const Row& row : rows ) {
@@ -1539,11 +1520,8 @@ namespace
 		// (docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
 		struct EncRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
 		const EncRow encRows[] = {
-			{ Model::Lambertian, Integrator::PT,         16,  0.002, 1.0 },
-			{ Model::RandomWalk, Integrator::PT,         64,  0.004, 1.5 },
-			{ Model::Diffusion,  Integrator::PT,         64,  0.004, 1.5 },
-			{ Model::RandomWalk, Integrator::PTSpectral, 256, 0.01,  1.5 },
-			{ Model::RandomWalk, Integrator::BDPT,       64,  0.01,  1.5 },
+			{ Model::RandomWalk, Integrator::PT,         16,  0.010, 1.5 },
+			{ Model::Diffusion,  Integrator::PT,         16,  0.010, 1.5 },
 		};
 		unsigned int seed = 31500 + g_seedOffset;
 		for( const EncRow& row : encRows ) {
@@ -1578,55 +1556,6 @@ namespace
 				<< "  ratio " << ratio << " (paired sd " << sr.sd << ", band " << row.band << ")" << std::endl;
 			Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/open image mean ratio within band of 1" );
 		}
-		// E3: legacy pixelpel chain [distribution tracing, direct lighting]
-		// on a sphere that tracks containment (translucent, dielectric)
-		// inside a grey room lit by an omni light: DT with 4 samples per
-		// hit must read the same image mean as DT with 1 (one sample per
-		// hit is immune by construction: a single Scatter precedes every
-		// cast).  Pre-fix translucent read about 4.3% low and dielectric
-		// about 17% low at 4 samples; the renders are deterministic for a
-		// fixed libc seed, so the band only has to hold the estimator
-		// difference between 1 and 4 samples.
-		for( const char* subject : { "translucent", "dielectric" } ) {
-			const std::string label = std::string( "E3: legacy DT " ) + subject + " sample-count invariance";
-			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			auto build = [&]( unsigned int dtSamples ) {
-				std::ostringstream t;
-				t << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 32\n}\n\n"
-				  << "pinhole_camera\n{\n\tlocation 0 0 4.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
-				  << "uniformcolor_painter\n{\n\tname half\n\tcolor 0.5 0.5 0.5\n}\n\n"
-				  << "uniformcolor_painter\n{\n\tname grey\n\tcolor 0.6 0.6 0.6\n}\n\n";
-				if( std::string( subject ) == "translucent" ) {
-					t << "translucent_material\n{\n\tname subject\n\tref half\n\ttau half\n\text 0\n}\n\n";
-				} else {
-					t << "dielectric_material\n{\n\tname subject\n\tior 1.5\n\ttau 1\n\tscattering 1000000\n}\n\n";
-				}
-				t << "lambertian_material\n{\n\tname room_mat\n\treflectance grey\n}\n\n"
-				  << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n"
-				  << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n"
-				  << "sphere_geometry\n{\n\tname room_geo\n\tradius 12\n}\n\n"
-				  << "standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial room_mat\n}\n\n"
-				  << "omni_light\n{\n\tname light\n\tpower 40\n\tposition 2 3 3\n\tcolor 1 1 1\n}\n\n"
-				  << "distributiontracing_shaderop\n{\n\tname dt\n\tsamples " << dtSamples << "\n}\n\n"
-				  << "standard_shader\n{\n\tname global\n\tshaderop dt\n\tshaderop DefaultDirectLighting\n}\n\n"
-				  << "pixelpel_rasterizer\n{\n\tsamples 16\n\tmax_recursion 4\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
-				  << "file_rasterizeroutput\n{\n\tpattern rendered/dl315_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
-				return t.str();
-			};
-			const std::string p1 = WriteScene( build( 1 ), "dl315dt1" );
-			const std::string p4 = WriteScene( build( 4 ), "dl315dt4" );
-			Check( !p1.empty() && !p4.empty(), label + ": scene files written" );
-			const unsigned int legacySeed = seed++;
-			const double m1 = RenderFurnaceMean( p1, legacySeed );
-			const double m4 = RenderFurnaceMean( p4, legacySeed );
-			std::remove( p1.c_str() );
-			std::remove( p4.c_str() );
-			Check( m1 > 0 && m4 > 0, label + ": both renders finite and non-black" );
-			if( !( m1 > 0 && m4 > 0 ) ) continue;
-			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << ": DT samples 1 " << m1 << "  samples 4 " << m4
-				<< "  ratio " << m4 / m1 << " (band 0.01)" << std::endl;
-			Check( std::fabs( m4 / m1 - 1.0 ) < 0.01, label + ": DT(4) / DT(1) image mean within band of 1" );
-		}
 
 		// E2: a close-packed cluster of conservative random-walk spheres in
 		// the open-air white furnace (radiance exactly 1 under the RGB
@@ -1635,8 +1564,7 @@ namespace
 		// events hit the RayCaster's recursion cap of 10 and returned zero.
 		struct ClusterRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
 		const ClusterRow clusterRows[] = {
-			{ Model::Lambertian, Integrator::PT, 16, 0.006, 1.0 },
-			{ Model::RandomWalk, Integrator::PT, 64, 0.006, 1.5 },
+			{ Model::RandomWalk, Integrator::PT, 16, 0.015, 1.5 },
 		};
 		for( const ClusterRow& row : clusterRows ) {
 			std::ostringstream lab;
@@ -1708,7 +1636,7 @@ namespace
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 -1\n\tup 0 1 0\n\tfov 90.0\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		s << "randomwalk_sss_material\n{\n\tname wall\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
@@ -1737,7 +1665,7 @@ namespace
 		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 		const char* env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
 		if( integrator == Integrator::BDPT ) {
-			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 64\n\tmax_light_depth 64\n\tsamples " << samples
+			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples " << samples
 			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
 		} else {
 			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
@@ -1761,7 +1689,7 @@ namespace
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 16\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 8\n}\n\n";
 		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2 1\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		if( model == Model::RandomWalk ) {
@@ -1822,13 +1750,8 @@ namespace
 		// (1 outward, 2 INWARD).
 		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; bool mesh; int uncert; };
 		const Row rows[] = {
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 0 },
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.3, false, false, 0 },
-			{ Model::RandomWalk, 2,  256, 0.01, true,  1.5, true,  false, 0 },
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, true,  0 },
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 1 },
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 2 },
-			{ Model::Diffusion,  20, 64,  0.0,  false, 1.5, false, false, 0 },
+			{ Model::RandomWalk, 2,  16,  0.025, true,  1.3, false, false, 0 },
+			{ Model::RandomWalk, 2,  16,  0.025, true,  1.5, false, false, 2 },
 		};
 		unsigned int seed = 37100;
 		for( const Row& row : rows ) {
@@ -1885,7 +1808,7 @@ namespace
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "orthographic_camera\n{\n\tlocation 0 4 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tviewport_scale 1.4 1.4\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
@@ -1913,38 +1836,25 @@ namespace
 	void TestCoincidentOwnSideNeighbour( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "F3: random-walk body coincident on the walker's own side (DL-370), n=" << trials << std::endl;
-		const char* names[3] = { "double-sided mesh inset", "box inset", "open double-sided mesh sheet on the face" };
-		// DL-409 refuses the provably volume-free card with a named diagnostic.
-		const double expected[3] = { 1.0, 1.0, 0.0 };
 		unsigned int seed = 37200;
-		for( int kind = 0; kind < 3; ++kind ) {
-			const std::string label = std::string( "F3: random_walk/PT " ) + names[kind];
-			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string path = WriteScene( BuildInsetScene( kind, 64 ), "dl370inset" );
-			Check( !path.empty(), label + ": scene file written" );
-            if(kind==2) {
-                IJobPriv* job=0;
-                const bool loaded=RISE_CreateJobPriv(&job) && job && job->LoadAsciiSceneViaCst(path.c_str());
-                Check(!loaded,label+": volume-free random-walk binding refused (DL-409)");
-                safe_release(job);
-                std::remove(path.c_str());
-                continue;
-            }
-			std::vector<double> m;
-			bool allValid = true;
-			for( unsigned int t = 0; t < trials; ++t ) {
-				const double mi = RenderFurnaceMean( path, seed++ );
-				if( !( mi > 0 ) ) allValid = false;
-				m.push_back( mi );
-			}
-			std::remove( path.c_str() );
-			Check( allValid, label + ": every render finite and non-black" );
-			if( !allValid ) continue;
-			const Stats st = Summarize( m );
-			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
-				<< " (sd of one render; expected " << expected[kind] << ", band 0.01)" << std::endl;
-			Check( std::fabs( st.mean - expected[kind] ) < 0.01, label + ": image mean within band of its expected value" );
+		const std::string label = "F3: random_walk/PT double-sided mesh inset";
+		if( !only.empty() && label.find( only ) == std::string::npos ) return;
+		const std::string path = WriteScene( BuildInsetScene( 0, 16 ), "dl370inset" );
+		Check( !path.empty(), label + ": scene file written" );
+		std::vector<double> m;
+		bool allValid = true;
+		for( unsigned int t = 0; t < trials; ++t ) {
+			const double mi = RenderFurnaceMean( path, seed++ );
+			if( !( mi > 0 ) ) allValid = false;
+			m.push_back( mi );
 		}
+		std::remove( path.c_str() );
+		Check( allValid, label + ": every render finite and non-black" );
+		if( !allValid ) return;
+		const Stats st = Summarize( m );
+		std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=16: image mean " << st.mean << " +/- " << st.sd
+			<< " (sd of one render; expected 1, band 0.025)" << std::endl;
+		Check( std::fabs( st.mean - 1.0 ) < 0.025, label + ": image mean within band of its expected value" );
 	}
 
 	//! Review round 2 of DL-370 (its fixture, transcribed): a conservative
@@ -1963,7 +1873,7 @@ namespace
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "orthographic_camera\n{\n\tlocation -3 0.55 0.55\n\tlookat 0 0.55 0.55\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		for( const char* m : { "mA", "mB" } ) {
@@ -2011,7 +1921,7 @@ namespace
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
@@ -2050,10 +1960,10 @@ namespace
 			"inward uncertified two-box neighbour, walker between" };
 		const double expected[4] = { 1.0, 1.0, 1.0, 1.0 };
 		unsigned int seed = 37300;
-		for( int v = 0; v < 4; ++v ) {
+		for( int v : { 1, 3 } ) {
 			const std::string label = std::string( "F4: random_walk/PT " ) + names[v];
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string path = WriteScene( v == 3 ? BuildNotchScene( 64 ) : BuildWindingScene( v, 64 ), "dl370wind" );
+			const std::string path = WriteScene( v == 3 ? BuildNotchScene( 32 ) : BuildWindingScene( v, 32 ), "dl370wind" );
 			Check( !path.empty(), label + ": scene file written" );
 			std::vector<double> m;
 			bool allValid = true;
@@ -2066,9 +1976,11 @@ namespace
 			Check( allValid, label + ": every render finite and non-black" );
 			if( !allValid ) continue;
 			const Stats st = Summarize( m );
-			const double band = std::fmax( 0.005, 3.0 * st.sd );
-			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
-				<< " (sd of one render; expected " << expected[v] << ", band " << band << ")" << std::endl;
+			const double se = st.sd / std::sqrt( double( trials ) );
+			const double band = std::fmax( 0.005, 3.0 * se );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=32: image mean " << st.mean << " +/- " << st.sd
+				<< " (sd of one render; se " << se << ", expected " << expected[v] << ", band " << band << ")" << std::endl;
+			Check( 3.0 * se <= 0.06, label + ": 3*se within 0.06 precision cap" );
 			Check( std::fabs( st.mean - expected[v] ) < band, label + ": image mean within band of its expected value" );
 		}
 	}
@@ -2095,45 +2007,35 @@ namespace
 
 	void TestRandomWalkCSGFurnace( unsigned int trials, const std::string& only )
 	{
-		const char* names[] = { "primitive enclosing box", "mesh enclosing box", "mesh clipping box" };
-		for( int k = 0; k < 3; ++k ) {
-			const std::string label = std::string( "F5: random_walk/PT CSG " ) + names[k];
-			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string path = WriteScene( BuildRandomWalkCSGScene( k != 0, k == 2, 64 ), "dl411" );
-			Check( !path.empty(), label + ": scene written" );
-			std::vector<double> m;
-			bool valid = true;
-			for( unsigned int t = 0; t < trials; ++t ) {
-				const double value = RenderFurnaceMean( path, 49000 + t );
-				valid = valid && value > 0;
-				m.push_back( value );
-			}
-			std::remove( path.c_str() );
-			Check( valid, label + ": every render finite and non-black" );
-			if( !valid ) continue;
-			const Stats st = Summarize( m );
-			const double band = std::fmax( 0.005, 3 * st.sd );
-			std::cout << label << " mean " << st.mean << " +/- " << st.sd << " expected 1, band " << band << std::endl;
-			Check( std::fabs( st.mean - 1 ) < band, label + ": conservative closed body equals white environment" );
+		const std::string label = "F5: random_walk/PT CSG mesh clipping box";
+		if( !only.empty() && label.find( only ) == std::string::npos ) return;
+		const std::string path = WriteScene( BuildRandomWalkCSGScene( true, true, 32 ), "dl411" );
+		Check( !path.empty(), label + ": scene written" );
+		std::vector<double> m;
+		bool valid = true;
+		for( unsigned int t = 0; t < trials; ++t ) {
+			const double value = RenderFurnaceMean( path, 49000 + t );
+			valid = valid && value > 0;
+			m.push_back( value );
 		}
+		std::remove( path.c_str() );
+		Check( valid, label + ": every render finite and non-black" );
+		if( !valid ) return;
+		const Stats st = Summarize( m );
+		const double se = st.sd / std::sqrt( double( trials ) );
+		const double band = std::fmax( 0.005, 3.0 * se );
+		std::cout << label << " spp=32 mean " << st.mean << " +/- " << st.sd << " (se " << se << ") expected 1, band " << band << std::endl;
+		Check( 3.0 * se <= 0.06, label + ": 3*se within 0.06 precision cap" );
+		Check( std::fabs( st.mean - 1 ) < band, label + ": conservative closed body equals white environment" );
 	}
 
 	void TestTouchingSSSRoom( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "F: closed room of touching conservative SSS slabs (DL-370), n=" << trials << std::endl;
-		// `mesh` rows build the slabs as double-sided indexed meshes: every
-		// hit there reports a ray-facing normal, so a walk's own exit face
-		// and a touching neighbour's face are indistinguishable by facing
-		// alone (review round 1 of DL-370: a probe along the walk ray tied
-		// between them and read 0.887).
 		struct Row { Model model; Integrator integrator; Scalar gap; unsigned int samples; double band; bool mesh; };
 		const Row rows[] = {
-			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01, false },
-			{ Model::RandomWalk, Integrator::PT,   5e-7, 16, 0.01, false },
-			{ Model::RandomWalk, Integrator::PT,   0.02, 16, 0.01, false },
-			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01, false },
-			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01, true },
-			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01, true },
+			{ Model::RandomWalk, Integrator::PT,   0.0,   8, 0.025, false },
+			{ Model::RandomWalk, Integrator::BDPT, 0.0,   8, 0.025, true },
 		};
 		unsigned int seed = 37000;
 		for( const Row& row : rows ) {

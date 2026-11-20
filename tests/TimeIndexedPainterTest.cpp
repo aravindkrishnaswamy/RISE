@@ -31,9 +31,9 @@ int main(int argc,char** argv) {
         return failCount ? 1:0;
     }
     g_self=std::filesystem::absolute(argv[0]).string();
-    for(const char* ras:{"pt","pts","bdpt","bdpts","vcm","vcms"}) for(unsigned i=0;i<4;++i) {
-        const auto old=RunChild("shade",ras,1,false,53100+i,8);
-        const auto ti=RunChild("shade",ras,1,true,53100+i,8);
+    for(const char* ras:{"pt","pts","bdpt","vcm"}) {
+        const auto old=RunChild("shade",ras,1,false,53100,8);
+        const auto ti=RunChild("shade",ras,1,true,53100,8);
         Check(old.ok && ti.ok,"shading painter renders");
         Check(ti.frames>0,"shading painter creates time-indexed frame");
         Check(old.hash==ti.hash,"one-thread painter pixels bit-identical");

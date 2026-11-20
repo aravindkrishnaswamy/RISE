@@ -166,7 +166,7 @@ static std::string Scene( const std::string& keyIn, const std::string& ras, cons
 	const bool ext = key.compare( 0, 4, "ext_" ) == 0;
 	if( ext ) key = key.substr( 4 );
 	std::string s = "RISE ASCII SCENE 7\n\n";
-	s += Fmt( "film\n{\n\twidth %d\n\theight %d\n}\n\n", big ? 192 : kW, big ? 192 : kH );
+	s += Fmt( "film\n{\n\twidth %d\n\theight %d\n}\n\n", big ? 64 : kW, big ? 64 : kH );
 	const bool still = key == "static";
 	if( ext ) {
 		s += Fmt( "thinlens_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tsensor_size 36\n\tfocal_length 35\n\tfstop 1.4\n\tfocus_distance 4\n\texposure %d\n}\n\n", still ? 0 : 1 );
@@ -457,12 +457,13 @@ static void SectionA( const int spp )
 	for( const char* scene : { "combo", "ext_combo" } ) {
 		for( const char* ras : kRasterizers ) {
 			const unsigned int salt = 1000u + unsigned( std::strlen( ras ) );
+			const bool checkSelfDet = std::strcmp( ras, "pt" ) == 0;
 			const ChildResult old1 = RunChild( scene, ras, 1, false, salt, spp );
-			const ChildResult old2 = RunChild( scene, ras, 1, false, salt, spp );
+			const ChildResult old2 = checkSelfDet ? RunChild( scene, ras, 1, false, salt, spp ) : old1;
 			const ChildResult ti = RunChild( scene, ras, 1, true, salt, spp );
 			std::printf( "  %-9s %-6s OLD %016llx / %016llx  TI %016llx  (TI frames %llu, OLD frames %llu)  mean %.9f vs %.9f\n",
 				scene, ras, old1.hash, old2.hash, ti.hash, ti.frames, old1.frames, old1.mean, ti.mean );
-			Check( old1.ok && old2.ok && ti.ok, Fmt( "A %s %s: all three renders succeed", scene, ras ) );
+			Check( old1.ok && old2.ok && ti.ok, Fmt( "A %s %s: all renders succeed", scene, ras ) );
 			Check( old1.frames == 0 && ti.frames > 0, Fmt( "A %s %s: OLD took the shared-scene path, TI the time-indexed one", scene, ras ) );
 			if( old1.hash != old2.hash ) {
 				std::printf( "  %s %s: OLD is not deterministic against itself at one thread; exactness not testable\n", scene, ras );
@@ -495,23 +496,24 @@ static void SectionS( const int spp )
 	}
 }
 
-//! On the 192x192 film: the 32x32 film is ONE FrameStore tile, which one
-//! worker renders alone, so only the big film exercises concurrent posing.
+//! On the 64x64 film: the 32x32 film is ONE FrameStore tile, which one
+//! worker renders alone, so only the big film (4 tiles) exercises concurrent posing.
 enum class BSubset { Fast, Reduced, Full };
 static void SectionB( const int spp, const int n, const BSubset subset = BSubset::Full )
 {
 	const bool fastSubset = ( subset == BSubset::Fast );
-	std::cout << "\nB: all threads TI vs OLD (single-threaded), 192x192, " << n << " salted renders each"
-		<< ( fastSubset ? " (fast representative subset; pass --extended for both scenes x pt/bdpt/vcm/vcms)" :
-		     subset == BSubset::Reduced ? " (pt, bdpt, vcm, vcms; section B alone runs the full 2x6 matrix)" : "" ) << "\n";
+	std::cout << "\nB: all threads TI vs OLD (single-threaded), 64x64, " << n << " salted renders each"
+		<< ( fastSubset ? " (fast representative subset; pass --extended for ext_combo_big x pt/bdpt/vcms)" :
+		     subset == BSubset::Reduced ? " (ext_combo_big x pt, bdpt, vcms; section B alone runs the full 2x6 matrix)" : "" ) << "\n";
 	static const char* kAllScenes[] = { "combo_big", "ext_combo_big" };
 	static const char* kFastScenes[] = { "combo_big" };
+	static const char* kReducedScenes[] = { "ext_combo_big" };
 	static const char* kFastRasterizers[] = { "pt", "bdpt" };
-	static const char* kReducedRasterizers[] = { "pt", "bdpt", "vcm", "vcms" };
-	const char* const* scenes = fastSubset ? kFastScenes : kAllScenes;
-	const int nScenes = fastSubset ? 1 : 2;
+	static const char* kReducedRasterizers[] = { "pt", "bdpt", "vcms" };
+	const char* const* scenes = fastSubset ? kFastScenes : subset == BSubset::Reduced ? kReducedScenes : kAllScenes;
+	const int nScenes = ( fastSubset || subset == BSubset::Reduced ) ? 1 : 2;
 	const char* const* rasList = fastSubset ? kFastRasterizers : subset == BSubset::Reduced ? kReducedRasterizers : kRasterizers;
-	const int nRas = fastSubset ? 2 : subset == BSubset::Reduced ? 4 : int( sizeof( kRasterizers ) / sizeof( kRasterizers[0] ) );
+	const int nRas = fastSubset ? 2 : subset == BSubset::Reduced ? 3 : int( sizeof( kRasterizers ) / sizeof( kRasterizers[0] ) );
 	const int family = nScenes * nRas * 17;
 	const double alpha = 0.01 / family;
 	for( int si = 0; si < nScenes; ++si ) {
@@ -621,14 +623,14 @@ int main( int argc, char** argv )
 		}
 	}
 	const std::string only = !posArgs.empty() ? posArgs[0] : "all";
-	const int spp = posArgs.size() > 1 ? std::atoi( posArgs[1] ) : 16;
-	const int n = posArgs.size() > 2 ? std::atoi( posArgs[2] ) : 8;
+	const int spp = posArgs.size() > 1 ? std::atoi( posArgs[1] ) : 8;
+	const int n = posArgs.size() > 2 ? std::atoi( posArgs[2] ) : 4;
 	std::cout << "TimeIndexedMotionBlurTest (DL-465)\n";
 	if( only == "all" || only == "S" ) SectionS( spp );
 	if( only == "all" || only == "A" ) SectionA( spp );
 	if( only == "all" ) {
-		const int bSpp = posArgs.size() > 1 ? spp : ( extended ? 16 : 8 );
-		const int bN   = posArgs.size() > 2 ? n   : ( extended ? 8  : 4 );
+		const int bSpp = posArgs.size() > 1 ? spp : 8;
+		const int bN   = posArgs.size() > 2 ? n   : 4;
 		SectionB( bSpp, bN, extended ? BSubset::Reduced : BSubset::Fast );
 	} else if( only == "B" ) {
 		SectionB( spp, n, BSubset::Full );

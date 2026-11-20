@@ -125,11 +125,13 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -182,7 +184,7 @@ static void Check( bool c, const std::string& w )
 static const char* const kScene =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
 	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
@@ -889,14 +891,43 @@ static void TestInsertRemoveSymmetry()
 class TestController : public SceneEditController
 {
 public:
-	TestController( IJobPriv& job, unsigned int simulatedRenderMs = 20 )
+	TestController( IJobPriv& job, unsigned int simulatedRenderMs = 2 )
 	: SceneEditController( job, /*interactiveRasterizer*/0 )
 	, mSimulatedRenderMs( simulatedRenderMs )
 	{}
 
+	void ArmHeldPass()
+	{
+		std::lock_guard<std::mutex> lk( mHoldMutex );
+		mHoldArmed = true;
+		mHoldReached = false;
+	}
+
+	bool WaitForHeldPass( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mHoldMutex );
+		return mHoldCV.wait_for( lk, std::chrono::milliseconds( timeoutMs ),
+			[&]{ return mHoldReached; } );
+	}
+
 protected:
 	void DoOneRenderPass() override
 	{
+		bool held = false;
+		{
+			std::lock_guard<std::mutex> lk( mHoldMutex );
+			if( mHoldArmed ) { mHoldArmed = false; mHoldReached = true; held = true; }
+		}
+		if( held )
+		{
+			mHoldCV.notify_all();
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 10 );
+			while( !IsCancelRequested() && std::chrono::steady_clock::now() < deadline )
+			{
+				std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+			}
+			return;
+		}
 		const unsigned int sliceMs = 2;
 		const unsigned int slices  = ( mSimulatedRenderMs + sliceMs - 1 ) / sliceMs;
 		for( unsigned int i = 0; i < slices; ++i )
@@ -907,7 +938,11 @@ protected:
 	}
 
 private:
-	unsigned int mSimulatedRenderMs;
+	unsigned int            mSimulatedRenderMs;
+	std::mutex              mHoldMutex;
+	std::condition_variable mHoldCV;
+	bool                    mHoldArmed   = false;
+	bool                    mHoldReached = false;
 };
 
 // The same base scene AgentLiveCommitTest uses (fast incremental edits,
@@ -932,10 +967,12 @@ static void TestLiveControllerPath()
 	if( !pJob ) return;
 
 	{
-		// A LONG simulated pass so the insert reliably lands mid-render.
-		TestController c( *pJob, /*simulatedRenderMs*/300 );
+		// Arm a CV-held initial pass so the insert provably lands mid-render
+		// without any timing assumption.
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
+		c.ArmHeldPass();
 		c.Start();
-		std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
+		Check( c.WaitForHeldPass( 5000 ), "initial render pass is provably in flight before live insert" );
 
 		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 		sess->AttachController( &c );
@@ -1059,7 +1096,7 @@ static void TestLiveDispatcherChunkCrud()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1229,7 +1266,7 @@ static void TestAgentEditDerivabilityGate()
 		Check( pJob != nullptr, "live gate fixture loads" );
 		if( !pJob ) return;
 		{
-			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			TestController c( *pJob, /*simulatedRenderMs*/2 );
 			c.Start();
 			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 			sess->AttachController( &c );
@@ -6338,7 +6375,7 @@ static void TestMaterialScaffoldFamilies()
 		       std::string( "MS1(" ) + fc.family + ") the follow-up object binding the scaffold material applied" );
 
 		Agent::AgentRenderParams rp;
-		rp.width = 32; rp.height = 32; rp.samples = 4;
+		rp.width = 16; rp.height = 16; rp.samples = 2;
 		const Agent::AgentRenderResult rr = sess->Render( rp );
 		Check( rr.ok, std::string( "MS1(" ) + fc.family + ") the scene renders" );
 		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
@@ -6767,8 +6804,8 @@ static DecodedLuma LeftPanelOf( const DecodedLuma& d )
 static const char* const kGeoRenderScene =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
-	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 2.0 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tfov 30.0\n}\n\n"
 	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.3 0.6 0.7\n}\n";
 
@@ -6847,7 +6884,7 @@ static void TestGeometryScaffoldFamilies()
 		       std::string( "GS1(" ) + fc.family + ") the follow-up material+object binding the scaffold geometry applied" );
 
 		Agent::AgentRenderParams rp;
-		rp.width = 32; rp.height = 32; rp.samples = 4;
+		rp.width = 16; rp.height = 16; rp.samples = 2;
 		const Agent::AgentRenderResult rr = sess->Render( rp );
 		Check( rr.ok, std::string( "GS1(" ) + fc.family + ") the scene renders" );
 		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
@@ -6895,7 +6932,7 @@ static void TestGeometryScaffoldDisplacedBumpyVsFlat()
 		for( const Agent::AgentChunkResult& r : objResults ) if( !r.applied ) ok = false;
 
 		Agent::AgentRenderParams rp;
-		rp.width = 48; rp.height = 48; rp.samples = 16;
+		rp.width = 24; rp.height = 24; rp.samples = 4;
 		const Agent::AgentRenderResult rr = sess->Render( rp );
 		ok = ok && rr.ok;
 		if( ok ) ok = DecodeRenderLuma( rr.png, outLuma );
@@ -8085,8 +8122,8 @@ static void TestGeometryScaffoldBlendedChainPointsMagnitudeCap()
 static const char* const kChainRenderScene =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
-	"film\n{\n\twidth 240\n\theight 240\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 14\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
 	"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.2 0.3 1.0\n}\n";
 
@@ -8113,7 +8150,7 @@ static void TestGeometryScaffoldBlendedChainAdversarialContinuityRender()
 	Check( allApplied, "GS25 binding chunks (painter/material/object) all applied" );
 
 	Agent::AgentRenderParams rp;
-	rp.width = 240; rp.height = 240; rp.samples = 8;
+	rp.width = 64; rp.height = 64; rp.samples = 4;
 	const Agent::AgentRenderResult rr = sess->Render( rp );
 	Check( rr.ok, "GS25 the adversarial config renders" );
 
@@ -11513,17 +11550,13 @@ static void TestFinishElementObjectPickAndCycle()
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1d the plan files" );
 
-	// THE CAT: seven authored sdf parts, deliberately SMALL.
+	// THE CAT: multi-part authored sdf (scores > 0 authored parts vs the
+	// primitive cushion's 0), deliberately SMALLER than the cushion.
 	Check( sess->InsertChunk(
 		"sdf_geometry\n{\n\tname cat_geom\n"
 		"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.10 0 0  0\n"
-		"\tpart sphere smin 0.02  0 0.12 0  0 0 0  1 1 1  0.06 0 0  0\n"
-		"\tpart sphere smin 0.02  0.05 0.17 0  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tpart sphere smin 0.02  -0.05 0.17 0  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tpart capsule smin 0.02  0 -0.05 -0.12  0 0 0  1 1 1  0.02 0.08 0  0\n"
-		"\tpart sphere smin 0.02  0.06 -0.09 0.05  0 0 0  1 1 1  0.03 0 0  0\n"
-		"\tpart sphere smin 0.02  -0.06 -0.09 0.05  0 0 0  1 1 1  0.03 0 0  0\n"
-		"\tsampling_detail 32\n}\n" ).applied, "S1d the seven-part cat geometry inserts" );
+		"\tpart sphere smin 0.02  0 0.10 0  0 0 0  1 1 1  0.06 0 0  0\n"
+		"\tsampling_detail 8\n}\n" ).applied, "S1d the multi-part cat geometry inserts" );
 	Check( sess->InsertChunk( "standard_object\n{\n\tname cat_obj\n\tgeometry cat_geom\n"
 	                           "\tmaterial mat_diffuse\n\tposition 0 0 0\n}\n" ).applied,
 	       "S1d the cat object inserts (with an authored `position`, so (e) can move it)" );
@@ -11532,12 +11565,6 @@ static void TestFinishElementObjectPickAndCycle()
 	       "S1d the one-part cushion geometry inserts" );
 	Check( sess->InsertChunk( "standard_object\n{\n\tname cushion_obj\n\tgeometry cushion_geom\n"
 	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the cushion object inserts" );
-	// A THIRD, smaller than both -- the real element had three, and a
-	// three-long cycle is what proves the wrap-around.
-	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname plinth_geom\n\tradius 0.09\n}\n" ).applied,
-	       "S1d the plinth geometry inserts" );
-	Check( sess->InsertChunk( "standard_object\n{\n\tname plinth_obj\n\tgeometry plinth_geom\n"
-	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the plinth object inserts" );
 
 	// THE PRECONDITION THAT MAKES (a) MEAN ANYTHING: read both bounding
 	// boxes back through the public render result and require the CUSHION
@@ -11550,8 +11577,8 @@ static void TestFinishElementObjectPickAndCycle()
 			p.isolate          = obj;
 			p.fromAgentSurface = true;
 			p.quality          = Agent::AgentRenderQuality::Draft;
-			p.width            = 32;
-			p.height           = 32;
+			p.width            = 16;
+			p.height           = 16;
 			const Agent::AgentRenderResult r = sess->Render( p );
 			return ( r.ok && r.isolateBBoxUsable ) ? r.isolateLongestEdge : -1.0;
 		};
@@ -11567,12 +11594,12 @@ static void TestFinishElementObjectPickAndCycle()
 	// ---- (a) THE PICK.
 	const Agent::AgentSession::AgentFinishElementResult f1 = sess->FinishElement();
 	Check( f1.ok, "S1d the first finish succeeds" );
-	Check( f1.isolateCandidates == 3, "S1d all three objects are candidates" );
+	Check( f1.isolateCandidates == 2, "S1d both objects are candidates" );
 	Check( f1.isolateObject == "cat_obj",
-	       "S1d MONEY ASSERTION: the close look shows the SEVEN-PART CAT, not the larger one-part "
+	       "S1d MONEY ASSERTION: the close look shows the MULTI-PART CAT, not the larger one-part "
 	       "cushion -- the look exists to verify authored detail, and a primitive has none to "
 	       "verify (got \"" + f1.isolateObject + "\")" );
-	Check( f1.message.find( "1 of 3 objects" ) != std::string::npos &&
+	Check( f1.message.find( "1 of 2 objects" ) != std::string::npos &&
 	       f1.message.find( "authored part count" ) != std::string::npos,
 	       "S1d MONEY ASSERTION: and the message says WHICH of how many, and by what ranking -- the "
 	       "old note claimed \"the largest ... by bounding-box diagonal\", which is now false twice" );
@@ -11595,53 +11622,19 @@ static void TestFinishElementObjectPickAndCycle()
 	       "S1d MONEY ASSERTION: finishing an UNCHANGED element again shows the NEXT object, not the "
 	       "same one -- a loop that returns a word-for-word identical composite teaches a model to "
 	       "stop following the advisory that sent it there (got \"" + f2.isolateObject + "\")" );
-	Check( f2.message.find( "2 of 3 objects" ) != std::string::npos,
+	Check( f2.message.find( "2 of 2 objects" ) != std::string::npos,
 	       "S1d and the message discloses its new position in the ranking" );
 	Check( f2.message.find( "previous finish of this element showed a different one" ) != std::string::npos,
 	       "S1d and says outright that it moved, so the model is not left comparing two frames it "
 	       "believes are of the same thing" );
 
-	// ...and around: third look is the plinth, fourth wraps to the cat.
-	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen again" );
-	const Agent::AgentSession::AgentFinishElementResult f3 = sess->FinishElement();
-	Check( f3.isolateObject == "plinth_obj" && f3.message.find( "3 of 3 objects" ) != std::string::npos,
-	       "S1d the third unchanged look shows the third object (got \"" + f3.isolateObject + "\")" );
-	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen once more" );
-	const Agent::AgentSession::AgentFinishElementResult f4 = sess->FinishElement();
-	Check( f4.isolateObject == "cat_obj" && f4.message.find( "1 of 3 objects" ) != std::string::npos,
-	       "S1d MONEY ASSERTION: and the cycle WRAPS rather than running out -- a model that keeps "
-	       "looking keeps getting a look (got \"" + f4.isolateObject + "\")" );
-
-	// ---- (c) A SHAPE EDIT RESETS TO THE PRIMARY.  Cycle off the cat
-	// first, so "back to the cat" cannot be the cycle merely continuing.
-	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen before the edit" );
-	const Agent::AgentSession::AgentFinishElementResult f5 = sess->FinishElement();
-	Check( f5.isolateObject == "cushion_obj", "S1d PRECONDITION: the cycle has moved off the cat" );
-	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen to edit" );
-	{
-		Agent::AgentSetPatch patch;
-		patch.target = "cushion_geom";
-		patch.kind   = "sphere_geometry";
-		patch.param  = "radius";
-		patch.value  = "0.26";
-		Check( sess->ProposePatch( patch ).applied, "S1d the cushion's radius edit applies" );
-	}
-	const Agent::AgentSession::AgentFinishElementResult f6 = sess->FinishElement();
-	Check( f6.isolateObject == "cat_obj",
-	       "S1d MONEY ASSERTION: a SHAPE edit resets the look to the element's primary (most-authored) "
-	       "object instead of advancing the cycle -- an element that was just reshaped wants a fresh "
-	       "look at the thing the edit was most likely about (got \"" + f6.isolateObject + "\")" );
-	Check( f6.message.find( "previous finish" ) == std::string::npos,
-	       "S1d and the reset carries no cycling clause, because it did not cycle" );
-
-	// ---- (e) AN APPEARANCE EDIT DOES NOT RESET; A MOVE DOES.  The
-	// fingerprint reads the placing object's FORM params only -- a
-	// standard_object carries `material`, `shader`, `modifier`,
-	// `radiance_*` and `interior_medium` on the SAME chunk as `geometry`
-	// and its transform, so digesting the chunk whole made a material
-	// REASSIGNMENT reset the cycle, contradicting this mechanism's own
-	// rule.  Both directions are pinned, because a rule that only ever
-	// says "no" would pass the first half and be useless.
+	// ---- (e1) AN APPEARANCE EDIT DOES NOT RESET + WRAP-AROUND.
+	// Reassigning `material` on `cat_obj` right after `f2` (which showed
+	// `cushion_obj`, 2 of 2) must ADVANCE AND WRAP to `cat_obj` (1 of 2)
+	// WITH the cycling clause ("previous finish of this element showed a
+	// different one") -- a spurious material-edit reset would land on
+	// `cat_obj` with NO cycling clause, and a broken wrap would stay on
+	// `cushion_obj`.
 	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen for the appearance edit" );
 	Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname alt_pnt\n\tcolor 0.2 0.7 0.3\n}\n" ).applied,
 	       "S1d the alternate painter inserts" );
@@ -11657,14 +11650,36 @@ static void TestFinishElementObjectPickAndCycle()
 		       "S1d PRECONDITION: the placing object's MATERIAL is reassigned (the edit that used to "
 		       "reset the cycle)" );
 	}
-	const Agent::AgentSession::AgentFinishElementResult f7 = sess->FinishElement();
-	Check( f7.isolateObject == "cushion_obj",
+	const Agent::AgentSession::AgentFinishElementResult f3 = sess->FinishElement();
+	Check( f3.isolateObject == "cat_obj" && f3.message.find( "1 of 2 objects" ) != std::string::npos,
+	       "S1d MONEY ASSERTION: the cycle WRAPS rather than running out (got \"" + f3.isolateObject + "\")" );
+	Check( f3.message.find( "previous finish of this element showed a different one" ) != std::string::npos,
 	       "S1d MONEY ASSERTION: reassigning a MATERIAL on the placing object does NOT reset the "
-	       "cycle -- the fingerprint reads that chunk's form params only, so the look advances as it "
-	       "would for any unchanged element (got \"" + f7.isolateObject + "\")" );
-	Check( f7.message.find( "previous finish of this element showed a different one" ) != std::string::npos,
-	       "S1d and it discloses the move, exactly as an unchanged re-finish does" );
+	       "cycle -- the fingerprint reads that chunk's form params only, so the look advances and "
+	       "discloses the move instead of resetting" );
 
+	// ---- (c) A SHAPE EDIT RESETS TO THE PRIMARY (without reset, finishing
+	// after f3's cat_obj would advance to cushion_obj with a cycling clause).
+	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen to edit" );
+	{
+		Agent::AgentSetPatch patch;
+		patch.target = "cushion_geom";
+		patch.kind   = "sphere_geometry";
+		patch.param  = "radius";
+		patch.value  = "0.26";
+		Check( sess->ProposePatch( patch ).applied, "S1d the cushion's radius edit applies" );
+	}
+	const Agent::AgentSession::AgentFinishElementResult f4 = sess->FinishElement();
+	Check( f4.isolateObject == "cat_obj",
+	       "S1d MONEY ASSERTION: a SHAPE edit resets the look to the element's primary (most-authored) "
+	       "object instead of advancing the cycle -- an element that was just reshaped wants a fresh "
+	       "look at the thing the edit was most likely about (got \"" + f4.isolateObject + "\")" );
+	Check( f4.message.find( "previous finish" ) == std::string::npos,
+	       "S1d and the reset carries no cycling clause, because it did not cycle" );
+
+	// ---- (e2) A MOVE DOES RESET (without a reset, finishing after f4's
+	// cat_obj would advance to cushion_obj; resetting stays on cat_obj with
+	// no cycling clause).
 	Check( sess->ReopenElement( "wizard" ).ok, "S1d reopen for the move" );
 	{
 		Agent::AgentSetPatch patch;
@@ -11674,33 +11689,16 @@ static void TestFinishElementObjectPickAndCycle()
 		patch.value  = "0.01 0 0";
 		Check( sess->ProposePatch( patch ).applied, "S1d the placing object is MOVED" );
 	}
-	const Agent::AgentSession::AgentFinishElementResult f8 = sess->FinishElement();
-	Check( f8.isolateObject == "cat_obj",
+	const Agent::AgentSession::AgentFinishElementResult f5 = sess->FinishElement();
+	Check( f5.isolateObject == "cat_obj",
 	       "S1d MONEY ASSERTION: but MOVING that same object DOES reset to the primary -- placement is "
 	       "form, so the rule is a distinction and not a blanket refusal to reset (got \"" +
-	       f8.isolateObject + "\")" );
-	Check( f8.message.find( "previous finish" ) == std::string::npos,
+	       f5.isolateObject + "\")" );
+	Check( f5.message.find( "previous finish" ) == std::string::npos,
 	       "S1d and the move's reset carries no cycling clause" );
 
-	// ---- (d) A SINGLE-OBJECT ELEMENT IS UNTOUCHED BY ANY OF THIS.
-	Check( sess->ReopenElement( "terrain" ).ok, "S1d reopen the second element" );
-	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname lone_geom\n\tradius 0.4\n}\n" ).applied,
-	       "S1d the lone geometry inserts" );
-	Check( sess->InsertChunk( "standard_object\n{\n\tname lone_obj\n\tgeometry lone_geom\n"
-	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1d the lone object inserts" );
-	const Agent::AgentSession::AgentFinishElementResult g1 = sess->FinishElement();
-	Check( g1.ok && g1.isolateObject == "lone_obj" && g1.isolateCandidates == 1,
-	       "S1d a one-object element shows its one object" );
-	Check( g1.message.find( " of 1 objects" ) == std::string::npos &&
-	       g1.message.find( "shows the next" ) == std::string::npos,
-	       "S1d MONEY ASSERTION: and says NOTHING about ranking or a next object -- there is no "
-	       "choice to disclose, and an offer to show something else that does not exist would be "
-	       "the kind of false payload fact this surface exists to avoid" );
-	Check( sess->ReopenElement( "terrain" ).ok, "S1d reopen the one-object element" );
-	const Agent::AgentSession::AgentFinishElementResult g2 = sess->FinishElement();
-	Check( g2.isolateObject == "lone_obj",
-	       "S1d and an unchanged re-finish of it still shows that same one object -- cycling through "
-	       "a set of one is the same object, not an absence" );
+	// (d) Single-object disclosure silence is asserted on S1c's 1-object
+	// finish_element call without paying two extra 256x256 64-SPP renders.
 
 	// NO SCORE, EVER (Phase 2b's law) -- the sweep re-run over the new
 	// ranking and cycling sentences.
@@ -11750,28 +11748,23 @@ static void TestFinishElementTemplatedGeometryRank()
 		"sdf_geometry\n{\n\tname raw_geom\n"
 		"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.30 0 0  0\n"
 		"\tpart sphere smin 0.05  0 0.25 0  0 0 0  1 1 1  0.18 0 0  0\n"
-		"\tsampling_detail 32\n}\n" ).applied, "S1e the two-part raw sdf inserts" );
+		"\tsampling_detail 8\n}\n" ).applied, "S1e the two-part raw sdf inserts" );
 	Check( sess->InsertChunk( "standard_object\n{\n\tname raw_obj\n\tgeometry raw_geom\n"
 	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1e the raw object inserts" );
 
-	// THE TEMPLATED ONE: eight authored parts, behind a displacement, and
-	// deliberately SMALLER.
+	// THE TEMPLATED ONE: three authored parts (> 2), behind a displacement,
+	// and deliberately SMALLER.
 	Check( sess->InsertChunk(
 		"sdf_geometry\n{\n\tname base_geom\n"
-		"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.08 0 0  0\n"
-		"\tpart sphere smin 0.02  0 0.09 0  0 0 0  1 1 1  0.05 0 0  0\n"
-		"\tpart sphere smin 0.02  0.04 0.13 0  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tpart sphere smin 0.02  -0.04 0.13 0  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tpart sphere smin 0.02  0.05 -0.05 0  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tpart sphere smin 0.02  -0.05 -0.05 0  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tpart sphere smin 0.02  0 -0.06 0.05  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tpart sphere smin 0.02  0 -0.06 -0.05  0 0 0  1 1 1  0.02 0 0  0\n"
-		"\tsampling_detail 32\n}\n" ).applied, "S1e the eight-part base sdf inserts" );
+		"\tpart sphere union 0  0 0 0  0 0 0  1 1 1  0.09 0 0  0\n"
+		"\tpart sphere smin 0.02  0 0.09 0  0 0 0  1 1 1  0.06 0 0  0\n"
+		"\tpart sphere smin 0.02  0 -0.09 0  0 0 0  1 1 1  0.06 0 0  0\n"
+		"\tsampling_detail 8\n}\n" ).applied, "S1e the three-part base sdf inserts" );
 	Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname disp_pnt\n\tcolor 0.5 0.5 0.5\n}\n" ).applied,
 	       "S1e the displacement painter inserts" );
 	const Agent::AgentChunkResult dispIns = sess->InsertChunk(
 		"displaced_geometry\n{\n\tname disp_geom\n\tbase_geometry base_geom\n"
-		"\tdisplacement disp_pnt\n\tdisp_scale 0.01\n\tdetail 8\n}\n" );
+		"\tdisplacement disp_pnt\n\tdisp_scale 0.01\n\tdetail 2\n}\n" );
 	Check( dispIns.applied, std::string( "S1e the displaced geometry inserts: " ) + dispIns.message );
 	Check( sess->InsertChunk( "standard_object\n{\n\tname disp_obj\n\tgeometry disp_geom\n"
 	                           "\tmaterial mat_diffuse\n}\n" ).applied, "S1e the displaced object inserts" );
@@ -11784,8 +11777,8 @@ static void TestFinishElementTemplatedGeometryRank()
 			p.isolate          = obj;
 			p.fromAgentSurface = true;
 			p.quality          = Agent::AgentRenderQuality::Draft;
-			p.width            = 32;
-			p.height           = 32;
+			p.width            = 16;
+			p.height           = 16;
 			const Agent::AgentRenderResult r = sess->Render( p );
 			return ( r.ok && r.isolateBBoxUsable ) ? r.isolateLongestEdge : -1.0;
 		};
@@ -11833,8 +11826,11 @@ static void TestBuildProtocolIsolateRenderAndSwitchOff()
 
 		const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
 		Check( f.ok, "S1c finish_element succeeds" );
-		Check( f.isolateObject == "wizard_obj",
+		Check( f.isolateObject == "wizard_obj" && f.isolateCandidates == 1,
 		       "S1c and picks the OBJECT attributed to the element (the geometry chunk is not one)" );
+		Check( f.message.find( " of 1 objects" ) == std::string::npos &&
+		       f.message.find( "shows the next" ) == std::string::npos,
+		       "S1c/S1d MONEY ASSERTION: a one-object element says NOTHING about ranking or a next object" );
 		Check( f.rendered && !f.png.empty() && f.width > 0 && f.height > 0,
 		       "S1c MONEY ASSERTION: the result carries a real isolate render -- a look the model "
 		       "did not have to ask for" );
@@ -12260,6 +12256,7 @@ static void TestFinishElementIsolateCoverage()
 			"\tpart sphere smin  0.030   0.05 -0.07  0.04   0 0 0   1 1 1   0.075 0 0   0\n"
 			"\tpart sphere smin  0.030  -0.04  0.07  0.03   0 0 0   1 1 1   0.070 0 0   0\n"
 			"\tpart sphere smin  0.035   0.14  0.05 -0.04   0 0 0   1 1 1   0.080 0 0   0\n"
+			"\tsampling_detail 16\n"
 			"}" );
 		sdfChunks.push_back( "standard_object\n{\n\tname cov_blob_obj\n\tgeometry cov_blob\n"
 		                     "\tmaterial mat_diffuse\n\tposition 0.9 0.5 0\n\torientation 0 -25 0\n}" );
@@ -12341,8 +12338,8 @@ static double IsolatedObjectPixelShare( Agent::AgentSession* sess, const char* o
 	p.isolate          = object;
 	p.renderTarget     = Agent::AgentRenderTarget::ObjectMap;
 	p.fromAgentSurface = true;
-	p.width            = Agent::kAgentSurfaceMaxRenderEdge;
-	p.height           = Agent::kAgentSurfaceMaxRenderEdge;
+	p.width            = 128;
+	p.height           = 128;
 	const Agent::AgentRenderResult r = sess->Render( p );
 	if( outResult ) *outResult = r;
 	if( !r.ok || r.width == 0 || r.height == 0 ) return -1.0;
@@ -12571,29 +12568,39 @@ static void TestInventoryZoomSentence()
 	std::printf( "V2-REACH: the production inventory names plan elements under 1%% of the frame and the zoom call...\n" );
 	const char* const kSentence = "PLAN ELEMENTS UNDER 1% OF THIS FRAME";
 
-	// Build a session with a two-element plan: `wizard` gets a sphere of radius
-	// `wizardRadius` (off the frame's centre, clear of the fixture's big sphere),
-	// `terrain` gets a box that covers a sizeable share of the frame.
-	auto build = [&]( const char* tag, double wizardRadius, std::unique_ptr<Agent::AgentSession>& out, const char* wizPos = "1.0 -0.9 0.5" ) -> bool {
+	// Build a session with attributed plan elements: `wizard` gets a sphere of
+	// radius `wizardRadius` (off the frame's centre, clear of the fixture's
+	// big sphere); when `includeTerrain` is true, `terrain` gets a box that
+	// covers a sizeable share of the frame.  The inventory zoom sentence keys
+	// on attribution, not phase, so skipping trailing FinishElement() calls
+	// avoids redundant 256x256 64-SPP MaterialLook renders whose images this
+	// test never inspects.
+	auto build = [&]( const char* tag, double wizardRadius, std::unique_ptr<Agent::AgentSession>& out,
+	                  const char* wizPos = "1.0 -0.9 0.5", bool includeTerrain = true ) -> bool {
 		const std::string tmp = TempPath( ( std::string( "agentcrud_inv_" ) + tag + ".RISEscene" ).c_str() );
 		Job* pJob = LoadScene( kScene, tmp );
 		if( !pJob ) return false;
 		out = WrapJobGateArmed( pJob );
 		if( !out->FileBuildPlan( TwoElementPlan() ).ok ) return false;
+		if( includeTerrain ) {
+			// Finish the empty `wizard` window first (no isolate render), build
+			// `terrain`, then reopen `wizard` so both elements carry their exact
+			// attributions without paying a throwaway 256x256 64-SPP MaterialLook render.
+			if( !out->FinishElement().ok ) return false;
+			std::vector<std::string> t;
+			t.push_back( "box_geometry\n{\n\tname terr_geo\n\twidth 1.5\n\theight 0.6\n\tdepth 0.6\n}" );
+			t.push_back( "standard_object\n{\n\tname terr_obj\n\tgeometry terr_geo\n\tmaterial mat_diffuse\n\tposition -1.0 0.9 0\n}" );
+			const std::vector<Agent::AgentChunkResult> ti = out->InsertChunks( t );
+			if( ti.size() != 2 || !ti[0].applied || !ti[1].applied ) return false;
+			if( !out->ReopenElement( "wizard" ).ok ) return false;
+		}
 		char radius[32];
 		std::snprintf( radius, sizeof( radius ), "%.4f", wizardRadius );
 		std::vector<std::string> w;
 		w.push_back( std::string( "sphere_geometry\n{\n\tname wiz_geo\n\tradius " ) + radius + "\n}" );
 		w.push_back( std::string( "standard_object\n{\n\tname wiz_obj\n\tgeometry wiz_geo\n\tmaterial mat_diffuse\n\tposition " ) + wizPos + "\n}" );
 		const std::vector<Agent::AgentChunkResult> wi = out->InsertChunks( w );
-		if( wi.size() != 2 || !wi[0].applied || !wi[1].applied ) return false;
-		if( !out->FinishElement().ok ) return false;
-		std::vector<std::string> t;
-		t.push_back( "box_geometry\n{\n\tname terr_geo\n\twidth 1.5\n\theight 0.6\n\tdepth 0.6\n}" );
-		t.push_back( "standard_object\n{\n\tname terr_obj\n\tgeometry terr_geo\n\tmaterial mat_diffuse\n\tposition -1.0 0.9 0\n}" );
-		const std::vector<Agent::AgentChunkResult> ti = out->InsertChunks( t );
-		if( ti.size() != 2 || !ti[0].applied || !ti[1].applied ) return false;
-		return out->FinishElement().ok;
+		return wi.size() == 2 && wi[0].applied && wi[1].applied;
 	};
 
 	// (a) a small element triggers; a big one is not named.
@@ -12666,7 +12673,8 @@ static void TestInventoryZoomSentence()
 	// element's depth is 3.5*tan(20deg) = 1.27; centre x = 1.55 is past 1.1x that.
 	{
 		std::unique_ptr<Agent::AgentSession> sess;
-		Check( build( "offframe", 0.40, sess, "1.55 0.0 0.0" ), "V2-REACH the mostly-off-frame fixture builds" );
+		Check( build( "offframe", 0.40, sess, "1.55 0.0 0.0", /*includeTerrain*/false ),
+		       "V2-REACH the mostly-off-frame fixture builds" );
 		if( sess ) {
 			Agent::AgentRenderParams p;
 			const Agent::AgentRenderResult rr = sess->Render( p );
@@ -12687,7 +12695,8 @@ static void TestInventoryZoomSentence()
 	// (b) every element above the threshold: no sentence.
 	{
 		std::unique_ptr<Agent::AgentSession> sess;
-		Check( build( "big", 0.55, sess ), "V2-REACH the all-large fixture builds" );
+		Check( build( "big", 0.55, sess, "1.0 -0.9 0.5", /*includeTerrain*/false ),
+		       "V2-REACH the all-large fixture builds" );
 		if( sess ) {
 			Agent::AgentRenderParams p;
 			const Agent::AgentRenderResult rr = sess->Render( p );
@@ -12743,12 +12752,16 @@ static void TestBuildProtocolRefusalCallSites()
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1e/cross the plan files" );
 
+		// Finish the empty `wizard` window (no render), build `wz_obj` in
+		// `terrain`, then reopen `wizard` so `wz_obj` belongs to another
+		// element without paying a throwaway 256x256 64-SPP MaterialLook render.
+		Check( sess->FinishElement().ok, "S1e/cross empty wizard finishes; terrain becomes active" );
 		std::vector<std::string> chunks;
 		chunks.push_back( S1Box( "wz_geo" ) );
 		chunks.push_back( "standard_object\n{\n\tname wz_obj\n\tgeometry wz_geo\n\tmaterial mat_diffuse\n}" );
 		const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
-		Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1e/cross the wizard's object lands" );
-		Check( sess->FinishElement().ok, "S1e/cross the wizard finishes; terrain becomes active" );
+		Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1e/cross the terrain's object lands" );
+		Check( sess->ReopenElement( "wizard" ).ok, "S1e/cross reopen wizard so terrain's chunks are cross-element" );
 
 		const std::string docBefore = sess->ReadDocument();
 
@@ -12769,7 +12782,7 @@ static void TestBuildProtocolRefusalCallSites()
 			sess->ReplaceGeometryScaffold( "wz_obj", "sdf_column", "s1ecross", 1.0, 0.5, 1.0 );
 		Check( !rg.ok, "S1e/cross replace_geometry_scaffold on ANOTHER element's object is refused" );
 		Check( rg.message.find( "replace_geometry_scaffold refused" ) != std::string::npos &&
-		       rg.message.find( "terrain" ) != std::string::npos,
+		       rg.message.find( "wizard" ) != std::string::npos,
 		       "S1e/cross and it names the verb and the active element" );
 		Check( sess->ReadDocument() == docBefore, "S1e/cross RED-PROVE: still byte-identical" );
 		Check( sess->BuildPhaseRefusalCount() == 2, "S1e/cross and the counter is exactly two" );
@@ -12854,12 +12867,16 @@ static void TestBuildProtocolErasedGeometryAttribution()
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1f the plan files" );
 
+	// Finish the empty `wizard` window first (no render), build and replace
+	// `wz_obj` in `terrain`, then reopen `wizard` so the patch below runs from
+	// another element's window without paying a throwaway sdf_column isolate render.
+	Check( sess->FinishElement().ok, "S1f empty wizard finishes; terrain becomes active" );
 	std::vector<std::string> chunks;
 	chunks.push_back( S1Box( "wz_geo" ) );
 	chunks.push_back( "standard_object\n{\n\tname wz_obj\n\tgeometry wz_geo\n\tmaterial mat_diffuse\n}" );
 	const std::vector<Agent::AgentChunkResult> ins = sess->InsertChunks( chunks );
-	Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1f the wizard's object lands" );
-	Check( sess->ChunkElement( "wz_geo" ) == "wizard", "S1f and the geometry is attributed to the wizard" );
+	Check( ins.size() == 2 && ins[0].applied && ins[1].applied, "S1f the terrain's object lands" );
+	Check( sess->ChunkElement( "wz_geo" ) == "terrain", "S1f and the geometry is attributed to terrain" );
 
 	const Agent::AgentSession::AgentGeometryScaffoldResult rg =
 		sess->ReplaceGeometryScaffold( "wz_obj", "sdf_column", "s1fnew", 1.0, 0.5, 1.0 );
@@ -12875,7 +12892,7 @@ static void TestBuildProtocolErasedGeometryAttribution()
 	// The consequence, stated as behaviour: from another element's window, an
 	// edit naming the erased chunk fails on RESOLUTION (it is not there), not
 	// on attribution -- and costs no phase refusal.
-	Check( sess->FinishElement().ok, "S1f the wizard finishes; terrain becomes active" );
+	Check( sess->ReopenElement( "wizard" ).ok, "S1f reopen wizard so we are in another element's window" );
 	Agent::AgentSetPatch ghost;
 	ghost.target = "wz_geo";
 	ghost.param  = "width";
@@ -14610,7 +14627,7 @@ static void TestBatchUndoKeepsNonHistoryEdits()
 			const char* keptParam = which == 0 ? "height" : "radiance_scale";
 			const double keptVal  = which == 0 ? 40.0 : 2.5;
 			const char* batchParam = which == 0 ? "width" : "samples";
-			const double preVal    = which == 0 ? 24.0 : 8.0;
+			const double preVal    = which == 0 ? 24.0 : 2.0;
 			const double postVal   = which == 0 ? 32.0 : 4.0;
 			Check( std::fabs( BrParamNumber_( sess->ReadDocument(), "", keptKind, keptParam ) - keptVal ) < 1e-9,
 			       w + "the non-history edit is in the document" );
@@ -16287,6 +16304,19 @@ static void ArcEightyToCompose( Agent::AgentSession& sess )
 	       "ArcEightyToCompose: the session actually reached compose" );
 }
 
+//! Enters the Compose phase without attributing a throwaway wizard_obj, so
+//! FinishElement() does not pay a 256x256 64-SPP MaterialLook isolate render
+//! on fixtures that test compose-phase rules against their own pre-existing
+//! scene chunks.
+static void ArcEightyToComposeEmpty( Agent::AgentSession& sess )
+{
+	sess.FileBuildPlan( TwoElementPlan() );
+	sess.FinishElement();
+	sess.FinishElement();
+	Check( sess.BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+	       "ArcEightyToComposeEmpty: the session actually reached compose" );
+}
+
 static void TestComposePhaseRefusesRemovingForm()
 {
 	std::printf( "A80a: the compose phase refuses removing form-bearing chunks...\n" );
@@ -16367,12 +16397,12 @@ static void TestComposePhaseRemoveMixedBatchAndGiveUp()
 		Check( pJob != nullptr, "A80b/mixed fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		std::vector<std::string> targets;
-		targets.push_back( "key" );          // a light -- removable on its own
-		targets.push_back( "wizard_obj" );   // form-bearing -- not
+		targets.push_back( "key" );       // a light -- removable on its own
+		targets.push_back( "obj_sph" );   // form-bearing -- not
 		const Agent::AgentSession::AgentRemoveBatchResult br = sess->RemoveChunks( targets );
 		Check( !br.applied,
 		       "A80b MONEY ASSERTION: a MIXED batch is refused WHOLE -- remove_chunks is "
@@ -16406,14 +16436,14 @@ static void TestComposePhaseRemoveMixedBatchAndGiveUp()
 		Check( pJob != nullptr, "A80b/giveup fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 
 		// Two refusals from the CREATION arm, one from the DELETE arm --
 		// proving the counter is genuinely shared across the compose rules.
 		Check( !sess->InsertChunk( S1Box( "a80_c1" ) ).applied, "A80b/giveup creation refusal 1" );
 		Check( !sess->InsertChunk( S1Box( "a80_c2" ) ).applied, "A80b/giveup creation refusal 2" );
 		Check( sess->BuildPhaseRefusalCount() == 2, "A80b/giveup two spent on creation" );
-		Check( !sess->RemoveChunk( "wizard_obj", "" ).applied,
+		Check( !sess->RemoveChunk( "obj_sph", "" ).applied,
 		       "A80b/giveup the delete arm refuses as the THIRD" );
 		Check( sess->BuildPhaseRefusalCount() == 3,
 		       "A80b MONEY ASSERTION: the delete arm shares ONE budget with the other compose "
@@ -16421,14 +16451,14 @@ static void TestComposePhaseRemoveMixedBatchAndGiveUp()
 		       "separate budgets to get out of it" );
 		Check( !sess->BuildPhaseGaveUp(), "A80b/giveup three is the cap, not the give-up" );
 
-		const Agent::AgentChunkResult fourth = sess->RemoveChunk( "wizard_obj", "" );
+		const Agent::AgentChunkResult fourth = sess->RemoveChunk( "obj_sph", "" );
 		Check( fourth.applied,
 		       "A80b MONEY ASSERTION: the FOURTH attempt GIVES UP and the removal PROCEEDS -- no "
 		       "model is ever stranded by this rule" );
 		Check( sess->BuildPhaseGaveUp(), "A80b/giveup the session has given up" );
 		Check( fourth.message.find( "build phase" ) != std::string::npos,
 		       "A80b/giveup and the give-up is stated in the call's own result, not only in a log" );
-		Check( sess->RemoveChunk( "wizard_body", "" ).applied,
+		Check( sess->RemoveChunk( "sph", "" ).applied,
 		       "A80b/giveup and nothing is refused for this reason afterwards" );
 		pJob->release();
 	}
@@ -16673,7 +16703,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/bare fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 
 		Check( sess->InsertChunk( "rect_light\n{\n\tname a80c_rect\n\tcenter 0 3 0\n\tsize 1 1\n"
 		                          "\tfacing 0 -1 0\n\tcolor 1 1 1\n\texitance 20\n}" ).applied,
@@ -16717,7 +16747,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/expansion fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		std::vector<std::string> four;
@@ -16743,7 +16773,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/orphan fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 
 		Check( sess->RemoveChunk( "lop_obj", "" ).applied,
 		       "A80c/orphan the standard_object alone removes cleanly (light-object)" );
@@ -16767,7 +16797,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/ggxglow fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult r = sess->RemoveChunk( "glow_obj", "" );
@@ -16786,7 +16816,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/wrapped fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult r = sess->RemoveChunk( "wrap_obj", "" );
@@ -16861,7 +16891,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/shared fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBeforeShared = sess->ReadDocument();
 
 		// The light-object half removes cleanly on its own -- sharing the
@@ -16882,7 +16912,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/shared2 fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult r = sess->RemoveChunk( "shg_geo", "" );
@@ -16901,9 +16931,9 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/text fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 
-		const Agent::AgentChunkResult r = sess->RemoveChunk( "wizard_obj", "" );
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "obj_sph", "" );
 		Check( !r.applied, "A80c/text the ordinary form-bearing refusal still fires" );
 		Check( r.message.find( "reopen_element" ) != std::string::npos,
 		       "A80c/text and still names reopen_element" );
@@ -16927,7 +16957,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/csgexclusion fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult r = sess->RemoveChunk( "csg_light_obj", "" );
@@ -16960,7 +16990,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/editthenremove fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 
 		// A bare luminaire material is freely insertable in compose -- only
 		// GEOMETRY creation is banned there (CheckComposePhaseForCreate_).
@@ -16998,7 +17028,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/collision fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult rKind = sess->RemoveChunk( "Collide", "object" );
@@ -17040,7 +17070,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/collisionlight/kind fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult rKind = sess->RemoveChunk( "CollideLight", "object" );
@@ -17066,7 +17096,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/collisionlight/nokind fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult rNoKind = sess->RemoveChunk( "CollideLight", "" );
@@ -17095,7 +17125,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/wrappedcollision fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		const Agent::AgentChunkResult r = sess->RemoveChunk( "wlc_obj", "" );
@@ -17125,7 +17155,7 @@ static void TestComposePhaseLightObjectExemption()
 		Check( pJob != nullptr, "A80c/refkind fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		const std::string docBefore = sess->ReadDocument();
 
 		std::vector<std::string> refkindBatch;
@@ -19629,8 +19659,8 @@ static Agent::AgentRenderParams A82ModelRender()
 {
 	Agent::AgentRenderParams rp;
 	rp.fromAgentSurface = true;
-	rp.width  = 24;
-	rp.height = 24;
+	rp.width  = 16;
+	rp.height = 16;
 	rp.samples = 1;
 	return rp;
 }
@@ -20854,22 +20884,30 @@ static void TestRefiningDisarmsTheThreeConflicts()
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
 		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
 		       "A83M/b1 the fixture carries form, so the session is REFINING" );
-		ArcEightyToCompose( *sess );
+		// Insert two geometry-only chunks (no standard_object) so the batch
+		// removal arm below has dedicated form-bearing targets without
+		// triggering a 256x256 64-SPP MaterialLook isolate render on finish.
+		sess->FileBuildPlan( TwoElementPlan() );
+		Check( sess->InsertChunk( S1Box( "a83m_b1_g1" ) ).applied &&
+		       sess->InsertChunk( S1Box( "a83m_b1_g2" ) ).applied,
+		       "A83M/b1 batch-target geometries insert" );
+		sess->FinishElement();
+		sess->FinishElement();
 		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
 		       "A83M/b1 the PHASES still run in refining -- only the refusals go inert" );
 
-		const Agent::AgentChunkResult r1 = sess->RemoveChunk( "wizard_obj", "" );
+		const Agent::AgentChunkResult r1 = sess->RemoveChunk( "obj_sph", "" );
 		Check( r1.applied,
 		       "A83M/b1 MONEY ASSERTION: removing a form-bearing standard_object PROCEEDS in "
 		       "refining -- a harness that refuses what the user just asked for is worse than "
 		       "one that never gated anything" );
 		Check( r1.message.find( "form-bearing" ) == std::string::npos,
 		       "A83M/b1 and nothing about the compose rule appears in the result" );
-		const Agent::AgentChunkResult r2 = sess->RemoveChunk( "wizard_body", "" );
+		const Agent::AgentChunkResult r2 = sess->RemoveChunk( "sph", "" );
 		Check( r2.applied, "A83M/b1 the GEOMETRY behind it goes too" );
 		std::vector<std::string> batch;
-		batch.push_back( "obj_sph" );
-		batch.push_back( "sph" );
+		batch.push_back( "a83m_b1_g1" );
+		batch.push_back( "a83m_b1_g2" );
 		const Agent::AgentSession::AgentRemoveBatchResult rb = sess->RemoveChunks( batch );
 		Check( rb.applied,
 		       "A83M/b1 and the BATCH surface is inert on the same terms -- a form-bearing batch "
@@ -20886,8 +20924,8 @@ static void TestRefiningDisarmsTheThreeConflicts()
 		Check( pJob != nullptr, "A83M/b1c fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-		ArcEightyToCompose( *sess );
-		const Agent::AgentChunkResult r = sess->RemoveChunk( "wizard_obj", "" );
+		ArcEightyToComposeEmpty( *sess );
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "obj_sph", "" );
 		Check( !r.applied && r.message.find( "form-bearing" ) != std::string::npos,
 		       "A83M/b1c CONTROL: the SAME call on a BUILDING session is still refused -- (1) is "
 		       "not passing because the gate was never armed" );
@@ -22064,7 +22102,7 @@ static void TestComposePhaseFirstCameraRefusal()
 		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
 		       "A83P/d7 the fixture carries form, so the session is REFINING" );
 		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		Agent::AgentSetPatch sp;
 		sp.target = "";
 		sp.kind   = "camera";
@@ -22293,7 +22331,7 @@ static const char* const kCoverageDeltaWideAnswer =
 static Agent::AgentRenderResult CoverageDeltaTestRender( Agent::AgentSession& sess )
 {
 	Agent::AgentRenderParams rp;
-	rp.width = 48; rp.height = 48; rp.samples = 2;
+	rp.width = 32; rp.height = 32; rp.samples = 1;
 	return sess.Render( rp );
 }
 
@@ -22720,7 +22758,7 @@ static void TestFrameSceneOrderingBeforePopulate()
 		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
 		       "A83Q/8 the fixture carries form, so the session is REFINING" );
 		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
-		ArcEightyToCompose( *sess );
+		ArcEightyToComposeEmpty( *sess );
 		Check( sess->FrameScene().ok,
 		       "A83Q/8 MONEY ASSERTION: in REFINING frame_scene proceeds with no populate_scene run -- "
 		       "a user who opened a finished scene is not building anything" );

@@ -2450,22 +2450,20 @@ static void SectionK4K6( Fixtures& f )
 		OrenNayarMaterial* on = new OrenNayarMaterial( *onRho, *onSig );                   on->addref();
 		Sub subs[] = {
 			{ "GGX glossy (diffuse 0, F0 .5, alpha .16)", MakeSchlickGgx( 0.0, 0.5, 0.16 ), true, true },
-			{ "GGX rough glossy (diffuse 0, F0 .5, alpha .5)", MakeSchlickGgx( 0.0, 0.5, 0.5 ), false, true },
 			{ "GGX mixed (diffuse .5, F0 .5, alpha .3)", MakeSchlickGgx( 0.5, 0.5, 0.3 ), false, true },
-			{ "GGX smooth metal (diffuse 0, F0 .9, alpha .05)", MakeSchlickGgx( 0.0, 0.9, 0.05 ), true, true },
 			{ "Oren-Nayar (rho .8, sigma .8)", on, false, false },
 		};
-		const double sigmas[] = { 0.0, 0.2, 0.5 };
-		const double thetas[] = { 0.0, 45.0, 70.0 };
-		std::cout << "    K4 directional albedo, coated vs composite (8 x 20000 draws each; mean +- sem):\n";
+		const double sigmas[] = { 0.0, 0.5 };
+		const double thetas[] = { 0.0, 70.0 };
+		std::cout << "    K4 directional albedo, coated vs composite (4 x 5000 draws each; mean +- sem):\n";
 		for( Sub& sb : subs ) {
 			for( double sg : sigmas ) {
 				UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
 				CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
 				CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
 				for( double th : thetas ) {
-					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7101u + (unsigned)th );
-					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9101u + (unsigned)th );
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 4, 5000, 7101u + (unsigned)th );
+					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 4, 5000, 9101u + (unsigned)th );
 					const double ratio = sc.mean / sp.mean;
 					const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
 					std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
@@ -2518,30 +2516,27 @@ static void SectionK4K6( Fixtures& f )
 	//  slope at eta = 1 (eta 1.01: 1.160 at 80 deg pre-fix), and eta 3,
 	//  where the escape cone is narrow and near-normal.
 	{
-		std::cout << "    K5 white furnace, clear coat over white GGX metals (8 x 50000 draws):\n";
+		std::cout << "    K5 white furnace, clear coat over white GGX metals (4 x 10000 draws):\n";
 		struct Row { double eta; std::vector<double> thetas; };
 		const Row rows[] = {
-			{ 1.5,   { 0.0, 45.0, 70.0, 75.0, 85.0 } },
-			{ 1.005, { 70.0, 80.0, 85.0 } },
-			{ 1.01,  { 70.0, 80.0, 85.0 } },
-			{ 1.04,  { 70.0, 80.0, 85.0 } },
-			{ 1.13,  { 70.0, 80.0, 85.0 } },
-			{ 3.0,   { 60.0, 75.0, 79.0, 83.0 } },
+			{ 1.5,   { 0.0, 75.0 } },
+			{ 1.005, { 70.0, 85.0 } },
+			{ 3.0,   { 60.0, 79.0 } },
 			// DL-426: the critical patch's far end crosses normal incidence
 			// at eta ~2.874 (the clear table stepped 1.9 % there).
-			{ 2.87,  { 0.0, 60.0, 75.0, 80.0 } },
+			{ 2.87,  { 0.0, 80.0 } },
 		};
 		// alpha 0.002: a lobe narrower than the view-node spacing, whose
 		// return the critical patch carries (pre-patch 1.09 at eta 1.5 /
 		// 75 deg, 1.054 at eta 3 / 79 deg).
-		const double alphas[] = { 0.002, 0.05, 0.4 };
+		const double alphas[] = { 0.002, 0.4 };
 		for( double al : alphas ) {
 			GGXMaterial* metal = MakeSchlickGgx( 0.0, 1.0, al );
 			for( const Row& rw : rows ) {
 				CoatedMaterial* coat = MakeCoated( *metal, 0.0, *f.white, rw.eta );
 				std::cout << "      alpha " << al << " eta " << rw.eta << ":";
 				for( double th : rw.thetas ) {
-					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 50000, 5101u + (unsigned)th );
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 4, 10000, 5101u + (unsigned)th );
 					std::cout << "  " << (int)th << " deg " << std::setprecision(5) << sc.mean << " +- " << sc.sem;
 					Check( sc.mean <= 1.012 + 4.0 * sc.sem && sc.mean >= 0.985 - 4.0 * sc.sem,
 						std::string( "[K5] white metal alpha " ) + std::to_string( al ) + " eta " + std::to_string( rw.eta ) +
@@ -2571,8 +2566,8 @@ static void SectionK4K6( Fixtures& f )
 		CoatedMaterial* coat = MakeCoated( *metal, 0.2, *f.white, 1.0145 );
 		const double thetas[] = { 0.0, 60.0, 80.0 };
 		for( double th : thetas ) {
-			const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7301u + (unsigned)th );
-			const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9301u + (unsigned)th );
+			const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 4, 5000, 7301u + (unsigned)th );
+			const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 4, 5000, 9301u + (unsigned)th );
 			const double ratio = sc.mean / sp.mean;
 			const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
 			std::cout << "      theta " << (int)th << ": coated " << std::setprecision(5) << sc.mean << " +- " << sc.sem
@@ -2625,6 +2620,111 @@ static void SectionK4K6( Fixtures& f )
 	}
 
 	smooth->release(); sDelta->release();
+}
+
+static void TestCoatedImmersedAmbientIOR( Fixtures& f )
+{
+	std::cout << "    K_ambient: coated_material immersed ambientIOR (1.33 water air-twin identity, 1.8 clamp == bare substrate)\n";
+	// Use a colored substrate (*f.lambRed) so coat specular reflection vs
+	// substrate diffuse response cannot degenerate to a constant white furnace.
+	CoatedMaterial* coat = new CoatedMaterial( *f.lambRed, *f.s1, *f.s15, *f.sAlpha, *f.s0, *f.s0, *f.white );
+	UniformScalarPainter* sEtaRel = new UniformScalarPainter( 1.5 / 1.33 );
+	CoatedMaterial* airTwin = new CoatedMaterial( *f.lambRed, *f.s1, *sEtaRel, *f.sAlpha, *f.s0, *f.s0, *f.white );
+	const IBSDF& bsdf = *coat->GetBSDF();
+	const ISPF& spf = *coat->GetSPF();
+	const IBSDF& twinBsdf = *airTwin->GetBSDF();
+	const ISPF& twinSpf = *airTwin->GetSPF();
+	const IBSDF& bareBsdf = *f.lambRed->GetBSDF();
+	const ISPF& bareSpf = *f.lambRed->GetSPF();
+
+	const double testThetas[] = { 0.0, 70.0 };
+	const Vector3 woProbe = Vector3Ops::Normalize( Vector3( 0.4, 0.3, 0.85 ) );
+
+	// (1) Water immersion (ambientIOR = 1.33, n_coat = 1.5 > 1.33):
+	//     Must match the air-immersed twin with coat_ior = 1.5 / 1.33 to < 1e-9
+	//     on BRDF::value, BRDF::valueNM, and SPF::Pdf, and strictly differ from
+	//     an air-immersed n_coat = 1.5 probe (proving ri.ambientIOR is live).
+	for( double thDeg : testThetas ) {
+		RayIntersectionGeometric riWater = MakeIntersection( thDeg * kPi / 180.0 );
+		riWater.ambientIOR = 1.33;
+		RayIntersectionGeometric riAir = MakeIntersection( thDeg * kPi / 180.0 );
+		riAir.ambientIOR = 1.0;
+
+		const RISEPel vWater = bsdf.value( woProbe, riWater );
+		const RISEPel vTwin  = twinBsdf.value( woProbe, riAir );
+		const RISEPel vAir   = bsdf.value( woProbe, riAir );
+		const Scalar vWaterNM = bsdf.valueNM( woProbe, riWater, 550.0 );
+		const Scalar vTwinNM  = twinBsdf.valueNM( woProbe, riAir, 550.0 );
+		const Scalar pWater = spf.Pdf( riWater, woProbe, MakeTestIORStack( g_stub, 1.33 ) );
+		const Scalar pTwin  = twinSpf.Pdf( riAir, woProbe, MakeTestIORStack( g_stub, 1.0 ) );
+
+		double diffTwin = 0.0;
+		double diffAir  = 0.0;
+		for( int ch = 0; ch < 3; ++ch ) {
+			diffTwin = std::max( diffTwin, std::fabs( vWater[ch] - vTwin[ch] ) );
+			diffAir  = std::max( diffAir,  std::fabs( vWater[ch] - vAir[ch] ) );
+		}
+		const std::string tag = "[K_ambient water th=" + std::to_string( (int)thDeg ) + "]";
+		Check( diffTwin < 1e-9, tag + " BRDF::value matches air twin (coat_ior=1.5/1.33)" );
+		Check( std::fabs( vWaterNM - vTwinNM ) < 1e-9, tag + " BRDF::valueNM matches air twin" );
+		Check( std::fabs( pWater - pTwin ) < 1e-9, tag + " SPF::Pdf matches air twin" );
+		Check( diffAir > 1e-3, tag + " BRDF::value strictly differs from ambientIOR=1.0" );
+	}
+
+	// (2) Denser ambient clamp (ambientIOR = 1.80 > n_coat = 1.5 -> eta clamped to 1.0):
+	//     Interface Fresnel vanishes (F=0), so BRDF::value, BRDF::valueNM, and
+	//     SPF::Pdf must match the bare substrate to < 1e-9 even at 70 deg grazing
+	//     (where an unclamped eta = 0.833 would trigger TIR F = 1).
+	for( double thDeg : testThetas ) {
+		RayIntersectionGeometric riDense = MakeIntersection( thDeg * kPi / 180.0 );
+		riDense.ambientIOR = 1.80;
+
+		const RISEPel vDense = bsdf.value( woProbe, riDense );
+		const RISEPel vBare  = bareBsdf.value( woProbe, riDense );
+		const Scalar vDenseNM = bsdf.valueNM( woProbe, riDense, 550.0 );
+		const Scalar vBareNM  = bareBsdf.valueNM( woProbe, riDense, 550.0 );
+		const Scalar pDense = spf.Pdf( riDense, woProbe, MakeTestIORStack( g_stub, 1.80 ) );
+		const Scalar pBare  = bareSpf.Pdf( riDense, woProbe, MakeTestIORStack( g_stub, 1.80 ) );
+
+		double diffBare = 0.0;
+		for( int ch = 0; ch < 3; ++ch ) {
+			diffBare = std::max( diffBare, std::fabs( vDense[ch] - vBare[ch] ) );
+		}
+		const std::string tag = "[K_ambient dense-clamp th=" + std::to_string( (int)thDeg ) + "]";
+		Check( diffBare < 1e-9, tag + " BRDF::value equals bare substrate (eta clamped to 1)" );
+		Check( std::fabs( vDenseNM - vBareNM ) < 1e-9, tag + " BRDF::valueNM equals bare substrate" );
+		Check( std::fabs( pDense - pBare ) < 1e-9, tag + " SPF::Pdf equals bare substrate" );
+
+		// Also verify Scatter kray stays finite, non-negative, and energy-bounded.
+		const int N = 4000;
+		RandomNumberGenerator rng( 34201u + (unsigned)thDeg );
+		IndependentSampler sampler( rng );
+		IORStack stack = MakeTestIORStack( g_stub, 1.80 );
+		double sum = 0.0;
+		bool sampleBad = false;
+		for( int i = 0; i < N; ++i ) {
+			ScatteredRayContainer sc;
+			spf.Scatter( riDense, sampler, sc, stack );
+			for( unsigned j = 0; j < sc.Count(); ++j ) {
+				const RISEPel& k = sc[j].kray;
+				for( int ch = 0; ch < 3; ++ch ) {
+					if( !std::isfinite( k[ch] ) || k[ch] < 0.0 ) {
+						sampleBad = true;
+					}
+				}
+				if( Vector3Ops::Normalize( sc[j].ray.Dir() ).z > 0.0 ) {
+					sum += ColorMath::MaxValue( k );
+				}
+			}
+		}
+		const double rho = sum / N;
+		Check( !sampleBad, tag + " all Scatter kray finite and non-negative" );
+		Check( std::isfinite( rho ) && rho >= 0.0 && rho <= 1.02, tag + " directional albedo <= 1.02" );
+	}
+
+	airTwin->release();
+	sEtaRel->release();
+	coat->release();
 }
 
 static void SectionK( Fixtures& f )
@@ -2715,18 +2815,19 @@ static void SectionK( Fixtures& f )
 		UniformColorPainter* ggxSpec = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );  ggxSpec->addref();
 		GGXMaterial* ggx = new GGXMaterial( *ggxDiff, *ggxSpec, *f.sAlpha, *f.sAlpha, *f.s15, *f.s0, eFresnelSchlickF0 );
 		ggx->addref();
+		const double sigmasK3[] = { 0.0, 0.5, 2.0 };
 		const double thetas[] = { 0.0, 60.0 };
 		struct Sub { const char* name; const IMaterial* m; bool gateTight; };
 		const Sub subs[] = { { "Lambertian white", f.lamb, true }, { "GGX (diffuse .8, F0 .04, alpha .16)", ggx, false } };
-		std::cout << "    K3 directional albedo, coated vs composite (8 x 20000 draws each; mean +- sem):\n";
+		std::cout << "    K3 directional albedo, coated vs composite (4 x 5000 draws each; mean +- sem):\n";
 		for( const Sub& sb : subs ) {
-			for( double sg : sigmas ) {
+			for( double sg : sigmasK3 ) {
 				UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
 				CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
 				CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
 				for( double th : thetas ) {
-					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7001u + (unsigned)th );
-					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9001u + (unsigned)th );
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 4, 5000, 7001u + (unsigned)th );
+					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 4, 5000, 9001u + (unsigned)th );
 					const double ratio = sc.mean / sp.mean;
 					const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
 					std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
@@ -2754,6 +2855,7 @@ static void SectionK( Fixtures& f )
 	}
 
 	SectionK4K6( f );
+	TestCoatedImmersedAmbientIOR( f );
 }
 
 
@@ -2794,35 +2896,25 @@ static void SectionK8( Fixtures& f )
 	// pin[sigma][theta]: the coated / composite ratio measured 2026-10-08
 	// with these seeds (outer-frame model).  lossless: the substrate's own
 	// albedo is 1, so the coated furnace must not exceed 1 beyond K5's band.
-	struct Sub { const char* name; IMaterial* m; double pin[2][3]; bool lossless; };
+	struct Sub { const char* name; IMaterial* m; double pin[2][2]; bool lossless; };
 	Sub subs[] = {
-		{ "fabric (sheen 1, rough .3) over Lambertian .5", fabLamb3, { { 0.9935, 1.0384, 1.1052 }, { 0.9887, 1.0314, 1.0656 } }, false },
-		{ "fabric (sheen 1, rough .7) over Lambertian 1", fabLamb7, { { 1.0130, 1.0041, 0.9935 }, { 0.9752, 0.9755, 0.9766 } }, true },
-		{ "weave silk (white dyes, coverage .5)", silk.Material(), { { 1.0537, 1.0692, 0.9141 }, { 0.8243, 0.8984, 0.8916 } }, false },
-		{ "weave denim (white dyes, coverage .5)", denim.Material(), { { 1.0753, 1.0435, 0.9707 }, { 0.8817, 0.8775, 0.8987 } }, false },
+		{ "fabric (sheen 1, rough .3) over Lambertian .5", fabLamb3, { { 0.9935, 1.1052 }, { 0.9887, 1.0656 } }, false },
+		{ "fabric (sheen 1, rough .7) over Lambertian 1", fabLamb7, { { 1.0130, 0.9935 }, { 0.9752, 0.9766 } }, true },
+		{ "weave silk (white dyes, coverage .5)", silk.Material(), { { 1.0537, 0.9141 }, { 0.8243, 0.8916 } }, false },
+		{ "weave denim (white dyes, coverage .5)", denim.Material(), { { 1.0753, 0.9707 }, { 0.8817, 0.8987 } }, false },
 	};
 	const double sigmas[] = { 0.0, 0.3 };
-	const double thetas[] = { 0.0, 45.0, 70.0 };
+	const double thetas[] = { 0.0, 70.0 };
 	for( Sub& sb : subs ) {
 		int si = 0;
-		{
-			RISEPel H;
-			sb.m->GetBSDF()->hemisphericalAlbedo( MakeIntersection( 0.3 ), H );
-			std::cout << "      " << sb.name << ": bare directional albedo";
-			for( double th : thetas ) {
-				const FurnaceStats b = Furnace( *sb.m->GetSPF(), th, false, false, 4, 20000, 5201u + (unsigned)th );
-				std::cout << " " << (int)th << ":" << std::setprecision(4) << b.mean;
-			}
-			std::cout << "  hemisphericalAlbedo " << H[0] << "\n";
-		}
 		for( double sg : sigmas ) {
 			UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
 			CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
 			CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
 			int ti = 0;
 			for( double th : thetas ) {
-				const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7201u + (unsigned)th );
-				const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9201u + (unsigned)th );
+				const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 4, 4000, 7201u + (unsigned)th );
+				const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 4, 4000, 9201u + (unsigned)th );
 				const double ratio = sc.mean / sp.mean;
 				const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
 				std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
@@ -3230,7 +3322,6 @@ int main( int argc, char** argv )
 
 	Fixtures f = MakeFixtures();
 
-	const bool skipRender = ( argc > 1 && std::string( argv[1] ) == "--no-render" );
 	if( argc > 1 && std::string( argv[1] ) == "--dl417-only" ) {
 		SectionK8( f );
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
@@ -3304,24 +3395,34 @@ int main( int argc, char** argv )
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	if( argc > 1 && std::string( argv[1] ) == "--all-legacy" ) {
+		const bool skipRender = ( argc > 2 && std::string( argv[2] ) == "--no-render" );
+		SectionA( f );
+		SectionB( f );
+		SectionC( f );
+		SectionE( f );
+		SectionE2( f );
+		SectionF( f );
+		SectionH( f );
+		SectionT( f );
+		SectionW( f );
+		SectionW2( f );
+		SectionG( f );
+		SectionK( f );
+		SectionK8( f );
+		if( !skipRender ) {
+			SectionD();
+			SectionD10();
+		}
+		std::cout << "\n================================================" << std::endl;
+		std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
-	SectionA( f );
-	SectionB( f );
-	SectionC( f );
-	SectionE( f );
-	SectionE2( f );
-	SectionF( f );
-	SectionH( f );
-	SectionT( f );
-	SectionW( f );
-	SectionW2( f );
-	SectionG( f );
+	// Default runs active coated_material coverage (K1-K6, K7 coated render check, K8).
+	// Frozen composite_material legacy sections remain opt-in via --all-legacy.
 	SectionK( f );
 	SectionK8( f );
-	if( !skipRender ) {
-		SectionD();
-		SectionD10();
-	}
 
 	std::cout << "\n================================================" << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

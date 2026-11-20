@@ -545,7 +545,11 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc, const bool renderSnipp
 				std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
 				Check( session != nullptr, label + ": loads through the agent surface" );
 				if( session ) {
-					const AgentRenderResult rr = session->Render();
+					AgentRenderParams rp;
+					rp.width   = 48;
+					rp.height  = 48;
+					rp.samples = 4;
+					const AgentRenderResult rr = session->Render( rp );
 					Check( rr.ok, label + ": renders ok (" + rr.message + ")" );
 					const double luma = 0.2126 * rr.meanR + 0.7152 * rr.meanG + 0.0722 * rr.meanB;
 					std::printf( "    %s rendered %dx%d mean RGB (%.4f, %.4f, %.4f) luma %.4f\n",

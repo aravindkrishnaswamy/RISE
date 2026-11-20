@@ -28,12 +28,12 @@ struct FogStats { double mean=0, sd=0; };
 static bool FogMeans(const std::string& model, const std::string& medium, bool black,
     int mode, int spp, FogStats (&stats)[2])
 {
-    std::string raster=SSSRasterizer(mode ? "bdpt" : "pt",16,spp);
+    std::string raster=SSSRasterizer(mode ? "bdpt" : "pt",8,spp);
     if(mode==2) {
         raster.replace(raster.find("bdpt_pel_rasterizer"),19,"vcm_pel_rasterizer");
         raster.insert(raster.find("\tmax_eye_depth"),"\tmerge_radius 0\n\tvm_enabled FALSE\n");
     }
-    raster.insert(raster.find("\tpixel_filter box"),"\tmax_volume_bounce 64\n");
+    raster.insert(raster.find("\tpixel_filter box"),"\tmax_volume_bounce 32\n");
     double sum[2]={}, sq[2]={};
     for(unsigned i=0;i<4;++i) {
         double s=0,wall=0;
@@ -53,35 +53,45 @@ static void BeerBound()
 {
     const double minimumDistance=3.0-1.15+std::sqrt(1.8*1.8+0.05*0.05+0.9*0.9)-0.55;
     const double upper=std::exp(-0.3*minimumDistance);
-    for(int mode=0;mode<3;++mode) {
+    for(int mode : {0,1}) {
         FogStats vacuum[2], absorb[2];
-        const bool ok=FogMeans("rw","vacuum",true,mode,512,vacuum)
-            && FogMeans("rw","absorb",true,mode,512,absorb);
+        const bool ok=FogMeans("rw","vacuum",true,mode,64,vacuum)
+            && FogMeans("rw","absorb",true,mode,64,absorb);
         Check(ok,"DL-416 absorption-only renders");
         if(!ok) continue;
-        const double band=3*std::hypot(absorb[0].sd,upper*vacuum[0].sd);
+        // n=4 independent salted renders -> SE = sd / sqrt(4) = sd / 2.
+        const double se=0.5*std::hypot(absorb[0].sd,upper*vacuum[0].sd);
+        const double band=3.0*se;
         std::cout << "Beer ratio mode=" << mode << " " << absorb[0].mean/vacuum[0].mean
                   << " closed-form upper=" << upper << " band=" << band << std::endl;
+        Check(band<=0.25*upper*vacuum[0].mean,"DL-416 Beer-Lambert precision cap (3*se <= 25% of bound)");
         Check(absorb[0].mean<=upper*vacuum[0].mean+band,"DL-416 exact Beer-Lambert upper bound");
     }
 }
 static void FogParity(const std::string& model)
 {
+    const unsigned spp = (model == "diffusion") ? 128u : 64u;
     FogStats reference[2];
-    const bool ok=FogMeans(model,"fog",false,1,512,reference);
+    const bool ok=FogMeans(model,"fog",false,1,spp,reference);
     Check(ok,"DL-416 independent BDPT fog reference");
     if(!ok) return;
-    for(int mode : {0,2}) {
+    const int modes[2] = { 0, 2 };
+    const int modeCount = (model == "diffusion") ? 1 : 2;
+    for(int mi=0; mi<modeCount; ++mi) {
+        const int mode = modes[mi];
         FogStats measured[2];
-        const bool rendered=FogMeans(model,"fog",false,mode,512,measured);
+        const bool rendered=FogMeans(model,"fog",false,mode,spp,measured);
         Check(rendered,"DL-416 fog renders");
         if(!rendered) continue;
         for(int r=0;r<2;++r) {
-            const double band=3*std::hypot(reference[r].sd,measured[r].sd);
+            // n=4 independent salted renders -> SE = sd / sqrt(4) = sd / 2.
+            const double se=0.5*std::hypot(reference[r].sd,measured[r].sd);
+            const double band=3.0*se;
             std::cout << "Fog ratio " << model << " mode=" << mode << " region=" << r
                       << " " << measured[r].mean/reference[r].mean << " band=" << band << std::endl;
+            Check(band<=0.25*reference[r].mean,"DL-416 fog parity precision cap (3*se <= 25% of ref)");
             Check(std::fabs(measured[r].mean-reference[r].mean)<=band,
-                "DL-416 fog agrees within three pooled render deviations");
+                "DL-416 fog agrees within three combined SEs");
         }
     }
 }

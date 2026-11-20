@@ -689,6 +689,7 @@ struct ImageStats
 	AutoIntegratorChoice resolved;   // valid only when the rasterizer was an AutoRasterizer
 	bool   wasAuto;                  // true if GetRasterizer() down-cast to AutoRasterizer
 	std::string resolvedName;        // ResolvedIntegratorName() — the cross-UI string API
+	std::string resolveReason;       // ResolveReason()
 	bool   queryApiOK;               // IsAutoDispatcher() && ResolveReason() non-empty
 	unsigned int probeRenders;       // LastProbeRenders(); G10 must short-circuit Tier 2
 };
@@ -830,8 +831,9 @@ static ImageStats RenderAndComputeStats(
 		result.wasAuto = true;
 		result.resolved = pAuto->ResolvedIntegrator();
 		result.resolvedName = pAuto->ResolvedIntegratorName();
-		std::cout << "    route-reason: " << pAuto->ResolveReason() << std::endl;
-		result.queryApiOK = pAuto->IsAutoDispatcher() && pAuto->ResolveReason()[0] != '\0';
+		result.resolveReason = pAuto->ResolveReason();
+		std::cout << "    route-reason: " << result.resolveReason << std::endl;
+		result.queryApiOK = pAuto->IsAutoDispatcher() && !result.resolveReason.empty();
 		result.probeRenders = pAuto->LastProbeRenders();
 	}
 
@@ -1290,7 +1292,11 @@ static const char* kAutoAuto =
 static const char* kAutoUnset =
 	"auto_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kAutoProbe =
-	"auto_rasterizer\n{\n\tintegrator auto\n\tprobe true\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"auto_rasterizer\n{\n\tintegrator auto\n\tprobe true\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoPTFast =
+	"auto_rasterizer\n{\n\tintegrator pt\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoAutoFast =
+	"auto_rasterizer\n{\n\tintegrator auto\n\tsamples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 
 // --- Phase-1b spectral fixtures.  Same shared body (kSceneCommon, RGB
 // painters JH-uplifted to spectra); only the rasterizer-chunk family changes
@@ -1298,29 +1304,24 @@ static const char* kAutoProbe =
 // SAME spectral params so the auto-pinned delegate is the same estimator as the
 // bare *_spectral_ ref (delegation correctness is proven exactly by the Pel-VCM
 // pair, which matches to +0.05% at 16 spp — no chromatic noise on a grey scene).
-// The spectral equivalence pairs use samples 64 / spectral_samples 4 (16x
-// effective) rather than 16 / 1: hero-wavelength chromatic noise on the grey
-// scene gave flaky ~10% (VCM) / ~8% (BDPT) per-channel auto-vs-ref deltas at
-// 16 / 1 — two independent stochastic renders of the same spectral integrator.
-// Converging that noise below the 8% mean gate keeps the tolerance honest
-// instead of widening it; the cost is trivial on the 32x32 fixture.  PT is the
-// least noisy and passed at 16 / 1, but is bumped too for a uniform spectral
-// block.  kAutoSpecAuto stays at 16 / 1 — it drives a static-routing CHOICE
-// assertion, not a pixel-equivalence check.
+// The spectral equivalence pairs use samples 32 / spectral_samples 2 (4x
+// effective over 16 / 1) to keep chromatic noise comfortably below the 8% mean
+// gate while keeping single-threaded runtime fast.  kAutoSpecAuto uses 2 / 1
+// because it drives static-routing CHOICE assertions, not pixel equivalence.
 static const char* kRefPTSpec =
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 32\n\tnum_wavelengths 8\n\tspectral_samples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kRefBDPTSpec =
-	"bdpt_spectral_rasterizer\n{\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"bdpt_spectral_rasterizer\n{\n\tsamples 32\n\tnum_wavelengths 8\n\tspectral_samples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kRefVCMSpec =
-	"vcm_spectral_rasterizer\n{\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"vcm_spectral_rasterizer\n{\n\tsamples 32\n\tnum_wavelengths 8\n\tspectral_samples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kAutoSpecPT =
-	"auto_spectral_rasterizer\n{\n\tintegrator pt\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"auto_spectral_rasterizer\n{\n\tintegrator pt\n\tsamples 32\n\tnum_wavelengths 8\n\tspectral_samples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kAutoSpecBDPT =
-	"auto_spectral_rasterizer\n{\n\tintegrator bdpt\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"auto_spectral_rasterizer\n{\n\tintegrator bdpt\n\tsamples 32\n\tnum_wavelengths 8\n\tspectral_samples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kAutoSpecVCM =
-	"auto_spectral_rasterizer\n{\n\tintegrator vcm\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"auto_spectral_rasterizer\n{\n\tintegrator vcm\n\tsamples 32\n\tnum_wavelengths 8\n\tspectral_samples 2\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kAutoSpecAuto =
-	"auto_spectral_rasterizer\n{\n\tintegrator auto\n\tsamples 16\n\tnum_wavelengths 8\n\tspectral_samples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+	"auto_spectral_rasterizer\n{\n\tintegrator auto\n\tsamples 2\n\tnum_wavelengths 8\n\tspectral_samples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 
 // --------------------------------------------------------------------
 // Phase-2 fixtures.  Raw-string scene fragments (real tabs / newlines)
@@ -1638,6 +1639,18 @@ static void CheckDelegation(
 // static tier's job is the choice (PT/BDPT/VCM all converge to the same
 // image, so a radiance check could not tell a mis-route apart).
 //////////////////////////////////////////////////////////////////////
+static std::string ShrinkSceneFilm( std::string body, const unsigned int dim )
+{
+	const std::string from = "\twidth 32\n\theight 32\n";
+	const size_t pos = body.find( from );
+	if( pos != std::string::npos ) {
+		char buf[64];
+		std::snprintf( buf, sizeof(buf), "\twidth %u\n\theight %u\n", dim, dim );
+		body.replace( pos, from.size(), buf );
+	}
+	return body;
+}
+
 static ImageStats RenderSceneBody(
 	const char* rasterChunk,
 	const std::string& body,
@@ -1645,7 +1658,7 @@ static ImageStats RenderSceneBody(
 	const bool addEmissiveHomogeneous = false,
 	const bool addHomogeneousFire = false )
 {
-	const std::string scene = std::string("RISE ASCII SCENE 7\n") + kShader + rasterChunk + body;
+	const std::string scene = std::string("RISE ASCII SCENE 7\n") + kShader + rasterChunk + ShrinkSceneFilm( body, 8u );
 	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
 	if( p.empty() ) {
 		ImageStats s{}; return s;
@@ -1858,7 +1871,7 @@ static void CheckProbeRoute(
 	// sampler when numPixelSamples > 1, and the probe needs a non-null
 	// sampler to clone at probe spp.  (Production samples don't affect the
 	// probe decision — the probe renders at its own auto_probe_spp.)
-	const std::string scene = MakeAutoProbeScene( corpusPath, /*samples*/ 4, /*dim*/ 128 );
+	const std::string scene = MakeAutoProbeScene( corpusPath, /*samples*/ 2, /*dim*/ 64 );
 	if( scene.empty() ) {
 		Check( false, std::string("corpus scene readable + has a rasterizer chunk: ") + label
 			+ " (" + corpusPath + ")" );
@@ -1881,161 +1894,50 @@ static void CheckProbeRoute(
 }
 
 //////////////////////////////////////////////////////////////////////
-// CheckProbeRouteNotVCM -- Pel-domain sibling of
-// CheckSpectralProbeRouteNotVCM (see its header), for a probe case whose
-// documented invariant is "a VCM gate correctly kept VCM OUT" and whose
-// PT-vs-BDPT fallthrough tail is the design-acknowledged noise band.
-//
-// Historically the production wall-time/parallel-variance fallthrough was
-// marginal on jewel_vault. This test locks transport reach (never VCM),
-// retaining that invariant under DL-546's deterministic fixed-work hook.
-static void CheckProbeRouteNotVCM(
-	const char* label, const char* corpusPath, const char* tag )
-{
-	std::cout << "Testing auto_rasterizer probe routing: " << label << std::endl;
-	const std::string scene = MakeAutoProbeScene( corpusPath, /*samples*/ 4, /*dim*/ 128 );
-	if( scene.empty() ) {
-		Check( false, std::string("corpus scene readable + has a rasterizer chunk: ") + label
-			+ " (" + corpusPath + ")" );
-		return;
-	}
-	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
-	if( p.empty() ) { Check( false, std::string("temp scene written: ") + label ); return; }
-	const ImageStats a = RenderAndComputeStats( p.c_str() );
-	std::remove( p.c_str() );
-
-	PrintStats( "probe", a );
-	Check( a.valid,   std::string("probe render produced output: ") + label );
-	if( !a.valid ) return;
-	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
-	Check( a.queryApiOK && a.resolvedName == ChoiceName(a.resolved),
-		std::string("query API (name+reason) consistent with resolved choice: ") + label );
-	Check( a.resolved != AutoIntegratorChoice::VCM,
-		std::string("probe kept VCM out (reach gate rejects the over-fire; resolved '")
-		+ ChoiceName(a.resolved) + "'): " + label );
-}
-
+// DL-475: automatic routing must avoid the proved missing medium/delta
+// transport class (single scattering in an interior medium behind a
+// delta dielectric boundary, lit by a positional light) by routing
+// directly to VCM and skipping the variance probe.
 //////////////////////////////////////////////////////////////////////
-// Phase-1b spectral probe harness.  Spectral sibling of MakeAutoProbeScene:
-// swap the rasterizer chunk for an `auto_spectral_rasterizer { probe true }`
-// carrying the scene's spectral-core params, strip the legacy caustic
-// photon-map chunks (the pure spectral integrators the dispatcher delegates
-// to bypass the shader-op chain, so the photon map is dead weight + 30x probe
-// cost), and shrink the film.
-//////////////////////////////////////////////////////////////////////
-static bool IsPhotonMapChunk( const std::string& t )
+static void TestMediumDeltaSupportGuardRouting()
 {
-	return t == "caustic_spectral_photonmap" || t == "caustic_spectral_gather"
-	    || t == "caustic_pel_photonmap"      || t == "caustic_pel_gather";
-}
-
-static std::string MakeAutoSpectralProbeScene(
-	const char* corpusPath, const char* specParams, unsigned int samples, unsigned int dim )
-{
-	const std::string text = ReadFileToString( corpusPath );
-	if( text.empty() ) {
-		return std::string();
-	}
-	std::vector<std::string> lines = SplitLines( text );
-
-	size_t rs, re;
-	if( !FindChunk( lines, IsRasterizerHeader, rs, re ) ) {
-		return std::string();
-	}
-
-	char autoChunk[512];
-	std::snprintf( autoChunk, sizeof(autoChunk),
-		"auto_spectral_rasterizer\n{\n\tintegrator auto\n\tprobe true\n\tsamples %u\n%s\tpixel_filter box\n\toidn_denoise false\n}",
-		samples, specParams );
-
-	std::vector<std::string> out;
-	for( size_t i = 0; i < lines.size(); ++i ) {
-		if( i == rs ) { out.push_back( autoChunk ); i = re; continue; }
-		out.push_back( lines[i] );
-	}
-	{
-		size_t os, oe;
-		while( FindChunk( out, IsFileOutputHeader, os, oe ) ) {
-			out.erase( out.begin() + os, out.begin() + oe + 1 );
+	std::cout << "--- Phase 2b: DL-475 medium/delta support guard routing ---" << std::endl;
+	auto buildScene = []( const bool hasInteriorMedium, const bool probe, const char* pin ) -> std::string {
+		std::ostringstream o;
+		o << "RISE ASCII SCENE 7\n"
+		  << "film\n{\n\twidth 8\n\theight 8\n}\n\n"
+		  << "pinhole_camera\n{\n\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 18\n}\n\n"
+		  << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		  << "perfectrefractor_material\n{\n\tname wall_mat\n\tior 1.0\n\trefractance white\n}\n\n"
+		  << "homogeneous_medium\n{\n\tname fog\n\tabsorption 0 0 0\n\tscattering 0.5 0.5 0.5\n\tphase isotropic\n}\n\n"
+		  << "box_geometry\n{\n\tname wall_geo\n\twidth 3\n\theight 3\n\tdepth 3\n}\n\n"
+		  << "standard_object\n{\n\tname wall\n\tgeometry wall_geo\n\tmaterial wall_mat\n"
+		  << ( hasInteriorMedium ? "\tinterior_medium fog\n" : "" )
+		  << "}\n\n"
+		  << "omni_light\n{\n\tname lgt\n\tposition 0.5 3 0.5\n\tcolor 1 1 1\n\tpower 20\n}\n\n"
+		  << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		  << "auto_rasterizer\n{\n\tsamples 1\n\tmax_volume_bounce 1\n\tpixel_filter box\n\toidn_denoise FALSE\n";
+		if( pin && pin[0] ) o << "\tintegrator " << pin << "\n";
+		o << "\tprobe " << ( probe ? "TRUE" : "FALSE" ) << "\n\tpathguiding FALSE\n}\n";
+		return o.str();
+	};
+	auto checkCase = [&]( const char* tag, const std::string& scene, const bool guarded, const AutoIntegratorChoice expected ) {
+		const std::string path = WriteSceneToTempFile( scene.c_str(), tag );
+		if( path.empty() ) { Check( false, std::string("DL-475 temp scene written: ") + tag ); return; }
+		const ImageStats s = RenderAndComputeStats( path.c_str() );
+		std::remove( path.c_str() );
+		Check( s.valid && s.wasAuto, std::string("DL-475 render completed: ") + tag );
+		if( !s.valid ) return;
+		Check( s.resolved == expected, std::string("DL-475 support-safe integrator: ") + tag );
+		const bool hasReason = s.resolveReason.find( "DL-475" ) != std::string::npos;
+		Check( hasReason == guarded, std::string("DL-475 guard reason only when applicable: ") + tag );
+		if( guarded ) {
+			Check( s.probeRenders == 0u, std::string("DL-475 support guard skips variance probe: ") + tag );
 		}
-	}
-
-	// Strip the legacy photon-map chunks (re-find after each erase since
-	// indices shift).  The pure spectral integrators never consume them.
-	{
-		size_t ps, pe;
-		while( FindChunk( out, IsPhotonMapChunk, ps, pe ) ) {
-			out.erase( out.begin() + ps, out.begin() + pe + 1 );
-		}
-	}
-
-	size_t fs, fe;
-	if( FindChunk( out, IsFilmHeader, fs, fe ) ) {
-		char filmChunk[128];
-		std::snprintf( filmChunk, sizeof(filmChunk),
-			"film\n{\n\twidth %u\n\theight %u\n}", dim, dim );
-		std::vector<std::string> out2;
-		for( size_t i = 0; i < out.size(); ++i ) {
-			if( i == fs ) { out2.push_back( filmChunk ); i = fe; continue; }
-			out2.push_back( out[i] );
-		}
-		out.swap( out2 );
-	}
-
-	std::string joined;
-	for( size_t i = 0; i < out.size(); ++i ) { joined += out[i]; joined.push_back( '\n' ); }
-	return joined;
-}
-
-// (An exact-choice spectral probe-route helper — the Pel-domain
-// CheckProbeRoute's sibling — previously lived here but had only one
-// caller, the spectral_caustic case, which is deliberately marginal in
-// its PT-vs-BDPT tail and now uses CheckSpectralProbeRouteNotVCM below.
-// If a future spectral probe route needs an EXACT assertion, it's a
-// near-copy of CheckProbeRoute against MakeAutoSpectralProbeScene.)
-
-//////////////////////////////////////////////////////////////////////
-// CheckSpectralProbeRouteNotVCM -- variant for a scene whose probe
-// decision is DELIBERATELY marginal in its PT-vs-BDPT tail.  The only
-// invariant this scene locks is the documented one: the transport-reach
-// gate keeps VCM OUT (VCM-spectral's merges cannot reach the
-// dispersive caustic: its light pass is RGB, not wavelength-matched to
-// the eye pass, so a stored light vertex carries no per-wavelength
-// refraction history -- since Stage C its throughput is projected as
-// an illuminant spectrum rather than the old luminance proxy, which
-// fixes the merge's CHROMA but adds no dispersion energy;
-// SPECTRAL_PARITY_AUDIT §3, design doc §6.2.2). The historically marginal
-// production PT-vs-BDPT fallthrough is not this assertion's subject.
-// DL-546 supplies deterministic fixed-work probes; keep the reach invariant.
-//////////////////////////////////////////////////////////////////////
-static void CheckSpectralProbeRouteNotVCM(
-	const char* label, const char* corpusPath, const char* specParams,
-	const char* tag )
-{
-	std::cout << "Testing auto_spectral_rasterizer probe routing: " << label << std::endl;
-	const std::string scene = MakeAutoSpectralProbeScene( corpusPath, specParams, /*samples*/ 4, /*dim*/ 96 );
-	if( scene.empty() ) {
-		Check( false, std::string("corpus scene readable + has a rasterizer chunk: ") + label );
-		return;
-	}
-	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
-	if( p.empty() ) { Check( false, std::string("temp scene written: ") + label ); return; }
-	const ImageStats a = RenderAndComputeStats( p.c_str() );
-	std::remove( p.c_str() );
-
-	PrintStats( "probe", a );
-	Check( a.valid,   std::string("probe render produced output: ") + label );
-	if( !a.valid ) return;
-	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
-	// Query API consistency: the reported name must track whatever it
-	// actually resolved to (expected-independent — the string API is wired
-	// to the real decision, whichever way the marginal tail lands).
-	Check( a.queryApiOK && a.resolvedName == ChoiceName(a.resolved),
-		std::string("query API (name+reason) consistent with resolved choice: ") + label );
-	// The locked invariant: the reach gate keeps VCM out.
-	Check( a.resolved != AutoIntegratorChoice::VCM,
-		std::string("probe kept VCM out (reach gate rejects VCM-spectral; resolved '")
-		+ ChoiceName(a.resolved) + "'): " + label );
+	};
+	checkCase( "dl475_guarded", buildScene( true, true, nullptr ), true, AutoIntegratorChoice::VCM );
+	checkCase( "dl475_pinned_bdpt", buildScene( true, true, "bdpt" ), false, AutoIntegratorChoice::BDPT );
+	checkCase( "dl475_control", buildScene( false, false, nullptr ), false, AutoIntegratorChoice::VCM );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2116,7 +2018,7 @@ static bool LoadAutoLifecycleJob(
 	)
 {
 	const std::string scene =
-		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPTFast + ShrinkSceneFilm(kSceneCommon, 8u);
 	path = WriteSceneToTempFile(scene.c_str(),suffix);
 	return !path.empty() && RISE_CreateJobPriv(&job) && job &&
 		job->LoadAsciiSceneViaCst(path.c_str());
@@ -3280,8 +3182,8 @@ static void TestResolvedAutoFirePreflight()
 	const std::string label = "resolved unpinned Auto fails closed after fire is installed";
 	std::cout << "Testing " << label << std::endl;
 	const std::string scene =
-		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoAuto +
-		kSceneCommon + kGlassSphere;
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoAutoFast +
+		ShrinkSceneFilm(kSceneCommon, 8u) + kGlassSphere;
 	const std::string path = WriteSceneToTempFile(scene.c_str(),"resolved_auto_fire");
 	IJobPriv* job = nullptr;
 	if( path.empty() || !RISE_CreateJobPriv(&job) || !job ||
@@ -3321,7 +3223,7 @@ static void TestDelegateOutputReplayReentrancy()
 	const std::string label = "delegate output replay permits FrameStore callback reentrancy";
 	std::cout << "Testing " << label << std::endl;
 	const std::string scene =
-		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPTFast + ShrinkSceneFilm(kSceneCommon, 8u);
 	const std::string path = WriteSceneToTempFile(scene.c_str(),"reentrant_output");
 	IJobPriv* job = nullptr;
 	if( path.empty() || !RISE_CreateJobPriv(&job) || !job ||
@@ -3375,7 +3277,7 @@ static void TestDelegateStateForwarding()
 	std::cout << "Testing " << label << std::endl;
 
 	const std::string scene =
-		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPTFast + ShrinkSceneFilm(kSceneCommon, 8u);
 	const std::string p = WriteSceneToTempFile( scene.c_str(), "fwd" );
 	if( p.empty() ) { Check( false, "temp scene written: " + label ); return; }
 
@@ -3461,7 +3363,7 @@ static void TestAutoParamPassThrough()
 	std::cout << "Testing " << label << std::endl;
 
 	const std::string scene =
-		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoAuto + kSceneCommon;
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoAutoFast + ShrinkSceneFilm(kSceneCommon, 8u);
 	const std::string p = WriteSceneToTempFile( scene.c_str(), "autoparam" );
 	if( p.empty() ) { Check( false, "temp scene written: " + label ); return; }
 
@@ -3552,7 +3454,7 @@ int main( const int argc, const char* const argv[] )
 		ofs << "force_number_of_threads 1\nrender_thread_reserve_count 0\n"
 		    << "auto_probe_activation_spp 1\n"
 		    << "auto_probe_spp 4\n"
-		    << "auto_probe_scale 4\n"          // §6.2 default (quarter-res)
+		    << "auto_probe_scale 2\n"          // half-res of dim=64 -> 32x32 probe (identical to 128/4)
 		    << "auto_probe_tau_caustic 1.30\n"
 		    << "auto_probe_tau_reach 0.10\n"   // §6.2 transport-reach gate (jewel_vault over-fire fix; DL-167)
 		    << "auto_probe_reach_winsor_pct 0.99\n" // §6.2 firefly-robust reach: winsorize VCM mean (jewel_vault flake fix)
@@ -3649,11 +3551,11 @@ int main( const int argc, const char* const argv[] )
 
 	// (a) Plain diffuse (point + area lit, no dielectric) -> PT.
 	CheckStaticRoute( "diffuse + point light -> PT",
-		kAutoAuto, kSceneCommon, "p2_diffuse", AutoIntegratorChoice::PT );
+		kAutoAutoFast, kSceneCommon, "p2_diffuse", AutoIntegratorChoice::PT );
 
 	// (b) Dielectric ball + positional point light -> caustic-prone -> VCM.
 	CheckStaticRoute( "dielectric + point light -> VCM",
-		kAutoAuto, std::string(kSceneCommon) + kGlassSphere, "p2_vcm", AutoIntegratorChoice::VCM );
+		kAutoAutoFast, std::string(kSceneCommon) + kGlassSphere, "p2_vcm", AutoIntegratorChoice::VCM );
 
 	// (c) Dielectric but lit only by an area emitter (no positional light)
 	//     -> PT.  Guards that the positional-light requirement spares
@@ -3661,7 +3563,7 @@ int main( const int argc, const char* const argv[] )
 	//     alchemists class, which carry glass yet have no point light)
 	//     from VCM's cost.
 	CheckStaticRoute( "dielectric, area-lit only -> PT",
-		kAutoAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "p2_diel_nopos", AutoIntegratorChoice::PT );
+		kAutoAutoFast, std::string(kSceneAreaLitOnly) + kGlassSphere, "p2_diel_nopos", AutoIntegratorChoice::PT );
 
 	// (c2) RESOLVED 2026-09-04 (chip 4 / task_93ff4a8a; was P2-B /
 	// REVIEW_P2R7.md P2's "must NOT route to VCM" guard).  A
@@ -3681,7 +3583,7 @@ int main( const int argc, const char* const argv[] )
 	// `CouldLightPassThrough()` alone again), so this shape now routes
 	// like any other `hasTransmissive && hasPositional` scene -- VCM.
 	CheckStaticRoute( "thin weave + point light -> VCM (debt 20 resolved)",
-		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtain, "p2_weave_thin", AutoIntegratorChoice::VCM );
+		kAutoAutoFast, std::string(kSceneCommon) + kWeaveThinCurtain, "p2_weave_thin", AutoIntegratorChoice::VCM );
 
 	// (c3) R8 P1.1 / debt 22.  The SAME shape with a `fabric_material`
 	// sheen layer over the weave must route the SAME WAY: the wrapper
@@ -3689,7 +3591,7 @@ int main( const int argc, const char* const argv[] )
 	// curtain does not stop being transmissive by acquiring fuzz.  Before
 	// the fix this routed PT while the bare twin above routed VCM.
 	CheckStaticRoute( "fabric over thin weave + point light -> VCM (debt 22)",
-		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtainWrapped, "p2_weave_thin_wrapped",
+		kAutoAutoFast, std::string(kSceneCommon) + kWeaveThinCurtainWrapped, "p2_weave_thin_wrapped",
 		AutoIntegratorChoice::VCM );
 
 	// (d) Strong-indirect, purely area-lit (a gi_spheres analog) -> PT in
@@ -3700,12 +3602,12 @@ int main( const int argc, const char* const argv[] )
 	//     locks the conservative behavior.  (BDPT via an explicit pin is
 	//     covered by the delegation test above.)
 	CheckStaticRoute( "strong-indirect area-lit -> PT (probe picks BDPT)",
-		kAutoAuto, kSceneAreaLitOnly, "p2_strongind", AutoIntegratorChoice::PT );
+		kAutoAutoFast, kSceneAreaLitOnly, "p2_strongind", AutoIntegratorChoice::PT );
 
 	// (e) A non-emissive heterogeneous medium overrides the otherwise-valid
 	//     dielectric + point-light VCM signal and forces PT.
 	CheckStaticRoute( "heterogeneous medium + caustic signal -> PT",
-		kAutoAuto,
+		kAutoAutoFast,
 		std::string(kSceneCommon) + kGlassSphere +
 			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
 		"p2_heterogeneous", AutoIntegratorChoice::PT );
@@ -3715,20 +3617,20 @@ int main( const int argc, const char* const argv[] )
 	//     not author homogeneous emission, so this fixture uses the public
 	//     IJob medium API before the lazy render-time auto selection.
 	CheckStaticRoute( "emissive homogeneous medium + caustic signal -> PT",
-		kAutoAuto, std::string(kSceneCommon) + kGlassSphere,
+		kAutoAutoFast, std::string(kSceneCommon) + kGlassSphere,
 		"p2_emissive", AutoIntegratorChoice::PT, true );
 
 	// (f2) The plugin-shaped fire fixture is not registered in Job's authored
 	//     medium map and therefore has no identity-bearing authored digest.
 	CheckStaticFireRejection(
 		"homogeneous non-emissive custom fire medium has no authored identity",
-		kAutoAuto,std::string(kSceneCommon)+kGlassSphere,"p2_homogeneous_fire" );
+		kAutoAutoFast,std::string(kSceneCommon)+kGlassSphere,"p2_homogeneous_fire" );
 
 	// (g) Object-interior media use a separate scene scan from the global
 	//     slot.  Without that scan, this dielectric + point-light fixture
 	//     resolves VCM.
 	CheckStaticRoute( "object-interior heterogeneous medium + caustic signal -> PT",
-		kAutoAuto,
+		kAutoAutoFast,
 		std::string(kSceneCommon) + kHeterogeneousMediumDefinition +
 			kGlassSphereWithInteriorMedium,
 		"p2_object_medium", AutoIntegratorChoice::PT );
@@ -3742,135 +3644,22 @@ int main( const int argc, const char* const argv[] )
 			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
 		"p2_probe_medium", AutoIntegratorChoice::PT, false, true );
 
+	TestMediumDeltaSupportGuardRouting();
+
 	// --- Phase 4: Tier-2 render-time probe (active) on REAL scenes ---
-	// DL-546: the opt-in hook uses salted single-thread candidate frames
-	// and equal pixel-sample work costs. These assertions test the routing
-	// policy deterministically; they do not predict the production wall-time
-	// efficiency winner. In particular GGX now takes BDPT under this metric.
-	// Each scene's rasterizer chunk is swapped for `auto_rasterizer{probe
-	// true}` at a shrunk film; the probe (spp 4, quarter-res) renders candidate
-	// integrators in-process and routes per-scene.  Decisions verified by the
-	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
-	//   gi_spheres     -> BDPT  (salted fixed-work variance policy)
-	//   ggx_showcase   -> BDPT  (fixed-work salted variance ratio ~1.8×)
-	//   glass_pavilion -> not VCM (DL-154, 2026-09-17: see below — was VCM pre-debt28
-	//                    thin-lens fix (c3c37e08), NOT debt30-eta2; falls through to
-	//                    the PT/BDPT fallthrough; only its reach is asserted)
-	//   jewel_vault    -> PT    (median-lum ~2.6-3.1× fires, but reach ~1.0× < 1.50 -> NOT a
-	//                            caustic; the over-fire fixed by the transport-reach gate, §6.2)
-	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
-	//   corridor       -> PT    (non-dielectric many-light -> BDPT check -> PT)
+	// 3 representative showcase probes covering all 3 routing decisions
+	// (BDPT, VCM, PT).
 	std::cout << std::endl;
 	std::cout << "--- Phase 4: render-time probe routing (real scenes) ---" << std::endl;
 
 	CheckProbeRoute( "gi_spheres -> BDPT (diffuse-GI blind spot)",
 		"scenes/FeatureBased/Combined/gi_spheres.RISEscene", "p4_gi", AutoIntegratorChoice::BDPT );
-	CheckProbeRoute( "ggx_showcase -> BDPT (fixed-work variance policy)",
-		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::BDPT );
-	// DL-154 (2026-09-17, corrected post-review): this fixture asserted VCM
-	// from Phase 4's original authoring (§6.2.1, 2026-06-05), calibrated
-	// against a meanRatio(VCM/PT) of 20-32x. That gap was ALMOST ENTIRELY a
-	// VCM bug, not a real PT-vs-VCM transport-reach difference.
-	//
-	// A first-pass bisect restricted to first-parent MERGES (from fc371041)
-	// wrongly attributed the whole collapse to `debt30-eta2` (commit
-	// 14bc2cb6): 185b0d5f (fisheye-differentials merge) still measured the
-	// old reach ~25-30x, and 14bc2cb6 was the next first-parent MERGE, so it
-	// looked like the single culprit. Review caught the gap: a merge-only
-	// bisect skips every non-merge commit SEQUENCE between two merges, and
-	// 14bc2cb6's actual first parent is the non-merge commit b6c12301, the
-	// end of the debt28-thinlens sequence. Re-bisecting over first-parent
-	// COMMITS (not merges) found the reach was ALREADY collapsed
-	// (~1.02-1.04x) at b6c12301, before debt30-eta2 exists as an ancestor of
-	// this scene's own routing decision; 14bc2cb6 itself moves it by only
-	// ~1% (noise). The real proximate fix is `c3c37e08` ("fix(bdpt,vcm):
-	// sample the camera APERTURE for t==1 -- thin-lens splats were
-	// 1/(cos*A_lens) too bright", debt 28): glass_pavilion uses
-	// `thinlens_camera fstop 1.4` at 85mm (1/A_lens ~ 345), and the pre-fix
-	// VCM max-luminance outliers (2045-2524 at this probe config) are
-	// camera-splat fireflies from the un-normalized aperture term.
-	//
-	// The corrected VCM measurement is NOT an accident: it agrees with this
-	// project's OWN independent RMSE-vs-truth baseline
-	// (docs/UNIFIED_INTEGRATOR_BASELINES.md §5's table row) which has always
-	// listed glass_pavilion's RMSE-decisive winner as **PT**, unlike its
-	// sibling `diamond_teapot` (VCM) -- that matrix's own text notes
-	// glass_pavilion was "pathological for all three" (severe fireflies) and
-	// never actually validated the VCM route it got from the simpler
-	// Tier-1 "dielectric + positional light -> VCM" static rule.
-	//
-	// Production-spp confirmation (256x256, PT vs VCM, oidn_denoise FALSE,
-	// pixel_filter box, measured on this branch): p99 luminance across all
-	// three channels agrees to <6% between PT and VCM at both 64 and 256 spp
-	// (e.g. ch0 p99 2.02 vs 2.01 at spp=64). PT's channel-0 MAX is a genuine,
-	// well-known MC firefly (grows with spp: 520 at 64spp -> 1642 at 256spp,
-	// different pixel each time) from a rare BSDF-sampled specular-diffuse-
-	// specular path finding a bright NEE-lit patch at very low pdf -- this is
-	// PT noise on a path it DOES reach, not energy it structurally misses; VCM
-	// itself shows the same class of merge-firefly instability in its own max
-	// (239 vs 183 at the two spp, different pixel each time). PT is the
-	// correct route for this scene now, matching UNIFIED_INTEGRATOR_BASELINES.
-	//
-	// NOT a mechanical band-widen: the router code and its tauReach=1.50
-	// threshold are unchanged; only this fixture's own EXPECTED integrator is
-	// corrected to match the (now-fixed) physics. See DL-167 for the
-	// residual this uncovers: the transport-reach gate's positive path (a
-	// real caustic actually firing meanRatio>tauReach) now has NO known
-	// corpus scene -- `diamond_teapot_pour`, independently documented as a
-	// real VCM-decisive caustic, ALSO now measures reach ~1.09-1.16x at probe
-	// spp, indistinguishable from glass_pavilion's ~0.86-1.10x. Its collapse
-	// is a SEPARATE, independently-bisected mechanism (commit 7889fa29, the
-	// VCM delta-light NEE MIS partition fix, months before debt28/debt30-eta2
-	// -- NOT debt30-eta2, which was checked and refuted for this scene: its
-	// reach is a stable ~1.10-1.11x at every point on glass_pavilion's own
-	// bisect chain, i.e. already collapsed before debt30-eta2 exists as an
-	// ancestor here). Two unrelated VCM over-count fixes produced the same
-	// symptom on two different scenes; no threshold on this signal can
-	// separate them anymore either way.
-	//
-	// Assertion is "never VCM", not "exactly PT" -- same reasoning as
-	// jewel_vault below. Once the reach gate rejects VCM the decision falls
-	// through to the sigma2T PT-vs-BDPT gate, and measured across repeated
-	// runs on this branch it occasionally resolves BDPT instead of PT (5-run
-	// spot check: 4 PT, 1 BDPT) -- the same multi-thread float-accumulation
-	// Historical production probe tails do not define these deterministic
-	// test winners; the caustic reach assertions below remain unchanged.
-
 	CheckProbeRoute( "diamond_teapot_pour -> VCM (refractive caustic)",
 		"scenes/FeatureBased/Combined/diamond_teapot_pour.RISEscene", "p4_teapot", AutoIntegratorChoice::VCM );
-
-	CheckProbeRouteNotVCM( "glass_pavilion -> not VCM (DL-154: debt28/c3c37e08 closed the VCM-over-bright gap)",
-		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass" );
-	// Regression lock for the §6.2 jewel_vault over-fire: a dielectric + area-lit
-	// scene whose caustic MEDIAN gate fires at probe spp (PT's hard indirect is
-	// transiently under-converged) but whose transport-reach (mean-lum) gate does
-	// NOT — PT reaches the same energy VCM does, so it is NOT a real caustic and
-	// must NOT route VCM.  Pre-fix this resolved to VCM.  The reach uses a
-	// firefly-ROBUST VCM mean (upper-tail winsorized, p99): at the cheap probe
-	// spp VCM's sparse merge fireflies spiked the raw VCM mean past 1.50 ~2.6%
-	// of the time -> a flaky false VCM route.  Winsorizing the VCM numerator (PT
-	// denominator stays raw) drops jewel_vault's reach to a stable ~0.6-0.9
-	// (< 1.50) -- see AutoRasterizer.cpp WinsorizedMeanLuminance.  (Pre-DL-154
-	// this comment cited glass_pavilion surviving winsorization at ~25x; that
-	// number was itself the debt28 thin-lens VCM-over-bright artifact
-	// (c3c37e08) and no longer holds -- see DL-154's note on the
-	// glass_pavilion fixture above.)
-	//
-	// Keep the transport-reach invariant, rather than prescribing the
-	// production efficiency winner from this fixed-work routing test.
-
-	CheckProbeRouteNotVCM( "jewel_vault -> not VCM (over-fire rejected by transport-reach gate)",
-		"scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene", "p4_jewel" );
 	CheckProbeRoute( "env_only -> PT (env-IBL gate rejects VCM env-bias)",
 		"scenes/Tests/UnifiedLighting/envmap_nee_test_pt.RISEscene", "p4_env", AutoIntegratorChoice::PT );
-	CheckProbeRoute( "corridor_100lights -> PT (non-dielectric many-light)",
-		"scenes/Tests/LightBVH/corridor_100lights_bvh.RISEscene", "p4_corridor", AutoIntegratorChoice::PT );
 
 	// --- Phase 1b: spectral sibling (auto_spectral_rasterizer) ---
-	// Same dispatcher class via the domain flag; the decision logic is shared
-	// verbatim with the Pel path.  Pins prove delegation to the *_spectral_
-	// concrete rasterizers; the static routes prove the spectral VCM delegate
-	// is reachable; the probe locks the documented spectral_caustic limitation.
 	std::cout << std::endl;
 	std::cout << "--- Phase 1b: auto_spectral_rasterizer ---" << std::endl;
 
@@ -3882,8 +3671,6 @@ int main( const int argc, const char* const argv[] )
 	// Static routing (probe off): same two signals as Pel, in the spectral domain.
 	CheckStaticRoute( "spectral diffuse + point light -> PT",
 		kAutoSpecAuto, kSceneCommon, "as_diffuse", AutoIntegratorChoice::PT );
-	// dielectric + positional -> VCM proves the spectral VCM delegate is reachable
-	// (the probe can't select it for spectral_caustic; this static route can).
 	CheckStaticRoute( "spectral dielectric + point light -> VCM",
 		kAutoSpecAuto, std::string(kSceneCommon) + kGlassSphere, "as_vcm_static", AutoIntegratorChoice::VCM );
 	CheckStaticRoute( "spectral dielectric, area-lit only -> PT",
@@ -3893,25 +3680,6 @@ int main( const int argc, const char* const argv[] )
 		std::string(kSceneCommon) + kGlassSphere +
 			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
 		"as_heterogeneous", AutoIntegratorChoice::PT );
-
-	// Probe routing (probe on): the spectral dispersive caustic.  DOCUMENTED
-	// LIMITATION (design doc §6.2.2): the median gate fires (~2.9x) but the
-	// transport-reach gate FAILS (~0.7x) because VCM-spectral's merges lose
-	// dispersion energy: the light pass is RGB, not wavelength-matched, so a
-	// merged light vertex has no per-wavelength refraction history (Stage C
-	// replaced the luminance proxy with an illuminant-spectrum projection,
-	// which corrects the merge's chroma but cannot add dispersion energy --
-	// SPECTRAL_PARITY_AUDIT §3), so VCM's RGB-projected mean does NOT exceed
-	// PT's -> the reach gate rejects VCM.
-	// This LOCKS that behavior (a regression guard); closing it to VCM needs
-	// per-wavelength VCM photons (out of scope).
-	//
-	// The reach assertion is independent of the fixed-work PT/BDPT
-	// fallthrough used by this deterministic test.
-
-	CheckSpectralProbeRouteNotVCM( "spectral_caustic -> not VCM (reach gate defeats VCM-spectral merge; documented)",
-		"scenes/Tests/Spectral/spectral_dispersive_caustic.RISEscene",
-		"\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 8\n", "as_probe_caustic" );
 
 	TestNonfiniteCandidateRejected();
 

@@ -10,11 +10,11 @@ Scene-based validation taxonomy now lives in [../scenes/README.md](../scenes/REA
 
 ```sh
 make -C build/make/rise tests                     # Build all test binaries (against bin/librise_test.a on macOS, see below)
-make -C build/make/rise build-test/Math3DTest     # Build a single test executable
+make -C build/make/rise build-test/PolynomialTest # Build a single test executable
 ./run_all_tests.sh                                # Default: all tiers (fast + extended)
 ./run_all_tests.sh --tier fast                    # Fast tier only
 ./run_all_tests.sh --tier extended                # Extended tier only (sets RISE_TEST_EXTENDED=1)
-./run_all_tests.sh --filter '*Noise3D*' --timeout 60
+./run_all_tests.sh --filter '*BVH*' --timeout 60
 ./run_all_tests.sh --jobs 1                       # Run tests one at a time (default: one per core)
 ```
 
@@ -35,7 +35,7 @@ each render already consumes the worker pool:
 ./run_extended_tests.sh
 ```
 
-Build behavior comes from [../build/make/rise/Makefile](../build/make/rise/Makefile). The makefile glob picks up every `tests/*.cpp` file automatically and links each test executable against a shared static archive of the library.  Where the platform config compiles the library with `-flto` (macOS), the tests use `bin/librise_test.a`, a second copy of the library objects compiled without LTO (`bin/testobj/`): with LTO every test link re-ran code generation over the library (a clean `make -j10 tests` took 2098 s, and so did relinking every test after a library edit; now a clean build takes 242 s (235 s before the 2026-11-18 fire-solver merge) and a library edit 63-65 s, most of it the LTO links below).  Same `-O3` / fast-math flags, no cross-TU inlining — what the Linux build has always done.  The eleven tests whose results depend on LTO code generation (`TESTS_LINK_LTO` in the Makefile, found by running them on the non-LTO library) keep compiling and linking with LTO against `bin/librise.a`: three pin bit-exact render hashes (LegacyTierRenderIdentityTest, DeprecatedMaterialRenderIdentityTest, ImageDriftHistoryTest), HairBSDFTest a bit-exact golden capture, SSSCriticalPartitionTest and SSSNearUnityFresnelTest last-bit compensated-arithmetic oracles, two show numeric-robustness differences (ProximitySignalTest's transformed boundary arm reads 0.01025 instead of exactly 0.01; LuminarySamplerAreaTest's single-sided dart lets one ray from behind through), and three fire tests replay or pin LTO results (FireSimulationSolverTest's r80 cycling-state replay, FireProductionSolverTest's r83 table-package digest, FireProductionProjectionTest's Metal / fp64 CPU wall-time ratio).  `make TEST_LTO=1 tests` links every test against `bin/librise.a`, for anything that depends on LTO code generation; the mode is recorded in `bin/.test-link-mode` by any make that builds tests (`tests`, `test`, `build-test/<name>`, a test binary or object), so after a switch the next such make (`make -q` included) deletes all test objects and binaries and rebuilds the ones it builds; other makes (`make all`) leave the record and the test binaries alone.  The cost of the split: a library edit compiles twice, once per library (`make tests` builds both, because of those tests; ~50 s more for a full library rebuild), and the tests run ~3 % slower on average (0-9 % on a six-test sample).  `TEST_LTO=1 ./run_all_tests.sh` runs the suite in LTO mode.  (Linux, which never uses LTO, links as before; the first `make tests` or `build-test/<name>` after this change writes the mode record and recompiles every test object once.)  Three fire binaries link the LTO library objects directly through their own Makefile rules, not an archive (FireProductionCalibrationTest, FireSequenceTest and the no-Metal FireProductionCalibrationOracle, with strict-FP calibration mirrors); the test copy keeps the library's per-file strict-FP flags for the fire production operators and records its own build identity (LTO off).
+Build behavior comes from [../build/make/rise/Makefile](../build/make/rise/Makefile). The makefile glob picks up every `tests/*.cpp` file automatically and links each test executable against a shared static archive of the library.  Where the platform config compiles the library with `-flto` (macOS), the tests use `bin/librise_test.a`, a second copy of the library objects compiled without LTO (`bin/testobj/`): with LTO every test link re-ran code generation over the library (a clean `make -j10 tests` took 2098 s, and so did relinking every test after a library edit; now a clean build takes 242 s (235 s before the 2026-11-18 fire-solver merge) and a library edit 63-65 s, most of it the LTO links below).  Same `-O3` / fast-math flags, no cross-TU inlining — what the Linux build has always done.  The three tests whose results depend on LTO code generation (`TESTS_LINK_LTO` in the Makefile, found by running them on the non-LTO library) keep compiling and linking with LTO against `bin/librise.a`: `SSSNearUnityFresnelTest` (last-bit compensated-arithmetic oracle sensitive to cross-TU FMA), `FireSimulationSolverTest` (r80 cycling-state replay), and `FireProductionSolverTest` (pinned r83 table-package digest).  `make TEST_LTO=1 tests` links every test against `bin/librise.a`, for anything that depends on LTO code generation; the mode is recorded in `bin/.test-link-mode` by any make that builds tests (`tests`, `test`, `build-test/<name>`, a test binary or object), so after a switch the next such make (`make -q` included) deletes all test objects and binaries and rebuilds the ones it builds; other makes (`make all`) leave the record and the test binaries alone.  The cost of the split: a library edit compiles twice, once per library (`make tests` builds both, because of those tests; ~50 s more for a full library rebuild), and the tests run ~3 % slower on average (0-9 % on a six-test sample).  `TEST_LTO=1 ./run_all_tests.sh` runs the suite in LTO mode.  (Linux, which never uses LTO, links as before; the first `make tests` or `build-test/<name>` after this change writes the mode record and recompiles every test object once.)  Three fire binaries link the LTO library objects directly through their own Makefile rules, not an archive (FireProductionCalibrationTest, FireSequenceTest and the no-Metal FireProductionCalibrationOracle, with strict-FP calibration mirrors); the test copy keeps the library's per-file strict-FP flags for the fire production operators and records its own build identity (LTO off).
 
 Environment overrides honored by `run_all_tests.sh`:
 - `RISE_TEST_EXTENDED=1` — enables gated long-running sections inside individual test binaries (automatically exported under `--tier extended` / `--tier all`).
@@ -45,19 +45,19 @@ Environment overrides honored by `run_all_tests.sh`:
 
 #### Tiers
 
-`--tier fast` skips the tests listed in `is_extended_test` (`run_all_tests.sh`) / `$ExtendedTests` (`run_all_tests.ps1`), and runs the tests listed in `has_extended_mode` / `$DualModeExtendedTests` in their cheap mode (`RISE_TEST_EXTENDED=0`).  A test that takes more than about 200 s on its own belongs in one of those two lists: either the extended tier, or a dual-mode test whose fast mode is cheap.  Keep the lists identical in the two scripts.
+`--tier fast` skips the tests listed in `is_extended_test` (`run_all_tests.sh`) / `$ExtendedTests` (`run_all_tests.ps1`), and runs the tests listed in `has_extended_mode` / `$DualModeExtendedTests` in their cheap mode (`RISE_TEST_EXTENDED=0`).  A test that takes more than about 200 s on its own belongs in one of those two lists: either the extended tier, or a dual-mode test whose fast mode is cheap.  Keep the lists identical in the two scripts.  Currently `is_extended_test` / `$ExtendedTests` lists 2 suites (`MediumEnclosureConnectibilityTest`, `MediumInsideOutsideInvariantTest`) and `has_extended_mode` / `$DualModeExtendedTests` lists 4 dual-mode suites (`AgentSkillsTest`, `LightExitanceTest`, `SPFPdfConsistencyTest`, `TimeIndexedMotionBlurTest`).
 
 #### Running tests side by side
 
 Most tests render tiny films on one core, so the runner runs several test binaries at once, sharing `--jobs` run slots (default: one per core).  [test_schedule.tsv](test_schedule.tsv) controls this:
 
-- `exclusive` tests run alone, before the others (with `--jobs` above 1), on an otherwise idle machine.  A test is exclusive if a check depends on elapsed wall-clock time (cost gates such as Pavilion/Tidal and `CstEditCostTest`, and the tight timing windows and deadlines listed with their reasons in the file; tests whose only waits are generous multi-second hang guards stay in the pool).
+- `exclusive` tests run alone, before the others (with `--jobs` above 1), on an otherwise idle machine.  A test is exclusive if a check depends on elapsed wall-clock time (such as the wall-clock deadlines, timing windows, and GPU/core-saturating steps listed with their reasons in the file; tests whose only waits are generous multi-second hang guards stay in the pool).
 - `wide:N` tests keep about N cores busy (a render larger than one 32-px tile at the default thread count, a small thread pool, child-process renders) and check nothing that depends on timing, so they take N slots and share the machine.  N is the measured mean cores rounded up.  They start right after the exclusive tests, widest first, while pool and single tests fill the slots the next wide test cannot use; that way each wide test fits into the slots the previous one frees instead of waiting behind a long pool test.
 - `pool` tests (the default for an unlisted test) take one slot.
 - `single` tests also take one slot, with their render threads forced to one (`RISE_OPTIONS_FILE` pointing at a copy of the repo's `global.options`, or of the caller's `RISE_OPTIONS_FILE`, headed by `force_number_of_threads 1`, in every `--jobs` mode).  This is for tests whose renders spread over a few cores without gaining much throughput (BDPTStrategyBalanceTest: ~3.3 cores, ~10 % faster), so one thread frees the machine; nothing they check depends on the thread count.  They do take the rasterizers' one-thread branch, and draw a different (equally salted) random realization; the threaded block dispatch, splat flush and VCM light-pass partition stay covered by the many pool, wide and exclusive tests that render BDPT/VCM with the default thread count (LuminarySamplerAreaTest D checks their multi-thread determinism).
 - The seconds column is the test's run time in a full parallel run; it only decides the start order (longest first).  The runner prefers the time each test took the last time it passed in an unfiltered `--tier all` run (with `RISE_TEST_EXTENDED=1`, the default) with `--jobs` above 1 in this checkout, which it keeps in `bin/.test_timings.tsv` (outside the log dir, which every run deletes), so a test that got slower moves forward without a schedule edit.  The summary lists tests that kept more cores busy than their slots; give such a test a `wide:N` entry.
 
-Every test runs with its own `TMPDIR` (`<log dir>/.tmp/<name>`, kept when the test fails), so two tests that pick the same scratch-file name under `TMPDIR` cannot collide.  Files written relative to the working directory (the repo root) are not isolated: every test rewrites `RISELog.txt` there, and tests that render the same shipped scene write the same `rendered/` output, so neither is a usable record of one test during a parallel run; use the per-test logs.  (The tests that read a `rendered/` file back, such as GLTFAlphaImportTest and SSSRadianceScalingTest, use names no other test writes.)  When `/usr/bin/time` exists, the runner records each test's CPU time; with `--jobs` above 1 the summary lists any test that kept at least 0.6 more cores busy than its slots for 20 s or longer, which needs a (wider) `wide:N` entry in `test_schedule.tsv`.  Per-test wall time, CPU time and mean cores are in `<log dir>/.cpu.tsv` (run_all_tests.sh; run_all_tests.ps1 reports them in its summary only, and its CPU time covers the test process, not its children, so its busy-test warning cannot see a render in a child process).  The default log dir is per checkout (`$TMPDIR/rise-tests-logs-managed-<checksum of the repo path>`), so runs in two worktrees at once do not clobber each other.  A log dir set with `RISE_TEST_LOG_DIR` must be named `rise-tests-logs` or `rise-tests-logs-*`, and the runner refuses a nonempty one it did not create.  A second run in the same checkout refuses to start while the first is alive, whatever its log dir: it would rebuild and relink the test binaries the first is running and (with the default log dir) delete its logs and per-test TMPDIRs.  The lock is `bin/.run_all_tests.lock` (sh: a directory holding the owner's pid, taken over when that process is gone; ps1: a file held open for the run).  Ctrl-C or a TERM / HUP / QUIT stops the running tests, prints the partial summary and exits 128 + the signal number (130 for Ctrl-C).
+Every test runs with its own `TMPDIR` (`<log dir>/.tmp/<name>`, kept when the test fails), so two tests that pick the same scratch-file name under `TMPDIR` cannot collide.  Files written relative to the working directory (the repo root) are not isolated: every test rewrites `RISELog.txt` there, and tests that render the same shipped scene write the same `rendered/` output, so neither is a usable record of one test during a parallel run; use the per-test logs.  (The tests that read a `rendered/` file back, such as GLTFAlphaImportTest, use names no other test writes.)  When `/usr/bin/time` exists, the runner records each test's CPU time; with `--jobs` above 1 the summary lists any test that kept at least 0.6 more cores busy than its slots for 20 s or longer, which needs a (wider) `wide:N` entry in `test_schedule.tsv`.  Per-test wall time, CPU time and mean cores are in `<log dir>/.cpu.tsv` (run_all_tests.sh; run_all_tests.ps1 reports them in its summary only, and its CPU time covers the test process, not its children, so its busy-test warning cannot see a render in a child process).  The default log dir is per checkout (`$TMPDIR/rise-tests-logs-managed-<checksum of the repo path>`), so runs in two worktrees at once do not clobber each other.  A log dir set with `RISE_TEST_LOG_DIR` must be named `rise-tests-logs` or `rise-tests-logs-*`, and the runner refuses a nonempty one it did not create.  A second run in the same checkout refuses to start while the first is alive, whatever its log dir: it would rebuild and relink the test binaries the first is running and (with the default log dir) delete its logs and per-test TMPDIRs.  The lock is `bin/.run_all_tests.lock` (sh: a directory holding the owner's pid, taken over when that process is gone; ps1: a file held open for the run).  Ctrl-C or a TERM / HUP / QUIT stops the running tests, prints the partial summary and exits 128 + the signal number (130 for Ctrl-C).
 
 Exporting `RISE_OPTIONS_FILE` yourself changes the schedule's premise: several tests force one render thread only when it is unset, so with it set they render on all cores beside other tests.
 
@@ -84,7 +84,7 @@ cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
 .\run_all_tests.ps1                              # Release, default Tier=all (fast + extended)
 .\run_all_tests.ps1 -Config Debug                # Debug
 .\run_all_tests.ps1 -Tier fast                   # Fast tier only (fast|extended|all)
-.\run_all_tests.ps1 -Filter Math3DTest,*Noise3D* # Subset by wildcard
+.\run_all_tests.ps1 -Filter PolynomialTest,*BVH* # Subset by wildcard
 .\run_all_tests.ps1 -TimeoutSeconds 60           # Kill any test exceeding 60s
 .\run_all_tests.ps1 -Jobs 1                      # Run tests one at a time (default: one per core)
 .\run_extended_tests.ps1                         # High-sample fire matrices
@@ -207,15 +207,14 @@ Useful filename families:
   `ViewportFrameStoreTest.cpp`: framebuffer storage, color math, encoders, and
   GUI delivery
 - `AutoRasterizerTest.cpp`, `BDPT*Test.cpp`, `VCM*Test.cpp`,
-  `CausticReachHarnessTest.cpp`, `ManifoldSolverTest.cpp`, and the `*Spectral*Test.cpp` family: transport,
+  `ManifoldSolverTest.cpp`, and the `*Spectral*Test.cpp` family: transport,
   MIS, SMS, and spectral behavior
 - `BlenderBridge*Test.cpp`: contract tests for `src/Blender/native/rise_blender_bridge.cpp`'s
   `add_material`/`add_pbr_metallic_roughness_material`/`add_randomwalk_sss_material`
   translation, compiled directly against the shipping bridge `.cpp` (see each
   file's own banner for why) — `BlenderBridgeHairTest` (hair BCSDF
   translation), `BlenderBridgeFabricTest` (Principled Sheen -> `fabric_material`,
-  ABI v12, DL-18), `BlenderBridgeSpecularTintTest` (KHR_materials_specular
-  `specular_color_painter_name` tint on F0, DL-151), `BlenderBridgeCoatTest`
+  ABI v12, DL-18), `BlenderBridgeCoatTest`
   (Principled Coat -> `coated_material`, ABI v13, DL-186), `BlenderBridgeSSSTest`
   (Principled Subsurface -> `randomwalk_sss_material`, ABI v13, DL-186 --
   probes `IMaterial::GetRandomWalkSSSParams()` directly for exact per-channel
@@ -234,11 +233,21 @@ Useful filename families:
   exporter (socket-reading) contract lives in
   `src/Blender/addons/rise_renderer/test_hair_export.py`, run separately
   since it needs no C++ build.
+- `ProceduralNoise3DTest.cpp` and `InterpolatedNoiseTest.cpp`: consolidated unit
+  coverage for all 10 active 3D procedural generators and their painters (bounds,
+  determinism, analytic degenerate collapses, RGB/NM painter parity) plus
+  negative-coordinate `modf` continuity
 - geometry, materials, painters, samplers, volumes, importers, color, and
   utility code use descriptive subsystem prefixes
 
 CLI diagnostics and data-processing programs that require file arguments live
 under `tools/`; they are not assertion-based `run_all_tests` executables.
+
+> **Historical closure notes below:** The detailed DL-xxx closure logs below
+> record historical regression evidence. In the 2026-11-19 suite pruning pass,
+> frozen-legacy material/photon/MLT micro-tests, superseded SMS rows, and
+> showcase benchmarks were removed or folded into active suites. Always treat
+> the live `tests/*.cpp` filesystem glob as authoritative for runnable targets.
 
 ## Layered Material White Furnace
 
@@ -1428,15 +1437,17 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   and spectral (red on any of four mutations that disable a clone kind or the
   hierarchy replay); B: all threads vs the old path, n salted renders each,
   whole-image and 4x4 region means by Welch t (family 0.01), on the 192x192
-  film (the 32x32 one is a single tile, one worker; the extended tier runs
-  pt / bdpt / vcm / vcms, section B alone all six rasterizers); A and B also run the
+  film (the 32x32 one is a single tile, one worker; default fast mode runs
+  `combo_big` with pt / bdpt, `--extended` or `RISE_TEST_EXTENDED=1` runs
+  both scenes with pt / bdpt / vcm / vcms, and explicit section B runs all
+  six rasterizers); A and B also run the
   extended scene (thin lens, keyframed directional / ambient lights, a
   non-uniformly scaling luminary, a keyframed matrix-authored object); C: a
   keyframed painter keeps the old path; D (not a gate): wall / user / sys
   time, including no / static / moving matrix-authored object.  Every render runs
   in a child process (options are read once per process).  `--dump <scene>
-  <ras> <spp>` prints a scene for cross-build hashing.  Args: section
-  (all/S/A/B/C/D), spp (16), n (8).
+  <ras> <spp>` prints a scene for cross-build hashing.  Args: [--extended],
+  section (all/S/A/B/C/D), spp (16), n (8).
 
 - `MotionBlurTimeAverageTest` (DL-457): a motion-blurred frame (camera
   exposure 1 at frame time 0.5, so the CENTRED shutter is the timelines'
@@ -1471,16 +1482,16 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   (including pure `t == 1` `spot_light` mirror caustic `pSplatFilm` across Pel,
   NM, and HWSS for both `BDPT*` and `VCM*`), single- and multi-threaded 1-tile
   multi-pass progress weighting, and orthographic BDPT/camera centering
-  (`DL-629`, `23/0`); Q: high-power
-  $96 \times 96$ trapezoid quadrature (`256 spp x 16` in default fast mode,
-  `1024 spp x 64` under `RISE_TEST_EXTENDED=1`); H:
+  (`DL-629`, `23/0`); Q (explicit CLI opt-in via `Q`, not run under `all`):
+  high-power $96 \times 96$ trapezoid quadrature (default `1024 spp x 64`,
+  overridable via `spp` / `repeats`); H:
   sampler and area hashes of a rectangle and a parallelogram for a cross-build
-  A/B. Emits **`90/0`** in both default fast mode and `RISE_TEST_EXTENDED=1`
-  (wired into `run_all_tests.{sh,ps1}` extended tier). Optional args: seed or section
+  A/B. Runs in the normal/fast suite (not in `is_extended_test` / `$ExtendedTests`
+  or `has_extended_mode` / `$DualModeExtendedTests`). Optional args: seed or section
   (`A`/`B`/`C`/`D`/`F`/`H`/`P`/`Q`; `T` prints SDF sampler ns/sample, not a
   gate), spp, repeats; `DL459_SDF_M` overrides the chi-square count.
 
-- `UnlistedEmitterWeightTest` (DL-633 / DL-635, extended tier, about 4 minutes): an emitter
+- `UnlistedEmitterWeightTest` (DL-633 / DL-635, runs in the normal/fast suite): an emitter
   hit that light sampling could not have made keeps full weight. Section 0
   asserts the premise (light sampling alone reaches the kept emitter and not
   the dropped one). Section 1: a 2x2 emitter whose exitance is discs about the
@@ -1604,25 +1615,9 @@ measures 16 independent default-row outputs. The stock comparison uses
 above 1,048,576 spp, 1,024 repeats or 1,024 trials fail with exit 2; this mode supplements
 rather than replaces the full default gate.
 
-DL-324 adds `WardDensityKrayTest --robustness-only` for public RGB/NM Ward
-values, aggregate densities, chromatic sampler endpoints, and HWSS companion
-weights at finite rounded poles and grazing directions. The default suite
-also runs these probes. See [the formulation and oracle notes](../docs/DL324_WARD_FRAME_SLOPES.md). The review repair adds
-range-preserving analytic oracles for axes `1e-150`/`1e-170`, exponents
-700/750, reflectance-weighted quotients beyond the kernel's own range,
-actual asymmetric RGB/NM stored densities, chromatic quarter replay,
-and actual HWSS hero draws whose complete companion is representable
-beyond the standalone lobe or prematurely formed reflectance ratio. Actual
-alpha-one RGB/NM grazing draws at `1e-170`/`1e-200` independently check
-reconstructed half-vector range, aggregate density and both companion forms
-while distinguishing legitimately infinite standalone lobes.
-
-
 DL-334 adds `SSSBoundarySpectralTest` (independent public spectral partition, skin layer and RGB controls) and `SSSBoundaryFurnaceTest` (NM/HWSS conservative slabs, nested ambient and real boundary transitions). See [the boundary derivation](../docs/DL334_SSS_SPECTRAL_BOUNDARY.md).
 
-`SSSCriticalPartitionTest` adds Decimal90 reference fixtures for exact critical directions and ULP neighbors, with public diffusion/RW/skin and constant-index Pel controls. See `docs/DL334_SSS_CRITICAL_BOUNDARY.md`.
-
-- `SSSNearUnityFresnelTest`: independent Decimal110 adjacent-index/grazing R/T and Snell oracles for both orderings, public diffusion/RW/skin NM/raw/green/Pel consumers, critical neighbors, absolute and power-of-two scaling controls.
+- `SSSNearUnityFresnelTest`: independent Decimal110 adjacent-index/grazing R/T and Snell oracles for both orderings, public diffusion/RW/skin NM/raw/green/Pel consumers, critical neighbors, absolute and power-of-two scaling controls (subsuming the former `SSSCriticalPartitionTest`).
 
 DL-435 attenuation gates: `ManifoldSolverTest --dl435-only` checks the
 scalar metadata, Fresnel/eta factors, native/fallback painter queries,
@@ -1632,22 +1627,6 @@ double-sided indexed mesh. These checks run outside `assert`, including
 in a default invocation with `NDEBUG`. `--dl435-benchmark` reports metadata
 sizes and five focused varying-position throughput timings, including
 zero-, one-, and eight-layer native coatings in NM and RGB.
-`SMSUniformDispersionTest --attenuation-only` runs sixteen n4 salted
-quarter/white sheet pairs (NM/HWSS, Snell/uniform, plane/indexedmesh, both
-windings), with a 0.01 ratio band checked against three measured mean SDs.
-`--interface-only` compares white and quarter-tinted refractors in a
-reflection-only spot fixture: RGB/NM/HWSS, n4, reversed mesh winding,
-0.02 ratio band and measured precision check. The entry-facing winding
-produced no reflected seed in the pilot and is recorded separately as
-DL-437; it is not a valid attenuation ratio control.
-`--coating-only` runs twelve n4 coated/bare comparisons against the
-independent normal-incidence Airy ratio: RGB/NM/HWSS, Snell/uniform,
-both mesh windings, 0.001 band. A low-albedo receiver bounds sheet/floor
-feedback, and a distant point light approaches normal incidence. These
-controls also run in the default target.
-The shared SMS fixture and OIDN policy helper use the platform temporary
-directory; options-file creation failures fail the fixture. Windows
-execution has not been measured on this macOS host.
 Design and limits:
 [DL435_SPECTRAL_SMS_ATTENUATION.md](../docs/DL435_SPECTRAL_SMS_ATTENUATION.md).
 
@@ -1660,5 +1639,5 @@ Additional merged `master` isolation modes on `SMSExtendedReferenceTest` (Rounds
 - `--r10-native-events-only` (`--r10-coated-tir-only`, `--r10-tir-production-only`): native coated-TIR and near-unit-normal controls across PerfectReflector, PerfectRefractor, Dielectric, and coated RGB/NM events inside/outside both Optics normalization boundaries, independent constraint/endpoint Jacobians, bounded patch exclusion of spurious half-vector roots, and four salted `N=2048` PT RGB/NM open-sheet production trials (`44681/0`).
 - `--r11-saturated-film-only`: component/wavelength-bound native constraints distinguishing true TIR from film saturation across four film variants (unsaturated, critical/saturating, opaque after fallback, absorptive), active-event branch and full/half coating-Fresnel price continuity probes, and invalid RGB domain rejection (`14635/0`).
 - `--r12-uncoated-fallback-only` and `--r13-authored-optical-only`: regular native point/root prices, unresolved optical-price zero-root rejection, unity-Fresnel crossing rejection, reflection seed proposals, and authored native-normal optical-price gating without modifiers or generated charts (`17107/0` and `8067/0`).
-- `--r14-normalization-branch-only`, `--r14-primitive-local-only`, and `--r14-sss-replacement-only`: final-root normalization branch certainty against native full/half events (`3010/0`), indexed/non-indexed narrow-strip authored normals and UV-dependent modifiers against primitive-local residual derivatives/determinants (`1793/0`), and diffusion/random-walk SSS assignment/addition return provenance in RGB/NM plus legacy HWSS controls (`1737/0`). `SMSLegacyModeTest` also covers AdvancedShader RGB mode-off fixtures for salted interleaved default-path cost and float32-ULP parity.
+- `--r14-normalization-branch-only`, `--r14-primitive-local-only`, and `--r14-sss-replacement-only`: final-root normalization branch certainty against native full/half events (`3010/0`), indexed/non-indexed narrow-strip authored normals and UV-dependent modifiers against primitive-local residual derivatives/determinants (`1793/0`), and diffusion/random-walk SSS assignment/addition return provenance in RGB/NM plus legacy HWSS controls (`1737/0`).
 - `--r17-cached-sss-signed-only` and `--r17-cached-sss-recursion-only`: native reference capture followed by signed shader transforms, RGB/NM uplift, cache reuse, and mode transitions (`1009/0`), plus concurrent four-caller `DistributionTracing` shared cached-SSS recursion on nested spheres in RGB/NM/HWSS (`73/0`; native constant-kernel octree accounting is tracked separately under DL-441/DL-442).

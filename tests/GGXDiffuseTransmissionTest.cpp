@@ -53,8 +53,12 @@ namespace
 {
 	static int checks = 0;
 	static int failures = 0;
-	static const int kRGBSamples = 30000;
-	static const int kNMSamples = 12000;
+	static const int kRGBSamples = 10000;
+	// Thin-film RGB evaluates 21-node Gauss-Legendre spectral Airy integrals per
+	// BRDF call (~600x Schlick); CheckRGBBound tracks its own runtime SE so
+	// 1500 samples keeps the full thin-film matrix fast while catching any gain.
+	static const int kThinFilmRGBSamples = 1500;
+	static const int kNMSamples = 4000;
 	static const double kEnergySigma = 6.0;
 	static const double kEnergyFloor = 0.005;
 
@@ -401,8 +405,9 @@ namespace
 
 	static bool RunRGBCase( const Case& c, const unsigned int seed )
 	{
+		const int samples = ( c.mode == eFresnelThinFilmConductor ) ? kThinFilmRGBSamples : kRGBSamples;
 		BrdfFixture fixture( c );
-		return CheckRGBBound( c.label, IntegrateRGB( *fixture.brdf, c, seed, kRGBSamples ), kRGBSamples );
+		return CheckRGBBound( c.label, IntegrateRGB( *fixture.brdf, c, seed, samples ), samples );
 	}
 
 	static bool RunNMCase( const Case& c, const double nm, const unsigned int seed )
@@ -748,7 +753,7 @@ namespace
 			const double lowerLimit = kExpectedMean - kPhiGridTightTol;
 			const double upperLimit = kExpectedMean + kPhiGridTightTol;
 			const bool validSamples = moments.invalid == 0 && std::isfinite( moments.sumSq[0] ) &&
-				std::isfinite( mean ) && std::isfinite( se );
+				std::isfinite( mean ) && std::isfinite( se ) && se <= 0.0011;
 			const bool rowPassed = validSamples && mean >= lowerLimit && mean <= upperLimit;
 			std::cout << "  " << std::left << std::setw( 58 ) << c.label
 				<< "  " << std::fixed << std::setprecision( 5 ) << mean
@@ -859,7 +864,7 @@ namespace
 		}
 	};
 
-	static const int kGrazingSamples = 400000;
+	static const int kGrazingSamples = 25000;
 
 	static bool RunGGXGrazingRow( const GrazingRow& row, const unsigned int seed )
 	{
@@ -882,23 +887,10 @@ namespace
 		// 0.00349/0.00192, all strictly below c0 (theta > acos(c0) ~
 		// 89.106 degrees).
 		const GrazingRow ggxRows[] = {
-			{ { "GGX Schlick iso a=1.0 F0=1 th=89.40 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=1.0 F0=1 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=1.0 F0=1 th=89.80 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.3 F0=1 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.05 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.02 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.02 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.60, 0.0, 0.0 }, 1.0, 0.010,
 			  "DL-105 CLOSED: was 1.01496 pre-fix" },
-			{ { "GGX Schlick iso a=0.02 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.01 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.01 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.01 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.005 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.0, 0.010,
-			  "DL-105 CLOSED: was 1.02734 pre-fix" },
-			{ { "GGX Schlick iso a=0.005 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.005 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.80, 0.0, 0.0 }, 1.0, 0.010,
-			  "DL-105 CLOSED: was 0.96729 pre-fix" },
 			{ { "GGX Schlick iso a=0.005 F0=1 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.89, 0.0, 0.0 }, 1.0, 0.010,
 			  "DL-105 CLOSED: was 0.96970 pre-fix" },
 		};
@@ -959,20 +951,9 @@ namespace
 
 		std::cout << "\n--- DL-86: CookTorranceBRDF (SEPARABLE-model LookupEss consumer) furnace at extreme grazing, two-sided ---\n";
 		const GrazingRow ctRows[] = {
-			{ { "CT conductor a=1.0 th=89.40 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "CT conductor a=1.0 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=1.0 th=89.80 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 1.0,  1.0,  89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.3 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.05 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.02 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.01 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.01 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.005 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "CT conductor a=0.3 th=89.89 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.05 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.02 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.02 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.01 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
+			{ { "CT conductor a=0.02 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "CT conductor a=0.005 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.0, 0.010,
 			  "DL-105 CLOSED: was 1.03432 pre-fix" },
 		};

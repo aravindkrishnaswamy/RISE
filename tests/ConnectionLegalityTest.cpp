@@ -256,8 +256,9 @@ namespace
 	// Every archetype needed by ANY row, declared once so every generated
 	// mini-scene sees the same universe of legal referents. `arch_png`
 	// requires a real on-disk image (tests run with CWD == repo root, the
-	// same RISE_MEDIA_PATH-relative convention every other test here uses).
-	const char* kArchetypeBlock =
+	// same RISE_MEDIA_PATH-relative convention every other test here uses)
+	// and is appended only when referenced (using tiny 32x32 cel.png).
+	const char* kArchetypeBlockNoPng =
 		"uniformcolor_painter\n{\nname arch_color\ncolor 0.5 0.5 0.5\n}\n"
 		"scalar_painter\n{\nname arch_scalar\nvalue 1.0\n}\n"
 		"scalar_painter\n{\nname aux_scalar\nvalue 2.0\n}\n"
@@ -268,10 +269,12 @@ namespace
 		"expression_painter\n{\nname arch_exprpainter\nexpr 0.5\n}\n"
 		"expression_function2d\n{\nname arch_exprfunc2d\nexpr u*v\n}\n"
 		"perlin2d_painter\n{\nname arch_perlin2d\n}\n"
-		"png_painter\n{\nname arch_png\nfile textures/wood.png\n}\n"
 		"pinhole_camera\n{\nname arch_cam\n}\n"
 		"sphere_geometry\n{\nname arch_base\n}\n"
 		"hair_guides\n{\nname arch_guides\nguide 0 0 0 0 0 1\n}\n";
+
+	const char* kArchetypePng =
+		"png_painter\n{\nname arch_png\nfile textures/cel.png\n}\n";
 
 	std::string FormatValue( const std::string& tmpl, const std::string& candidate )
 	{
@@ -283,8 +286,11 @@ namespace
 	std::string BuildScene( const std::string& targetKeyword, const std::string& param, const std::string& value )
 	{
 		std::ostringstream ss;
-		ss << "RISE ASCII SCENE 7\n" << kArchetypeBlock;
-		ss << targetKeyword << "\n{\nname t\n" << param << " " << value << "\n}\n";
+		ss << "RISE ASCII SCENE 7\n" << kArchetypeBlockNoPng;
+		if( value.find( "arch_png" ) != std::string::npos ) ss << kArchetypePng;
+		ss << targetKeyword << "\n{\nname t\n";
+		if( targetKeyword == "reactiondiffusion3d_painter" ) ss << "grid_size 8\niterations 1\n";
+		ss << param << " " << value << "\n}\n";
 		return ss.str();
 	}
 
@@ -299,8 +305,13 @@ namespace
 	std::string BuildSceneMulti( const std::string& targetKeyword,
 	                              const std::vector<std::pair<std::string, std::string> >& params )
 	{
+		bool needsPng = false;
+		for( size_t i = 0; i < params.size(); ++i ) {
+			if( params[i].second.find( "arch_png" ) != std::string::npos ) needsPng = true;
+		}
 		std::ostringstream ss;
-		ss << "RISE ASCII SCENE 7\n" << kArchetypeBlock;
+		ss << "RISE ASCII SCENE 7\n" << kArchetypeBlockNoPng;
+		if( needsPng ) ss << kArchetypePng;
 		ss << targetKeyword << "\n{\nname t\n";
 		for( size_t i = 0; i < params.size(); ++i ) ss << params[i].first << " " << params[i].second << "\n";
 		ss << "}\n";
@@ -380,12 +391,12 @@ int main()
 	// =================================================================
 	{
 		std::ostringstream ss;
-		ss << "RISE ASCII SCENE 7\n" << kArchetypeBlock;
+		ss << "RISE ASCII SCENE 7\n" << kArchetypeBlockNoPng << kArchetypePng;
 		const bool ok = DeriveOK( ss.str() );
 		Check( ok, "PRE-FLIGHT: the shared archetype block derives cleanly on its own" );
 		if( !ok ) {
 			std::cout << "  Archetype block failed to derive -- aborting (every corpus row would "
-			             "spuriously skip). Check CWD == repo root and textures/wood.png exists.\n";
+			             "spuriously skip). Check CWD == repo root and textures/cel.png exists.\n";
 			std::cout << "ConnectionLegalityTest: " << passCount << " passed, " << failCount << " failed\n";
 			return 1;
 		}

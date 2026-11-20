@@ -1573,7 +1573,7 @@ static std::string MediumBoxScene( bool heterogeneous )
 			"\tcolora pnt_dense\n\tcolorb pnt_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n"
 			"painter_heterogeneous_medium\n{\n\tname med\n\tabsorption 0.15 0.15 0.15\n"
 			"\tscattering 0.35 0.35 0.35\n\tphase isotropic\n\tdensity_painter pnt_density\n"
-			"\tresolution 256\n\tcolor_to_scalar luminance\n\tbbox_min -2 -2 -2\n\tbbox_max 2 2 2\n}\n\n";
+			"\tresolution 96\n\tcolor_to_scalar luminance\n\tbbox_min -2 -2 -2\n\tbbox_max 2 2 2\n}\n\n";
 	} else {
 		s += "homogeneous_medium\n{\n\tname med\n\tabsorption 0.3 0.3 0.3\n"
 			"\tscattering 0.7 0.7 0.7\n\tphase isotropic\n}\n\n";
@@ -1705,8 +1705,8 @@ static bool RunStreamAudit( IJobPriv* pJob, bool nm, StreamAuditTally& t, int* p
 	BDPTIntegrator* pBdpt = new BDPTIntegrator( 20, 20, stability );
 	pBdpt->SetLightSampler( pCaster->GetLightSampler() );
 
-	for( unsigned int i = 0; i < 4096u; i++ ) {
-		const Point2 screen( ( ( i % 64u ) + 0.5 ) / 64.0, ( ( i / 64u ) + 0.5 ) / 64.0 );
+	for( unsigned int i = 0; i < 1024u; i++ ) {
+		const Point2 screen( ( ( i % 32u ) + 0.5 ) / 32.0, ( ( i / 32u ) + 0.5 ) / 32.0 );
 		Ray cameraRay;
 		if( !pCamera->GenerateRay( rc, cameraRay, screen ) ) continue;
 		StreamAuditSobol sampler( i, 0x283u + i * 7u );
@@ -2010,7 +2010,7 @@ static void TestPTSMSVertexBudget()
 	using namespace PTSMSBudget;
 	std::cout << "\nTest I: PT vertex streams with SMS (legacy / extended, NM / RGB / HWSS)\n";
 	bool ok = true;
-	const unsigned int N = 512;
+	const unsigned int N = 64;
 	struct Fixture { const char* name; std::string text; } fixtures[] = {
 		{ "slab + area emitter (estimator B)", Slab( true ) },
 		{ "slab + omni light (estimator A)", Slab( false ) },

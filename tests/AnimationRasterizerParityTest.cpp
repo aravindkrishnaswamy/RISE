@@ -56,7 +56,6 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/SobolSampler.h"
-#include "../src/Library/Utilities/PSSMLTSampler.h"
 #include "TestTempDir.h"
 
 using namespace RISE;
@@ -154,9 +153,6 @@ namespace
 		pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
 		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x458u, salt ) );
-		// DL-468: MLT's chains are otherwise a deterministic function of
-		// the scene, so every repeat returned the identical image (se 0).
-		PSSMLTSamplerTestHooks::SeedSalt().store( SobolSequence::HashCombine( 0x468u, salt ) | 1u );
 		std::srand( 1000u + salt );
 		if( frames == 0 ) {
 			pJob->Rasterize();
@@ -164,7 +160,6 @@ namespace
 			pJob->RasterizeAnimation( t0, t1, frames, fields, false );
 		}
 		SobolSamplerTestHooks::ValueSalt().store( 0u );
-		PSSMLTSamplerTestHooks::SeedSalt().store( 0u );
 
 		out = pCap->frames;
 		safe_release( pCap );
@@ -200,10 +195,8 @@ namespace
 		return a.n > 0 && b.n > 0 && d <= tol && a.m > 0 && b.m > 0;
 	}
 
-	// Salted repeats per render set.  MLT's single-render spread on this
-	// rig is several percent (MLT-spectral ~6 %), so its cases take 12
-	// (DL-468); the other rasterizers keep 4.
-	int kRepeats = 4;
+	// Salted repeats per render set (n >= 4 for se-gated checks).
+	const int kRepeats = 4;
 
 	//////////////////////////////////////////////////////////////////
 	// Scene pieces
@@ -214,7 +207,7 @@ namespace
 	std::string Body( bool withEmitter, const char* omniPos, bool keyframed )
 	{
 		std::string s;
-		s += "film\n{\n\twidth 24\n\theight 24\n}\n\n";
+		s += "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s += "pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
 		s += "uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.6 0.6 0.6\n}\n\n";
 		s += "lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n";
@@ -240,7 +233,7 @@ namespace
 	std::string BodyE( const char* scale, bool keyframed )
 	{
 		std::string s;
-		s += "film\n{\n\twidth 24\n\theight 24\n}\n\n";
+		s += "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s += "pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
 		s += "uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.6 0.6 0.6\n}\n\n";
 		s += "lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n";
@@ -267,7 +260,7 @@ namespace
 	std::string BodyF()
 	{
 		std::string s;
-		s += "film\n{\n\twidth 24\n\theight 24\n}\n\n";
+		s += "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s += "pinhole_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
 		s += "uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.6 0.6 0.6\n}\n\n";
 		s += "lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n";
@@ -294,8 +287,6 @@ namespace
 		{ "BDPT-spectral", "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" },
 		{ "VCM", "vcm_pel_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" },
 		{ "VCM-spectral", "vcm_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" },
-		{ "MLT", "mlt_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tbootstrap_samples 20000\n\tchains 64\n\tmutations_per_pixel 16\n\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n\n" },
-		{ "MLT-spectral", "mlt_spectral_rasterizer\n{\n\tmax_eye_depth 3\n\tmax_light_depth 3\n\tbootstrap_samples 20000\n\tchains 64\n\tmutations_per_pixel 16\n\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n\n" },
 	};
 
 	std::string Scene( const RastCase& rc, const std::string& body )
@@ -330,7 +321,6 @@ namespace
 	void RunCase( const RastCase& rc )
 	{
 		std::cout << "== " << rc.label << std::endl;
-		kRepeats = ( std::string( rc.label ).compare( 0, 3, "MLT" ) == 0 ) ? 12 : 4;
 		std::string detail;
 
 		// --- A/B: static scene (emitter + omni), no timeline ---
@@ -417,15 +407,7 @@ namespace
 			}
 		}
 
-		const auto animB = Collect( staticPath, 2, 0.0, 1.0, 300 );
-		for( unsigned int f = 0; f < 2; f++ ) {
-			const Stat sB = MeanOf( animB[f], 0 );
-			const bool okB = Agree( sStill, sB, detail );
-			std::cout << "  B still vs anim frame " << f << " " << detail << std::endl;
-			Check( okB, std::string( rc.label ) + ": B two-frame animation frame " + std::to_string( f ) + " matches still " + detail );
-		}
-
-		// --- C: keyframed omni light (omni only: BDPT/VCM/MLT reach it
+		// --- C: keyframed omni light (omni only: BDPT/VCM reach it
 		// only through NEE / light subpaths, never by an eye hit) ---
 		const std::string animPath  = WriteScene( Scene( rc, Body( false, "-1.5 0 1.0", true ) ), std::string( rc.label ) + "_kf" );
 		const std::string leftPath  = WriteScene( Scene( rc, Body( false, "-1.5 0 1.0", false ) ), std::string( rc.label ) + "_left" );

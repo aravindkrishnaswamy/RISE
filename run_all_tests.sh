@@ -139,20 +139,7 @@ esac
 # below).  Keep this list and run_all_tests.ps1's $ExtendedTests identical.
 is_extended_test() {
 	case "$1" in
-		AgentProposeRenderTest|AgentViewModeRenderTest|BDPTDepthCapMISTest|\
-		BDPTGuidedContinuationTest|BDPTStrategyBalanceTest|CompositeEnergyConservationTest|\
-		ConnectionTypeSplitTest|CstDeriveGoldenTest|ExteriorIndexInvarianceTest|\
-		GradedIndexInteriorFactorTest|LayeredWhiteFurnaceTest|\
-		MediumEnclosureConnectibilityTest|MediumInsideOutsideInvariantTest|\
-		MotionBlurTimeAverageTest|OIDNAutoDeterminismTest|OpenSheetIndexConventionTest|\
-		PTGuidingMISPartitionTest|RandomWalkFogEnergyTest|RefractiveRadianceScalingTest|\
-		SignalIntegratorConsistencyTest|SMSDisplacedEnergyTest|SMSEmitterDirectionTest|\
-		SMSExtendedHWSSTest|SMSExtendedPartitionTest|SMSExtendedReferenceTest|\
-		SMSFourVertexVarianceTest|SMSHWSSNestedEnergyTest|SMSLegacyModeTest|\
-		SMSMediumAnchorTest|SMSPhotonSeedEnergyTest|SMSSupersededRowsTest|\
-		SMSUniformDispersionTest|SpectralOnlyEmitterTest|SSSContactContinuationTest|\
-		SSSExteriorIndexInvarianceTest|UnlistedEmitterWeightTest|VCMStrategyBalanceTest|\
-		VCMVolumeMergeTest|VolumeAbsorptionAttenuationTest|WeaveGapShadowTransmittanceTest)
+		MediumEnclosureConnectibilityTest|MediumInsideOutsideInvariantTest)
 			return 0
 			;;
 		*)
@@ -166,10 +153,7 @@ is_extended_test() {
 # (RISE_TEST_EXTENDED=1).
 has_extended_mode() {
 	case "$1" in
-		AgentSkillsTest|InteriorCandidateWalkCostTest|LightExitanceTest|\
-		LuminarySamplerAreaTest|PavilionColonnadeShowcaseTest|PolishedBRDFConsistencyTest|\
-		SchlickSPFPdfConsistencyTest|ShelfBunnyShowcaseTest|SPFPdfConsistencyTest|\
-		TidalStonesShowcaseTest|TimeIndexedMotionBlurTest)
+		AgentSkillsTest|LightExitanceTest|SPFPdfConsistencyTest|TimeIndexedMotionBlurTest)
 			return 0
 			;;
 		*)

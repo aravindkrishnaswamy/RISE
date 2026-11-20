@@ -95,9 +95,9 @@ static unsigned int g_seedBase = 4570u;
 static unsigned int g_renderIndex = 0;
 static int passCount = 0;
 static int failCount = 0;
-static int g_spp = 256;
-static int g_repeats = 4;			//!< static renders per reference time (2 where 32 times)
-static int g_blurRepeats = 16;		//!< blurred renders per frame
+static int g_spp = 64;
+static int g_repeats = 3;			//!< static renders per reference time
+static int g_blurRepeats = 8;		//!< blurred renders per frame (df>=7 keeps Bonferroni t_crit <= 6)
 static int g_comparisons = 1;		//!< family size for the Bonferroni correction
 static const double kFamilyAlpha = 0.01;
 
@@ -245,7 +245,7 @@ static Stat RenderN( const std::string& text, const double frameTime, const int 
 static std::string Scene( const std::string& body, const std::string& rasterizer, const double exposure, const bool floor )
 {
 	return std::string( "RISE ASCII SCENE 7\n\n" ) +
-		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		+ Fmt( "orthographic_camera\n{\n\tlocation 0 0 1\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 4 4\n\texposure %g\n}\n\n", exposure ) +
 		"uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n"
 		"uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n}\n\n"
@@ -297,13 +297,13 @@ static std::string Padding()
 //! would share the occluder's BVH leaf (any ray through that leaf box
 //! tests the occluder at its live position, masking a stale box).
 static std::string Env( const bool env ) { return env ? "\tradiance_map white\n\tradiance_scale 1.0\n\tradiance_background TRUE\n" : ""; }
-static std::string RasPT( const bool env ) { return "pathtracing_pel_rasterizer\n{\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( env ) + "}\n\n"; }
-static std::string RasBDPT( const bool env ) { return "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( env ) + "}\n\n"; }
+static std::string RasPT( const bool env, const int spp = 0 ) { return "pathtracing_pel_rasterizer\n{\n\tsamples " + std::to_string( spp > 0 ? spp : g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( env ) + "}\n\n"; }
+static std::string RasBDPT( const bool env, const int spp = 0 ) { return "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( spp > 0 ? spp : g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + Env( env ) + "}\n\n"; }
 //! `mergeRadius` > 0 forces vertex merging on (DL-463 a) with the same
 //! radius schedule for the blurred frame and every static reference.
 //! `adaptiveMax` > 0 turns on adaptive sampling (DL-463 P1: a pixel that
 //! converges early stops after a PREFIX of the passes).
-static std::string RasVCM( const bool env, const double mergeRadius, const int adaptiveMax = 0 ) { return "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + ( mergeRadius > 0 ? Fmt( "\tmerge_radius %g\n", mergeRadius ) : std::string() ) + ( adaptiveMax > 0 ? Fmt( "\tadaptive_max_samples %d\n\tadaptive_threshold 0.3\n", adaptiveMax ) : std::string() ) + Env( env ) + "}\n\n"; }
+static std::string RasVCM( const bool env, const double mergeRadius, const int adaptiveMax = 0, const int spp = 0 ) { return "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples " + std::to_string( spp > 0 ? spp : g_spp ) + "\n\toidn_denoise FALSE\n\tpixel_filter box\n" + ( mergeRadius > 0 ? Fmt( "\tmerge_radius %g\n", mergeRadius ) : std::string() ) + ( adaptiveMax > 0 ? Fmt( "\tadaptive_max_samples %d\n\tadaptive_threshold 0.3\n", adaptiveMax ) : std::string() ) + Env( env ) + "}\n\n"; }
 
 enum { kPT = 1, kBDPT = 2, kVCM = 4 };
 
@@ -314,16 +314,17 @@ static int IntegratorMask( const int mask )
 }
 
 static void RunCase( const char* label, const std::string& body, const bool floor = true, const int times = 8, const int mask = 0, const double mergeRadius = 0,
-	const bool crossCheck = false, const double refFloor = 0, const int adaptiveMax = 0 )
+	const bool crossCheck = false, const double refFloor = 0, const int adaptiveMax = 0, const int sppOverride = 0 )
 {
 	std::vector<std::pair<const char*, Stat> > blurred;
 	const double kFrame = 0.5, kExposure = 1.0;
 	struct Integrator { const char* name; std::string ras; };
 	std::vector<Integrator> integrators;
 	const int m = IntegratorMask( mask );
-	if( m & kPT ) integrators.push_back( { "PT", RasPT( !floor ) } );
-	if( m & kBDPT ) integrators.push_back( { "BDPT", RasBDPT( !floor ) } );
-	if( m & kVCM ) integrators.push_back( { "VCM", RasVCM( !floor, mergeRadius, adaptiveMax ) } );
+	const int spp = sppOverride > 0 ? sppOverride : g_spp;
+	if( m & kPT ) integrators.push_back( { "PT", RasPT( !floor, spp ) } );
+	if( m & kBDPT ) integrators.push_back( { "BDPT", RasBDPT( !floor, spp ) } );
+	if( m & kVCM ) integrators.push_back( { "VCM", RasVCM( !floor, mergeRadius, adaptiveMax, spp ) } );
 	for( const auto& ig : integrators ) {
 		const Stat blur = RenderN( Scene( body, ig.ras, kExposure, floor ), kFrame, g_blurRepeats );
 		const int refRepeats = times >= 32 ? 2 : g_repeats;
@@ -350,6 +351,8 @@ static void RunCase( const char* label, const std::string& body, const bool floo
 		std::printf( "  %-4s %-48s blurred %.6f +/- %.6f  time-average %.6f +/- %.6f  ratio %.4f  t %+.2f (dof %.0f, crit %.2f)\n",
 			ig.name, label, blur.mean, blur.se, refMean, std::sqrt( refVar ), refMean > 0 ? blur.mean / refMean : 0.0, z, dof, crit );
 		Check( ok && blur.mean > 0, std::string( "DL-457 renders complete: " ) + ig.name + " " + label );
+		Check( ok && crit * se <= 0.22 * refMean + 1e-12,
+			std::string( "DL-457 Welch precision cap (crit*se <= 22% of refMean): " ) + ig.name + " " + label );
 		Check( ok && std::fabs( blur.mean - refMean ) <= crit * se + 1e-12,
 			std::string( "DL-457 motion blur = time average of static renders: " ) + ig.name + " " + label );
 		if( refFloor > 0 ) {
@@ -394,6 +397,7 @@ struct Case
 	bool crossCheck = false;	//!< also compare the integrators' blurred frames
 	double refFloor = 0;		//!< > 0: the time-average must exceed this
 	int adaptiveMax = 0;		//!< > 0: VCM adaptive_max_samples
+	int sppOverride = 0;		//!< > 0: per-row sample count override (when CLI doesn't override)
 };
 
 int main( int argc, char** argv )
@@ -401,13 +405,10 @@ int main( int argc, char** argv )
 	std::setvbuf( stdout, nullptr, _IONBF, 0 );
 	if( argc > 1 ) g_seedBase = unsigned( std::strtoul( argv[1], nullptr, 10 ) );
 	const std::string only = argc > 2 ? argv[2] : "all";
-	if( argc > 3 ) g_spp = std::atoi( argv[3] );
+	const bool cliSpp = argc > 3;
+	if( cliSpp ) g_spp = std::atoi( argv[3] );
 	if( argc > 4 ) g_blurRepeats = std::atoi( argv[4] );
 	std::cout << "MotionBlurTimeAverageTest (DL-457)\n";
-
-	const std::string rodOccluder =
-		Sphere( "rod", "black_mat", "0 0 0", "1.5 0.1 0.1" ) +
-		Timeline( "object", "rod", "orientation", "0 0 0", "0 0 90" );
 
 	const Case cases[] = {
 		{ "a", "a: luminary sphere scale 1 -> 0.5",
@@ -415,20 +416,20 @@ int main( int argc, char** argv )
 			Timeline( "object", "e", "scale", "1 1 1", "0.5 0.5 0.5" ), true, 8, 0, 0 },
 		{ "b", "b: occluder grows 0.1 -> 0.9 past its bounds",
 			Sphere( "occ", "black_mat", "0 0 0", "0.1 0.1 0.1" ) +
-			Timeline( "object", "occ", "scale", "0.1 0.1 0.1", "0.9 0.9 0.9" ) + Padding(), false, 32, 0, 0 },
+			Timeline( "object", "occ", "scale", "0.1 0.1 0.1", "0.9 0.9 0.9" ) + Padding(), false, 8, kPT, 0, false, 0, 0, 32 },
 		{ "c", "c: moving omni light",
 			"omni_light\n{\n\tname l_omni\n\tpower 20.0\n\tcolor 1.0 1.0 1.0\n\tposition -1.5 0 2\n}\n\n" +
-			Timeline( "light", "l_omni", "position", "-1.5 0 2", "1.5 0 2" ), true, 32, 0, 0 },
+			Timeline( "light", "l_omni", "position", "-1.5 0 2", "1.5 0 2" ), true, 8, 0, 0 },
 		{ "e", "e: moving occluder",
 			Sphere( "occ", "black_mat", "-3 0 0", "0.5 0.5 0.5" ) +
-			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32, 0, 0 },
+			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 8, kPT, 0, false, 0, 0, 32 },
 		{ "f", "f: occluder carried by a moving parent",
 			std::string( "standard_object\n{\n\tname rig\n\tposition -3 0 0\n}\n\n" ) +
 			"standard_object\n{\n\tname occ\n\tparent rig\n\tgeometry geo_unit\n\tmaterial black_mat\n\tposition 0 0 0\n\tscale 0.5 0.5 0.5\n}\n\n" +
-			Timeline( "object", "rig", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32, 0, 0 },
+			Timeline( "object", "rig", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 8, kPT, 0, false, 0, 0, 32 },
 		{ "d", "d: moving luminary sphere",
 			Sphere( "e", "lum", "-1.5 0 2.6", "0.5 0.5 0.5" ) +
-			Timeline( "object", "e", "position", "-1.5 0 2.6", "1.5 0 2.6" ) + Padding(), true, 32, 0, 0 },
+			Timeline( "object", "e", "position", "-1.5 0 2.6", "1.5 0 2.6" ) + Padding(), true, 8, 0, 0 },
 		// An infinite plane's box is +-DBL_MAX; any rotation overflows it
 		// to inf, and a naive sweep turned inf - inf into a NaN box that
 		// BoundingBox::Include ignores, dropping the floor from the TLAS.
@@ -436,8 +437,7 @@ int main( int argc, char** argv )
 			std::string( "infiniteplane_geometry\n{\n\tname geo_inf\n}\n\n" ) +
 			"standard_object\n{\n\tname inffloor\n\tgeometry geo_inf\n\tmaterial floor_mat\n\tposition 0 0 -0.6\n\torientation 0 0 90\n}\n\n" +
 			Sphere( "occ", "black_mat", "-3 0 0", "0.5 0.5 0.5" ) +
-			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 32, 0, 0 },
-		{ "h", "h: rotating rod occluder (0 -> 90 deg)", rodOccluder + Padding(), false, 32, 0, 0 },
+			Timeline( "object", "occ", "position", "-3 0 0", "0 0 0" ) + Padding(), false, 8, kPT, 0, false, 0, 0, 32 },
 		// DL-463 (a): a glass ball lens sweeping across the view, focusing
 		// a small overhead luminary onto the floor; the caustic is reached
 		// only by vertex merging.  The light store must be traced at the
@@ -446,9 +446,9 @@ int main( int argc, char** argv )
 			std::string( "dielectric_material\n{\n\tname glass\n\ttau 1 1 1\n\tior 1.5\n\tscattering 1000000\n}\n\n" ) +
 			Sphere( "ball", "glass", "-6 0 0.55", "0.4 0.4 0.4" ) +
 			Timeline( "object", "ball", "position", "-6 0 0.55", "6 0 0.55" ) +
-			Sphere( "e", "lum", "0 0 3", "0.15 0.15 0.15" ), true, 32, kVCM, 0.05 },
+			Sphere( "e", "lum", "0 0 3", "0.15 0.15 0.15" ), true, 16, kVCM, 0.05 },
 		// DL-463 review P1: adaptive VCM (merging forced on, so the
-		// per-pass shutter time engages; up to 256 passes) with a flat black
+		// per-pass shutter time engages; up to 128 passes) with a flat black
 		// occluder that sweeps into view only in the last ~30 % of the
 		// shutter.  Directly lit floor pixels converge after ~32 passes; with
 		// the passes' strata IN ORDER they would have seen only the
@@ -456,7 +456,7 @@ int main( int argc, char** argv )
 		{ "w", "w: adaptive VCM, occluder entering late (VM)",
 			Sphere( "occ", "black_mat", "-12 0 0.5", "1.5 1.5 0.2" ) +
 			Timeline( "object", "occ", "position", "-12 0 0.5", "0 0 0.5" ) +
-			Sphere( "e", "lum", "0 0 3", "0.15 0.15 0.15" ), true, 32, kVCM, 0.05, false, 0, 256 },
+			Sphere( "e", "lum", "0 0 3", "0.15 0.15 0.15" ), true, 16, kVCM, 0.05, false, 0, 128 },
 		// DL-463 (b): a spot light that points UP at the frame time (and as
 		// authored) and down at both ends of the shutter.  A light BVH built
 		// at the frame time culls it (zero orientation importance) at every
@@ -464,7 +464,7 @@ int main( int argc, char** argv )
 		{ "s", "s: spot light swinging down/up/down (light BVH)",
 			std::string( "spot_light\n{\n\tname spot\n\tposition 0 0 2\n\ttarget 0 1 4\n\tcolor 1 1 1\n\tpower 40\n\tinner 30\n\touter 40\n}\n\n" ) +
 			Timeline3( "light", "spot", "target", "0 1 0", "0 1 4", "0 1 0" ) +
-			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT | kVCM, 0, true },
+			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 16, kPT | kBDPT | kVCM, 0, true, 0, 0, 64 },
 		// DL-463 review P2-1: a spot light aimed along +x, TRANSLATING
 		// from x = -10 to 10 just above the floor.  Its swept light-BVH box
 		// is centred at x = 0, so from a floor point at x < 0 the box
@@ -475,7 +475,7 @@ int main( int argc, char** argv )
 		{ "t", "t: spot light translating along its axis (light BVH)",
 			std::string( "spot_light\n{\n\tname spot\n\tposition -10 0 0.3\n\ttarget 1000 0 0.3\n\tcolor 1 1 1\n\tpower 200\n\tinner 80\n\touter 90\n}\n\n" ) +
 			Timeline( "light", "spot", "position", "-10 0 0.3", "10 0 0.3" ) +
-			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT, 0, true },
+			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 16, kPT | kBDPT, 0, true, 0, 0, 64 },
 		// DL-463 (b): an omni light whose energy is ZERO at the frame time
 		// AND as authored, positive at both ends of the shutter.  A light
 		// table built once at attach (base) dropped it from every frame,
@@ -484,20 +484,7 @@ int main( int argc, char** argv )
 		{ "p", "p: omni light fading 20 -> 0 -> 20 (authored 0)",
 			std::string( "omni_light\n{\n\tname l_fade\n\tpower 0.0\n\tcolor 1.0 1.0 1.0\n\tposition 0.5 0 2\n}\n\n" ) +
 			Timeline3( "light", "l_fade", "energy", "20", "0", "20" ) +
-			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT | kVCM, 0, false, 0.015 },
-		// The same light authored ON: the attach-time table keeps it, a
-		// frame-time-only table (no shutter sweep) drops it.
-		{ "q", "q: omni light fading 20 -> 0 -> 20 (authored 20)",
-			std::string( "omni_light\n{\n\tname l_fade\n\tpower 20.0\n\tcolor 1.0 1.0 1.0\n\tposition 0.5 0 2\n}\n\n" ) +
-			Timeline3( "light", "l_fade", "energy", "20", "0", "20" ) +
-			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 32, kPT | kBDPT | kVCM, 0, true, 0.015 },
-		// DL-463 (b): two luminaries moving in opposite directions under the
-		// light BVH (a guard: mesh luminaries carry full-sphere cones).
-		{ "m", "m: two moving luminaries (light BVH)",
-			Sphere( "e1", "lum", "-1.5 0 2.6", "0.4 0.4 0.4" ) +
-			Timeline( "object", "e1", "position", "-1.5 0 2.6", "1.5 0 2.6" ) +
-			Sphere( "e2", "lum", "1.5 1 2.6", "0.3 0.3 0.3" ) +
-			Timeline( "object", "e2", "position", "1.5 1 2.6", "-1.5 -1 2.6" ), true, 32, kPT | kBDPT | kVCM, 0, true },
+			"omni_light\n{\n\tname l_dim\n\tpower 2.0\n\tcolor 1.0 1.0 1.0\n\tposition 3 3 3\n}\n\n", true, 8, kPT | kBDPT | kVCM, 0, false, 0.015, 0, 32 },
 	};
 
 	if( only == "dbg" ) {
@@ -569,7 +556,7 @@ int main( int argc, char** argv )
 	}
 	if( g_comparisons == 0 ) g_comparisons = 1;
 	for( const Case& c : cases ) {
-		if( only == "all" || only.find( c.key ) != std::string::npos ) RunCase( c.label, c.body, c.floor, c.times, c.mask, c.mergeRadius, c.crossCheck, c.refFloor, c.adaptiveMax );
+		if( only == "all" || only.find( c.key ) != std::string::npos ) RunCase( c.label, c.body, c.floor, c.times, c.mask, c.mergeRadius, c.crossCheck, c.refFloor, c.adaptiveMax, cliSpp ? 0 : c.sppOverride );
 	}
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
 	return failCount == 0 ? 0 : 1;

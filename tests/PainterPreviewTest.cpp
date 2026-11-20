@@ -56,6 +56,7 @@
 #include <cmath>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -720,21 +721,45 @@ static void TestEvaluationBudgetDecimatesLargeRequests()
 // AgentRenderAsyncTest.cpp's RunRenderOwnsSceneGuardTest recipe.
 //////////////////////////////////////////////////////////////////////
 
+struct CanaryGate
+{
+	std::mutex mu;
+	std::condition_variable cv;
+	bool release = false;
+
+	void Release()
+	{
+		{
+			std::lock_guard<std::mutex> lk( mu );
+			release = true;
+		}
+		cv.notify_all();
+	}
+
+	void Wait( unsigned int timeoutMs )
+	{
+		std::unique_lock<std::mutex> lk( mu );
+		cv.wait_for( lk, std::chrono::milliseconds( timeoutMs ), [this]() { return release; } );
+	}
+};
+
 class CanaryJob : public Job
 {
 public:
-	CanaryJob( unsigned int sleepMs, std::shared_ptr<std::atomic<int>> counter )
-	: Job(), mSleepMs( sleepMs ), mCounter( std::move( counter ) ) {}
+	CanaryJob( std::shared_ptr<CanaryGate> gate, std::shared_ptr<std::atomic<int>> counter )
+	: Job(), mGate( std::move( gate ) ), mCounter( std::move( counter ) ) {}
 	bool Rasterize() override
 	{
 		mCounter->fetch_add( 1, std::memory_order_acq_rel );
-		std::this_thread::sleep_for( std::chrono::milliseconds( mSleepMs ) );
+		if( mGate ) {
+			mGate->Wait( 5000 );
+		}
 		const bool ok = Job::Rasterize();
 		mCounter->fetch_sub( 1, std::memory_order_acq_rel );
 		return ok;
 	}
 private:
-	unsigned int mSleepMs;
+	std::shared_ptr<CanaryGate> mGate;
 	std::shared_ptr<std::atomic<int>> mCounter;
 };
 
@@ -765,8 +790,9 @@ static void TestConcurrencyRefusal()
 	const char* tmp = "painterpreview_concurrency.RISEscene";
 	{ std::ofstream o( tmp, std::ios::binary ); o << kLiveScene; }
 
+	auto gate = std::make_shared<CanaryGate>();
 	auto insideRasterize = std::make_shared<std::atomic<int>>( 0 );
-	CanaryJob* pJob = new CanaryJob( /*sleepMs*/ 500, insideRasterize );
+	CanaryJob* pJob = new CanaryJob( gate, insideRasterize );
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "live fixture scene loads via the CST path" );
 
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -792,7 +818,7 @@ static void TestConcurrencyRefusal()
 
 		std::vector<unsigned char> rgba;
 		const bool previewQuick = RunWatchdogged(
-			"GetPainterPreview() while a render owns the scene", 200, [&]{
+			"GetPainterPreview() while a render owns the scene", 1000, [&]{
 				(void)controller.GetPainterPreview( String( "probe" ), -1, 8, 8, rgba );
 			} );
 		Check( previewQuick, "MONEY: GetPainterPreview() did NOT wedge on mMutex during a render" );
@@ -800,18 +826,20 @@ static void TestConcurrencyRefusal()
 
 		std::vector<unsigned char> rgba2;
 		const bool stripQuick = RunWatchdogged(
-			"GetRampStripPreview() while a render owns the scene", 200, [&]{
+			"GetRampStripPreview() while a render owns the scene", 1000, [&]{
 				(void)controller.GetRampStripPreview( String( "probe" ), 8, 1, rgba2 );
 			} );
 		Check( stripQuick, "MONEY: GetRampStripPreview() did NOT wedge on mMutex during a render" );
 
 		std::vector<unsigned char> rgbaMatBusy;
 		const bool matQuick = RunWatchdogged(
-			"GetMaterialPreview() while a render owns the scene", 200, [&]{
+			"GetMaterialPreview() while a render owns the scene", 1000, [&]{
 				(void)controller.GetMaterialPreview( String( "mat_diffuse" ), 8, 8, rgbaMatBusy );
 			} );
 		Check( matQuick, "MONEY: GetMaterialPreview() did NOT wedge on mMutex during a render" );
 		Check( rgbaMatBusy.empty(), "GetMaterialPreview() REFUSED (empty buffer) while the render owns the scene" );
+
+		gate->Release();
 
 		const bool completed = session->RenderWait( ar.renderJobId, 5000 );
 		Check( completed, "render completed within the timeout" );

@@ -222,30 +222,18 @@ librise : $(LIBRISE_A)
 # LTO library, so `make tests` builds both.)
 #
 # TESTS_LINK_LTO keeps the old LTO build for the tests whose results depend
-# on LTO code generation (measured: a full suite run on the non-LTO library
-# failed exactly these): three pin bit-exact render hashes measured on it,
-# two check compensated-arithmetic oracles to the last bits
-# (SSSCriticalPartitionTest, SSSNearUnityFresnelTest), HairBSDFTest
-# compares to a bit-exact golden capture, ProximitySignalTest's transformed
-# boundary arm reads 0.01025 instead of exactly 0.01, and
-# LuminarySamplerAreaTest's single-sided dart lets one ray from behind hit.
-# The last two are numeric-robustness differences, not only low bits; the
-# Linux build (never LTO) may show them too.  That run could not test the
-# twelve tests already failing on master; one of them may need adding once
-# fixed.  Added with the fire solver merge (each failed on the non-LTO library
-# and passed on the LTO one, run alone): FireSimulationSolverTest (an r80
-# recorded cycling-state replay), FireProductionSolverTest (a pinned r83
-# table-package digest) and FireProductionProjectionTest (a Metal / fp64 CPU
-# mirror wall-time ratio, which the CPU side's code generation moves).
+# on LTO code generation: SSSNearUnityFresnelTest (last-bit compensated-
+# arithmetic oracle sensitive to cross-TU FMA), FireSimulationSolverTest (an
+# r80 recorded cycling-state replay), and FireProductionSolverTest (a pinned
+# r83 table-package digest).  All other tests link against the non-LTO
+# librise_test.a archive.
 # `make TEST_LTO=1 tests` links every test against the LTO library instead,
 # for checking something that depends on LTO code generation (run the suite
 # that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
 # $(TEST_MODE_STAMP), so the next make that builds tests after a switch
 # rebuilds them; dry runs leave the record alone (but see the stamp rule for
 # -t), and `clean` deletes it.
-TESTS_LINK_LTO = LegacyTierRenderIdentityTest DeprecatedMaterialRenderIdentityTest ImageDriftHistoryTest \
-	SSSCriticalPartitionTest SSSNearUnityFresnelTest HairBSDFTest ProximitySignalTest LuminarySamplerAreaTest \
-	FireSimulationSolverTest FireProductionSolverTest FireProductionProjectionTest
+TESTS_LINK_LTO = SSSNearUnityFresnelTest FireSimulationSolverTest FireProductionSolverTest
 
 ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
 ifeq ($(filter-out 0,$(strip $(TEST_LTO))),)

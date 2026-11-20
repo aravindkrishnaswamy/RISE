@@ -31,162 +31,86 @@
 # The runner's summary lists tests that kept more cores busy than their
 # slots; give such a test a wide:N entry.  A new test that checks a timing
 # belongs here as exclusive.
-AgentChunkCrudTest	exclusive	73	timing window (40 ms sleep vs 300 ms simulated pass)
-AgentEvalCheckTest	exclusive	124	wall-clock gate (refusal < 25 ms)
-AgentFixBlendScaleTest	wide:5	3	4.2 cores (measured)
-AgentLiveCommitTest	exclusive	7	timing windows (sleep-simulated renders, 2-5 s waits)
+AgentChunkCrudTest	wide:3	52	FinishElement MaterialLook studio renders (~2.1-3 cores)
+AgentEvalLiveTransportTest	pool	7
+AgentFixBlendScaleTest	wide:5	4	4.2 cores (measured)
+AgentLiveCommitTest	pool	7
 AgentLoopbackHttpTest	exclusive	2	wall-clock deadlines (300 ms request budget)
-AgentProposeRenderTest	exclusive	4	wall-clock gate (cancelled render < 0.25 x baseline)
-AgentRenderAnchorTest	wide:6	14	4.6 cores (measured)
-AgentRenderAsyncTest	exclusive	14	wall-clock deadlines (stop < 800 ms, cancel < 50 ms, 150-200 ms waits)
-AgentSkillsTest	wide:5	12	3.9 cores (measured)
-AgentViewModeRenderTest	wide:2	3	1.7 cores (measured)
-AlphaCSGTransportTest	pool	107
-AlphaEmitterNormalizationTest	pool	80
-AlphaEndpointContextTest	pool	6
-AlphaIntersectionTransportTest	pool	165
-AlphaMediumTailTest	pool	61
-AlphaShadowMediumTest	pool	209
-AlphaSMSReciprocalTest	pool	5
-AlphaSMSTransportTest	pool	14
-AnimationProgressTest	wide:5	2	4.0 cores (measured)
-AnimationRasterizerParityTest	pool	78
-AshikminShirleySPFPdfConsistencyTest	pool	82
-AutoMediumDeltaRoutingTest	pool	55
-AutoRasterizerTest	exclusive	35	timing windows (2 s waits for a concurrent output add / remove / swap to be rejected)
-BDPTDepthCapMISTest	pool	536
-BDPTGuidedContinuationTest	pool	474
-BDPTMediumDeltaStrategyTest	pool	35
-BDPTStrategyBalanceTest	single	3464	3.3 cores at default threads for ~10% more throughput; ~2900 s CPU on one thread
-BDPTZeroDensityConnectibleTest	pool	9
-BDPTZeroExitanceBSSRDFTest	pool	5
-BidirectionalTextureFootprintParityTest	wide:5	2	4.5 cores (measured)
-CallbackOutputRenderScopeTest	wide:5	1	4.7 cores (measured)
-CausticPhotonMapNormalizationTest	wide:2	8	1.9 cores (measured mean)
-CausticReachHarnessTest	wide:5	4	4.6 cores (measured)
-CoatedBindingCapTest	pool	31
-CoatedFabricAccuracyTest	pool	31
-CoatedGGXAccuracyTest	pool	13
-CompositeEnergyConservationTest	pool	3669
-ConnectionLegalityTest	pool	22
-ConnectionTypeSplitTest	pool	306
-CsgMeshOperandTest	exclusive	1	8 query threads, CPU-time ratio gate
-CstDeriveGoldenTest	pool	97
-CstEditCostTest	exclusive	9	wall-clock cost gate (CST operation timing ratios)
-CurvedOpenSheetSlabTest	pool	179
-CurvePainterRGBDispersionTest	pool	11
-DoubleSidedEmitterTest	pool	34
-EmitterAverageExitanceTest	pool	33
-EmitterUVSampleTest	pool	6
-EmitterWorldPositionTest	pool	82
-EntityTemplatesTest	pool	39
-EnvLightBalanceTest	pool	44
-ExteriorIndexInvarianceTest	pool	3236
-FabricRenderTest	pool	66
-FileRasterizerOutputShimTest	exclusive	1	timing windows (2 s waits for two concurrent file writers to contend)
-FireProductionProjectionTest	exclusive	1	Metal wall-time gates (p95 <= 120 ms; Metal / fp64 CPU mirror ratio <= 1.25)
-FireProductionSolverTest	exclusive	3	Metal wall-time gates (tier-10 remap allocation 45 ms, p95 budgets)
-FireSequenceTest	exclusive	0	not measured here (needs OpenVDB); Metal fire solver steps, preview renders and child-process runs
-FireSimulationSolverTest	pool	106
-FrameStoreTest	exclusive	1	timing window (iterations in 500 ms)
-GeometryPanelJumpTest	exclusive	1	timing windows (30 ms negative windows pass without testing under load)
-GGXDiffuseRenderTest	wide:3	1	3.0 cores (measured)
-GGXDiffuseTransmissionTest	pool	64
-GGXHeightCorrelatedEnergyLUTTest	pool	286
-GGXHemisphericalAlbedoTest	pool	149
-GradedIndexInteriorFactorTest	pool	636
-HairBSDFTest	pool	47
-HairRenderTest	wide:2	113	1.6 cores (measured mean; peak 2.2)
-InfinitePlaneLuminaireTest	wide:2	49	1.6 cores (measured mean; peak 5.6)
-IntermediateCompositionTest	wide:3	1	2.7 cores (measured)
-IORStackSeedingRegressionTest	wide:3	5	2.5 cores (measured)
-IsotropicPhongSPFPdfConsistencyTest	pool	13
-LayeredWhiteFurnaceTest	pool	34
-LegacyTierRenderIdentityTest	pool	61
-LightSoloTest	wide:3	4	3.1 cores (measured)
-LuminarySamplerAreaTest	wide:7	1274	6.9 cores (measured mean); multi-threaded 96x96 renders (Q, D) and child-process renders (F); D checks multi-thread determinism
-MediumEnclosureConnectibilityTest	single	1215	1.6 cores (48x48 films); 944 s on one thread
-MediumInsideOutsideInvariantTest	single	1791	1.7 cores over the whole run (64x64 deep-fog rows); ~1350 s on one thread
-MeshClosestPointTest	pool	43
-MeshInteriorSignalTest	exclusive	4	wall-clock gates (weld and certification ms budgets)
-MLTMutationScheduleTest	pool	6
-MLTSpectralHWSSNormalizationTest	wide:5	4	4.3 cores (measured)
-MLTSpectralIntegralNormalizationTest	wide:6	84	6.0 cores (measured mean; peak 9.6)
-MotionBlurTimeAverageTest	pool	1364
-MultichannelHeterogeneousMediumTest	pool	25
-NonUniformLuminaryAreaTest	pool	110
-OIDNAutoDeterminismTest	pool	300
-OpenSheetHalfSpaceSeedingTest	pool	127
-OpenSheetIndexConventionTest	pool	304
-PainterPreviewTest	exclusive	2	wall-clock deadlines (200 ms watchdogs, 2 s preview)
-PatchSetCertificationTest	exclusive	4	wall-clock budget (200k-wedge fan < 2 s)
-PathTracingThermalEmissionTest	pool	16
-PavilionColonnadeShowcaseTest	exclusive	365	wall-clock cost gate (live/def-0 render ratio <= 1.15)
-PixelCenterConventionTest	wide:3	47	2.4 cores (measured mean; peak 8.9)
-PolishedBRDFConsistencyTest	pool	24
-PrimitiveSelfHitTest	pool	16
-PTGuidingMISPartitionTest	pool	79
-RandomWalkFogEnergyTest	pool	422
-RandomWalkSSSSpectralColourTest	pool	92
-RasterizeSequenceCoverageTest	pool	6
-ReferenceGraphTest	exclusive	2	wall-clock budget (< 2 s)
-RefractiveRadianceScalingTest	single	554	3.9 cores at default threads; 466 s on one thread
-ReliefBidirectionalConsistencyTest	wide:6	92	5.3 cores (measured mean; peak 9.5)
-RewireConnectionTest	exclusive	2	wall-clock ratio (batch vs build time)
-SceneEditorCancelRestartTest	exclusive	11	timing window (sleep-paced drag counts)
-SchlickKrayBRDFConsistencyTest	pool	54
-SchlickLobePairingTest	pool	11
-SchlickSPFPdfConsistencyTest	pool	583
-ShelfBunnyShowcaseTest	wide:9	121	8.3 cores (measured mean; peak 9.6)
-SignalEmitterRecordTest	wide:2	134	1.5 cores (measured mean; peak 1.7)
-SignalIntegratorConsistencyTest	wide:4	2806	3.4 cores at default threads (377 s alone); 2800 s on one thread beside nine others
-SMSDisplacedEnergyTest	pool	1180
-SMSDomainReplayTest	pool	10
-SMSEmitterDirectionTest	pool	852
-SMSExtendedAllocationTest	pool	15
-SMSExtendedHWSSTest	pool	3668
-SMSExtendedPartitionTest	pool	875
-SMSExtendedReferenceTest	pool	1752
-SMSFourVertexVarianceTest	pool	124
-SMSHWSSNestedEnergyTest	pool	1187
-SMSLegacyCoverageTest	pool	74
-SMSLegacyDispersionReferenceTest	pool	109
-SMSLegacyModeTest	pool	379
-SMSMediumAnchorTest	pool	1301
-SMSMediumTransmittanceTest	pool	76
-SMSPhotonAirControlTest	pool	40
-SMSPhotonSeedEnergyTest	pool	239
-SMSSupersededRowsTest	pool	3530
-SMSUniformDispersionTest	pool	1798
-SMSUniformReflectionCoverageTest	pool	149
-SobolDimensionBudgetTest	pool	36
-SobolDimensionParityTest	pool	14
-SobolSelectionChannelBiasTest	pool	10
+AgentObjectMapTest	pool	5
+AgentRenderAnchorTest	pool	17
+AgentRenderAsyncTest	exclusive	11	wall-clock deadlines (stop/cancel waits)
+AgentSkillsTest	wide:2	3	trimmed 48x48 snippet renders
+AgentViewModeRenderTest	wide:2	12	1.7 cores (measured)
+AlphaEmitterNormalizationTest	pool	5
+AlphaIntersectionTransportTest	pool	9
+AnimationProgressTest	wide:5	3	4.0 cores (measured)
+AutoRasterizerTest	pool	8
+BDPTDepthCapMISTest	pool	25
+BDPTGuidedContinuationTest	pool	8
+BDPTStrategyBalanceTest	single	194	one render thread so 10 tests share cores cleanly
+BDPTZeroExitanceBSSRDFTest	pool	6
+CallbackOutputRenderScopeTest	wide:5	2	4.7 cores (measured)
+CompositeEnergyConservationTest	pool	8
+ConnectionTypeSplitTest	pool	14
+CstDeriveGoldenTest	pool	22
+DoubleSidedEmitterTest	pool	5
+EntityTemplatesTest	pool	11
+EnvLightBalanceTest	pool	7
+ExteriorIndexInvarianceTest	pool	136
+FabricMaterialChunkTest	pool	5
+FabricRenderTest	pool	11
+FileRasterizerOutputShimTest	exclusive	1	timing windows (concurrent file writers)
+FireSequenceTest	exclusive	0	not measured here (needs OpenVDB); Metal fire solver steps
+FireSimulationSolverTest	pool	31
+GGXHemisphericalAlbedoTest	pool	9
+GeometryPanelJumpTest	exclusive	1	timing windows (30 ms negative windows)
+GradedIndexInteriorFactorTest	pool	13
+HairBSDFTest	pool	24
+HairRenderTest	pool	10
+IORStackSeedingRegressionTest	wide:3	7	2.5 cores (measured)
+InfinitePlaneLuminaireTest	pool	5
+IntermediateCompositionTest	wide:3	2	2.7 cores (measured)
+LayeredWhiteFurnaceTest	pool	8
+LuminarySamplerAreaTest	wide:4	19	multi-threaded renders (D/F/P)
+MLTMutationScheduleTest	pool	7
+MediumEnclosureConnectibilityTest	single	204	one render thread so 10 tests share cores cleanly
+MediumInsideOutsideInvariantTest	single	409	one render thread so 10 tests share cores cleanly
+MotionBlurTimeAverageTest	pool	51
+MultichannelHeterogeneousMediumTest	pool	26
+OpenSheetHalfSpaceSeedingTest	pool	10
+OpenSheetIndexConventionTest	pool	26
+PTGuidingMISPartitionTest	pool	15
+PathTracingThermalEmissionTest	pool	7
+RandomWalkFogEnergyTest	pool	50
+RefractiveRadianceScalingTest	single	78	one render thread so 10 tests share cores cleanly
+SMSDomainReplayTest	pool	11
+SMSExtendedHWSSTest	pool	70
+SMSExtendedPartitionTest	pool	49
+SMSExtendedReferenceTest	pool	51
+SMSMediumAnchorTest	pool	173
+SMSMediumTransmittanceTest	pool	9
+SPFPdfConsistencyTest	pool	13
+SSSBoundaryFurnaceTest	pool	22
+SSSContactContinuationTest	pool	8
+SSSExteriorIndexInvarianceTest	pool	50
+SSSHWSSCompanionTest	pool	8
+SceneEditorCancelRestartTest	exclusive	2	timing window (sleep-paced drag counts)
+SheenDirectionalAlbedoTest	pool	5
+SignalEmitterRecordTest	pool	17
+SignalIntegratorConsistencyTest	pool	19
 SourceHygieneTest	pool	12
-SpectralOnlyEmitterTest	pool	363
-SpectralPainterScaleTest	pool	11
-SpectralSplatActiveCountTest	pool	24
-SpectralSplatIntegralNormalizationTest	pool	40
-SPFPdfConsistencyTest	pool	84
-SSSBoundaryFurnaceTest	pool	119
-SSSContactContinuationTest	pool	1607
-SSSExteriorIndexInvarianceTest	pool	2897
-SSSHWSSCompanionTest	pool	87
-SSSRadianceScalingTest	pool	166
+SpectralOnlyEmitterTest	pool	96
+SpectralPainterScaleTest	pool	14
+SpectralSplatIntegralNormalizationTest	pool	5
 ThreadPoolExceptionSafetyTest	exclusive	1	timing window (2 ms settle)
-TidalStonesShowcaseTest	exclusive	225	wall-clock cost gate (live/no-signal render ratio <= 1.15)
-TimeIndexedMotionBlurTest	exclusive	324	all-core child renders; section D times renders
-TimeIndexedPainterTest	pool	5
-TranslucentLobeConsistencyTest	pool	15
-TransparentShadowPartitionTest	pool	177
-UnlistedEmitterWeightTest	pool	344
-VCMStrategyBalanceTest	single	2330	3.4 cores at default threads
-VCMVolumeMergeTest	pool	487
-VCMVolumeNoBoundaryHashTest	pool	45
-ViewportFrameStoreTest	exclusive	1	timing window (activity counts in 200 ms)
-ViewportPaneSchedulerTest	exclusive	34	timing windows (250 ms contention/settle waits)
-VolumeAbsorptionAttenuationTest	pool	40
-VolumeEnvFurnaceTest	pool	55
-WardDensityKrayTest	pool	27
-WeaveGapShadowTransmittanceTest	pool	1995
+TimeIndexedMotionBlurTest	wide:4	10	multi-core child renders
+TranslucentLobeConsistencyTest	pool	5
+TransparentShadowPartitionTest	pool	12
+UnlistedEmitterWeightTest	pool	9
+VCMStrategyBalanceTest	single	55	one render thread so 10 tests share cores cleanly
+VCMVolumeMergeTest	pool	62
+ViewportPaneSchedulerTest	exclusive	28	timing windows (130 ms settle waits)
+VolumeAbsorptionAttenuationTest	pool	19
+VolumeEnvFurnaceTest	pool	10
+WeaveGapShadowTransmittanceTest	pool	34
 WetTextureDetailRenderTest	wide:2	1	1.9 cores (measured)

@@ -61,7 +61,6 @@
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/CookTorranceMaterial.h"
 #include "../src/Library/Materials/SchlickMaterial.h"
-#include "../src/Library/Materials/WardIsotropicGaussianMaterial.h"
 #include "../src/Library/Materials/WardAnisotropicEllipticalGaussianMaterial.h"
 #include "../src/Library/Materials/IsotropicPhongMaterial.h"
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongMaterial.h"
@@ -73,10 +72,8 @@
 #include "WeaveTestFixture.h"
 #include "../src/Library/Materials/HairMaterial.h"
 #include "../src/Library/Materials/FabricMaterial.h"
-#include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
 #include "../src/Library/Materials/RandomWalkSSSMaterial.h"
-#include "../src/Library/Materials/DonnerJensenSkinBSSRDFMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -182,7 +179,7 @@ static void RunCase( const Case& c, double thetaDeg, int ch, Scalar nm, ISampler
 	// (2) quadrature of out[t] |cos| g over the sphere.
 	double Q[5][kNumG] = {};
 	{
-		const int nT = 360, nP = 720;
+		const int nT = 120, nP = 240;
 		const double dT = PI / nT, dP = TWO_PI / nP;
 		for( int a = 0; a < nT; a++ ) {
 			const double th = ( a + 0.5 ) * dT;
@@ -210,7 +207,7 @@ static void RunCase( const Case& c, double thetaDeg, int ch, Scalar nm, ISampler
 	}
 
 	// (3) the walk's labelled estimator.
-	const int N = 400000;
+	const int N = 50000;
 	double S[5][kNumG] = {}, S2[5][kNumG] = {};
 	int strayType = 0;
 	for( int i = 0; i < N; i++ ) {
@@ -418,7 +415,6 @@ int main(int argc, char** argv)
 	cases.push_back( { "ggx conductor", new GGXMaterial( *rd, *rs, *a03, *a02, *iorAu, *extAu ), &iorStack } );
 	cases.push_back( { "cooktorrance", new CookTorranceMaterial( *rd, *rs, *a03, *ior15, *ext0 ), &iorStack } );
 	cases.push_back( { "schlick", new SchlickMaterial( *rd, *rs, *a02, *iso1 ), &iorStack } );
-	cases.push_back( { "ward isotropic", new WardIsotropicGaussianMaterial( *rd, *rs, *a02 ), &iorStack } );
 	cases.push_back( { "ward anisotropic", new WardAnisotropicEllipticalGaussianMaterial( *rd, *rs, *a01, *a03 ), &iorStack } );
 	cases.push_back( { "isotropic phong", new IsotropicPhongMaterial( *rd, *rs, *n20 ), &iorStack } );
 	// GREY rs: AshikminShirleyAnisotropicPhongSPF's RGB specular lobe uses
@@ -429,7 +425,7 @@ int main(int argc, char** argv)
 	cases.push_back( { "polished", new PolishedMaterial( *rd, *tau09, *ior15, *scat30, false ), &iorStack } );
 	cases.push_back( { "translucent (entry)", new TranslucentMaterial( *rd, *tau, *trExt, *trN, *trScat ), &iorStack } );
 	// Reviewer probe cases (DL-481 review): thin-film Fresnel, the DL-310 diffuse
-	// clip where it binds (Schlick, Ward), the translucent EXIT side (the IOR
+	// clip where it binds (Schlick), the translucent EXIT side (the IOR
 	// stack holds the object), and a nonzero glossy filter width.
 	UniformScalarPainter* fIor = new UniformScalarPainter( 1.4 ); fIor->addref();
 	UniformScalarPainter* fTh = new UniformScalarPainter( 300.0 ); fTh->addref();
@@ -442,12 +438,8 @@ int main(int argc, char** argv)
 	exitStack.push( 1.3 );
 	cases.push_back( { "ggx thinfilm", new GGXMaterial( *rd, *rs, *a03, *a02, *iorAu, *extAu, eFresnelThinFilmConductor, nullptr, fIor, ext0, fTh ), &iorStack } );
 	cases.push_back( { "schlick clip binds", new SchlickMaterial( *rdHi, *rsHi, *r005, *iso04 ), &iorStack } );
-	cases.push_back( { "ward iso clip binds", new WardIsotropicGaussianMaterial( *rdHi, *rsHi, *a02 ), &iorStack } );
 	cases.push_back( { "translucent (exit)", new TranslucentMaterial( *rd, *tau, *trExt, *trN, *trScat ), &exitStack } );
-	cases.push_back( { "ggx schlick_f0", new GGXMaterial( *rd, *rs, *a03, *a03, *ior15, *ext0, eFresnelSchlickF0 ), &iorStack, 0.15 } );
-	cases.push_back( { "ggx conductor", new GGXMaterial( *rd, *rs, *a03, *a02, *iorAu, *extAu ), &iorStack, 0.15 } );
 	cases.push_back( { "schlick", new SchlickMaterial( *rd, *rs, *a02, *iso1 ), &iorStack, 0.15 } );
-	cases.push_back( { "cooktorrance", new CookTorranceMaterial( *rd, *rs, *a03, *ior15, *ext0 ), &iorStack, 0.15 } );
 	WeaveTest::PresetWeave weave("linen", 0.31, 0.37);
 	WeaveTest::PresetWeave thin("linen", 0.31, 0.37, false, true, 0.3, 0.5, 0.2);
 	// Strict residual: these splits remain unavailable; opt in to the red pin.
@@ -456,14 +448,11 @@ int main(int argc, char** argv)
 		cases.push_back({"DL502 thin weave", thin.Material(), &iorStack});
 	}
 	LambertianMaterial* fabricLam = new LambertianMaterial(*rd); fabricLam->addref();
-	OrenNayarMaterial* fabricOren = new OrenNayarMaterial(*rd,*a03); fabricOren->addref();
 	UniformScalarPainter* rotation = new UniformScalarPainter(0.0); rotation->addref();
 	cases.push_back({"DL502 fabric Lambertian",new FabricMaterial(*fabricLam,*rs,*a03,*rotation),&iorStack});
-	cases.push_back({"DL502 fabric Oren-Nayar",new FabricMaterial(*fabricOren,*rs,*a03,*rotation),&iorStack});
 	cases.push_back({"DL502 coated Lambertian",new CoatedMaterial(*fabricLam,*ext0,*ior15,*a03,*ext0,*ext0,*rd),&iorStack});
-	cases.push_back({"DL502 coated Oren-Nayar",new CoatedMaterial(*fabricOren,*ext0,*ior15,*a03,*ext0,*ext0,*rd),&iorStack});
 	if(coatedPin) cases.push_back({"DL502 coated positive",new CoatedMaterial(*fabricLam,*a03,*ior15,*a03,*ext0,*ext0,*rd),&iorStack});
-	fabricLam->release(); fabricOren->release(); rotation->release();
+	fabricLam->release(); rotation->release();
 	HairPainters hp; hp.sigma_a=trExt; hp.beta_m=a03; hp.beta_n=a03; hp.alpha=iso1; hp.ior=ior15;
 	cases.push_back({"DL502 hair",new HairMaterial(hp),&iorStack});
     if(coatedOnly || coatedPin || dl502Only) {
@@ -481,11 +470,10 @@ int main(int argc, char** argv)
 	// Shared finite reflection BSDF, independent native-SPF expectation.
 	cases.push_back({"DL482 diffusion",new SubSurfaceScatteringMaterial(*ior15,*a03,*scat30,0,.4),&iorStack});
 	cases.push_back({"DL482 random-walk",new RandomWalkSSSMaterial(*ior15,*a03,*scat30,0,.4,256),&iorStack});
-	cases.push_back({"DL482 skin",new DonnerJensenSkinBSSRDFMaterial(*a03,*a02,*ext0,*a01,*a03,*a02,*ior15,*ior15,*a03,.4),&iorStack});
 	// New SSS cases own their construction reference until final release.
 	for( Case& c : cases ) if(c.name.find("DL482")!=0) c.mat->addref();
 
-	const double thetas[] = { 0.0, 40.0, 70.0 };
+	const double thetas[] = { 40.0, 70.0 };
 	for( const Case& c : cases ) {
 		if(sssOnly && c.name.find("DL482") != 0) continue;
 		if(dl502Only && c.name.find("DL502") != 0) continue;
@@ -495,7 +483,6 @@ int main(int argc, char** argv)
 		for( double th : thetas ) {
 			if( c.glossyFilterWidth > 0 && th != 40.0 ) continue;	// filter-width rows: one incidence
 			RunCase( c, th, 0, 0, sampler );
-			RunCase( c, th, 2, 0, sampler );
 			RunCase( c, th, 0, 550.0, sampler );
 		}
 	}

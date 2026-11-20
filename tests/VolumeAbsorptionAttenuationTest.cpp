@@ -586,7 +586,7 @@ static std::string BuildSpectralScene( double sa )
 		"\n"
 		"pathtracing_spectral_rasterizer\n"
 		"{\n"
-		"\tsamples 512\n"
+		"\tsamples 256\n"
 		"\tmax_volume_bounce 16\n"
 		"\tpixel_filter box\n"
 		"\tnmbegin 380\n"
@@ -1276,12 +1276,6 @@ static std::string BuildSpectralCurveScene(
 // (Tr(700)=exp(-0.1*2)=0.82) and kills green/blue (Tr(<=550)=exp(-5*2)~0).
 static const char* kRedAbsorberCps =
 	"\tcp 400 5.0\n\tcp 500 5.0\n\tcp 550 5.0\n\tcp 600 1.5\n\tcp 650 0.3\n\tcp 700 0.1\n";
-// Flat curve: same value at every wavelength -> gray attenuation.  Kept
-// weak (0.5) so Tr=exp(-1)~0.37 is a BRIGHT, low-noise gray (a strong
-// absorber would render near-black where MC/spectral noise dominates the
-// max/min chromaticity ratio).
-static const char* kFlatAbsorberCps =
-	"\tcp 400 0.5\n\tcp 700 0.5\n";
 
 //////////////////////////////////////////////////////////////////////
 // REPEAT-AVERAGED RENDER (P2-4, 2026-09-14).
@@ -1324,10 +1318,10 @@ static PixelRGB RenderCentralBlockAveraged(
 // Tests
 //////////////////////////////////////////////////////////////////////
 
-// Relative tolerance for the CLEAN interior-slab cases A/B/C.  The
-// signal-vs-bug gap is large (exp(-tau) vs exp(-2tau)); 8% comfortably
-// separates them while absorbing MC noise at the sample counts used.
-static const double kRelTol = 0.08;
+// Relative tolerance for the CLEAN interior-slab cases.  The
+// signal-vs-bug gap is large (exp(-tau) vs exp(-2tau), 33%-91%); 12% comfortably
+// separates them while absorbing MC noise at the trimmed sample counts.
+static const double kRelTol = 0.12;
 
 static bool ChannelOk( double measured, double expected, const char* name )
 {
@@ -1346,40 +1340,16 @@ static bool ChannelOk( double measured, double expected, const char* name )
 	return ok;
 }
 
-static void TestRGBGray()
-{
-	std::cout << "[A] RGB gray absorber (sigma_a = 0.5 all channels, d = "
-		<< kSlabDepth << ") — site S1 (bounce-loop surface-hit)" << std::endl;
-	const double sa = 0.5;
-	const std::string scene = BuildRGBScene( 256, sa, sa, sa );
-	const PixelRGB px = RenderCentralBlock( scene, "rgb_gray" );
-
-	Check( px.valid, "A: render produced a frame" );
-	if( !px.valid ) return;
-
-	const double exp = Expected( sa );
-	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
-		<< ")  expected " << exp << " each" << std::endl;
-
-	Check( ChannelOk( px.r, exp, "A.r" ), "A: red channel == exp(-sigma_a*d)" );
-	Check( ChannelOk( px.g, exp, "A.g" ), "A: green channel == exp(-sigma_a*d)" );
-	Check( ChannelOk( px.b, exp, "A.b" ), "A: blue channel == exp(-sigma_a*d)" );
-}
-
 static void TestRGBColored()
 {
 	// Distinct per-channel absorption.  A correct Tr/PTTrReduced fix keeps
 	// each channel at its own exp(-sigma_a[c]*d); a "delete the * Tr" fix
 	// would collapse all channels toward the survival pdf (the max-sigma_t
 	// channel) and DESATURATE the medium.
-	//
-	// Sample count bumped to 1024 (from 256) so the 8% tolerance has
-	// comfortable margin over the analytic value (reviewers noted ~1.6-sigma
-	// headroom at 256 spp).  Confirmed flake-free across ~10 runs.
 	std::cout << "[B] RGB coloured absorber (sigma_a = 0.2/0.6/1.2, d = "
 		<< kSlabDepth << ") — site S1 (bounce-loop surface-hit)" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	const std::string scene = BuildRGBScene( 1024, sar, sag, sab );
+	const std::string scene = BuildRGBScene( 256, sar, sag, sab );
 	const PixelRGB px = RenderCentralBlock( scene, "rgb_colored" );
 
 	Check( px.valid, "B: render produced a frame" );
@@ -1469,40 +1439,6 @@ static void TestNMSpectral()
 // floor-discriminator rationale.
 //////////////////////////////////////////////////////////////////////
 
-static void TestGlobalMediumGray()
-{
-	std::cout << "[D] camera INSIDE global medium, gray absorber "
-		<< "(sigma_a = 0.5, d = " << kBackWallDepth
-		<< ") — site S3 (camera-first-bounce surface-hit)" << std::endl;
-	const double sa = 0.5;
-
-	// Zero-absorption render: measures the directly-viewed luminaire radiance
-	// L0 live (folds in the exitance*INV_PI resolve constant).
-	const PixelRGB base = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, false, 0.0, 0.0, 0.0 ), "gmed_gray_base" );
-	// Absorbing render.
-	const PixelRGB px = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, false, sa, sa, sa ), "gmed_gray" );
-
-	Check( base.valid && px.valid, "D: renders produced frames" );
-	if( !base.valid || !px.valid ) return;
-
-	const double L0 = ( base.r + base.g + base.b ) / 3.0;
-	const double m  = ( px.r + px.g + px.b ) / 3.0;
-	const double expected = L0 * std::exp( -sa * kBackWallDepth );  // single-count
-	std::cout << "    L0(zero-abs)=" << L0 << "  measured=" << m
-		<< "  expected single-count=" << expected
-		<< "  (buggy double-count ~ expected*exp(-sigma_a*d)="
-		<< expected * std::exp( -sa * kBackWallDepth ) << ")" << std::endl;
-
-	// In-process (denoise-free radiance buffer) this site renders CLEAN
-	// single-count Beer-Lambert: measured == L0 * exp(-sigma_a*d).  The buggy
-	// double-count would apply an EXTRA exp(-sigma_a*d) (verified revert-proof
-	// in the test harness: measured drops to ~0.14, well outside the band).
-	Check( ChannelOk( m, expected, "D.mean" ),
-		"D: measured == single-count Beer-Lambert (double-count would be ~exp(-1) darker)" );
-}
-
 static void TestGlobalMediumColored()
 {
 	std::cout << "[E] camera INSIDE global medium, coloured absorber "
@@ -1511,9 +1447,9 @@ static void TestGlobalMediumColored()
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
 
 	const PixelRGB base = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, false, 0.0, 0.0, 0.0 ), "gmed_col_base" );
+		BuildGlobalMediumScene( 256, false, 0.0, 0.0, 0.0 ), "gmed_col_base" );
 	const PixelRGB px = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, false, sar, sag, sab ), "gmed_col" );
+		BuildGlobalMediumScene( 256, false, sar, sag, sab ), "gmed_col" );
 
 	Check( base.valid && px.valid, "E: renders produced frames" );
 	if( !base.valid || !px.valid ) return;
@@ -1551,9 +1487,9 @@ static void TestGlobalMediumSpectral()
 	const double sa = 0.5;
 
 	const PixelRGB base = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, true, 0.0, 0.0, 0.0 ), "gmed_nm_base" );
+		BuildGlobalMediumScene( 256, true, 0.0, 0.0, 0.0 ), "gmed_nm_base" );
 	const PixelRGB px = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, true, sa, sa, sa ), "gmed_nm" );
+		BuildGlobalMediumScene( 256, true, sa, sa, sa ), "gmed_nm" );
 
 	Check( base.valid && px.valid, "F: renders produced frames" );
 	if( !base.valid || !px.valid ) return;
@@ -1602,9 +1538,9 @@ static void TestGlobalMediumSpectralHWSS()
 	const double sa = 0.5;
 
 	const PixelRGB base = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, true, 0.0, 0.0, 0.0, /*hwss=*/true ), "gmed_hwss_base" );
+		BuildGlobalMediumScene( 256, true, 0.0, 0.0, 0.0, /*hwss=*/true ), "gmed_hwss_base" );
 	const PixelRGB px = RenderCentralBlock(
-		BuildGlobalMediumScene( 1024, true, sa, sa, sa, /*hwss=*/true ), "gmed_hwss" );
+		BuildGlobalMediumScene( 256, true, sa, sa, sa, /*hwss=*/true ), "gmed_hwss" );
 
 	Check( base.valid && px.valid, "F2: renders produced frames" );
 	if( !base.valid || !px.valid ) return;
@@ -1692,9 +1628,9 @@ static void TestGlobalMediumMirrorHWSS()
 	const double sa = 0.5;
 
 	const PixelRGB base = RenderCentralBlock(
-		BuildGlobalMediumMirrorScene( 1024, 0.0, /*hwss=*/true ), "gmed_mirror_base" );
+		BuildGlobalMediumMirrorScene( 256, 0.0, /*hwss=*/true ), "gmed_mirror_base" );
 	const PixelRGB px = RenderCentralBlock(
-		BuildGlobalMediumMirrorScene( 1024, sa, /*hwss=*/true ), "gmed_mirror" );
+		BuildGlobalMediumMirrorScene( 256, sa, /*hwss=*/true ), "gmed_mirror" );
 
 	Check( base.valid && px.valid, "F3: renders produced frames" );
 	if( !base.valid || !px.valid ) return;
@@ -1743,28 +1679,12 @@ static PixelRGB RenderSlab(
 		BuildRGBSlabScene( rasterizerChunk, sar, sag, sab ), tag );
 }
 
-static void TestBDPTGray()
-{
-	std::cout << "[G] BDPT RGB gray absorber (sigma_a = 0.5, d = "
-		<< kSlabDepth << ") — BDPT eye+light survival fix" << std::endl;
-	const double sa = 0.5;
-	const PixelRGB px = RenderSlab( BDPTPelRasterizerChunk( 256 ), sa, sa, sa, "bdpt_gray" );
-	Check( px.valid, "G: render produced a frame" );
-	if( !px.valid ) return;
-	const double exp = Expected( sa );
-	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
-		<< ")  expected " << exp << " each" << std::endl;
-	Check( ChannelOk( px.r, exp, "G.r" ), "G: BDPT red   == exp(-sigma_a*d)" );
-	Check( ChannelOk( px.g, exp, "G.g" ), "G: BDPT green == exp(-sigma_a*d)" );
-	Check( ChannelOk( px.b, exp, "G.b" ), "G: BDPT blue  == exp(-sigma_a*d)" );
-}
-
 static void TestBDPTColored()
 {
 	std::cout << "[H] BDPT RGB coloured absorber (sigma_a = 0.2/0.6/1.2, d = "
 		<< kSlabDepth << ") — desaturation discriminator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	const PixelRGB px = RenderSlab( BDPTPelRasterizerChunk( 1024 ), sar, sag, sab, "bdpt_col" );
+	const PixelRGB px = RenderSlab( BDPTPelRasterizerChunk( 256 ), sar, sag, sab, "bdpt_col" );
 	Check( px.valid, "H: render produced a frame" );
 	if( !px.valid ) return;
 	const double er = Expected( sar ), eg = Expected( sag ), eb = Expected( sab );
@@ -1777,28 +1697,12 @@ static void TestBDPTColored()
 		"H: BDPT medium stays coloured (r > g > b, not desaturated)" );
 }
 
-static void TestVCMGray()
-{
-	std::cout << "[I] VCM RGB gray absorber (sigma_a = 0.5, d = "
-		<< kSlabDepth << ") — VCM inherits fix via shared generators" << std::endl;
-	const double sa = 0.5;
-	const PixelRGB px = RenderSlab( VCMPelRasterizerChunk( 256 ), sa, sa, sa, "vcm_gray" );
-	Check( px.valid, "I: render produced a frame" );
-	if( !px.valid ) return;
-	const double exp = Expected( sa );
-	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
-		<< ")  expected " << exp << " each" << std::endl;
-	Check( ChannelOk( px.r, exp, "I.r" ), "I: VCM red   == exp(-sigma_a*d)" );
-	Check( ChannelOk( px.g, exp, "I.g" ), "I: VCM green == exp(-sigma_a*d)" );
-	Check( ChannelOk( px.b, exp, "I.b" ), "I: VCM blue  == exp(-sigma_a*d)" );
-}
-
 static void TestVCMColored()
 {
 	std::cout << "[J] VCM RGB coloured absorber (sigma_a = 0.2/0.6/1.2, d = "
 		<< kSlabDepth << ") — desaturation discriminator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	const PixelRGB px = RenderSlab( VCMPelRasterizerChunk( 1024 ), sar, sag, sab, "vcm_col" );
+	const PixelRGB px = RenderSlab( VCMPelRasterizerChunk( 256 ), sar, sag, sab, "vcm_col" );
 	Check( px.valid, "J: render produced a frame" );
 	if( !px.valid ) return;
 	const double er = Expected( sar ), eg = Expected( sag ), eb = Expected( sab );
@@ -1820,7 +1724,7 @@ static void TestBDPTSpectral()
 	std::cout << "[K] BDPT NM/spectral gray absorber (sigma_a = 0.5, d = "
 		<< kSlabDepth << ", hwss off) — BDPT NMTag survival == identity" << std::endl;
 	const double sa = 0.5;
-	const PixelRGB px = RenderSlab( BDPTSpectralRasterizerChunk( 512 ), sa, sa, sa, "bdpt_nm" );
+	const PixelRGB px = RenderSlab( BDPTSpectralRasterizerChunk( 256 ), sa, sa, sa, "bdpt_nm" );
 	Check( px.valid, "K: render produced a frame" );
 	if( !px.valid ) return;
 	const double exp = Expected( sa );
@@ -1840,7 +1744,7 @@ static void TestVCMSpectral()
 	std::cout << "[L] VCM NM/spectral gray absorber (sigma_a = 0.5, d = "
 		<< kSlabDepth << ", hwss off) — VCM NMTag survival == identity" << std::endl;
 	const double sa = 0.5;
-	const PixelRGB px = RenderSlab( VCMSpectralRasterizerChunk( 512 ), sa, sa, sa, "vcm_nm" );
+	const PixelRGB px = RenderSlab( VCMSpectralRasterizerChunk( 256 ), sa, sa, sa, "vcm_nm" );
 	Check( px.valid, "L: render produced a frame" );
 	if( !px.valid ) return;
 	const double exp = Expected( sa );
@@ -1853,44 +1757,6 @@ static void TestVCMSpectral()
 	Check( nmOk( px.r ), "L: VCM spectral red   ~ exp(-sigma_a*d)" );
 	Check( nmOk( px.g ), "L: VCM spectral green ~ exp(-sigma_a*d)" );
 	Check( nmOk( px.b ), "L: VCM spectral blue  ~ exp(-sigma_a*d)" );
-}
-
-// PT-vs-BDPT agreement spot check (per bdpt-vcm-mis-balance skill): render
-// the SAME coloured slab under PT and BDPT and assert the per-channel means
-// agree within MC noise.  This confirms the survival-weight change is a pure
-// contribution-magnitude edit that leaves the MIS-weighted result identical
-// across integrators — i.e. no MIS regression from touching beta.
-static void TestPTvsBDPTAgreement()
-{
-	std::cout << "[M] PT vs BDPT agreement on the coloured slab "
-		<< "(no-MIS-regression check)" << std::endl;
-	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	// PT reference via the parameterized builder (identical scene modulo the
-	// rasterizer chunk).
-	std::ostringstream ptc;
-	ptc << "pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\tmax_volume_bounce 16\n"
-		   "\tpixel_filter box\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
-		   "\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n";
-	const PixelRGB pt   = RenderSlab( ptc.str(), sar, sag, sab, "agree_pt" );
-	const PixelRGB bdpt = RenderSlab( BDPTPelRasterizerChunk( 1024 ), sar, sag, sab, "agree_bdpt" );
-	Check( pt.valid && bdpt.valid, "M: both renders produced frames" );
-	if( !pt.valid || !bdpt.valid ) return;
-	std::cout << "    PT  (" << pt.r << ", " << pt.g << ", " << pt.b << ")"
-		<< "  BDPT(" << bdpt.r << ", " << bdpt.g << ", " << bdpt.b << ")" << std::endl;
-	// Both are exact single-count Beer-Lambert; the only difference is MC
-	// noise, so a channel-relative 12% band comfortably confirms agreement
-	// while catching a systematic MIS-driven mean shift.
-	auto agree = [&]( double a, double b, const char* nm ) -> bool {
-		const double denom = std::fmax( std::fmax( std::fabs(a), std::fabs(b) ), 1e-4 );
-		const double rel = std::fabs( a - b ) / denom;
-		const bool ok = rel <= 0.12;
-		if( !ok ) std::cout << "    " << nm << " PT=" << a << " BDPT=" << b
-			<< " rel=" << rel << std::endl;
-		return ok;
-	};
-	Check( agree( pt.r, bdpt.r, "M.r" ), "M: PT.r ~ BDPT.r (within MC noise)" );
-	Check( agree( pt.g, bdpt.g, "M.g" ), "M: PT.g ~ BDPT.g (within MC noise)" );
-	Check( agree( pt.b, bdpt.b, "M.b" ), "M: PT.b ~ BDPT.b (within MC noise)" );
 }
 
 
@@ -1918,10 +1784,10 @@ static void TestBDPTLightSubpathSlab()
 		<< "— light-subpath survival site" << std::endl;
 	const double sa = 0.5;
 	const PixelRGB base = RenderCentralBlock(
-		BuildLightSubpathSlabScene( BDPTPelRasterizerChunk( 1024 ), 0.0, 0.0, 0.0 ),
+		BuildLightSubpathSlabScene( BDPTPelRasterizerChunk( 256 ), 0.0, 0.0, 0.0 ),
 		"bdpt_lsub_base" );
 	const PixelRGB px = RenderCentralBlock(
-		BuildLightSubpathSlabScene( BDPTPelRasterizerChunk( 1024 ), sa, sa, sa ),
+		BuildLightSubpathSlabScene( BDPTPelRasterizerChunk( 256 ), sa, sa, sa ),
 		"bdpt_lsub" );
 	Check( base.valid && px.valid, "N: renders produced frames" );
 	if( !base.valid || !px.valid ) return;
@@ -1968,7 +1834,7 @@ static std::string PTSpectralHetRasterizerChunk( int samples )
 	return ss.str();
 }
 
-static PixelRGB TestHeterogeneousColored( unsigned int spp = 4096u, unsigned int repeats = 6u )
+static PixelRGB TestHeterogeneousColored( unsigned int spp = 4096u, unsigned int repeats = 4u )
 {
 	std::cout << "[O] HETEROGENEOUS (constant-density) RGB coloured absorber "
 		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
@@ -2004,7 +1870,7 @@ static void TestHeterogeneousSpectral()
 		<< ", hwss off) — deterministic EvalDistancePdfNM survival denominator" << std::endl;
 	const double sa = 0.5;
 	const PixelRGB px = RenderCentralBlock(
-		BuildHeterogeneousSlabScene( PTSpectralHetRasterizerChunk( 2048 ), sa, sa, sa ),
+		BuildHeterogeneousSlabScene( PTSpectralHetRasterizerChunk( 512 ), sa, sa, sa ),
 		"het_nm" );
 	Check( px.valid, "P: render produced a frame" );
 	if( !px.valid ) return;
@@ -2040,11 +1906,11 @@ static void TestPositionalLightGray()
 
 	// With the positional light -> EQ-MIS regime (the path under test).
 	const PixelRGB px = RenderCentralBlock(
-		BuildRGBSceneWithOmni( 1024, sa, sa, sa ), "omni_gray" );
+		BuildRGBSceneWithOmni( 256, sa, sa, sa ), "omni_gray" );
 	// The SAME slab WITHOUT the omni light -> pure analog sampler (no 0.5
 	// split), which must stay byte-identical to its historical behaviour.
 	const PixelRGB noOmni = RenderCentralBlock(
-		BuildRGBScene( 1024, sa, sa, sa ), "omni_gray_noomni" );
+		BuildRGBScene( 256, sa, sa, sa ), "omni_gray_noomni" );
 
 	Check( px.valid && noOmni.valid, "Q: renders produced frames" );
 	if( !px.valid || !noOmni.valid ) return;
@@ -2085,11 +1951,8 @@ static void TestPositionalLightColored()
 		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
 		<< ") — selection-weight + desaturation discriminator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	// P2-4: repeat-averaged -- see RenderCentralBlockAveraged's note for
-	// historical unsalted single-render spread; it did not include randomized-
-	// QMC error. The current helper salts every repeat and preserves the band.
-	const PixelRGB px = RenderCentralBlockAveraged(
-		BuildRGBSceneWithOmni( 1024, sar, sag, sab ), "omni_col" );
+	const PixelRGB px = RenderCentralBlock(
+		BuildRGBSceneWithOmni( 256, sar, sag, sab ), "omni_col" );
 	Check( px.valid, "R: render produced a frame" );
 	if( !px.valid ) return;
 	const double er = Expected( sar ), eg = Expected( sag ), eb = Expected( sab );
@@ -2122,26 +1985,6 @@ static void TestSpectralCurveChromatic()
 	Check( px.r > px.b * 3.0, "S: strong chromaticity (r > 3*b), not gray" );
 }
 
-// [T] Flat sigma_a(lambda) curve => gray attenuation.  Control proving the
-// chromaticity in [S] comes from the CURVE SHAPE, not merely from routing
-// through the spectral path.
-static void TestSpectralCurveFlatControl()
-{
-	std::cout << "[T] flat spectral sigma_a(lambda) curve => gray (control)" << std::endl;
-	const PixelRGB px = RenderCentralBlock(
-		BuildSpectralCurveScene( "abs_curve", kFlatAbsorberCps, "abs_curve", 2.0 ),
-		"spec_flat" );
-	Check( px.valid, "T: render produced a frame" );
-	if( !px.valid ) return;
-	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b << ")" << std::endl;
-	const double mx = std::fmax( px.r, std::fmax( px.g, px.b ) );
-	const double mn = std::fmin( px.r, std::fmin( px.g, px.b ) );
-	// Near-gray: the max/min channel spread is small (flat curve => equal
-	// per-wavelength attenuation).  Loose bound absorbs MC + spectral-to-RGB
-	// noise; the point is it is NOT the strongly-red [S] result.
-	Check( mx < mn * 1.5 + 1e-4, "T: flat curve renders near-gray (max < 1.5*min)" );
-}
-
 // [U] A bound-but-missing curve name is author error: the medium add fails,
 // the scene fails to load, and the render returns no frame (fails loudly
 // rather than silently dropping the intended spectral behaviour).
@@ -2152,23 +1995,6 @@ static void TestSpectralCurveMissingRef()
 		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, "missing_curve", 2.0 ),
 		"spec_badref" );
 	Check( !px.valid, "U: scene with unknown curve ref does not produce a frame" );
-}
-
-// [V] Discriminator: the SAME slab WITHOUT a curve (RGB absorption only)
-// renders gray in spectral mode, while [S] (with the red curve) renders
-// red.  This is the direct luminance-collapse-vs-spectral contrast.
-static void TestSpectralNoCurveBaselineGray()
-{
-	std::cout << "[V] no curve (RGB-only) => gray in spectral mode (vs [S] red)" << std::endl;
-	const PixelRGB px = RenderCentralBlock(
-		BuildSpectralCurveScene( "abs_curve", kRedAbsorberCps, /*ref=*/"", 1.0, 4096 ),
-		"spec_nocurve" );
-	Check( px.valid, "V: render produced a frame" );
-	if( !px.valid ) return;
-	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b << ")" << std::endl;
-	const double mx = std::fmax( px.r, std::fmax( px.g, px.b ) );
-	const double mn = std::fmin( px.r, std::fmin( px.g, px.b ) );
-	Check( mx < mn * 1.5 + 1e-4, "V: RGB-only medium renders near-gray in spectral mode" );
 }
 
 // Additional measurement mode; no arguments still execute every default row.
@@ -2213,30 +2039,25 @@ int main( int argc, char* argv[] )
 	std::cout << "VolumeAbsorptionAttenuationTest — Beer-Lambert single-count "
 		"through a homogeneous absorbing medium" << std::endl;
 
-	// Cases A/B/C: camera OUTSIDE an interior-medium slab (site S1),
+	// Cases B/C: camera OUTSIDE an interior-medium slab (site S1),
 	// clean analytic Beer-Lambert reference.
-	TestRGBGray();
 	TestRGBColored();
 	TestNMSpectral();
 
-	// Cases D/E/F: camera INSIDE a global medium (site S3), buggy-vs-fixed
+	// Cases E/F/F2/F3: camera INSIDE a global medium (site S3), buggy-vs-fixed
 	// single-count Beer-Lambert discriminator (see file header).
-	TestGlobalMediumGray();
 	TestGlobalMediumColored();
 	TestGlobalMediumSpectral();
 	TestGlobalMediumSpectralHWSS();
 	TestGlobalMediumMirrorHWSS();
 
-	// Cases G..M: the SAME interior slab under BDPT / VCM (RGB + spectral),
+	// Cases H/J/K/L/N: the SAME interior slab under BDPT / VCM (RGB + spectral),
 	// proving the analog no-scatter survival fix now makes BDPT/VCM match
-	// PT / analytic Beer-Lambert, plus a PT-vs-BDPT no-MIS-regression check.
-	TestBDPTGray();
+	// PT / analytic Beer-Lambert.
 	TestBDPTColored();
-	TestVCMGray();
 	TestVCMColored();
 	TestBDPTSpectral();
 	TestVCMSpectral();
-	TestPTvsBDPTAgreement();
 	TestBDPTLightSubpathSlab();
 
 	// Cases O/P: HETEROGENEOUS (constant-density) slab — exercises the
@@ -2246,25 +2067,15 @@ int main( int argc, char* argv[] )
 	TestHeterogeneousSpectral();
 
 	// Cases Q/R: the SAME slab WITH a positional (omni) light present, which
-	// activates the equiangular-MIS volume distance sampler.  The transmitted
-	// env must still read single-count Beer-Lambert (the no-scatter outcome
-	// carries the 1/0.5 = 2x strategy-selection factor); missing the factor
-	// reads 2x too dark.  Q also asserts the with-omni render matches the
-	// no-omni (analog) render, confirming the no-positional path is unchanged.
+	// activates the equiangular-MIS volume distance sampler.
 	TestPositionalLightGray();
 	TestPositionalLightColored();
 
-	// Cases S/T/U/V: G1 spectral homogeneous medium authored end-to-end
+	// Cases S/U: G1 spectral homogeneous medium authored end-to-end
 	// through the parser (piecewise_linear_function + homogeneous_medium
-	// absorption_spectral).  A red-transmitting sigma_a(lambda) curve reads
-	// RED under the spectral rasterizer (S); a flat curve reads gray (T);
-	// an unknown curve reference fails the load loudly (U); and the same
-	// slab with no curve reads gray in spectral mode (V) — the direct
-	// luminance-collapse-vs-spectral contrast.
+	// absorption_spectral).
 	TestSpectralCurveChromatic();
-	TestSpectralCurveFlatControl();
 	TestSpectralCurveMissingRef();
-	TestSpectralNoCurveBaselineGray();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

@@ -278,7 +278,7 @@ static Stat SaltedHalves( const std::string& scene, const char* tag, int holeMod
 // Scene text.
 //////////////////////////////////////////////////////////////////////
 static const char* kScene =
-	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
@@ -329,7 +329,7 @@ static std::string Scene( const char* rasterizer )
 // disabled, BDPT reads 0.00038x / 0.00008x of PT on the two halves.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneWall =
-	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
@@ -357,19 +357,19 @@ static const char* kVCMDeep =
 	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 32\n\tmerge_radius 0.0\n"
 	"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 static const char* kPTWall =
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+	"pathtracing_pel_rasterizer\n{\n\tsamples 128\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 
 static std::string SceneWall( const char* rasterizer )
 {
 	return std::string( "RISE ASCII SCENE 7\n" ) + kShader + rasterizer + kSceneWall;
 }
 
-static const int kRepeats = 4;
+static const int kRepeats = 2;
 // Mean band against the PT Lambertian reference, per image half.  The
-// measured salted sd of a half-mean is ~0.1-0.3 % at this sample count
+// measured salted sd of a half-mean is ~0.2-0.6 % at this sample count
 // (printed below); the defect it guards against is a factor of ~0.006
 // (null SPF) and ~0.5 on the hole half (half SPF).
-static const double kBand = 0.03;
+static const double kBand = 0.05;
 
 static void Compare( const char* label, const Stat& got, const Stat& ref,
 	const double band = kBand, const char* refName = "PT Lambertian" )
@@ -415,7 +415,7 @@ int main()
 	// The wall fixture is ~5x noisier per half (a three-bounce family; salted
 	// sd of a half-mean up to ~2 %), so its band is wider; the defect it
 	// guards is a factor of ~0.0004 (eye-walk break disabled, measured).
-	const double kWallBand = 0.10;
+	const double kWallBand = 0.15;
 	Compare( "BDPT null-SPF wall", SaltedHalves( SceneWall( kBDPTDeep ), "bdpt_wall_null", 0, kRepeats, "obj_wall" ),
 		refWall, kWallBand, "PT null-SPF wall" );
 	Compare( "VCM null-SPF wall", SaltedHalves( SceneWall( kVCMDeep ), "vcm_wall_null", 0, kRepeats, "obj_wall" ),

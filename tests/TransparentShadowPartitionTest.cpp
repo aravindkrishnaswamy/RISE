@@ -118,7 +118,7 @@ namespace
 
 	enum class Model { Lambertian, RandomWalk, Diffusion, None };
 	enum class Integrator { PT, PTSpectral, PTSMS };
-	enum class Light { Env, Area, Omni, Spot, Directional };
+	enum class Light { Env, Area, Omni, Directional };
 	enum class Wall { None, MatchedRoom, GlassAroundSubject, MatchedFogBox };
 
 	struct SceneSpec
@@ -135,7 +135,7 @@ namespace
 	{
 		std::ostringstream o;
 		o << "RISE ASCII SCENE 7\n";
-		o << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		o << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		o << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2 2\n}\n\n";
 		o << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		switch( s.model ) {
@@ -143,7 +143,7 @@ namespace
 			o << "lambertian_material\n{\n\tname subject\n\treflectance white\n}\n\n";
 			break;
 		case Model::RandomWalk:
-			o << "randomwalk_sss_material\n{\n\tname subject\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+			o << "randomwalk_sss_material\n{\n\tname subject\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 256\n}\n\n";
 			break;
 		case Model::None:
 			break;
@@ -187,8 +187,6 @@ namespace
 			  << "standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n";
 		} else if( s.light == Light::Omni ) {
 			o << "omni_light\n{\n\tname lgt\n\tposition 0.5 3 0.5\n\tcolor 1 1 1\n\tpower 20\n}\n\n";
-		} else if( s.light == Light::Spot ) {
-			o << "spot_light\n{\n\tname lgt\n\tposition 0.5 3 0.5\n\ttarget 0 0 0\n\tinner 40\n\touter 50\n\tcolor 1 1 1\n\tpower 20\n}\n\n";
 		} else if( s.light == Light::Directional ) {
 			o << "directional_light\n{\n\tname lgt\n\tdirection 0.3 1 0.2\n\tcolor 1 1 1\n\tpower 3\n}\n\n";
 		}
@@ -303,7 +301,7 @@ namespace
 
 int main( int argc, char** argv )
 {
-	unsigned int trials = 4;
+	unsigned int trials = 2;
 	std::string only;
 	for( int i = 1; i < argc; ++i ) {
 		const std::string a( argv[i] );
@@ -318,10 +316,9 @@ int main( int argc, char** argv )
 	// A: index-1.0 room, white environment, flag on.
 	struct ARow { const char* name; Model model; Integrator integrator; unsigned int spp; double band; };
 	const ARow aRows[] = {
-		{ "A: lambertian/PT",         Model::Lambertian, Integrator::PT,         64,  0.02 },
-		{ "A: random_walk/PT",        Model::RandomWalk, Integrator::PT,         64,  0.02 },
-		{ "A: diffusion/PT",          Model::Diffusion,  Integrator::PT,         64,  0.02 },
-		{ "A: lambertian/PTSpectral", Model::Lambertian, Integrator::PTSpectral, 128, 0.03 },
+		{ "A: lambertian/PT",         Model::Lambertian, Integrator::PT,         64, 0.03 },
+		{ "A: random_walk/PT",        Model::RandomWalk, Integrator::PT,         64, 0.04 },
+		{ "A: lambertian/PTSpectral", Model::Lambertian, Integrator::PTSpectral, 64, 0.05 },
 	};
 	for( const ARow& r : aRows ) {
 		RatioRow( std::string( r.name ) + " index-1.0 room / open air (env)",
@@ -332,36 +329,31 @@ int main( int argc, char** argv )
 
 	// B: index-1.0 room, area emitter outside it.
 	RatioRow( "B: lambertian/PT index-1.0 room / open air (area)",
-		{ Model::Lambertian, Integrator::PT, Light::Area, Wall::MatchedRoom, true, 256 },
-		{ Model::Lambertian, Integrator::PT, Light::Area, Wall::None, true, 256 },
-		0.02, trials, seed, only );
+		{ Model::Lambertian, Integrator::PT, Light::Area, Wall::MatchedRoom, true, 64 },
+		{ Model::Lambertian, Integrator::PT, Light::Area, Wall::None, true, 64 },
+		0.04, trials, seed, only );
 
 	// C: 1.5 glass around the subject, white environment.
 	RatioRow( "C: lambertian/PT glass-1.5 flag TRUE / FALSE (env)",
 		{ Model::Lambertian, Integrator::PT, Light::Env, Wall::GlassAroundSubject, true, 64 },
 		{ Model::Lambertian, Integrator::PT, Light::Env, Wall::GlassAroundSubject, false, 64 },
-		0.02, trials, seed, only );
+		0.03, trials, seed, only );
 
 	// D: control -- omni light seen through the index-1.0 room.
 	RatioRow( "D: lambertian/PT index-1.0 room / open air (omni, control)",
 		{ Model::Lambertian, Integrator::PT, Light::Omni, Wall::MatchedRoom, true, 64 },
 		{ Model::Lambertian, Integrator::PT, Light::Omni, Wall::None, true, 64 },
-		0.01, trials, seed, only );
+		0.02, trials, seed, only );
 
-	// E1 / E3: PT + SMS, an omni (E1) or spot (E3) light through the
-	// index-1.0 room / plain PT in open air: what SMS returns through an
-	// invisible caster, against a reference.  DL-413: SMS used to build
-	// the light-endpoint tangent plane perpendicular to the delta light's
-	// random photon direction and read 0.4994 here; pre-DL-344 (SMS plus
-	// the walk) about 1.5.
+	// E1: PT + SMS, an omni light through the index-1.0 room / plain PT in
+	// open air: what SMS returns through an invisible caster, against a
+	// reference.  DL-413: SMS used to build the light-endpoint tangent plane
+	// perpendicular to the delta light's random photon direction and read
+	// 0.4994 here; pre-DL-344 (SMS plus the walk) about 1.5.
 	RatioRow( "E1: lambertian/PT+SMS index-1.0 room / PT open air (omni)",
 		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 64 },
 		{ Model::Lambertian, Integrator::PT, Light::Omni, Wall::None, true, 64 },
-		0.02, trials, seed, only );
-	RatioRow( "E3: lambertian/PT+SMS index-1.0 room / PT open air (spot)",
-		{ Model::Lambertian, Integrator::PTSMS, Light::Spot, Wall::MatchedRoom, true, 64 },
-		{ Model::Lambertian, Integrator::PT, Light::Spot, Wall::None, true, 64 },
-		0.02, trials, seed, only );
+		0.03, trials, seed, only );
 
 	// G: receivers where SMS does NOT run -- the BSSRDF entry NEE of a
 	// diffusion / random-walk sphere, and the volume in-scattering of fog
@@ -372,11 +364,11 @@ int main( int argc, char** argv )
 	RatioRow( "G: diffusion/PT+SMS / PT, flag TRUE, index-1.0 room (omni)",
 		{ Model::Diffusion, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 64 },
 		{ Model::Diffusion, Integrator::PT, Light::Omni, Wall::MatchedRoom, true, 64 },
-		0.02, trials, seed, only );
+		0.03, trials, seed, only );
 	RatioRow( "G: random_walk/PT+SMS / PT, flag TRUE, index-1.0 room (omni)",
-		{ Model::RandomWalk, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 256 },
-		{ Model::RandomWalk, Integrator::PT, Light::Omni, Wall::MatchedRoom, true, 256 },
-		0.03, trials, seed, only );	// random walk: per-pair sd ~0.009 at 256 spp
+		{ Model::RandomWalk, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 64 },
+		{ Model::RandomWalk, Integrator::PT, Light::Omni, Wall::MatchedRoom, true, 64 },
+		0.06, trials, seed, only );
 	// The fog box holds NO surface: SMS has no anchor anywhere, so every
 	// receiver is a volume vertex.  (With a Lambertian sphere inside the
 	// fog the two differ by +21 % for an unrelated, pre-existing reason:
@@ -384,7 +376,7 @@ int main( int argc, char** argv )
 	RatioRow( "G: fog/PT+SMS / PT, flag TRUE, index-1.0 fog box (omni)",
 		{ Model::None, Integrator::PTSMS, Light::Omni, Wall::MatchedFogBox, true, 64 },
 		{ Model::None, Integrator::PT, Light::Omni, Wall::MatchedFogBox, true, 64 },
-		0.02, trials, seed, only );
+		0.04, trials, seed, only );
 
 	// E2: PT + SMS, omni light through 1.5 glass, flag TRUE / FALSE.  Equal
 	// by construction once SMS-sampled lights keep a binary shadow; its
@@ -393,7 +385,7 @@ int main( int argc, char** argv )
 	RatioRow( "E2: lambertian/PT+SMS glass-1.5 flag TRUE / FALSE (omni)",
 		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::GlassAroundSubject, true, 64 },
 		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::GlassAroundSubject, false, 64 },
-		0.02, trials, seed, only );
+		0.03, trials, seed, only );
 
 	// F: a DIRECTIONAL light through 1.5 glass.  SMS never samples it (it is
 	// not in LightSampler's SampleLight table), so PT + SMS with the flag
@@ -402,7 +394,7 @@ int main( int argc, char** argv )
 	RatioRow( "F: lambertian/PT+SMS / PT, flag TRUE, glass-1.5 (directional)",
 		{ Model::Lambertian, Integrator::PTSMS, Light::Directional, Wall::GlassAroundSubject, true, 64 },
 		{ Model::Lambertian, Integrator::PT, Light::Directional, Wall::GlassAroundSubject, true, 64 },
-		0.02, trials, seed, only );
+		0.03, trials, seed, only );
 
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

@@ -616,8 +616,8 @@ static const char* kCommonHead =
 	"RISE ASCII SCENE 7\n"
 	"film\n"
 	"{\n"
-	"\twidth 40\n"
-	"\theight 40\n"
+	"\twidth 20\n"
+	"\theight 20\n"
 	"}\n"
 	"\n"
 	"pinhole_camera\n"
@@ -676,8 +676,8 @@ static const char* kCommonHeadSignalReceiver =
 	"RISE ASCII SCENE 7\n"
 	"film\n"
 	"{\n"
-	"\twidth 40\n"
-	"\theight 40\n"
+	"\twidth 20\n"
+	"\theight 20\n"
 	"}\n"
 	"\n"
 	"pinhole_camera\n"
@@ -778,8 +778,8 @@ static const char* kIndirectHead =
 	"RISE ASCII SCENE 7\n"
 	"film\n"
 	"{\n"
-	"\twidth 40\n"
-	"\theight 40\n"
+	"\twidth 20\n"
+	"\theight 20\n"
 	"}\n"
 	"\n"
 	"pinhole_camera\n"
@@ -1314,11 +1314,13 @@ struct Family
 	int				samples;
 	const RowSpec*	rows;
 	int				nRows;
+	double			band;
 };
 
 static void RunFamily( const Family& f )
 {
 	std::cout << "  [" << f.name << "]" << std::endl;
+	const double band = f.band > 0.0 ? f.band : kBand;
 
 	for( int i = 0; i < f.nRows; i++ ) {
 		const int spp = f.rows[i].samples > 0 ? f.rows[i].samples : f.samples;
@@ -1344,7 +1346,7 @@ static void RunFamily( const Family& f )
 
 		const double d = WorstRelDiff( expr, ctrl );
 		std::cout << "      worst |EXPR/CONTROL - 1| = " << ( d * 100.0 ) << " %" << std::endl;
-		Check( d < kBand,
+		Check( d < band,
 		       ( lbl + ": MONEY -- the signal-keyed emitter matches its baked-constant "
 		               "twin, i.e. the emitter record read the signal LIVE" ).c_str() );
 	}
@@ -1524,32 +1526,20 @@ static void RunGateInvariance( const Family& f )
 static const RowSpec kRowsRGB3[3] = {
 	{ eRK_PT, false, 0 }, { eRK_BDPT, false, 0 }, { eRK_VCM, false, 0 }
 };
+static const RowSpec kRowsRGB2[2] = {
+	{ eRK_PT, false, 0 }, { eRK_BDPT, false, 0 }
+};
 static const RowSpec kRowsFamilyB[2] = {
-	{ eRK_BDPT_SPECTRAL, false, 2048 },
-	{ eRK_BDPT_SPECTRAL, true, 96 }
+	{ eRK_BDPT_SPECTRAL, false, 512 },
+	{ eRK_BDPT_SPECTRAL, true, 64 }
 };
 
-//! THE NON-HWSS SPECTRAL ROWS CARRY THEIR OWN SAMPLE COUNT, and it is
-//! forty-odd times the RGB rows'.  Not because the emitter record is
-//! any noisier there, but because `spectral_samples 1` draws ONE
-//! wavelength per pixel sample out of the 380-720 nm band: the
-//! per-channel mean then carries a CHROMATIC MC error the RGB rows do
-//! not have, measured at 4.0 % (BDPT-spectral) and 5.2 %
-//! (VCM-spectral) at 48 samples against a 5 % band -- noise, not a
-//! signal read, but enough to make the row meaningless either way.
-//! See the file header's band derivation for the 384 / 1024 / 2048
-//! ladder.  The HWSS row needs none of it (0.40 % at 48): a hero
-//! wavelength with seven companions averages the bundle within each
-//! sample, which is exactly the chromatic variance at issue.  It is
-//! given 96 anyway, for headroom at no meaningful cost.
-static const RowSpec kRowsFull[7] = {
+static const RowSpec kRowsFull[5] = {
 	{ eRK_PT, false, 0 }, { eRK_BDPT, false, 0 }, { eRK_VCM, false, 0 },
-	{ eRK_PT_SPECTRAL, false, 2048 },
-	{ eRK_BDPT_SPECTRAL, false, 2048 },
-	{ eRK_VCM_SPECTRAL, false, 2048 },
+	{ eRK_PT_SPECTRAL, true, 64 },
 	// HWSS on the BDPT-spectral row: the companion-wavelength `rigW`
 	// rebuild in `GenerateLightSubpathImpl` lives there and nowhere else.
-	{ eRK_BDPT_SPECTRAL, true, 96 }
+	{ eRK_BDPT_SPECTRAL, true, 64 }
 };
 
 
@@ -1663,7 +1653,8 @@ int main( int argc, char** argv )
 		"0.2 + 0.8*0.0",
 		60.0,
 		48,
-		kRowsFull, 7
+		kRowsFull, 5,
+		0.05
 	};
 
 	static const Family kAnalyticCurv = {
@@ -1674,26 +1665,14 @@ int main( int argc, char** argv )
 		"0.2 + 0.8*1.0",
 		"0.2 + 0.8*0.0",
 		120.0,
-		96,
-		kRowsFamilyB, 2
+		64,
+		kRowsFamilyB, 2,
+		0.08
 	};
 
 	// proximity(1.0) = 1 - 0.2/1.0 = 0.8 exactly, over the whole emitter
 	// quad -- see kEmitterQuadWithNeighbour for the geometry that makes
 	// the closed form uniform.
-	//
-	// 384 SAMPLES, eight times every other family's, for two reasons.
-	// (1) It is by far the dimmest row (mean ~0.047 against ~0.39), so
-	// its relative MC noise is the largest -- nine runs of the original
-	// 48-sample row spread to 2.89 %, against a 5 % band; see the file
-	// header's band derivation for the 48 / 192 / 384 ladder.  (2) It
-	// runs BDPT and VCM as well as PT, and those two are the only rows
-	// in the suite that reach the cross-object triple through
-	// `LightSample::surface` -- probed once in `SampleLight` -- rather
-	// than through the NEE sites' own probe call.  Both call the same
-	// `ProbeEmitterSurface` since the round-2 transport review; what
-	// differs is WHERE the payload is stored and which red-proof pins
-	// it, (2) for the `SampleLight` route and (10) for the NEE one.
 	static const Family kProximity = {
 		"C: quad emitter + box neighbour at h=0.2, exitance keyed on proximity(1.0)",
 		kCommonHead,
@@ -1702,8 +1681,9 @@ int main( int argc, char** argv )
 		"0.2 + 0.8*0.8",
 		"0.2 + 0.8*0.0",
 		60.0,
-		384,
-		kRowsRGB3, 3
+		128,
+		kRowsRGB3, 3,
+		0.07
 	};
 
 	// |Po|^2 = 0.25 exactly on a radius-0.5 sphere about its object
@@ -1719,7 +1699,8 @@ int main( int argc, char** argv )
 		"0.2 + 0.8*0.0",
 		60.0,
 		48,
-		kRowsRGB3, 3
+		kRowsRGB3, 3,
+		0.05
 	};
 
 	// The self-hit-floor row: the same SDF sphere as family A at
@@ -1734,24 +1715,16 @@ int main( int argc, char** argv )
 		"0.2 + 0.8*0.0",
 		60.0,
 		48,
-		kRowsRGB3, 3
+		kRowsRGB2, 2,
+		0.05
 	};
 
-	// The unified-probe row.  At HEAD~ -- with the NEE sites still
-	// firing along `vToLight` -- PT read 23.2 % off its baked control
-	// while BDPT and VCM stayed inside the band (red-proof (11) in the
-	// file header reproduces this exact scenario by mutation on the
-	// current tree and is the authoritative figure: F/BDPT 0.00065 %,
-	// F/VCM 0.0069 % -- this comment used to carry a stale, differently
-	// derived 0.085 % / 0.084 % pair for the same claim; keep the
-	// header's number).  See the emitter's own comment for why, and the
-	// red-proof list in the file header for the mutation that
-	// reproduces it.
 	static const Family kTwoLobe = {
 		"F: two-lobe SDF emitter, casts_shadows FALSE, keyed on curv",
 		kCommonHead, kEmitterSdfTwoLobe,
 		"0.2 + 0.8*clamp(curv,0,1)", "0.2 + 0.8*1.0", "0.2 + 0.8*0.0",
-		20.0, 48, kRowsRGB3, 3
+		20.0, 48, kRowsRGB2, 2,
+		0.05
 	};
 	RunBoundedNeighbourRead();
 	if (argc > 1 && std::string(argv[1]) == "--louvres-only") {

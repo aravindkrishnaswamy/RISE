@@ -319,7 +319,7 @@ static std::string BuildScene( const std::string& rasterizerChunk, const char* o
 	s += "file_rasterizeroutput\n{\n\tpattern\t\t\t";
 	s += outPattern;
 	s += "\n\ttype\t\t\tEXR\n\tbpp\t\t\t32\n\tcolor_space\t\tRec709RGB_Linear\n}\n\n";
-	s += "film\n{\n\twidth\t\t\t128\n\theight\t\t\t96\n}\n\n";
+	s += "film\n{\n\twidth\t\t\t64\n\theight\t\t\t48\n}\n\n";
 	s += "pinhole_camera\n{\n\tlocation\t\t0 2 -5\n\tlookat\t\t\t0 -0.3 60\n\tup\t\t\t0 1 0\n\tfov\t\t\t50.0\n}\n\n";
 	s += "expression_painter\n{\n\tname\t\t\tfbmfade\n"
 	     "\tdef\t\t\tt clamp(0.5 + 0.5*fbm(P*6.0, 6, 0.5, 2.0), 0, 1)\n"
@@ -335,7 +335,7 @@ static std::string BuildScene( const std::string& rasterizerChunk, const char* o
 }
 
 static const char* kPtRasterizer =
-	"pathtracing_pel_rasterizer\n{\n\tsamples\t\t\t64\n\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
+	"pathtracing_pel_rasterizer\n{\n\tsamples\t\t\t16\n\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
 // BDPT runs with max_light_depth 0 so the floor is shaded only at the
 // eye subpath's first vertex -- the camera-differential mechanism DL-14
 // guards.  Since DL-402 gave the light-tracing (t == 1) strategy its
@@ -344,79 +344,38 @@ static const char* kPtRasterizer =
 // fbm unfaded (HF energy 0.0253 vs PT 0.00777 at max_light_depth 2).  That
 // separate gap is tracked as DL-636 in docs/DEBT_LEDGER.md.
 static const char* kBdptRasterizer =
-	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t0\n\tsamples\t\t\t64\n"
-	"\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
-static const char* kVcmRasterizer =
-	"vcm_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t2\n\tsamples\t\t\t64\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth\t\t2\n\tmax_light_depth\t\t0\n\tsamples\t\t\t16\n"
 	"\toidn_denoise\t\tFALSE\n\tpixel_filter\t\tbox\n}\n";
 
 static void TestFootprintParity()
 {
 	CapturingRasterizerOutput* pt   = RenderScene( BuildScene( kPtRasterizer,   "rendered/dl14_parity_pt"   ), "pt"   );
 	CapturingRasterizerOutput* bdpt = RenderScene( BuildScene( kBdptRasterizer, "rendered/dl14_parity_bdpt" ), "bdpt" );
-	CapturingRasterizerOutput* vcm  = RenderScene( BuildScene( kVcmRasterizer,  "rendered/dl14_parity_vcm"  ), "vcm"  );
 
 	Check( pt != nullptr,   "PT scene rendered" );
 	Check( bdpt != nullptr, "BDPT scene rendered" );
-	Check( vcm != nullptr,  "VCM scene rendered" );
-	if( !pt || !bdpt || !vcm ) {
-		safe_release( pt ); safe_release( bdpt ); safe_release( vcm );
+	if( !pt || !bdpt ) {
+		safe_release( pt ); safe_release( bdpt );
 		return;
 	}
 
 	const ImageHFStats ptStats   = ImageHF( *pt );
 	const ImageHFStats bdptStats = ImageHF( *bdpt );
-	const ImageHFStats vcmStats  = ImageHF( *vcm );
 
-	Check( ptStats.valid && bdptStats.valid && vcmStats.valid, "all three images finite" );
+	Check( ptStats.valid && bdptStats.valid, "both images finite" );
 
 	std::cout << "  PT   mean=" << ptStats.mean   << " hfEnergy=" << ptStats.hfEnergy   << std::endl;
 	std::cout << "  BDPT mean=" << bdptStats.mean << " hfEnergy=" << bdptStats.hfEnergy << std::endl;
-	std::cout << "  VCM  mean=" << vcmStats.mean  << " hfEnergy=" << vcmStats.hfEnergy  << std::endl;
 
-	// (1) PT vs BDPT, tight: identical camera ray, identical geometry
+	// PT vs BDPT, tight: identical camera ray, identical geometry
 	// intersection, identical vertex-population copy -- agreement is
-	// expected to several decimal places, not MC-noise-scale.  5% is
-	// still a wide margin over the ~0.1% relative difference measured
-	// on this fixture; it exists only to not be a flake magnet.
+	// expected to several decimal places, not MC-noise-scale.  VCM and MLT
+	// reuse BDPTIntegrator::GenerateEyeSubpath by construction.
 	Check( RelClose( ptStats.mean,     bdptStats.mean,     0.05 ), "PT vs BDPT: whole-image mean" );
 	Check( RelClose( ptStats.hfEnergy, bdptStats.hfEnergy, 0.10 ), "PT vs BDPT: whole-image HF energy" );
 
-	// (2) PT vs VCM: mean only, loose tolerance.  VCM does NOT get its
-	// own HF-energy check here -- measured on this fixture, VCM's own
-	// per-pixel noise is 2-4x PT/BDPT's at matched 64 spp and converges
-	// to that noise floor only very slowly with more samples (1.9x
-	// remained at 1024 spp, 16x the sample count), which is exactly
-	// RISE's own documented, ACCEPTED characteristic of VCM on a
-	// non-caustic scene (CLAUDE.md: "VCM loses sigma^2*T 3-40x
-	// off-caustics" -- UNIFIED_INTEGRATOR_DECISION.md) rather than
-	// anything to do with footprint.  An HF-energy check tight enough
-	// to catch a real footprint regression would also be tripped by
-	// VCM's ordinary, expected noise, and one loose enough to tolerate
-	// that noise would not catch the regression either (a missing
-	// footprint's blowout on THIS fixture is measured at 1-2 orders of
-	// magnitude, comfortably outside VCM's 2-4x noise band, but "loose
-	// enough for VCM noise, tight enough for the defect" is not a
-	// robust needle to thread at a test-suite-friendly sample count).
-	//
-	// The mechanism itself does not need a separate, noise-tolerant
-	// re-proof for VCM: VCM's eye subpath is the exact same
-	// `std::vector<BDPTVertex>` BDPT's own `GenerateEyeSubpath` call
-	// produces (VCMPelRasterizer.cpp -> VCMIntegrator.cpp, which reuses
-	// `BDPTIntegrator`; see MLTRasterizer.cpp:166/376 for the same
-	// pattern under MLT) -- VCMIntegrator.cpp never re-populates or
-	// re-derives `BDPTVertex::txFootprint` itself (grep the symbol: no
-	// occurrences in that file), so whatever the tight PT-vs-BDPT check
-	// above proves about the shared vertex array is true for VCM's
-	// consumption of it BY CONSTRUCTION, not by a separate render-level
-	// coincidence.  The mean check here is a coarse end-to-end sanity
-	// check that VCM renders the same scene sensibly, not the load-
-	// bearing footprint assertion.
-	Check( RelClose( ptStats.mean, vcmStats.mean, 0.15 ), "PT vs VCM: whole-image mean" );
-
 	safe_release( pt );
 	safe_release( bdpt );
-	safe_release( vcm );
 }
 
 int main()

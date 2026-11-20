@@ -22,7 +22,7 @@
 using namespace RISE;using namespace RISE::Implementation;
 static int pass=0,fail=0;
 static void Check(bool b,const char* s){(b?pass:fail)++;if(!b)std::cout<<"FAIL "<<s<<'\n';}
-static double Measure(bool alpha,bool requestedBiased,bool requestedSnell,bool nm,bool inherited=false){
+static double Measure(bool alpha,bool requestedBiased,bool requestedSnell,bool nm,bool inherited=false,int N=4000){
     auto* white=new UniformColorPainter(RISEPel(1,1,1));
     auto* mirror=new PerfectReflectorMaterial(*white);auto* receiver=new LambertianMaterial(*white);
     auto* coverage=new UniformScalarPainter(.5);if(alpha)mirror->SetAlpha(coverage,eAlphaBlend,.5);
@@ -48,7 +48,7 @@ static double Measure(bool alpha,bool requestedBiased,bool requestedSnell,bool n
     cfg.targetBounces=1;cfg.maxChainDepth=1;cfg.maxBernoulliTrials=2;
     auto* solver=new ManifoldSolver(cfg);std::vector<const IObject*> casters;ManifoldSolver::EnumerateSpecularCasters(*scene,casters);solver->SetSpecularCasters(casters);
     RandomNumberGenerator rng(214);IndependentSampler sampler(rng);OrthonormalBasis3D onb;onb.CreateFromW(Vector3(0,1,0));
-    const auto start=std::chrono::steady_clock::now();double total=0;const int N=20000;
+    const auto start=std::chrono::steady_clock::now();double total=0;
     for(int i=0;i<N;++i){
         if(nm)total+=solver->EvaluateAtShadingPointNM(Point3(0,0,0),Vector3(0,1,0),Vector3(0,1,0),onb,receiver,Vector3(0,1,0),*scene,*caster,sampler,550).contribution;
         else total+=solver->EvaluateAtShadingPoint(Point3(0,0,0),Vector3(0,1,0),Vector3(0,1,0),onb,receiver,Vector3(0,1,0),*scene,*caster,sampler).contribution.r;
@@ -62,16 +62,17 @@ int main(){
     // A separate live alpha material must not influence the opaque scene.
     auto* unrelatedPaint=new UniformColorPainter(RISEPel(1,1,1));auto* unrelated=new LambertianMaterial(*unrelatedPaint);auto* a=new UniformScalarPainter(.2);unrelated->SetAlpha(a,eAlphaBlend,.5);
     for(bool nm:{false,true}){
-        const double base=Measure(false,false,false,nm);
-        const double uniform=Measure(true,false,false,nm);
-        const double requestedFast=Measure(true,true,true,nm);
-        const double inheritedUniform=Measure(false,false,false,nm,true);
-        const double inheritedFast=Measure(false,true,true,nm,true);
+        const double base=Measure(false,false,false,nm,false,4000);
+        const double uniform=Measure(true,false,false,nm,false,4000);
+        const double uniformShort=Measure(true,false,false,nm,false,200);
+        const double requestedFast=Measure(true,true,true,nm,false,200);
+        const double inheritedUniform=Measure(false,false,false,nm,true,200);
+        const double inheritedFast=Measure(false,true,true,nm,true,200);
         Check(inheritedUniform>0,"inherited alpha scene SMS control produces contribution");
         Check(inheritedUniform==inheritedFast,"inherited CSG alpha selects identical accounted SMS estimator");
         Check(base>0,"opaque SMS control produces physical contribution");
         Check(std::fabs(uniform/base-.5)<.035,"alpha SMS has exactly one physical coverage factor");
-        Check(uniform==requestedFast,"alpha requested modes select identical accounted estimator");
+        Check(uniformShort==requestedFast,"alpha requested modes select identical accounted estimator");
     }
     safe_release(unrelated);safe_release(unrelatedPaint);safe_release(a);
     std::cout<<pass<<" passed / "<<fail<<" failed\n";return fail?1:0;

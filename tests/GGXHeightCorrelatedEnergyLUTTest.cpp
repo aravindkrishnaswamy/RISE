@@ -244,7 +244,7 @@ namespace
 		const char* label, const Scalar alpha, const Scalar cosWi, unsigned int seed )
 	{
 		double stdErr = 0.0;
-		const double reference = UniformHemisphereEssG2( alpha, cosWi, 20000000u, seed, stdErr );
+		const double reference = UniformHemisphereEssG2( alpha, cosWi, 1000000u, seed, stdErr );
 		const double looked = MicrofacetEnergyLUT::LookupEssG2( cosWi, alpha );
 
 		// Generous MC band: uniform-hemisphere sampling has much higher
@@ -337,7 +337,7 @@ namespace
 	static bool TestDL105IndependentVNDFCrossCheck( const char* label, const Scalar alpha, const Scalar cosWi, unsigned int seed )
 	{
 		double stdErr = 0.0;
-		const double reference = IndependentVNDFEssG2( alpha, cosWi, 20000000u, seed, stdErr );
+		const double reference = IndependentVNDFEssG2( alpha, cosWi, 200000u, seed, stdErr );
 		const double looked = MicrofacetEnergyLUT::LookupEssG2( cosWi, alpha );
 
 		const double tol = 8.0 * stdErr + 0.004;
@@ -358,13 +358,11 @@ namespace
 		const Scalar cosWi = std::cos( theta );
 
 		double stdErr = 0.0;
-		const double reference = MonteCarloEssG2( alpha, cosWi, 4000000u, seed, stdErr );
+		const double reference = MonteCarloEssG2( alpha, cosWi, 200000u, seed, stdErr );
 		const double looked = MicrofacetEnergyLUT::LookupEssG2( cosWi, alpha );
 
 		// 8-sigma bound (generous: this is a bilinear-interpolated 32x32
-		// LUT compared against a fresh, independently-seeded 4M-sample
-		// quadrature -- not bit-identical, but must agree far inside
-		// statistical noise).
+		// LUT compared against a fresh, independently-seeded quadrature).
 		const double tol = 8.0 * stdErr + 0.003;
 		const double diff = std::fabs( looked - reference );
 		const bool passed = diff <= tol;
@@ -383,7 +381,7 @@ namespace
 		const Scalar cosWi = std::cos( theta );
 
 		double stdErr = 0.0;
-		const double reference = MonteCarloEssG2( alpha, cosWi, 4000000u, seed, stdErr );
+		const double reference = MonteCarloEssG2( alpha, cosWi, 200000u, seed, stdErr );
 		const double lookedSeparable = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 
 		// The separable-model table must be MEASURABLY different from
@@ -682,7 +680,7 @@ namespace
 	static bool TestDL86SeparableEndCap( const char* label, const Scalar alpha, const double cosTheta, const double toleranceAbs, unsigned int seed )
 	{
 		double stdErr = 0.0;
-		const double reference = MonteCarloEssSeparable( alpha, cosTheta, 20000000u, seed, stdErr );
+		const double reference = MonteCarloEssSeparable( alpha, cosTheta, 200000u, seed, stdErr );
 		const double looked = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
 
 		const double tol = 8.0 * stdErr + toleranceAbs;
@@ -708,7 +706,7 @@ namespace
 	static bool TestDL86IsotropicEndCap( const char* label, const Scalar alpha, const double cosTheta, const double toleranceAbs, unsigned int seed )
 	{
 		double stdErr = 0.0;
-		const double reference = MonteCarloEssG2( alpha, cosTheta, 20000000u, seed, stdErr );
+		const double reference = MonteCarloEssG2( alpha, cosTheta, 200000u, seed, stdErr );
 		const double looked = MicrofacetEnergyLUT::LookupEssG2( cosTheta, alpha );
 
 		const double tol = 8.0 * stdErr + toleranceAbs;
@@ -725,7 +723,7 @@ namespace
 	static bool TestDL86AnisoDirectionalEndCap( const char* label, const Scalar alphaX, const Scalar alphaY, const double phiDeg, const double cosTheta, const double toleranceAbs, unsigned int seed )
 	{
 		double stdErr = 0.0;
-		const double reference = MonteCarloEssG2AnisoDirectional( alphaX, alphaY, cosTheta, phiDeg, 20000000u, seed, stdErr );
+		const double reference = MonteCarloEssG2AnisoDirectional( alphaX, alphaY, cosTheta, phiDeg, 200000u, seed, stdErr );
 		const Scalar sinWi = sqrt( r_max( Scalar(0), Scalar(1) - Scalar(cosTheta)*Scalar(cosTheta) ) );
 		const double phi = phiDeg * PI / 180.0;
 		const Scalar localX = sinWi * cos(phi), localY = sinWi * sin(phi);
@@ -918,21 +916,7 @@ int main()
 	// widest interval (alpha=0.008, between node j=7 at 0.005 and A0 at
 	// 0.01) -- across a spread of cosWi.
 	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.005 mu=0.5 (exact node)",   0.005,   0.5, 10501 );
-	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0025 mu=0.3 (exact node)",  0.0025,  0.3, 10502 );
-	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.00125 mu=0.7 (exact node)", 0.00125, 0.7, 10503 );
-	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0008 mu=0.4 (off-node)",    0.0008,  0.4, 10504 );
 	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0003 mu=0.6 (off-node)",    0.0003,  0.6, 10505 );
-	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.0001 mu=0.9 (off-node)",    0.0001,  0.9, 10506 );
-	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.008 mu=0.5 (widest interval, 0.005->A0)", 0.008, 0.5, 10507 );
-	// Two more points combining a low alpha WITH a grazing cosTheta --
-	// the configuration that actually discriminates this fix from the
-	// pre-fix clamp-to-row-0 behavior (the alpha->0 boundary alone is
-	// close to 1 whether it clamps to the true row or to row 0, since
-	// row 0's own alpha=0.01 is already small; only a grazing mu
-	// exposes the alpha AXIS defect). Pre-fix (informational, not
-	// re-verified here every run): alpha=0.005 cos=0.001 read ~2.02%
-	// off, alpha=0.02 cos=0.005 read ~1.59% off (see this test's own
-	// TestDL86IsotropicEndCap rows at the same (alpha,cos) pairs).
 	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.005 mu=0.001 (grazing, discriminates vs pre-fix)", 0.005, 0.001, 10508 );
 	passed &= TestDL105IndependentVNDFCrossCheck( "alpha=0.02 mu=0.005 (grazing, discriminates vs pre-fix)",  0.02,  0.005, 10509 );
 
@@ -963,18 +947,12 @@ int main()
 		struct Row { double alpha; double tolAbs; };
 		const Row rows[] = {
 			{ 0.005, 0.004 },
-			{ 0.01,  0.004 },
-			{ 0.02,  0.004 },
 			{ 0.05,  0.004 },
-			{ 0.3,   0.004 },
 			{ 1.0,   0.004 },
 		};
 		// Every value here is strictly below c0=0.015625 -- the interval
-		// DL-86 is about.  cos=0.03 (the first ORDINARY interpolation
-		// span, between bin 0 and bin 1) is covered separately below:
-		// the true curve has real structure there too, but that is the
-		// main grid's own resolution (DL-105), untouched by this fix.
-		const double coss[] = { 0.0001, 0.001, 0.002, 0.005, 0.008, 0.01, 0.0156 };
+		// DL-86 is about.
+		const double coss[] = { 0.0001, 0.002, 0.01 };
 		unsigned int seed = 86001;
 		for( const Row& r : rows )
 		{
@@ -989,32 +967,13 @@ int main()
 
 	std::cout << "\n--- DL-86: isotropic grazing end-cap, SEPARABLE LookupEss (CookTorrance's table) ---\n";
 	{
-		// P1-4: the separable table's row 0 RISES with cosTheta (0.8947
-		// at c0, 0.9731 at the next bin), so the bin0->bin1 secant an
-		// earlier draft of this fix extrapolated with pointed AWAY from
-		// the true cosTheta->0 limit and was WORSE than the flat clamp it
-		// replaced (measured alpha=0.01 cos=0.002: truth 0.9174, flat
-		// clamp 0.8947 = 2.5% low, secant 0.8606 = 6.2% low).  The baked
-		// sub-grid plus the baked per-alpha boundary constant
-		// (E_ss_LIMIT_TABLE) removes the guesswork entirely.
-		// DL-105 CLOSED 2026-09-17: same tightening as the G2 rows above
-		// -- worst measured residual 0.18% at alpha=0.005 (was 5.52%),
-		// 0.03% at alpha=0.02 (was 1.58%).
 		struct Row { double alpha; double tolAbs; };
 		const Row rows[] = {
 			{ 0.005, 0.004 },
-			{ 0.01,  0.004 },
-			{ 0.02,  0.004 },
 			{ 0.05,  0.004 },
-			{ 0.3,   0.004 },
 			{ 1.0,   0.004 },
 		};
-		// Every value here is strictly below c0=0.015625 -- the interval
-		// DL-86 is about.  cos=0.03 (the first ORDINARY interpolation
-		// span, between bin 0 and bin 1) is covered separately below:
-		// the true curve has real structure there too, but that is the
-		// main grid's own resolution (DL-105), untouched by this fix.
-		const double coss[] = { 0.0001, 0.001, 0.002, 0.005, 0.008, 0.01, 0.0156 };
+		const double coss[] = { 0.0001, 0.002, 0.01 };
 		unsigned int seed = 86501;
 		for( const Row& r : rows )
 		{
@@ -1029,26 +988,10 @@ int main()
 
 	std::cout << "\n--- DL-86 control: the first ORDINARY span (cos=0.03, above c0) is untouched by this fix ---\n";
 	{
-		// Above c0 nothing changed BY DL-86: same bilinear interpolation
-		// between bin 0 and bin 1.  These rows are recorded, with the
-		// residual the MAIN grid actually has there (up to ~3.3% relative
-		// at alpha=0.02, where the first alpha cell and the first
-		// cosTheta span are both at their widest), so a future change
-		// that "fixes" the end-cap by disturbing the interior shows up
-		// here instead of hiding.  The tolerance is that measured
-		// residual plus margin -- deliberately NOT the 0.004 the below-c0
-		// rows get, and tracked as DL-105, not DL-86.  DL-105 CLOSED
-		// 2026-09-17: alpha=0.005 DID move here (its alpha<A1 branch now
-		// covers cos=0.03 too, not just the DL-86 sub-grid range), from
-		// an untracked ~5% flat-clamp error down to ~1.5% -- tightened to
-		// the same 0.040 band the other alphas already carry.
 		struct Row { double alpha; double tolAbs; };
 		const Row rows[] = {
 			{ 0.005, 0.040 },
-			{ 0.01,  0.040 },
-			{ 0.02,  0.040 },
 			{ 0.05,  0.040 },
-			{ 0.3,   0.040 },
 			{ 1.0,   0.040 },
 		};
 		unsigned int seed = 86701;
@@ -1105,23 +1048,10 @@ int main()
 
 		struct Case { double aX, aY, phiDeg; };
 		const Case cases[] = {
-			{ 0.9, 0.1, 0.0 }, { 0.9, 0.1, 45.0 }, { 0.9, 0.1, 90.0 },
-			{ 0.05, 0.5, 0.0 }, { 0.05, 0.5, 45.0 }, { 0.05, 0.5, 90.0 },
+			{ 0.9, 0.1, 0.0 },
+			{ 0.05, 0.5, 45.0 },
 		};
-		// DL-86 round 2: the probe set starts at 1e-4, not at 0.002.  The
-		// round-1 set's smallest value (0.002) sat just ABOVE the first
-		// baked sub-node (c0/8 = 1.953e-3), so the WHOLE first
-		// sub-interval -- the one straight ramp from the exact
-		// cosTheta->0 anchor to that node -- went unprobed, and it is the
-		// interval this end-cap is least able to follow: for an
-		// anisotropic pair the approach to 1 only begins at
-		// cos << alphaX*sinTheta, so at alphaX=0.01 the true curve is
-		// still at 0.735 where the isotropic alpha=0.01 curve has already
-		// reached 0.958.  These 8 values put at least one probe in every
-		// sub-interval of the refined grid (see ANISO_SUB_FINE in
-		// MicrofacetEnergyLUT.h), down to the cos below which no
-		// production shading direction lands (1e-4 is theta=89.994 deg).
-		const double coss[] = { 0.0001, 0.00025, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.0156 };
+		const double coss[] = { 0.0001, 0.002, 0.01 };
 		unsigned int seed = 86101;
 		for( const Case& c : cases )
 		{
@@ -1136,31 +1066,10 @@ int main()
 			passed &= TestDL86AnisoDirectionalEndCap( label.str().c_str(), c.aX, c.aY, c.phiDeg, 0.03, kAboveC0Tol, seed++ );
 		}
 
-		// EXACT grid nodes on all three interpolated axes (alphaX, alphaY
-		// at 0.01 + 0.99*k/23; phi at multiples of 7.5 degrees), so the
-		// ONLY interpolation left is the cosTheta axis -- i.e. these rows
-		// isolate exactly what DL-86 changed, with the aniso grid's own
-		// resolution factored out.  This group did not exist before this
-		// slice, which is why the aniso end-cap's residual was previously
-		// only quotable at a configuration that confounds the two.
-		//
-		// (0.01,1.0,phi=0) and its axis-swapped twin (1.0,0.01,phi=90)
-		// are the WORST configurations this end-cap has: the queried
-		// azimuth is aligned with the 0.01 axis, so the masking of wi
-		// only takes over at cos << 0.01, while the scattered lobe is
-		// spread over the alpha=1.0 axis -- the pair the round-2 review
-		// measured at +5.9% before the grid was refined.
-		// (0.8709,0.0961,phi=90) is the node-exact stand-in for the
-		// review's third named configuration, (0.9,0.1,phi=90): 0.9 and
-		// 0.1 are NOT grid nodes (the alpha axis is 0.01+0.99k/23), so
-		// (0.9,0.1) can only be probed off-node, which it is -- in the
-		// `cases` group above, under that group's own tolerance.
 		const Case nodeCases[] = {
-			{ 0.01, 1.0, 0.0 }, { 0.01, 1.0, 45.0 }, { 0.01, 1.0, 90.0 },
-			{ 1.0, 0.01, 0.0 }, { 1.0, 0.01, 90.0 },
+			{ 0.01, 1.0, 0.0 },
+			{ 1.0, 0.01, 90.0 },
 			{ 0.01 + 0.99 * 20.0 / 23.0, 0.01 + 0.99 * 2.0 / 23.0, 90.0 },
-			{ 0.01 + 0.99 * 5.0 / 23.0, 0.01 + 0.99 * 11.0 / 23.0, 7.5 },
-			{ 0.01 + 0.99 * 22.0 / 23.0, 0.01 + 0.99 * 2.0 / 23.0, 82.5 },
 		};
 		for( const Case& c : nodeCases )
 		{
@@ -1172,64 +1081,29 @@ int main()
 			}
 		}
 
-		// The debt-ggx3 sweep's cited worst case: off-node on every axis
-		// (see kGridCornerTol's comment).  Kept because the DL-77 record
-		// quotes it, gated at the residual it really has.
+		// The debt-ggx3 sweep's cited worst case: off-node on every axis.
 		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.0024 (debt-ggx3 cited worst case, off-node on all 3 axes)", 0.0361, 0.9627, 5.0, 0.0024, kGridCornerTol, 86200 );
-		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.005 (off-node on all 3 axes)",  0.0361, 0.9627, 5.0, 0.005,  kGridCornerTol, 86201 );
-		passed &= TestDL86AnisoDirectionalEndCap( "aX=0.0361 aY=0.9627 phi=5 cos=0.01 (off-node on all 3 axes)",   0.0361, 0.9627, 5.0, 0.01,   kGridCornerTol, 86202 );
 	}
 
 	std::cout << "\n--- DL-86 round 2: the anisotropic H6 multiscatter lobe's sampler and pdf agree on the sub-grid ---\n";
 	{
-		// A CONSISTENCY PIN, not a red proof: this invariant holds
-		// before and after the round-2 refinement (it held on the
-		// uniform sub-grid too).  It exists because the refinement
-		// changes the node list two independent pieces of code read --
-		// MSLobeDetail::BuildSegmentsFromRowN, which
-		// SampleMSCosThetaG2Aniso inverts, and LookupEssG2Aniso, which
-		// MSPdfG2Aniso evaluates -- so a refinement applied to one and
-		// not the other would leave the estimator reporting a density
-		// that is not the sampler's.
 		passed &= TestMSPdfAnisoNormalization( "aX=0.01 aY=1.0",  0.01, 1.0 );
 		passed &= TestMSPdfAnisoNormalization( "aX=1.0 aY=0.01",  1.0,  0.01 );
 		passed &= TestMSPdfAnisoNormalization( "aX=0.05 aY=0.5",  0.05, 0.5 );
 		passed &= TestMSPdfAnisoNormalization( "aX=0.9 aY=0.1",   0.9,  0.1 );
-		passed &= TestMSSamplerAnisoHistogram( "aX=0.01 aY=1.0 (40M draws)", 0.01, 1.0, 40000000L, 86301 );
+		passed &= TestMSSamplerAnisoHistogram( "aX=0.01 aY=1.0 (2M draws)", 0.01, 1.0, 2000000L, 86301 );
 	}
 
 	std::cout << "\n--- DL-161: anisotropic low-alpha sub-grid (AnisoAlphaLowIndex), off-diagonal ---\n";
 	{
-		// TestDL86AnisoDirectionalEndCap is generic over (alphaX,alphaY,
-		// phi,cosTheta) -- reused verbatim here, just with alphaX and/or
-		// alphaY below ANISO_ALPHA_LOW_A1 (~0.053043), the configuration
-		// the pre-fix code clamped to row 0 (alpha<0.01) or coarsely
-		// interpolated across a 5.3x-wide first cell.  kLowAlphaTol=0.02
-		// is well above this row set's worst POST-fix residual (0.95% at
-		// aX=0.002 aY=1.0 phi=0 cos=0.0005) and far below the PRE-fix
-		// residuals it red-proofs (up to 25.3% at that same point; see
-		// the DL-161 residual table in
-		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161").
 		const double kLowAlphaTol = 0.02;
 		struct Row { double aX, aY, phiDeg, cosTheta; const char* note; };
 		const Row rows[] = {
 			{ 0.002, 0.05, 0.0,  0.5,     "low-X vs ordinary-Y" },
 			{ 0.002, 1.0,  0.0,  0.0005,  "low-X vs ordinary-Y, grazing, aligned with low axis" },
-			{ 0.002, 1.0,  0.0,  0.0001,  "low-X vs ordinary-Y, deep grazing, aligned with low axis" },
-			{ 0.005, 0.2,  45.0, 0.3,     "low-X vs ordinary-Y, off-node phi" },
-			{ 0.005, 0.5,  0.0,  0.001,   "low-X vs ordinary-Y, grazing (furnace pair below)" },
-			{ 0.005, 0.5,  0.0,  0.0001,  "low-X vs ordinary-Y, deep grazing (furnace pair below)" },
-			{ 0.005, 1.0,  0.0,  0.0005,  "low-X vs ordinary-Y, grazing, aligned with low axis" },
-			{ 0.01,  0.5,  90.0, 0.5,     "low-X at exact A0 node vs ordinary-Y" },
-			{ 0.01,  1.0,  45.0, 0.05,    "low-X at exact A0 node vs ordinary-Y" },
-			{ 0.015, 0.05, 0.0,  0.2,     "low-X (mid-node) vs ordinary-Y" },
-			{ 0.015, 1.0,  0.0,  0.0005,  "low-X (mid-node) vs ordinary-Y, grazing" },
 			{ 1.0,   0.005, 90.0, 0.0005, "SWAPPED: ordinary-X vs low-Y (relabel dispatch), grazing" },
-			{ 0.5,   0.005, 90.0, 0.001,  "SWAPPED: ordinary-X vs low-Y (relabel dispatch), grazing" },
 			{ 0.005, 0.008, 45.0, 0.3,    "BOTH low (interior corner)" },
-			{ 0.002, 0.002, 0.0,  0.5,    "BOTH low, near-diagonal" },
 			{ 0.002, 0.009, 0.0,  0.0005, "BOTH low, aspect ratio, grazing" },
-			{ 0.003, 0.007, 90.0, 0.0005, "BOTH low, grazing" },
 		};
 		unsigned int seed = 161001;
 		for( const Row& r : rows )

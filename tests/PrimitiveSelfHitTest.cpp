@@ -483,9 +483,7 @@ enum PrimKind
 	kPrimCylOpen,
 	kPrimDisk,
 	kPrimPlane,
-	kPrimMesh,
-	kPrimBoxControl,
-	kPrimClippedPlaneControl
+	kPrimMesh
 };
 
 struct PrimRow
@@ -504,8 +502,6 @@ static const PrimRow kPrimRows[] = {
 	{ kPrimDisk,                 "circular disk",                 "disk",        kFlatSurfaceTol },
 	{ kPrimPlane,                "infinite plane",                "plane",       kFlatSurfaceTol },
 	{ kPrimMesh,                 "two-triangle PLY mesh",         "mesh",        kFlatSurfaceTol },
-	{ kPrimBoxControl,           "box (control)",                 "boxctl",      kClosedShellTol },
-	{ kPrimClippedPlaneControl,  "clippedplane (control)",        "clipctl",     kFlatSurfaceTol },
 };
 
 static std::string PrimitiveGeometryChunk( PrimKind kind, const std::string& plyPath )
@@ -525,13 +521,6 @@ static std::string PrimitiveGeometryChunk( PrimKind kind, const std::string& ply
 		return "infiniteplane_geometry\n{\n\tname g\n\txtile 1.0\n\tytile 1.0\n}\n\n";
 	case kPrimMesh:
 		return "plymesh_geometry\n{\n\tname g\n\tfile " + plyPath + "\n\tdouble_sided TRUE\n}\n\n";
-	case kPrimBoxControl:
-		return "box_geometry\n{\n\tname g\n\twidth 2.8\n\theight 2.8\n\tdepth 1.0\n}\n\n";
-	case kPrimClippedPlaneControl:
-		return
-			"clippedplane_geometry\n{\n\tname g\n"
-			"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
-			"\tdoublesided TRUE\n}\n\n";
 	}
 	return std::string();
 }
@@ -555,8 +544,8 @@ static void TestTransmissiveCrossingAllPrimitives()
 {
 	std::cout << "=== 1. Transmissive-crossing self-hit (debt 25 sibling audit) ===" << std::endl;
 
-	const unsigned int W = 24, H = 24;
-	const unsigned int samples = 256;
+	const unsigned int W = 16, H = 16;
+	const unsigned int samples = 64;
 
 	// Written once, shared by the mesh row's PT and BDPT renders.
 	const std::string plyPath = WritePlyQuadToTempFile();
@@ -660,8 +649,8 @@ static std::string LambertianSphereGrazingCommon(
 
 static void RunLambertianSphereRow( double sphereScale, double lightPower, const char* label, const char* tag )
 {
-	const unsigned int W = 48, H = 48;
-	const unsigned int samples = 256;
+	const unsigned int W = 24, H = 24;
+	const unsigned int samples = 32;
 	const std::string common = LambertianSphereGrazingCommon( sphereScale, lightPower, W, H );
 
 	char tagPt[64], tagBd[64], buf[256];

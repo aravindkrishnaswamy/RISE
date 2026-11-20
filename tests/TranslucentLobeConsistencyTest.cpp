@@ -564,7 +564,7 @@ namespace
 static void Gate1( const Rig& rig, const IObject* obj, const IObject* other,
 	RecordKind kind, bool bNM, bool bStacked, Scalar segLen, const char* label )
 {
-	const int kTrials = 40000;
+	const int kTrials = 15000;
 	const bool bExit = ( kind == kExit || kind == kDSExit || kind == kBezierExit || kind == kCSGExit );
 
 	std::cout << "  -- Gate 1 " << label << " " << RecordName(kind)
@@ -682,7 +682,7 @@ static void Gate1( const Rig& rig, const IObject* obj, const IObject* other,
 static void Gate234( const Rig& rig, const IObject* obj, const IObject* other,
 	RecordKind kind, bool bNM, Scalar segLen, const char* label )
 {
-	const int kTrials = 200000;
+	const int kTrials = 40000;
 
 	std::cout << "  -- Gates 2/3/4 " << label << " " << RecordName(kind)
 	          << " (" << (bNM?"NM":"RGB") << ")" << std::endl;

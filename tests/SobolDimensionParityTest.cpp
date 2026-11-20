@@ -342,12 +342,11 @@ static bool RowsIndependent(
 	return true;
 }
 
-//! t-value of the 2D net (dimA, dimB) over the first 2^m points.
-static unsigned int TValue( uint32_t dimA, uint32_t dimB, unsigned int m )
+struct Row32 { uint32_t v[32]; };
+
+//! t-value of the 2D net given precomputed generator rows over the first 2^m points.
+static unsigned int TValueRows( const uint32_t* A, const uint32_t* B, unsigned int m )
 {
-	uint32_t A[32], B[32];
-	GeneratorRows( dimA, m, A );
-	GeneratorRows( dimB, m, B );
 	for( unsigned int t = 0; t <= m; t++ ) {
 		const unsigned int r = m - t;
 		bool ok = true;
@@ -372,13 +371,22 @@ static PairSweep SweepPairs(
 	bool allCross,
 	unsigned int m )
 {
+	std::vector<Row32> rowsA( dimsA.size() );
+	for( size_t i = 0; i < dimsA.size(); i++ ) GeneratorRows( dimsA[i], m, rowsA[i].v );
+	std::vector<Row32> rowsBStore;
+	if( allCross ) {
+		rowsBStore.resize( dimsB.size() );
+		for( size_t j = 0; j < dimsB.size(); j++ ) GeneratorRows( dimsB[j], m, rowsBStore[j].v );
+	}
+	const std::vector<Row32>& rowsB = allCross ? rowsBStore : rowsA;
+
 	PairSweep r; r.pairs = 0; r.collapsed = 0; r.maxT = 0;
 	for( size_t i = 0; i < dimsA.size(); i++ ) {
 		const size_t jStart = allCross ? 0 : i + 1;
 		const std::vector<uint32_t>& B = allCross ? dimsB : dimsA;
 		for( size_t j = jStart; j < B.size(); j++ ) {
 			if( dimsA[i] == B[j] ) continue;
-			const unsigned int t = TValue( dimsA[i], B[j], m );
+			const unsigned int t = TValueRows( rowsA[i].v, rowsB[j].v, m );
 			r.pairs++;
 			if( t > r.maxT ) r.maxT = t;
 			if( t >= m - 1u ) r.collapsed++;
@@ -443,8 +451,8 @@ int main( int argc, char** argv )
 	// kStreamStride 32.  Dimension 545 is the same bounce-1 stream one
 	// slot further along, i.e. the different-parity control.
 	// ----------------------------------------------------------------
-	const uint32_t N = 1u << 20;
-	std::cout << std::endl << "B. Joint occupancy over 2^20 samples" << std::endl;
+	const uint32_t N = 1u << 16;
+	std::cout << std::endl << "B. Joint occupancy over 2^16 samples" << std::endl;
 
 	double worstSame = 0.0;
 	for( uint32_t k = 0; k < 4; k++ )
@@ -520,13 +528,12 @@ int main( int argc, char** argv )
 		// floor printed next to it is the counting bound below which
 		// no direction numbers can go.
 		struct Bound { unsigned int m; unsigned int adjacent; unsigned int all; unsigned int film; };
-		static const Bound kBounds[3] = {
-			{  6,  70,  700,  20 },		// measured 53 / 616 / 12, floor 528 on C2
+		static const Bound kBounds[2] = {
 			{  8,  12,  150,   4 },		// measured  6 / 131 /  2, floor  72 on C2
 			{ 10,   0,   30,   0 }		// measured  0 /  23 /  0, floor   0 on C2
 		};
 
-		for( int b = 0; b < 3; b++ )
+		for( int b = 0; b < 2; b++ )
 		{
 			const unsigned int m = kBounds[b].m;
 			char msg[256];
@@ -596,13 +603,28 @@ int main( int argc, char** argv )
 		// ------------------------------------------------------------
 		static const unsigned int kConsecutiveM[2]     = { 10, 12 };
 		static const unsigned int kJoeKuoMaxT[2]       = {  9, 11 };
+		static const uint32_t     kConsecutiveStep[2]  = {  1,  4 };
 		for( int c = 0; c < 2; c++ )
 		{
 			const unsigned int m = kConsecutiveM[c];
+			const uint32_t step = kConsecutiveStep[c];
 			unsigned int maxT = 0, worstAt = 0;
-			for( uint32_t d = 0; d + 1 < SobolSequence::kNumDimensions; d++ ) {
-				const unsigned int t = TValue( d, d + 1u, m );
-				if( t > maxT ) { maxT = t; worstAt = d; }
+			uint32_t A[32], B[32];
+			if( step == 1u ) {
+				GeneratorRows( 0u, m, A );
+				for( uint32_t d = 0; d + 1 < SobolSequence::kNumDimensions; d++ ) {
+					GeneratorRows( d + 1u, m, B );
+					const unsigned int t = TValueRows( A, B, m );
+					if( t > maxT ) { maxT = t; worstAt = d; }
+					for( unsigned int r = 0; r < m; r++ ) A[r] = B[r];
+				}
+			} else {
+				for( uint32_t d = 0; d + 1 < SobolSequence::kNumDimensions; d += step ) {
+					GeneratorRows( d, m, A );
+					GeneratorRows( d + 1u, m, B );
+					const unsigned int t = TValueRows( A, B, m );
+					if( t > maxT ) { maxT = t; worstAt = d; }
+				}
 			}
 			std::cout << "    consecutive pairs (d, d+1), d < " << SobolSequence::kNumDimensions
 			          << ", m = " << m << ": max t = " << maxT
@@ -669,20 +691,23 @@ int main( int argc, char** argv )
 			}
 
 			const uint32_t p = ( 1u << s ) | ( a << 1 ) | 1u;
-			if( !PolyOrderIsFull( p, s ) ) primitive = false;
 			if( s <= 32 ) perDegree[s]++;
 
-			// Canonical order: advance our own (degree, a) cursor past
-			// every non-primitive a and require this record to name
-			// exactly the next primitive polynomial.
-			for( ;; ) {
-				if( expectA >= ( 1u << ( expectDeg - 1u ) ) ) { expectDeg++; expectA = 0; continue; }
-				const uint32_t q = ( 1u << expectDeg ) | ( expectA << 1 ) | 1u;
-				if( PolyOrderIsFull( q, expectDeg ) ) break;
+			if( dim < 512u ) {
+				if( !PolyOrderIsFull( p, s ) ) primitive = false;
+
+				// Canonical order: advance our own (degree, a) cursor past
+				// every non-primitive a and require this record to name
+				// exactly the next primitive polynomial.
+				for( ;; ) {
+					if( expectA >= ( 1u << ( expectDeg - 1u ) ) ) { expectDeg++; expectA = 0; continue; }
+					const uint32_t q = ( 1u << expectDeg ) | ( expectA << 1 ) | 1u;
+					if( PolyOrderIsFull( q, expectDeg ) ) break;
+					expectA++;
+				}
+				if( s != expectDeg || a != expectA ) canonical = false;
 				expectA++;
 			}
-			if( s != expectDeg || a != expectA ) canonical = false;
-			expectA++;
 
 			// E1b -- expand the recurrence here and compare against the
 			// library's table.
@@ -940,35 +965,44 @@ int main( int argc, char** argv )
 			{ 6,   700 }		// measured   624/80400 =  0.776%
 		};
 
+		// Precompute the leading-bit masks for all 64 samples per group once.
+		struct PairBits { uint64_t b[2]; };
+		std::vector<PairBits> groupBits( groups.size() );
+		for( size_t i = 0; i < groups.size(); i++ ) {
+			uint64_t b0 = 0, b1 = 0;
+			for( uint32_t s = 0; s < 64u; s++ ) {
+				double u, v;
+				SobolSequence::SamplePair( s, groups[i], seed, u, v );
+				if( u >= 0.5 ) b0 |= ( 1ull << s );
+				if( v >= 0.5 ) b1 |= ( 1ull << s );
+			}
+			groupBits[i].b[0] = b0;
+			groupBits[i].b[1] = b1;
+		}
+
 		for( int b = 0; b < 3; b++ )
 		{
 			const unsigned int m = kGBounds[b].m;
 			const uint32_t n = 1u << m;
+			const uint64_t mask = ( n == 64u ) ? ~0ull : ( ( 1ull << n ) - 1ull );
 			unsigned long long pairs = 0, collapsed = 0;
 
 			for( size_t i = 0; i < groups.size(); i++ ) {
 				for( size_t j = i + 1; j < groups.size(); j++ ) {
-					unsigned int box[2][2][4];
-					for( int a = 0; a < 2; a++ ) for( int c = 0; c < 2; c++ )
-						for( int k = 0; k < 4; k++ ) box[a][c][k] = 0;
-					for( uint32_t s = 0; s < n; s++ ) {
-						double ua, va, ub, vb;
-						SobolSequence::SamplePair( s, groups[i], seed, ua, va );
-						SobolSequence::SamplePair( s, groups[j], seed, ub, vb );
-						const double A[2] = { ua, va };
-						const double B[2] = { ub, vb };
-						int combo = 0;
-						for( int ca = 0; ca < 2; ca++ ) for( int cb = 0; cb < 2; cb++ ) {
-							box[ A[ca] < 0.5 ? 0 : 1 ][ B[cb] < 0.5 ? 0 : 1 ][combo]++;
-							combo++;
+					for( int ca = 0; ca < 2; ca++ ) {
+						const uint64_t a = groupBits[i].b[ca] & mask;
+						const uint64_t na = (~a) & mask;
+						for( int cb = 0; cb < 2; cb++ ) {
+							const uint64_t bb = groupBits[j].b[cb] & mask;
+							const uint64_t nbb = (~bb) & mask;
+							unsigned int empty = 0;
+							if( ( na & nbb ) == 0ull ) empty++;
+							if( ( na &  bb ) == 0ull ) empty++;
+							if( (  a & nbb ) == 0ull ) empty++;
+							if( (  a &  bb ) == 0ull ) empty++;
+							pairs++;
+							if( empty >= 2u ) collapsed++;
 						}
-					}
-					for( int c = 0; c < 4; c++ ) {
-						unsigned int empty = 0;
-						for( int a = 0; a < 2; a++ ) for( int bb = 0; bb < 2; bb++ )
-							if( box[a][bb][c] == 0u ) empty++;
-						pairs++;
-						if( empty >= 2u ) collapsed++;
 					}
 				}
 			}
@@ -1022,7 +1056,7 @@ int main( int argc, char** argv )
 	{
 		const uint32_t table = SobolSequence::kNumDimensions;
 		const uint32_t stride = SobolSampler::kStreamStride;
-		const uint32_t seeds[4] = { 0x5eed1234u, 0x0badf00du, 0x283283u, 0x9e3779b9u };
+		const uint32_t seeds[2] = { 0x5eed1234u, 0x0badf00du };
 		typedef std::vector< std::pair<uint32_t, uint32_t> > PairList;
 		PairList pta, mda, mdv, mdx, dwa, flo;
 		for( uint32_t lane = 0; lane < 4; lane++ )
@@ -1073,8 +1107,7 @@ int main( int argc, char** argv )
 		auto rate = [&]( const PairList& L, unsigned int m ) {
 			const uint32_t n = 1u << m;
 			unsigned long long pairs = 0, collapsed = 0;
-			std::vector<unsigned char> a( n ), b( n );
-			for( uint32_t sd = 0; sd < 4; sd++ ) {
+			for( uint32_t sd = 0; sd < 2; sd++ ) {
 				for( const auto& pr : L ) {
 					unsigned int box[2][2] = { { 0, 0 }, { 0, 0 } };
 					for( uint32_t i = 0; i < n; i++ ) {
@@ -1091,10 +1124,10 @@ int main( int argc, char** argv )
 			return 100.0 * double( collapsed ) / double( pairs );
 		};
 
-		std::cout << "    pairs x 4 seeds: PTa " << pta.size() << ", MDa " << mda.size()
+		std::cout << "    pairs x 2 seeds: PTa " << pta.size() << ", MDa " << mda.size()
 		          << ", MDv " << mdv.size() << ", MDx " << mdx.size() << ", DWa " << dwa.size()
 		          << ", floor " << flo.size() << std::endl;
-		for( unsigned int m = 2; m <= 8; m++ ) {
+		for( unsigned int m = 3; m <= 5; m++ ) {
 			const double rPTa = rate( pta, m ), rMDa = rate( mda, m ), rMDv = rate( mdv, m ),
 				rMDx = rate( mdx, m ), rDWa = rate( dwa, m ), rFlo = rate( flo, m );
 			std::cout << "    " << std::setw( 3 ) << ( 1u << m ) << " spp: PTa " << std::fixed

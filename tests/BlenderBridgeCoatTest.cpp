@@ -55,6 +55,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -680,6 +681,89 @@ void TestDanglingCoatTintIsFatal()
 		"nothing is left registered under the final name after the failure" );
 }
 
+// ============================================================
+//  9. Specular color tint forwarding (DL-151): NULL keeps F0 flat
+//     (untinted), while a red `specular_color_painter_name` tints
+//     dielectric F0 and dramatically skews the R/G peak ratio.
+// ============================================================
+
+void TestSpecularColorTintForwarding()
+{
+	std::cout << "Test: specular_color_painter_name NULL vs red tint forwarding (DL-151)" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) { Check( false, "created a job" ); return; }
+
+	double greyBase[3]  = { 0.5, 0.5, 0.5 };
+	double zeroMetal[3] = { 0.0, 0.0, 0.0 };
+	double lowRough[3]  = { 0.05, 0.05, 0.05 };
+	double redTint[3]   = { 1.0, 0.0, 0.0 };
+	(*job).AddUniformColorPainter( "spec_grey_base", greyBase, "Rec709RGB_Linear" );
+	(*job).AddUniformColorPainter( "spec_zero_metal", zeroMetal, "Rec709RGB_Linear" );
+	(*job).AddUniformColorPainter( "spec_low_rough", lowRough, "Rec709RGB_Linear" );
+	(*job).AddUniformColorPainter( "spec_tint_red", redTint, "Rec709RGB_Linear" );
+
+	auto makeSpecMat = []( const char* name, const char* specTintPainter ) {
+		rise_blender_material mat;
+		std::memset( &mat, 0, sizeof( mat ) );
+		mat.name = name;
+		mat.model = RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS;
+		mat.double_sided = 1;
+		mat.base_color_painter_name = "spec_grey_base";
+		mat.metallic_painter_name = "spec_zero_metal";
+		mat.roughness_painter_name = "spec_low_rough";
+		mat.specular_color_painter_name = specTintPainter;
+		mat.emissive_scale = 1.0;
+		return mat;
+	};
+
+	char err[256] = { 0 };
+	const rise_blender_material untinted = makeSpecMat( "spec_untinted", 0 );
+	const rise_blender_material tinted   = makeSpecMat( "spec_tinted", "spec_tint_red" );
+	Check( add_material( *job, untinted, err, sizeof( err ) ),
+		std::string( "untinted PBR material registered: " ) + err );
+	Check( add_material( *job, tinted, err, sizeof( err ) ),
+		std::string( "red-tinted PBR material registered: " ) + err );
+
+	const double th = 40.0 * 3.14159265358979323846 / 180.0;
+	const RISE::Vector3 mirrorPeak( std::sin( th ), 0.0, std::cos( th ) );
+	const RISE::RayIntersectionGeometric ri = MakeProbe( 0.5, 0.5 );
+
+	auto evalPel = [&]( const char* name ) -> RISE::RISEPel {
+		RISE::IMaterial* m = (*job).GetMaterials() ? (*job).GetMaterials()->GetItem( name ) : 0;
+		if( !m || !m->GetBSDF() ) return RISE::RISEPel( -1.0, -1.0, -1.0 );
+		return m->GetBSDF()->value( mirrorPeak, ri );
+	};
+
+	const RISE::RISEPel untintedPel = evalPel( "spec_untinted" );
+	const RISE::RISEPel tintedPel   = evalPel( "spec_tinted" );
+	Check( untintedPel.r > 0.0 && untintedPel.g > 0.0 && untintedPel.b > 0.0,
+		"untinted material has positive RGB response at mirror peak" );
+	Check( tintedPel.r > 0.0 && tintedPel.g > 0.0 && tintedPel.b > 0.0,
+		"red-tinted material has positive RGB response at mirror peak" );
+
+	const double untintedRG = untintedPel.r / untintedPel.g;
+	const double untintedRB = untintedPel.r / untintedPel.b;
+	const double tintedRG   = tintedPel.r / tintedPel.g;
+	std::cout << "  untinted R/G=" << untintedRG << " R/B=" << untintedRB
+	          << "  tinted R/G=" << tintedRG << std::endl;
+
+	Check( std::fabs( untintedRG - 1.0 ) < 0.02 && std::fabs( untintedRB - 1.0 ) < 0.02,
+		"NULL specular_color_painter_name keeps flat untinted F0 (R/G and R/B near 1)" );
+	Check( tintedRG > untintedRG * 3.0,
+		"red specular_color_painter_name skews mirror-peak R/G ratio >= 3x untinted control" );
+	Check( std::fabs( tintedPel.g - tintedPel.b ) < 0.02 * std::max( tintedPel.g, 1.0e-6 ),
+		"red-tinted G and B channels agree (both see F0=0)" );
+	Check( tintedPel.g < untintedPel.g,
+		"red-tinted G channel is lower than untinted G channel" );
+
+	const rise_blender_material dangling = makeSpecMat( "spec_dangling", "no_such_spec_tint_painter" );
+	err[0] = '\0';
+	const bool danglingReg = add_material( *job, dangling, err, sizeof( err ) );
+	Check( !danglingReg && err[0] != '\0' && (*job).GetMaterials()->GetItem( "spec_dangling" ) == 0,
+		"dangling specular_color_painter_name fails cleanly without leaving material registered" );
+}
+
 } // namespace
 
 int main()
@@ -697,6 +781,7 @@ int main()
 	TestCoatComposesOverSheen();
 	TestCoatSheenEmissionTripleCombination();
 	TestDanglingCoatTintIsFatal();
+	TestSpecularColorTintForwarding();
 
 	std::cout << "----------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << "   failures: " << g_failures << std::endl;

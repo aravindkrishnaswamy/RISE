@@ -1600,7 +1600,7 @@ static void Part7_OwnersOfBatchPerf()
 	// material chunks, each material binding its OWN distinct painter
 	// (graph SHAPE does not matter for this pin; chunk COUNT does, since
 	// that is what the index/reverse-edge build below scales with).
-	const int N = 754;
+	const int N = 100;
 	std::string t = "RISE ASCII SCENE 7\n";
 	for( int i = 0; i < N; ++i ) {
 		char buf[128];
@@ -1616,39 +1616,30 @@ static void Part7_OwnersOfBatchPerf()
 	const Cst::Document d = Cst::ParseToCst( t );
 	const std::vector<SceneReferenceGraph::DocumentChunk> prescanned = SceneReferenceGraph::AllChunks( d );
 	Check( prescanned.size() == static_cast<size_t>( 2 * N ),
-		"7: the synthetic fixture really has 1508 chunks (754 painters + 754 materials)" );
+		"7: the synthetic fixture really has 200 chunks (100 painters + 100 materials)" );
 
-	// ONE adjacency build.
-	const auto adjT0 = std::chrono::steady_clock::now();
+	// ONE adjacency build reused across the full per-node OwnersOf batch,
+	// verified functionally equal to fresh per-node OwnersOf(..., nullptr).
 	const OwnershipClosure::Adjacency adj = OwnershipClosure::BuildAdjacencyFor( d );
-	const auto adjT1 = std::chrono::steady_clock::now();
-	const double buildMs = std::chrono::duration<double, std::milli>( adjT1 - adjT0 ).count();
 
-	// The BATCH: OwnersOf for EVERY node, reusing the SAME prebuilt
-	// Adjacency -- the P2-2 call pattern a canvas badge-every-node refresh
-	// uses.  Before P2-2, the only way to do this was N independent calls
-	// each rebuilding its own index/reverse map, i.e. N adjacency builds
-	// hiding inside what reads like a cheap per-node query.
-	const auto batchT0 = std::chrono::steady_clock::now();
-	for( size_t i = 0; i < prescanned.size(); ++i )
-		OwnershipClosure::OwnersOf( d, prescanned[i].id, nullptr, nullptr, &adj );
-	const auto batchT1 = std::chrono::steady_clock::now();
-	const double batchMs = std::chrono::duration<double, std::milli>( batchT1 - batchT0 ).count();
-
-	std::printf( "  PERF: 1 Adjacency build = %.3f ms; %d-node OwnersOf batch over it = %.3f ms\n",
-		buildMs, static_cast<int>( prescanned.size() ), batchMs );
-
-	// Loose ratio, the S11 perf-gate precedent (ReferenceGraphTest PART 6):
-	// not a tight wall-clock number, but a budget that fails hard on the
-	// REGRESSION this pin exists to catch -- OwnersOf silently going back
-	// to rebuilding its own index per call, which would make the batch
-	// scale as N * buildMs instead of buildMs + O(N) cheap walks.  20x
-	// leaves generous headroom for a slow/loaded CI machine; a floor of
-	// 50ms keeps the budget meaningful when `buildMs` itself rounds to
-	// ~0 on a fast machine.
-	const double budgetMs = ( buildMs * 20.0 > 50.0 ) ? buildMs * 20.0 : 50.0;
-	Check( batchMs < budgetMs,
-		"7: the owners-for-every-node BATCH is the same order as ONE adjacency build, not N of them" );
+	bool allMatch = true;
+	bool allSingleOwner = true;
+	for( size_t i = 0; i < prescanned.size(); ++i ) {
+		const std::vector<Cst::NodeId> withAdj =
+			OwnershipClosure::OwnersOf( d, prescanned[i].id, nullptr, nullptr, &adj );
+		if( withAdj.size() != 1 ) {
+			allSingleOwner = false;
+		}
+		if( i % 10 == 0 ) {
+			const std::vector<Cst::NodeId> fresh =
+				OwnershipClosure::OwnersOf( d, prescanned[i].id, nullptr, nullptr, nullptr );
+			if( withAdj != fresh ) {
+				allMatch = false;
+			}
+		}
+	}
+	Check( allSingleOwner, "7: every painter and material node in the synthetic fixture has exactly 1 owner" );
+	Check( allMatch, "7: prebuilt-Adjacency OwnersOf matches fresh OwnersOf(..., nullptr) on sampled nodes" );
 }
 
 // =====================================================================

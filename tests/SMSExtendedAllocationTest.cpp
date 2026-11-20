@@ -6,8 +6,9 @@
 #undef main
 int main() {
     const char* args[]={"SMSExtendedAllocationTest","--section","dl500-sample",
-        "--cost-scene","DL372","--allocation-limit","68"};
-    char* argv[7];
-    for(unsigned i=0;i<7;++i) argv[i]=const_cast<char*>(args[i]);
-    return SMSExtendedPartitionEntry(7,argv);
+        "--cost-scene","DL372","--cost-spp","16","--allocation-limit","68"};
+    constexpr unsigned argc=sizeof(args)/sizeof(args[0]);
+    char* argv[argc];
+    for(unsigned i=0;i<argc;++i) argv[i]=const_cast<char*>(args[i]);
+    return SMSExtendedPartitionEntry(int(argc),argv);
 }

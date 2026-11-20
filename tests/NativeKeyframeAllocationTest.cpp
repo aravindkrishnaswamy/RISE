@@ -13,6 +13,7 @@
 #include "../src/Library/Lights/PointLight.h"
 #include "../src/Library/Lights/SpotLight.h"
 #include "../src/Library/Lights/DirectionalLight.h"
+#include "../src/Library/Objects/Object.h"
 #include "../src/Library/Animation/Timeline.h"
 #include "../src/Library/Animation/KeyframableHelper.h"
 #include "../src/Library/Utilities/SimpleInterpolators.h"
@@ -207,5 +208,11 @@ int main() {
     Measure<Scalar>("retaining point subclass",*holder,"energy","1.125","9.625",
         [&]{return holder->retained?*static_cast<Scalar*>(holder->retained->getValue()):Scalar(-1);},9998);
     holder->release();
+    auto* object=new Object();
+    Measure<Point3>("object position",*object,"position","1.125 2.25 3.5","9.625 8.75 6.5",[&]{
+        object->FinalizeTransformations();
+        return Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(0,0,0));
+    });
+    object->release();
     std::printf("%d failures\n",failures);return failures?1:0;
 }

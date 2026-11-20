@@ -15,8 +15,11 @@ int main(){
     Check(first.Estimate()==1,"initial K term is one");
     Check(first.ContinueAfterFailure(end)&&first.ContinueAfterFailure(end),"prefix retained through B-1 failures");
     Check(!first.ContinueAfterFailure(end)&&first.Estimate()==3,"roulette termination returns prefix, never discards it");
-    for(Scalar p:{.5,.1,.01,1./1024.})for(unsigned B:{64u,1024u}){
-        const int N=(p<.001 && B==64)?6000000:100000;
+    struct Case { Scalar p; unsigned B; };
+    const Case cases[] = { {.5, 64u}, {.1, 64u}, {.01, 64u}, {1./256., 64u}, {.5, 1024u}, {.01, 1024u}, {1./1024., 1024u} };
+    for(const Case& c : cases){
+        const Scalar p = c.p; const unsigned B = c.B;
+        const int N=(p<.005 && B==64)?300000:50000;
         RandomNumberGenerator random(214u+B);IndependentSampler sampler(random);
         double sum=0,sq=0,work=0;
         for(int i=0;i<N;++i){

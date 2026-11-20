@@ -15,7 +15,7 @@
 #   .\run_all_tests.ps1 -Jobs 1                  # Run tests one at a time (default: one per core)
 #   .\run_all_tests.ps1 -NoBuild                 # Run pre-built tests only
 #   .\run_all_tests.ps1 -BuildOnly               # Build only, don't run
-#   .\run_all_tests.ps1 -Filter Math3D*,*Noise3D # Run subset matching wildcards
+#   .\run_all_tests.ps1 -Filter Polynomial*,*BVH* # Run subset matching wildcards
 #
 # Exit code: 0 if every built test passed, 1 if any build or run failed.
 # -----------------------------------------------------------------------------
@@ -97,22 +97,7 @@ switch ($Tier) {
 # run_all_tests.sh's is_extended_test / has_extended_mode.
 $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
-        'AgentProposeRenderTest', 'AgentViewModeRenderTest', 'BDPTDepthCapMISTest',
-        'BDPTGuidedContinuationTest', 'BDPTStrategyBalanceTest',
-        'CompositeEnergyConservationTest', 'ConnectionTypeSplitTest', 'CstDeriveGoldenTest',
-        'ExteriorIndexInvarianceTest', 'GradedIndexInteriorFactorTest',
-        'LayeredWhiteFurnaceTest', 'MediumEnclosureConnectibilityTest',
-        'MediumInsideOutsideInvariantTest', 'MotionBlurTimeAverageTest',
-        'OIDNAutoDeterminismTest', 'OpenSheetIndexConventionTest', 'PTGuidingMISPartitionTest',
-        'RandomWalkFogEnergyTest', 'RefractiveRadianceScalingTest',
-        'SignalIntegratorConsistencyTest', 'SMSDisplacedEnergyTest', 'SMSEmitterDirectionTest',
-        'SMSExtendedHWSSTest', 'SMSExtendedPartitionTest', 'SMSExtendedReferenceTest',
-        'SMSFourVertexVarianceTest', 'SMSHWSSNestedEnergyTest', 'SMSLegacyModeTest',
-        'SMSMediumAnchorTest', 'SMSPhotonSeedEnergyTest', 'SMSSupersededRowsTest',
-        'SMSUniformDispersionTest', 'SpectralOnlyEmitterTest', 'SSSContactContinuationTest',
-        'SSSExteriorIndexInvarianceTest', 'UnlistedEmitterWeightTest',
-        'VCMStrategyBalanceTest', 'VCMVolumeMergeTest', 'VolumeAbsorptionAttenuationTest',
-        'WeaveGapShadowTransmittanceTest'
+        'MediumEnclosureConnectibilityTest', 'MediumInsideOutsideInvariantTest'
     ),
     [System.StringComparer]::Ordinal
 )
@@ -122,10 +107,7 @@ $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
 # (RISE_TEST_EXTENDED=1).
 $DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
-        'AgentSkillsTest', 'InteriorCandidateWalkCostTest', 'LightExitanceTest',
-        'LuminarySamplerAreaTest', 'PavilionColonnadeShowcaseTest',
-        'PolishedBRDFConsistencyTest', 'SchlickSPFPdfConsistencyTest',
-        'ShelfBunnyShowcaseTest', 'SPFPdfConsistencyTest', 'TidalStonesShowcaseTest',
+        'AgentSkillsTest', 'LightExitanceTest', 'SPFPdfConsistencyTest',
         'TimeIndexedMotionBlurTest'
     ),
     [System.StringComparer]::Ordinal

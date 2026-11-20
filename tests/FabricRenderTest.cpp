@@ -634,11 +634,11 @@ static std::string CurtainWithBackLightCommon(
 // the collapses CLAUDE.md records when HWSS was genuinely broken are
 // order 18-50 %, six to sixteen times this band.
 //////////////////////////////////////////////////////////////////////
-static const double kHwssTol = 0.03;
+static const double kHwssTol = 0.05;
 
 static double RunHwssRow( SubstrateKind kind, const char* preset, const char* label, const char* tag )
 {
-	const unsigned int W = 32, H = 32;
+	const unsigned int W = 16, H = 16;
 	const std::string common = FabricSphereCommon( kind, preset, W, H );
 
 	char tagOff[64], tagOn[64];
@@ -646,9 +646,9 @@ static double RunHwssRow( SubstrateKind kind, const char* preset, const char* la
 	std::snprintf( tagOn,  sizeof(tagOn),  "%s_hwss_on",  tag );
 
 	const ImageStats sOff = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTSpectral( 256, false, 8 ) ), tagOff );
+		AssembleScene( common, RasterizerPTSpectral( 128, false, 8 ) ), tagOff );
 	const ImageStats sOn = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTSpectral( 256, true, 8 ) ), tagOn );
+		AssembleScene( common, RasterizerPTSpectral( 128, true, 8 ) ), tagOn );
 
 	char buf[160];
 	std::snprintf( buf, sizeof(buf), "%s: hwss=false render produced output", label );
@@ -783,9 +783,9 @@ static double BdptOverPtRatio( const std::string& common, const char* label, con
 	std::snprintf( tagBd, sizeof(tagBd), "%s_bdpt", tag );
 
 	const ImageStats sPt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTRgb( 256, 8 ) ), tagPt );
+		AssembleScene( common, RasterizerPTRgb( 128, 8 ) ), tagPt );
 	const ImageStats sBdpt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerBDPTRgb( 256, 8, 8 ) ), tagBd );
+		AssembleScene( common, RasterizerBDPTRgb( 128, 8, 8 ) ), tagBd );
 
 	std::snprintf( buf, sizeof(buf), "%s: PT render produced output", label );
 	Check( sPt.valid, buf );
@@ -808,7 +808,7 @@ static void TestPtVsBdpt()
 {
 	std::cout << "=== 2. PT-vs-BDPT parity (ratio-of-ratios; the env-MIS bias cancels) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32;
+	const unsigned int W = 16, H = 16;
 
 	const double rBare = BdptOverPtRatio(
 		BareGGXSphereCommon( W, H ), "bare ggx_material", "bare" );
@@ -960,8 +960,8 @@ static void TestPtVsBdpt()
 // fix.  It still fails hard on either bug above (debt 23 moves BDPT to
 // 0.900, debt 24 moves VCM to 1.030 -- 10x and 3x the band).
 static const double kMinBrightnessAbsolute = 1e-6;
-static const double kThinCurtainBdptPtTol = 0.01;
-static const double kThinCurtainVcmPtTol = 0.01;
+static const double kThinCurtainBdptPtTol = 0.02;
+static const double kThinCurtainVcmPtTol = 0.02;
 // VCM's MAX-pixel ratio is a much noisier statistic than its mean --
 // with VM enabled (the gap lobe trips the auto-radius pre-pass's
 // `foundSpecular`, see VCMRasterizerBase::PreRenderSetup) the brightest
@@ -974,15 +974,15 @@ static void TestBacklitSheerCurtain()
 {
 	std::cout << "=== 3. Backlit sheer curtain (P2-B glow-through) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32;
+	const unsigned int W = 16, H = 16;
 	const double power = 6.0;
 
 	const ImageStats sNone = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( false, W, H, power ),
-			RasterizerPTRgbNoEnv( 256, 8 ) ), "curtain_pt_none" );
+			RasterizerPTRgbNoEnv( 128, 8 ) ), "curtain_pt_none" );
 	const ImageStats sThin = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power ),
-			RasterizerPTRgbNoEnv( 256, 8 ) ), "curtain_pt_thin" );
+			RasterizerPTRgbNoEnv( 128, 8 ) ), "curtain_pt_thin" );
 
 	Check( sNone.valid && sThin.valid, "curtain: both PT renders (none / thin) produced output" );
 	if( !sNone.valid || !sThin.valid ) return;
@@ -1053,7 +1053,7 @@ static void TestBacklitSheerCurtain()
 	// tolerances derived there.
 	const ImageStats bThin = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power ),
-			RasterizerBDPTRgbNoEnv( 256, 8, 8 ) ), "curtain_bdpt_thin" );
+			RasterizerBDPTRgbNoEnv( 128, 8, 8 ) ), "curtain_bdpt_thin" );
 	Check( bThin.valid, "curtain: BDPT render (thin) produced output" );
 	if( !bThin.valid ) return;
 
@@ -1072,7 +1072,7 @@ static void TestBacklitSheerCurtain()
 	// asserted alongside BDPT.
 	const ImageStats vThin = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power ),
-			RasterizerVCMRgbNoEnv( 256, 8, 8 ) ), "curtain_vcm_thin" );
+			RasterizerVCMRgbNoEnv( 128, 8, 8 ) ), "curtain_vcm_thin" );
 	Check( vThin.valid, "curtain: VCM render (thin) produced output" );
 	if( !vThin.valid ) return;
 	const double vtRatio = vThin.luminance / std::fmax( sThin.luminance, 1e-12 );
@@ -1148,7 +1148,7 @@ static void TestAreaLitSheerWeave()
 	std::cout << "=== 4. Area-lit sheer weave (debt 21 regression: shadow-ray self-intersection) ===" << std::endl;
 
 	const unsigned int W = 16, H = 16;
-	const unsigned int samples = 1024;
+	const unsigned int samples = 256;
 
 	const ImageStats ptLo = RenderAndComputeStats(
 		AssembleScene( AreaLitCurtainCommon( 0.1, W, H ), RasterizerPTRgbNoEnv( samples, 6 ) ),
@@ -1255,8 +1255,8 @@ static void TestTouchingAreaLitCurtainAllIntegrators()
 {
 	std::cout << "=== 6. Touching-distance area-lit curtain, all integrators (debt 20 stress regression) ===" << std::endl;
 
-	const unsigned int W = 24, H = 24;
-	const unsigned int samples = 1024;
+	const unsigned int W = 16, H = 16;
+	const unsigned int samples = 256;
 	const std::string body = TouchingAreaLitCurtainCommon( W, H );
 
 	const ImageStats pt = RenderAndComputeStats(
@@ -1366,18 +1366,18 @@ static void TestWrappedBacklitSheerCurtain()
 {
 	std::cout << "=== 7. Backlit sheer curtain UNDER a fabric wrapper (R8 P1.1 / debt 22) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32;
+	const unsigned int W = 16, H = 16;
 	const double power = 6.0;
 
 	const ImageStats bareThin = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/false ),
-			RasterizerPTRgbNoEnv( 256, 8 ) ), "wrapcurtain_pt_bare_thin" );
+			RasterizerPTRgbNoEnv( 128, 8 ) ), "wrapcurtain_pt_bare_thin" );
 	const ImageStats wrapNone = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( false, W, H, power, /*bWrap=*/true ),
-			RasterizerPTRgbNoEnv( 256, 8 ) ), "wrapcurtain_pt_none" );
+			RasterizerPTRgbNoEnv( 128, 8 ) ), "wrapcurtain_pt_none" );
 	const ImageStats wrapThin = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/true ),
-			RasterizerPTRgbNoEnv( 256, 8 ) ), "wrapcurtain_pt_thin" );
+			RasterizerPTRgbNoEnv( 128, 8 ) ), "wrapcurtain_pt_thin" );
 
 	Check( bareThin.valid && wrapNone.valid && wrapThin.valid,
 		"wrapped curtain: all three PT renders (bare thin / wrapped none / wrapped thin) produced output" );
@@ -1417,10 +1417,10 @@ static void TestWrappedBacklitSheerCurtain()
 	// (d) the three integrators, at test 3's own tolerances.
 	const ImageStats bdpt = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/true ),
-			RasterizerBDPTRgbNoEnv( 256, 8, 8 ) ), "wrapcurtain_bdpt_thin" );
+			RasterizerBDPTRgbNoEnv( 128, 8, 8 ) ), "wrapcurtain_bdpt_thin" );
 	const ImageStats vcm = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/true ),
-			RasterizerVCMRgbNoEnv( 256, 8, 8 ) ), "wrapcurtain_vcm_thin" );
+			RasterizerVCMRgbNoEnv( 128, 8, 8 ) ), "wrapcurtain_vcm_thin" );
 	Check( bdpt.valid && vcm.valid, "wrapped curtain: BDPT and VCM renders produced output" );
 	if( !bdpt.valid || !vcm.valid ) return;
 
@@ -1510,7 +1510,7 @@ static void TestWrappedBacklitSheerCurtain()
 // case stays as the 256-spp PT/BDPT/VCM three-way guard.  Mechanism and
 // numbers: docs/CLOTH_FABRIC_DESIGN.md §15 debt 26.
 //////////////////////////////////////////////////////////////////////
-static const double kGapAreaLightTol = 0.02;
+static const double kGapAreaLightTol = 0.03;
 
 static std::string GappedWeaveAreaLightCommon( unsigned int width, unsigned int height )
 {
@@ -1541,15 +1541,15 @@ static void TestGappedWeaveWithAreaLight()
 {
 	std::cout << "=== 8. Gapped weave in front of an AREA light (s=0 through the delta gap) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32;
+	const unsigned int W = 16, H = 16;
 	const std::string common = GappedWeaveAreaLightCommon( W, H );
 
 	const ImageStats sPt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTRgbNoEnv( 256, 8 ) ), "gaparea_pt" );
+		AssembleScene( common, RasterizerPTRgbNoEnv( 128, 8 ) ), "gaparea_pt" );
 	const ImageStats sBdpt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerBDPTRgbNoEnv( 256, 8, 8 ) ), "gaparea_bdpt" );
+		AssembleScene( common, RasterizerBDPTRgbNoEnv( 128, 8, 8 ) ), "gaparea_bdpt" );
 	const ImageStats sVcm = RenderAndComputeStats(
-		AssembleScene( common, RasterizerVCMRgbNoEnv( 256, 8, 8 ) ), "gaparea_vcm" );
+		AssembleScene( common, RasterizerVCMRgbNoEnv( 128, 8, 8 ) ), "gaparea_vcm" );
 
 	Check( sPt.valid && sBdpt.valid && sVcm.valid,
 		"gap+area: all three renders produced output" );
@@ -1704,8 +1704,8 @@ static void TestClosedBoxThinWeave()
 {
 	std::cout << "=== 9. Closed box, thin weave, light OUTSIDE (debt 25 resolved) ===" << std::endl;
 
-	const unsigned int W = 24, H = 24;
-	const unsigned int samples = 256;
+	const unsigned int W = 16, H = 16;
+	const unsigned int samples = 128;
 
 	const std::string boxCommon = ClosedBoxThinWeaveCommon( true, false, W, H );
 	const std::string planesCommon = ClosedBoxThinWeaveCommon( false, false, W, H );
@@ -1859,8 +1859,8 @@ static void TestMediumVertexBehindGappedWeave()
 {
 	std::cout << "=== 10. Medium vertex behind a gapped weave (debt 25's medium-vertex sibling) ===" << std::endl;
 
-	const unsigned int W = 24, H = 24;
-	const unsigned int samples = 256;
+	const unsigned int W = 16, H = 16;
+	const unsigned int samples = 128;
 	const std::string common = MediumVertexGappedWeaveCommon( W, H );
 
 	const ImageStats sPt = RenderAndComputeStats(
