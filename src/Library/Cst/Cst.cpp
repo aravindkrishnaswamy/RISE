@@ -1157,7 +1157,11 @@ static bool EvalExprBody( const std::string& body, const LetBindings& lets, doub
 	// u/v are unaffected (never gated) and mean the query coordinates below.
 	// Do NOT flip this on: this surface (document-level `expr(...)` / `let`)
 	// has no shading context to supply P/N/etc. from, and enabling it would
-	// silently start accepting names that mean nothing here.
+	// silently start accepting names that mean nothing here.  The flag gates
+	// CONTEXT, not functions: the other builtins -- the maths, the noise
+	// family (whose fbm/turbulence/ridged read `fw`, 0 here) and the `osl_`
+	// family (ExpressionOslBuiltins.h) -- compile here, and a vec3-typed
+	// final result is still refused by the scalar-result check below.
 	for( const std::pair<std::string,double>& L : lets ) b.AddParam( L.first, (Scalar)L.second );
 	b.AddParam( "PI", (Scalar)3.14159265358979323846 );
 	b.AddParam( "E",  (Scalar)2.71828182845904523536 );

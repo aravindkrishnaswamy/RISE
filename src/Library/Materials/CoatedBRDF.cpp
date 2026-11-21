@@ -501,8 +501,9 @@ namespace
 	//! The GGX lobe tables: for each roughness node and internal view
 	//! cosine node, a histogram over the outgoing cosine mu_u of
 	//! INT f_ss(w, u) mu_u du with the microfacet Fresnel replaced by the
-	//! two Schlick basis functions 1 and (1 - w.m)^5 (Schlick's F0 is the
-	//! exact combination; conductor / thin-film are projected onto it).
+	//! two Schlick basis functions 1 and (1 - w.m)^5 (Schlick's F0 and the
+	//! constant mode, which uses only the basis 1, are exact combinations;
+	//! conductor / thin-film are projected onto it).
 	//! Built ONCE per process (magic static) by deterministic VNDF
 	//! quadrature: E_vndf[ F G2/G1 ] is exactly INT F D G2/(4 mu_w) dw_m.
 	constexpr int    kLobeN   = 32;							//!< mu grid: view nodes AND outgoing bins
@@ -736,6 +737,7 @@ namespace
 		Scalar Q0, Q5, E0, E5, G0, G5, H0, H5;			//!< spec hemispherical integrals
 		Scalar JAphi, JApsi;							//!< 2 INT (1-(1-u)^5) u {Phi,Psi} du  (diffuse shape)
 		Scalar JMphi, JMpsi;							//!< 2 INT (1-Ess(u)) u {Phi,Psi} du   (multiscatter shape)
+		Scalar J1phi, J1psi;							//!< 2 INT u {Phi,Psi} du              (flat diffuse shape, fresnel_mode constant)
 		Scalar Eavg;
 		Scalar muC;										//!< the critical cosine the patch is anchored to
 		Scalar pg0[kPatchN], pg5[kPatchN];				//!< g on the critical patch (LobePatchNode)
@@ -965,6 +967,7 @@ namespace
 		using namespace RISE::Implementation;
 		b.alpha = alpha; b.eta = eta; b.tau = tau; b.valid = true;
 		b.JAphi = b.JApsi = b.JMphi = b.JMpsi = 0;
+		b.J1phi = b.J1psi = 0;
 		const bool opaque = !( tau < std::numeric_limits<Scalar>::infinity() );
 
 		// The coat's weights (DL-426: one continuous function of mu, exact
@@ -1168,6 +1171,7 @@ namespace
 				const Scalar sA = Scalar(1) - om * om * om * om * om;
 				b.JAphi += wq * sA * ph;  b.JApsi += wq * sA * pv;
 				b.JMphi += wq * sM * ph;  b.JMpsi += wq * sM * pv;
+				b.J1phi += wq * ph;       b.J1psi += wq * pv;
 			}
 		}
 		b.Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
@@ -1203,6 +1207,7 @@ namespace
 		Scalar pg0[kPatchN], pg5[kPatchN], pe0[kPatchN], pe5[kPatchN];
 		Scalar Q0, Q5, E0, E5, G0, G5, H0, H5;
 		Scalar JAphi, JApsi, JMphi, JMpsi;
+		Scalar J1phi, J1psi;
 	};
 
 	inline const std::vector<LobeEvalEntry>& LobeClearTable()
@@ -1219,6 +1224,7 @@ namespace
 					o.Q0 = b.Q0; o.Q5 = b.Q5; o.E0 = b.E0; o.E5 = b.E5;
 					o.G0 = b.G0; o.G5 = b.G5; o.H0 = b.H0; o.H5 = b.H5;
 					o.JAphi = b.JAphi; o.JApsi = b.JApsi; o.JMphi = b.JMphi; o.JMpsi = b.JMpsi;
+					o.J1phi = b.J1phi; o.J1psi = b.J1psi;
 				}
 			}
 			return t;
@@ -1272,6 +1278,8 @@ namespace
 		out.JApsi = mix( c00.JApsi, c01.JApsi, c10.JApsi, c11.JApsi );
 		out.JMphi = mix( c00.JMphi, c01.JMphi, c10.JMphi, c11.JMphi );
 		out.JMpsi = mix( c00.JMpsi, c01.JMpsi, c10.JMpsi, c11.JMpsi );
+		out.J1phi = mix( c00.J1phi, c01.J1phi, c10.J1phi, c11.J1phi );
+		out.J1psi = mix( c00.J1psi, c01.J1psi, c10.J1psi, c11.J1psi );
 		out.alpha = alpha; out.eta = eta; out.tau = Scalar(0); out.valid = true;
 		out.Eavg = RISE::MicrofacetEnergyLUT::LookupEavgG2( alpha );
 	}
@@ -1296,6 +1304,7 @@ namespace
 		out.H0 = mix( b0.H0, b1.H0 );  out.H5 = mix( b0.H5, b1.H5 );
 		out.JAphi = mix( b0.JAphi, b1.JAphi );  out.JApsi = mix( b0.JApsi, b1.JApsi );
 		out.JMphi = mix( b0.JMphi, b1.JMphi );  out.JMpsi = mix( b0.JMpsi, b1.JMpsi );
+		out.J1phi = mix( b0.J1phi, b1.J1phi );  out.J1psi = mix( b0.J1psi, b1.J1psi );
 		out.muC = b0.muC;
 		out.alpha = alpha; out.eta = b0.eta; out.tau = b0.tau; out.valid = true;
 		out.Eavg = RISE::MicrofacetEnergyLUT::LookupEavgG2( alpha );
@@ -1370,8 +1379,11 @@ namespace
 	//! One channel's colours: the diffuse albedo, the Fresnel at normal
 	//! incidence (Schlick's F0; the projection for conductor / film) and
 	//! the Kulla-Conty multiscatter tint -- exactly what GGXBRDF::value
-	//! multiplies its three lobes by.
-	struct LobeChannel { Scalar c; Scalar F0; Scalar Fms; };
+	//! multiplies its three lobes by.  `flat` is fresnel_mode constant:
+	//! the specular reflectance is F0 at every angle (no (1 - F0) g5 rise)
+	//! and the diffuse lobe's interface transmission is the flat
+	//! (1 - F0)^2, so its shape is 1, not 1 - (1 - mu)^5.
+	struct LobeChannel { Scalar c; Scalar F0; Scalar Fms; bool flat; };
 
 	//! Per-direction (channel-independent within one basis) pieces.
 	struct LobeDir { Scalar g0, g5, e0, e5, sA, sM; };
@@ -1395,17 +1407,21 @@ namespace
 		return ( ( Scalar(1) - b.Eavg ) > Scalar(1e-10) ) ? ch.Fms / ( Scalar(1) - b.Eavg ) : Scalar(0);
 	}
 
+	//! The weight of the Schlick rise basis g5 / e5: 1 - F0, or 0 for a
+	//! constant reflectance.
+	inline Scalar LobeRise( const LobeChannel& ch ) { return ch.flat ? Scalar(0) : Scalar(1) - ch.F0; }
+
 	inline Scalar LobeReturn( const LobeBasis& b, const LobeChannel& ch, const LobeDir& d )
 	{
-		return ch.F0 * d.g0 + ( Scalar(1) - ch.F0 ) * d.g5
-		     + LobeDiffuseK( ch ) * d.sA * b.JAphi
+		return ch.F0 * d.g0 + LobeRise( ch ) * d.g5
+		     + ( ch.flat ? LobeDiffuseK( ch ) * b.J1phi : LobeDiffuseK( ch ) * d.sA * b.JAphi )
 		     + LobeMsK( b, ch ) * d.sM * b.JMphi;
 	}
 
 	inline Scalar LobeEscape( const LobeBasis& b, const LobeChannel& ch, const LobeDir& d )
 	{
-		return ch.F0 * d.e0 + ( Scalar(1) - ch.F0 ) * d.e5
-		     + LobeDiffuseK( ch ) * d.sA * b.JApsi
+		return ch.F0 * d.e0 + LobeRise( ch ) * d.e5
+		     + ( ch.flat ? LobeDiffuseK( ch ) * b.J1psi : LobeDiffuseK( ch ) * d.sA * b.JApsi )
 		     + LobeMsK( b, ch ) * d.sM * b.JMpsi;
 	}
 
@@ -1416,15 +1432,20 @@ namespace
 		// The separable lobes' directional albedo is k (1 - Ā) s(mu) with
 		// 2 INT s(u) u du = 20/21 (diffuse) and 1 - Eavg (multiscatter),
 		// so their Q / E are k * that * J; G and H are k * J * J.
+		// (A flat diffuse shape, fresnel_mode constant, has 2 INT u du = 1
+		// and J1 in place of JA.)
 		const Scalar kd = LobeDiffuseK( ch );
 		const Scalar km = LobeMsK( b, ch );
-		const Scalar aD = Scalar(20) / Scalar(21);
+		const Scalar rise = LobeRise( ch );
+		const Scalar aD = ch.flat ? Scalar(1) : Scalar(20) / Scalar(21);
+		const Scalar jDphi = ch.flat ? b.J1phi : b.JAphi;
+		const Scalar jDpsi = ch.flat ? b.J1psi : b.JApsi;
 		const Scalar aM = Scalar(1) - b.Eavg;
 		LobeTotals t;
-		t.Q = ch.F0 * b.Q0 + ( Scalar(1) - ch.F0 ) * b.Q5 + kd * aD * b.JAphi + km * aM * b.JMphi;
-		t.E = ch.F0 * b.E0 + ( Scalar(1) - ch.F0 ) * b.E5 + kd * aD * b.JApsi + km * aM * b.JMpsi;
-		t.G = ch.F0 * b.G0 + ( Scalar(1) - ch.F0 ) * b.G5 + kd * b.JAphi * b.JApsi + km * b.JMphi * b.JMpsi;
-		t.H = ch.F0 * b.H0 + ( Scalar(1) - ch.F0 ) * b.H5 + kd * b.JApsi * b.JApsi + km * b.JMpsi * b.JMpsi;
+		t.Q = ch.F0 * b.Q0 + rise * b.Q5 + kd * aD * jDphi + km * aM * b.JMphi;
+		t.E = ch.F0 * b.E0 + rise * b.E5 + kd * aD * jDpsi + km * aM * b.JMpsi;
+		t.G = ch.F0 * b.G0 + rise * b.G5 + kd * jDphi * jDpsi + km * b.JMphi * b.JMpsi;
+		t.H = ch.F0 * b.H0 + rise * b.H5 + kd * jDpsi * jDpsi + km * b.JMpsi * b.JMpsi;
 		return t;
 	}
 
@@ -1475,9 +1496,10 @@ namespace
 		const Scalar  Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 		const RISEPel Fms  = ( ( Scalar(1) - Eavg ) > Scalar(1e-10) ) ? MicrofacetEnergyLUT::ComputeFms<RISEPel>( mean, Eavg ) : RISEPel( 0, 0, 0 );
 		for( int i = 0; i < 3; ++i ) {
-			ch[i].c   = c[i];
-			ch[i].F0  = r_min( r_max( F0[i], Scalar(0) ), Scalar(1) );
-			ch[i].Fms = Fms[i];
+			ch[i].c    = c[i];
+			ch[i].F0   = r_min( r_max( F0[i], Scalar(0) ), Scalar(1) );
+			ch[i].Fms  = Fms[i];
+			ch[i].flat = ( g.GetFresnelMode() == eFresnelConstant );
 		}
 	}
 
@@ -1503,6 +1525,7 @@ namespace
 		ch.c   = ReflectanceColorNM( g.GetDiffuse(), riIn, nm );
 		ch.F0  = r_min( r_max( fr.DirectionalNM( Scalar(1), nm ), Scalar(0) ), Scalar(1) );
 		ch.Fms = ( ( Scalar(1) - Eavg ) > Scalar(1e-10) ) ? MicrofacetEnergyLUT::ComputeFms<Scalar>( fr.MeanNM( nm ), Eavg ) : Scalar(0);
+		ch.flat = ( g.GetFresnelMode() == eFresnelConstant );
 	}
 
 	//! The coat's per-channel optical depth (the exponent of

@@ -1,8 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OrenNayarSPF.h - Defines a Oren-Nayar SPF, which just
-//    does uniform sampling but adjusts the weights according
-//    to the Cook-Torrance BRDF
+//  OrenNayarSPF.h - Defines a Oren-Nayar SPF, which samples
+//    the cosine-weighted hemisphere and weights each ray by the
+//    Oren-Nayar BRDF (classic or EON)
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: June 12, 2004
@@ -40,10 +40,14 @@ namespace RISE
 			const IPainter*			pReflectance;
 			const IScalarPainter*	pRoughness;
 
+			//! The model, as on OrenNayarBRDF: false classic, true EON.
+			const bool				bEnergyPreserving;
+
 		public:
 			OrenNayarSPF(
 				const IPainter& reflectance,
-				const IScalarPainter& roughness
+				const IScalarPainter& roughness,
+				const bool energy_preserving = false
 				);
 
 			//! Read-back + rebind for the interactive editor.

@@ -898,7 +898,8 @@ namespace
 		rd->addref(); rs->addref(); exponent->addref(); roughness->addref();
 		IsotropicPhongMaterial* phong = new IsotropicPhongMaterial(*rd,*rs,*exponent);
 		OrenNayarMaterial* oren = new OrenNayarMaterial(*rd,*roughness);
-		phong->addref(); oren->addref();
+		OrenNayarMaterial* eon = new OrenNayarMaterial(*rd,*roughness,true);
+		phong->addref(); oren->addref(); eon->addref();
 		const IORStack ior(1.0);
 		const ContinuationPathState state = NoRouletteState();
 		const Scalar nmValue = 550.0;
@@ -919,7 +920,11 @@ namespace
 				oren->MakeContinuationClosurePel(ri,ior,state);
 			const IContinuationClosureNM* orenNM =
 				oren->MakeContinuationClosureNM(ri,ior,nmValue,state);
-			Check(phongPel && phongNM && orenPel && orenNM,
+			const IContinuationClosurePel* eonPel =
+				eon->MakeContinuationClosurePel(ri,ior,state);
+			const IContinuationClosureNM* eonNM =
+				eon->MakeContinuationClosureNM(ri,ior,nmValue,state);
+			Check(phongPel && phongNM && orenPel && orenNM && eonPel && eonNM,
 				"material-owned Pel/NM response fixtures construct");
 			for( const Vector3& frontDirection : directions ) {
 				const Vector3 direction = face==0 ? frontDirection : -frontDirection;
@@ -939,9 +944,24 @@ namespace
 					orenNM->GetLobeMask(),direction),
 					oren->GetBSDF()->valueNM(direction,ri,nmValue),1e-14,
 					"NM Oren-Nayar closure response equals renderer BRDF");
+				if( eonPel ) CheckPelNear(eonPel->EvaluateSubset(
+					eonPel->GetLobeMask(),direction),
+					eon->GetBSDF()->value(direction,ri),1e-14,
+					"Pel energy-preserving Oren-Nayar closure response equals renderer BRDF");
+				if( eonNM ) CheckNear(eonNM->EvaluateSubset(
+					eonNM->GetLobeMask(),direction),
+					eon->GetBSDF()->valueNM(direction,ri,nmValue),1e-14,
+					"NM energy-preserving Oren-Nayar closure response equals renderer BRDF");
 			}
+			// The two models differ off the normal at this roughness, so the
+			// EON rows above are not the classic rows again.
+			if( face==0 && eonPel && orenPel ) Check( std::fabs(
+				eonPel->EvaluateSubset(eonPel->GetLobeMask(),directions[1])[0] -
+				orenPel->EvaluateSubset(orenPel->GetLobeMask(),directions[1])[0] ) > 1e-4,
+				"EON closure is not the classic closure" );
 			safe_release(phongPel); safe_release(phongNM);
 			safe_release(orenPel); safe_release(orenNM);
+			safe_release(eonPel); safe_release(eonNM);
 		}
 
 		const RayIntersectionGeometric front = MakeIntersection();
@@ -985,7 +1005,7 @@ namespace
 		CheckNear(nmGlossyZ/Scalar(nmGlossyCount),glossyMean,0.006,
 			"NM mixed sample's glossy label follows its Phong base law");
 		safe_release(pel); safe_release(nm);
-		safe_release(phong); safe_release(oren);
+		safe_release(phong); safe_release(oren); safe_release(eon);
 		safe_release(rd); safe_release(rs);
 		safe_release(exponent); safe_release(roughness);
 	}

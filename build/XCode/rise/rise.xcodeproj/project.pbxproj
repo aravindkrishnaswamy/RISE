@@ -8,6 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		140407933B9764E4BC83D473 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
+		05C1A0000000000000000016 /* ExpressionOslBuiltins.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000011 /* ExpressionOslBuiltins.h */; };
+		05C1A0000000000000000015 /* ExpressionOslBuiltins.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000012 /* ExpressionOslBuiltins.cpp */; };
+		05C1A0000000000000000014 /* ExpressionOslBuiltins.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000011 /* ExpressionOslBuiltins.h */; };
+		05C1A0000000000000000013 /* ExpressionOslBuiltins.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000012 /* ExpressionOslBuiltins.cpp */; };
+		05C1A0000000000000000006 /* OslNoise.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000001 /* OslNoise.h */; };
+		05C1A0000000000000000005 /* OslNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000002 /* OslNoise.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000004 /* OslNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000001 /* OslNoise.h */; };
+		05C1A0000000000000000003 /* OslNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000002 /* OslNoise.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
 		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
@@ -2315,7 +2323,9 @@
 		DEFE44ED00000000000000F2 /* RenderParallelScope.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RenderParallelScope.h; sourceTree = "<group>"; };
 		EAF8BA46AF7CB493378B515E /* StochasticTilePainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = StochasticTilePainter.h; sourceTree = "<group>"; };
 		EE990000000000000000001A /* ExpressionPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionPainter.h; sourceTree = "<group>"; };
+		05C1A0000000000000000011 /* ExpressionOslBuiltins.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionOslBuiltins.h; sourceTree = "<group>"; };
 		EE990000000000000000001B /* ExpressionPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ExpressionPainter.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000012 /* ExpressionOslBuiltins.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ExpressionOslBuiltins.cpp; sourceTree = "<group>"; };
 		F204D6F309C3AA61F5300F19 /* RampPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = RampPainter.cpp; sourceTree = "<group>"; };
 		F24B71C62F52A211008304C4 /* RISE-GUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "RISE-GUI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F24B80012F52A632008304C4 /* PendingPhotonShoots.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PendingPhotonShoots.h; sourceTree = "<group>"; };
@@ -3012,9 +3022,11 @@
 		F2A5C0D02FB30E000077A171 /* OidnConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OidnConfig.h; sourceTree = "<group>"; };
 		F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerDefaults.h; sourceTree = "<group>"; };
 		F2ADD0000000000000000001 /* ProceduralNoiseCore.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProceduralNoiseCore.h; sourceTree = "<group>"; };
+		05C1A0000000000000000001 /* OslNoise.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslNoise.h; sourceTree = "<group>"; };
 		F5C0DEEE0000000000000001 /* SurfaceCurvature.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SurfaceCurvature.h; sourceTree = "<group>"; };
 		F5C0DEF00000000000000001 /* ExpressionMemo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionMemo.h; sourceTree = "<group>"; };
 		F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ProceduralNoiseCore.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000002 /* OslNoise.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslNoise.cpp; sourceTree = "<group>"; };
 		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BidirectionalRasterizerBase.cpp; sourceTree = "<group>"; };
@@ -4140,7 +4152,9 @@
 				6A11E001000000000000C0DE /* ExpressionEval.h */,
 				6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */,
 				EE990000000000000000001A /* ExpressionPainter.h */,
+				05C1A0000000000000000011 /* ExpressionOslBuiltins.h */,
 				EE990000000000000000001B /* ExpressionPainter.cpp */,
+				05C1A0000000000000000012 /* ExpressionOslBuiltins.cpp */,
 				89A2797DF74BDB70C5D959B9 /* RampPainter.h */,
 				F204D6F309C3AA61F5300F19 /* RampPainter.cpp */,
 				457B359DA029B1CE5FC98767 /* MappingPainter.h */,
@@ -4631,9 +4645,11 @@
 				F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */,
 				F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */,
 				F2ADD0000000000000000001 /* ProceduralNoiseCore.h */,
+				05C1A0000000000000000001 /* OslNoise.h */,
 				F5C0DEEE0000000000000001 /* SurfaceCurvature.h */,
 				F5C0DEF00000000000000001 /* ExpressionMemo.h */,
 				F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */,
+				05C1A0000000000000000002 /* OslNoise.cpp */,
 				F27F0A37069C42900069C9E5 /* RandomNumbers.h */,
 				F27F0A38069C42900069C9E5 /* Ray.h */,
 				F2EE004000000000000000A1 /* RayDifferentials.h */,
@@ -5263,6 +5279,7 @@
 				6A11B002000000000000C0DE /* ExpressionEval.h in Headers */,
 				6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */,
 				EE990000000000000000001D /* ExpressionPainter.h in Headers */,
+				05C1A0000000000000000014 /* ExpressionOslBuiltins.h in Headers */,
 				A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */,
 				FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */,
 				AA9ACED5B61C5CEB57B603BC /* StochasticTilePainter.h in Headers */,
@@ -5534,6 +5551,7 @@
 				F27F0C8D069C42910069C9E5 /* Plane.h in Headers */,
 				F27F0C8F069C42910069C9E5 /* ProbabilityDensityFunction.h in Headers */,
 				F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */,
+				05C1A0000000000000000004 /* OslNoise.h in Headers */,
 				F5C0DEEE0000000000000002 /* SurfaceCurvature.h in Headers */,
 				F5C0DEF00000000000000002 /* ExpressionMemo.h in Headers */,
 				F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */,
@@ -5973,6 +5991,7 @@
 				CC0F0000000000000000000B /* PolynomialFunction2DPainter.cpp in Sources */,
 				DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */,
 				EE990000000000000000001C /* ExpressionPainter.cpp in Sources */,
+				05C1A0000000000000000013 /* ExpressionOslBuiltins.cpp in Sources */,
 				994B89380C42A0BE4D05347C /* RampPainter.cpp in Sources */,
 				D7F0DC15ABC1B86AE7C693B0 /* MappingPainter.cpp in Sources */,
 				5F01DFA9B418370DBDAB64F1 /* StochasticTilePainter.cpp in Sources */,
@@ -6154,6 +6173,7 @@
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
 				F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */,
+				05C1A0000000000000000003 /* OslNoise.cpp in Sources */,
 				F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */,
 				F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */,
 				F27F0C9B069C42910069C9E5 /* ThreadsPTHREADs.cpp in Sources */,
@@ -7150,11 +7170,15 @@
 				F24B74402F52A632008304C4 /* ProbabilityDensityFunction.cpp in Sources */,
 				F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */,
 				F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */,
+				05C1A0000000000000000005 /* OslNoise.cpp in Sources */,
 				F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */,
+				05C1A0000000000000000006 /* OslNoise.h in Sources */,
 				F5C0DEEE0000000000000003 /* SurfaceCurvature.h in Sources */,
 				F5C0DEF00000000000000003 /* ExpressionMemo.h in Sources */,
 				EE990000000000000000001E /* ExpressionPainter.cpp in Sources */,
+				05C1A0000000000000000015 /* ExpressionOslBuiltins.cpp in Sources */,
 				EE990000000000000000001F /* ExpressionPainter.h in Sources */,
+				05C1A0000000000000000016 /* ExpressionOslBuiltins.h in Sources */,
 				71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */,
 				E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */,
 				FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */,

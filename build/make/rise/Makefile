@@ -275,11 +275,13 @@ $(TESTOBJ_DIR)%.o : ../../../%.mm
 
 # Library files with their own compile flags (see the per-file rules near the
 # end of this file) keep them in the test copy: the fire production
-# operators compile without fast-math or FP contraction (FireCase's rule only
-# drops LTO, which the test copy does anyway).
+# operators and the Cycles noise port (OslNoise) compile without fast-math or
+# FP contraction (FireCase's rule only drops LTO, which the test copy does
+# anyway).
 TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvection.o FireProductionProjection.o \
-	FireProductionTransport.o FireProductionSource.o FireProductionForce.o)
+	FireProductionTransport.o FireProductionSource.o FireProductionForce.o \
+	OslNoise.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -561,6 +563,13 @@ test : tests
 $(PATHLIBRARY)Utilities/FireCase.o : $(PATHLIBRARY)Utilities/FireCase.cpp
 	@echo "Compiling (no LTO): $<"
 	@$(CXX) $(filter-out -flto,$(CPPFLAGS)) $(filter-out -flto,$(CXXFLAGS)) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# The Cycles noise port reproduces Cycles' scalar path as strict IEEE
+# single precision; fast-math's contraction would change its pattern
+# (OslNoise.cpp refuses to compile with __FAST_MATH__ defined).
+$(PATHLIBRARY)Utilities/OslNoise.o : $(PATHLIBRARY)Utilities/OslNoise.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 # r84 production remap arithmetic is a recorded binary32 operator.  It must
 # not inherit the renderer's reassociation/contract flags.

@@ -21,10 +21,12 @@ using namespace RISE::Implementation;
 
 OrenNayarSPF::OrenNayarSPF(
 	const IPainter& reflectance,
-	const IScalarPainter& roughness
+	const IScalarPainter& roughness,
+	const bool energy_preserving
 	) :
   pReflectance( &reflectance ),
-  pRoughness( &roughness )
+  pRoughness( &roughness ),
+  bEnergyPreserving( energy_preserving )
 {
 	pReflectance->addref();
 	pRoughness->addref();
@@ -88,13 +90,17 @@ void OrenNayarSPF::Scatter(
 	// by sign on a back-face hit and fed ComputeFactor's geomN gate the
 	// wrong-oriented normal, silently zeroing the back-face NM twin's
 	// symmetric case (ScatterNM below already used myonb.w() correctly).
-	RISEPel L1, L2;
 	const ScalarTriple r = pRoughness->GetValuesAt(ri);
 	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
-	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), roughness );
-
 	const RISEPel rho = ReflectanceColor( *pReflectance, ri );
-	diffuse.kray = L1*rho + (L2*rho*rho);
+	if( bEnergyPreserving ) {
+		// f cos / pdf with pdf = cos/pi: the weight is pi f.
+		diffuse.kray = OrenNayarBRDF::EONValue<RISEPel>( diffuse.ray.Dir(), ri, myonb.w(), rho, roughness ) * PI;
+	} else {
+		RISEPel L1, L2;
+		OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), roughness );
+		diffuse.kray = L1*rho + (L2*rho*rho);
+	}
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
@@ -141,11 +147,15 @@ void OrenNayarSPF::ScatterNM(
 	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, ptrand ) );
 	
 	// Compute the weight
-	Scalar L1=0, L2=0;
-	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness->GetValueAtNM(ri,nm) );
-
 	const Scalar rho = ReflectanceColorNM( *pReflectance, ri, nm );
-	diffuse.krayNM = L1*rho + (L2*rho*rho);
+	if( bEnergyPreserving ) {
+		// f cos / pdf with pdf = cos/pi: the weight is pi f.
+		diffuse.krayNM = OrenNayarBRDF::EONValue<Scalar>( diffuse.ray.Dir(), ri, myonb.w(), rho, pRoughness->GetValueAtNM(ri,nm) ) * PI;
+	} else {
+		Scalar L1=0, L2=0;
+		OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness->GetValueAtNM(ri,nm) );
+		diffuse.krayNM = L1*rho + (L2*rho*rho);
+	}
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;

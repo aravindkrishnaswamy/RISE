@@ -180,14 +180,18 @@ namespace RISE
 		const IContinuationClosureNM* CreateLambertianContinuationClosureNM(
 			const RayIntersectionGeometric& ri, Scalar reflectance,
 			const ContinuationPathState& pathState );
+		//! `energyPreserving` selects the EON model (OrenNayarBRDF::EONValue)
+		//! instead of the classic one, matching the material's own BRDF.
 		const IContinuationClosurePel* CreateOrenNayarContinuationClosurePel(
 			const RayIntersectionGeometric& ri, const RISEPel& reflectance,
 			const RISEPel& roughness,
-			const ContinuationPathState& pathState );
+			const ContinuationPathState& pathState,
+			bool energyPreserving = false );
 		const IContinuationClosureNM* CreateOrenNayarContinuationClosureNM(
 			const RayIntersectionGeometric& ri, Scalar reflectance,
 			Scalar roughness,
-			const ContinuationPathState& pathState );
+			const ContinuationPathState& pathState,
+			bool energyPreserving = false );
 		const IContinuationClosurePel* CreateIsotropicPhongContinuationClosurePel(
 			const RayIntersectionGeometric& ri, const RISEPel& rd,
 			const RISEPel& rs, Scalar exponent,

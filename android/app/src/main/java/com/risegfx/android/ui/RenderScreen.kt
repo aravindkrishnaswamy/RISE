@@ -29,6 +29,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +47,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.risegfx.android.R
 import com.risegfx.android.RiseApplication
@@ -203,6 +205,7 @@ private fun ScenePickerBar(
     onSceneSelected: (SceneEntry) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showLicenses by remember { mutableStateOf(false) }
     Card(modifier, shape = RoundedCornerShape(12.dp)) {
         Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             // Anchor row — clickable to open the menu.  We use a Box
@@ -233,8 +236,19 @@ private fun ScenePickerBar(
                         selected.description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
+                } else {
+                    Spacer(Modifier.weight(1f))
                 }
+                // Always available, including mid-render: the notices the
+                // app ships (see LicensesDialog.kt).
+                TextButton(onClick = { showLicenses = true }) { Text("Licences") }
+            }
+            if (showLicenses) {
+                LicensesDialog(onDismiss = { showLicenses = false })
             }
             DropdownMenu(
                 expanded = expanded && enabled,

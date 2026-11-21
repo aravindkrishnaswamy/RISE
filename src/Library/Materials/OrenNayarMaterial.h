@@ -40,15 +40,19 @@ namespace RISE
 			}
 
 		public:
+			//! `energy_preserving` picks the model for the BRDF and SPF
+			//! together: false the classic Oren-Nayar, true EON (see
+			//! OrenNayarBRDF::EONValue).
 			OrenNayarMaterial(
 				const IPainter& reflectance,
-				const IScalarPainter& roughness
+				const IScalarPainter& roughness,
+				const bool energy_preserving = false
 				)
 			{
-				pBRDF = new OrenNayarBRDF( reflectance, roughness );
+				pBRDF = new OrenNayarBRDF( reflectance, roughness, energy_preserving );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
-				pSPF = new OrenNayarSPF( reflectance, roughness );
+				pSPF = new OrenNayarSPF( reflectance, roughness, energy_preserving );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
@@ -73,7 +77,8 @@ namespace RISE
 				const ScalarTriple roughness = pBRDF->GetRoughness().GetValuesAt(ri);
 				return CreateOrenNayarContinuationClosurePel(
 					ri,ReflectanceColor(pBRDF->GetReflectance(),ri),
-					RISEPel(roughness.v[0],roughness.v[1],roughness.v[2]),pathState);
+					RISEPel(roughness.v[0],roughness.v[1],roughness.v[2]),pathState,
+					pBRDF->IsEnergyPreserving());
 			}
 
 			const IContinuationClosureNM* MakeContinuationClosureNM(
@@ -83,13 +88,15 @@ namespace RISE
 			{
 				return CreateOrenNayarContinuationClosureNM(
 					ri,ReflectanceColorNM(pBRDF->GetReflectance(),ri,nm),
-					pBRDF->GetRoughness().GetValueAtNM(ri,nm),pathState);
+					pBRDF->GetRoughness().GetValueAtNM(ri,nm),pathState,
+					pBRDF->IsEnergyPreserving());
 			}
 
 			//! Read-back + rebind for the interactive editor.  Material
 			//! forwards to BOTH BRDF and SPF in lockstep.
 			inline const IPainter&       GetReflectance() const { return pBRDF->GetReflectance(); }
 			inline const IScalarPainter& GetRoughness()   const { return pBRDF->GetRoughness(); }
+			inline bool IsEnergyPreserving()               const { return pBRDF->IsEnergyPreserving(); }
 			inline void SetReflectance( const IPainter& v )       { pBRDF->SetReflectance( v ); pSPF->SetReflectance( v ); }
 			inline void SetRoughness( const IScalarPainter& v )   { pBRDF->SetRoughness( v );   pSPF->SetRoughness( v ); }
 		};

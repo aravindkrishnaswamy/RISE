@@ -193,14 +193,15 @@ void GGXSPF::Scatter(
 	// computed Fresnel term by the painter TINT elsewhere (`specColor`);
 	// tint==0 legitimately means "no specular energy" there, so the raw
 	// tint is already a valid, cheap, always-correct selection weight for
-	// those two modes.  Calling interfaceFresnel.Mean()/MeanNM()
+	// those two modes, and for eFresnelConstant (where the raw tint IS its
+	// hemispherical mean).  Calling interfaceFresnel.Mean()/MeanNM()
 	// unconditionally on EVERY Scatter()/Pdf() call was measured to cost
 	// an unconditional 21-tap MicrofacetEnergyLUT::ComputeFresnelAvg
 	// (conductor -- the parser DEFAULT) or a 21-node Gauss-Legendre
 	// quadrature over a 32-wavelength-step Airy thin-film evaluation
 	// (thin-film) -- see docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
 	// "Cost".  Restrict the hemispherical-average path to Schlick mode
-	// only; the other two modes keep the pre-DL-64 raw-tint weight, which
+	// only; the other modes keep the pre-DL-64 raw-tint weight, which
 	// was never the defect.
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar wd = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
@@ -311,7 +312,11 @@ void GGXSPF::Scatter(
 						// Fresnel evaluated at microfacet normal m, not macrosurface normal
 						const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 						RISEPel F;
-						if( fresnelMode == eFresnelSchlickF0 )
+						if( fresnelMode == eFresnelConstant )
+						{
+							F = specColor;	// constant reflectance, no Fresnel term
+						}
+						else if( fresnelMode == eFresnelSchlickF0 )
 						{
 							const Scalar cosWoH = r_max( Scalar(0), wiDotM );	// reflection: wi·m == wo·m
 							F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosWoH );
@@ -422,7 +427,12 @@ void GGXSPF::Scatter(
 
 				const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 				RISEPel F_ms;
-				if( fresnelMode == eFresnelSchlickF0 )
+				if( fresnelMode == eFresnelConstant )
+				{
+					// Per-bounce average is specColor itself (GGXBRDF::value's twin).
+					F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor, Eavg );
+				}
+				else if( fresnelMode == eFresnelSchlickF0 )
 				{
 					const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
 					F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
@@ -527,8 +537,8 @@ void GGXSPF::ScatterNM(
 	// `ws` uses the hemispherical Fresnel-weighted albedo
 	// (GGXInterfaceFresnel::MeanNM) ONLY in eFresnelSchlickF0 mode, where
 	// raw F0 can collapse to exactly zero despite real grazing energy.
-	// eFresnelConductor / eFresnelThinFilmConductor keep the pre-DL-64
-	// raw-tint weight (`wsF0`) -- calling MeanNM unconditionally there
+	// eFresnelConductor / eFresnelThinFilmConductor / eFresnelConstant keep
+	// the pre-DL-64 raw-tint weight (`wsF0`) -- calling MeanNM unconditionally there
 	// costs a 21-tap LUT average or a 21-node x 32-wavelength Airy
 	// quadrature on every call for no correctness benefit.  `wsF0` also
 	// remains the true per-wavelength painter sample for the
@@ -620,7 +630,11 @@ void GGXSPF::ScatterNM(
 						// selection-weight fix above)
 						const Scalar specColor = wsF0;
 						Scalar F;
-						if( fresnelMode == eFresnelSchlickF0 )
+						if( fresnelMode == eFresnelConstant )
+						{
+							F = specColor;	// constant reflectance, no Fresnel term
+						}
+						else if( fresnelMode == eFresnelSchlickF0 )
 						{
 							const Scalar cosWoH = r_max( Scalar(0), wiDotM );
 							F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( specColor, cosWoH );
@@ -717,7 +731,12 @@ void GGXSPF::ScatterNM(
 				// Ess_i, cosWi computed once at the top of ScatterNM().
 
 				Scalar F_ms;
-				if( fresnelMode == eFresnelSchlickF0 )
+				if( fresnelMode == eFresnelConstant )
+				{
+					// Per-bounce average is the specular colour (GGXBRDF::valueNM's twin).
+					F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( wsF0, Eavg );
+				}
+				else if( fresnelMode == eFresnelSchlickF0 )
 				{
 					// wsF0 holds the raw painter F0 sample for this call (see the
 					// specular-branch note above)
@@ -812,7 +831,7 @@ Scalar GGXSPF::Pdf(
 	// 3-lobe mixture PDF weighted by painter albedos.  DL-64 / P2-1: `ws`
 	// matches the mixture Scatter() actually samples from -- the
 	// hemispherical Fresnel-weighted albedo ONLY in eFresnelSchlickF0
-	// mode (see Scatter()'s twin comment for why the other two modes keep
+	// mode (see Scatter()'s twin comment for why the other modes keep
 	// the cheap raw-tint weight); otherwise this reported density would
 	// disagree with the sampler it is meant to describe (MIS /
 	// SPFPdfConsistencyTest).

@@ -1658,6 +1658,16 @@ namespace RISE
 			const char* roughness										///< [in] Roughness factor
 			);
 
+		//! Adds Oren-Nayar material with an explicit model ("classic" or
+		//! "energy_preserving"); see IJob::AddOrenNayarMaterialModel.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddOrenNayarMaterialModel(
+			const char* name,
+			const char* reflectance,
+			const char* roughness,
+			const char* model
+			);
+
 		//! Adds Schlick material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddSchlickMaterial(

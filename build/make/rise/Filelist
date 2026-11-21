@@ -101,6 +101,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
 	$(PATHLIBRARY)Utilities/ProceduralNoiseCore.cpp			\
+	$(PATHLIBRARY)Utilities/OslNoise.cpp			\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
 	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
@@ -173,6 +174,7 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/PolynomialFunction2DPainter.cpp		\
 	$(PATHLIBRARY)Painters/GerstnerWavePainter.cpp				\
 	$(PATHLIBRARY)Painters/ExpressionPainter.cpp				\
+	$(PATHLIBRARY)Painters/ExpressionOslBuiltins.cpp			\
 	$(PATHLIBRARY)Painters/RampPainter.cpp						\
 	$(PATHLIBRARY)Painters/MappingPainter.cpp					\
 	$(PATHLIBRARY)Painters/StochasticTilePainter.cpp			\

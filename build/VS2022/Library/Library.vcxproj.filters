@@ -330,6 +330,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\OslNoise.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Reference.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -505,6 +508,9 @@
       <Filter>Painters</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\ExpressionPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\ExpressionOslBuiltins.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\RampPainter.cpp">
@@ -1602,6 +1608,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\OslNoise.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -2011,6 +2020,9 @@
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionOslBuiltins.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h">

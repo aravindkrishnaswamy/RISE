@@ -76,7 +76,14 @@ namespace RISE
 	{
 		eFresnelConductor = 0,
 		eFresnelSchlickF0 = 1,
-		eFresnelThinFilmConductor = 2
+		eFresnelThinFilmConductor = 2,
+		//! Constant reflectance: the specular colour at every angle, with no
+		//! Fresnel term (Cycles' Glossy BSDF).  `ior`/`extinction` are ignored.
+		//! The model is energy-bounded for specular and diffuse colours at or
+		//! below 1 per channel.  The diffuse lobe gets the reciprocal (1 - A_i)(1 - A_o)
+		//! interface transmission every GGX mode applies; here A is the
+		//! specular colour, so it is (1 - specular) on entry and on exit.
+		eFresnelConstant = 3
 	};
 
 	/// Parameters for random-walk subsurface scattering.

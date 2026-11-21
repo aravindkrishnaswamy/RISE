@@ -50,6 +50,24 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
 - [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md): Principled
   BSDF, Hair, Sheen, Coat, SSS, Alpha, Tangent, thin film and dispersion
   translation, and light power (ABI v18)
+- [BLENDER_PROCEDURAL_TRANSLATION_DESIGN.md](BLENDER_PROCEDURAL_TRANSLATION_DESIGN.md):
+  DRAFT design for translating Blender shader node graphs natively (no bake),
+  with the 177-file node-usage survey behind its phasing
+  (`tools/blender_node_survey.py`)
+- [MIX_MATERIAL_PATH_STATE_AO_DESIGN.md](MIX_MATERIAL_PATH_STATE_AO_DESIGN.md):
+  DRAFT design for `mix_material` (one leaf chosen per hit), path-dependent
+  inputs (ray type, view direction, ray visibility; path tracer only), and a
+  ray-traced `ao()` builtin
+- [BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md):
+  consolidated findings of the first four-reviewer round on the two designs
+  above
+- [BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND2.md](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND2.md):
+  findings of the second review (a different model and harness), its verdict
+  that the transport features are not ready to build, and the decisions taken
+- [BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND3.md](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND3.md):
+  findings of the third review on drafts 6 and 3 (fourteen new P1s, the leaf
+  selector ruling, measured Cycles differences) and the owner's decisions;
+  the designs carry an "After round 3" block and are not redrafted
 - [LIGHTS.md](LIGHTS.md): emitter and light-sampling architecture
 - [MIS_HEURISTICS.md](MIS_HEURISTICS.md): PT/BDPT/VCM/MLT MIS choices and
   subsurface-jump partitions
