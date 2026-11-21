@@ -126,6 +126,121 @@ val syncRiseAssets = tasks.register<Sync>("syncRiseAssets") {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Third-party licence notices
+//
+// librise_jni.so compiles in stb, cgltf, mt19937, the Sobol' direction
+// numbers, the Cycles noise port, the Unicode NFC tables, libpng and zlib,
+// and the APK ships the NDK's libc++_shared.so.  The in-repo notices are listed once, in
+// licenses/third_party_notices.tsv (lines tagged "android" or "all"); the
+// LLVM notice covering libc++ comes from the NDK the build uses.  The
+// stageThirdPartyNotices task copies them into the generated asset folder
+// `licenses/` -- one folder per package plus THIRD-PARTY-NOTICES.txt, the
+// concatenation the app's Licences screen shows -- and FAILS the build if
+// any of them is missing.
+// ----------------------------------------------------------------------------
+val riseNoticeManifest: File = File(riseRepoRoot, "licenses/third_party_notices.tsv")
+val riseNoticesOutputDir: Provider<Directory> =
+    layout.buildDirectory.dir("generated/rise-notices")
+
+// (package, repo-relative path) for every manifest line tagged android/all.
+// Read at configuration time so a malformed manifest fails the build early.
+val riseManifestNotices: List<Pair<String, String>> = run {
+    if (!riseNoticeManifest.isFile) {
+        throw GradleException("Third-party notice manifest is missing: $riseNoticeManifest")
+    }
+    // Same rules as tools/third_party_notices.py read_manifest().
+    val known = setOf("macos", "android", "windows", "blender")
+    val packageName = Regex("^[A-Za-z0-9][A-Za-z0-9._+@-]*$")
+    val seen = mutableSetOf<Pair<String, String>>()
+    riseNoticeManifest.readLines().mapIndexedNotNull { index, line ->
+        if (line.isBlank() || line.trimStart().startsWith("#")) return@mapIndexedNotNull null
+        val where = "$riseNoticeManifest:${index + 1}"
+        val fields = line.split("\t")
+        if (fields.size != 3) throw GradleException("$where: expected 3 tab-separated fields")
+        val pkg = fields[0].trim()
+        val rel = fields[1].trim()
+        if (!packageName.matches(pkg)) throw GradleException("$where: bad package name '$pkg'")
+        if (rel.isEmpty() || rel.startsWith("/") || rel.replace("\\", "/").split("/").contains("..")) {
+            throw GradleException("$where: path must be repo-relative: '$rel'")
+        }
+        if (!seen.add(pkg to rel)) throw GradleException("$where: $pkg $rel is listed twice")
+        val distField = fields[2].trim()
+        val dists = if (distField == "all") known else distField.split(",").map { it.trim() }.toSet()
+        if (dists.isEmpty() || dists.any { it !in known }) {
+            throw GradleException("$where: unknown distribution in '$distField'")
+        }
+        if ("android" in dists) pkg to rel else null
+    }.also {
+        if (it.isEmpty()) throw GradleException("$riseNoticeManifest lists no notices for android")
+    }
+}
+
+val stageThirdPartyNotices = tasks.register("stageThirdPartyNotices") {
+    description = "Copy the third-party licence notices the APK must carry into its assets."
+    group = "rise"
+    val outDir = riseNoticesOutputDir.map { it.dir("licenses") }
+    inputs.file(riseNoticeManifest)
+    for ((_, rel) in riseManifestNotices) {
+        val f = File(riseRepoRoot, rel)
+        if (f.isFile) inputs.file(f)
+    }
+    // libc++_shared.so and the libc++ / compiler-rt code linked into
+    // librise_jni.so are LLVM's; the NDK carries their notice beside the
+    // prebuilt toolchain (one host directory per install).  Resolved when
+    // the task is configured so the file is a real task input.
+    val ndkDir = android.ndkDirectory
+    val llvmNotices = File(ndkDir, "toolchains/llvm/prebuilt")
+        .listFiles()?.map { File(it, "NOTICE") }?.filter { it.isFile }.orEmpty()
+    if (llvmNotices.size == 1) inputs.file(llvmNotices.single())
+    outputs.dir(outDir)
+    doLast {
+        val notices = mutableListOf<Pair<String, File>>()
+        for ((pkg, rel) in riseManifestNotices) {
+            val f = File(riseRepoRoot, rel)
+            if (!f.isFile) throw GradleException("Third-party notice for $pkg is missing: $f")
+            notices += pkg to f
+        }
+        if (llvmNotices.size != 1) {
+            throw GradleException(
+                "Expected one LLVM toolchain NOTICE under $ndkDir/toolchains/llvm/prebuilt, " +
+                "found ${llvmNotices.size}")
+        }
+        notices += "LLVM-libcxx" to llvmNotices.single()
+
+        val dest = outDir.get().asFile
+        dest.deleteRecursively()
+        dest.mkdirs()
+        val combined = StringBuilder()
+        combined.append("RISE for Android -- licences and third-party notices\n\n")
+        combined.append("RISE's own licence comes first, then the licence and copyright\n")
+        combined.append("notices of the third-party code compiled into the app's native\n")
+        combined.append("library.  The app's Kotlin, kotlinx.coroutines, AndroidX and\n")
+        combined.append("Jetpack Compose libraries are distributed under the Apache\n")
+        combined.append("License, Version 2.0, whose text is included below under\n")
+        combined.append("Apache-2.0.\n\n")
+        val seen = mutableSetOf<String>()
+        for ((pkg, f) in notices) {
+            val name = if (pkg == "LLVM-libcxx") "NOTICE.txt" else f.name
+            val target = File(dest, "$pkg/$name")
+            if (!seen.add("$pkg/$name")) {
+                // Identical repeats are fine, as in tools/third_party_notices.py.
+                if (!target.readBytes().contentEquals(f.readBytes())) {
+                    throw GradleException("Two different $pkg notices are both named $name")
+                }
+                continue
+            }
+            target.parentFile.mkdirs()
+            f.copyTo(target, overwrite = true)
+            combined.append("=".repeat(72)).append("\n")
+            combined.append("$pkg -- $name\n")
+            combined.append("=".repeat(72)).append("\n\n")
+            combined.append(f.readText(Charsets.UTF_8).trimEnd()).append("\n\n")
+        }
+        File(dest, "THIRD-PARTY-NOTICES.txt").writeText(combined.toString(), Charsets.UTF_8)
+    }
+}
+
 android {
     namespace = "com.risegfx.android"
     compileSdk = 35
@@ -181,6 +296,8 @@ android {
         // Layer the Sync output beneath the in-tree assets dir so generated
         // RISE scenes/textures/meshes are packaged like any other asset.
         assets.srcDir(riseAssetsOutputDir)
+        // Third-party notices, under the asset path licenses/.
+        assets.srcDir(riseNoticesOutputDir)
     }
 
     buildTypes {
@@ -221,7 +338,7 @@ android {
 // fail eagerly here.  `configureEach` defers the wiring until the task is
 // actually realised.
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
-    .configureEach { dependsOn(syncRiseAssets) }
+    .configureEach { dependsOn(syncRiseAssets, stageThirdPartyNotices) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)

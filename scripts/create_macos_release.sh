@@ -561,20 +561,70 @@ copy_static_license() {
 	[ -f "${source}" ] || die "in-tree third-party notice is missing: ${source}"
 	destination="${APP}/Contents/Resources/Third-Party Licenses/${package}"
 	mkdir -p "${destination}"
+	if [ -e "${destination}/$(basename "${source}")" ] && \
+		! cmp -s "${source}" "${destination}/$(basename "${source}")"; then
+		die "two different ${package} notices are both named $(basename "${source}")"
+	fi
 	cp -pfL "${source}" "${destination}/$(basename "${source}")"
 	chmod 0644 "${destination}/$(basename "${source}")"
 }
 
 cp -pfL "${SOURCE_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
 chmod 0644 "${APP}/Contents/Resources/RISE-LICENSE.txt"
-copy_static_license "${SOURCE_ROOT}/extlib/cgltf/LICENSE.txt" cgltf
-copy_static_license "${SOURCE_ROOT}/extlib/mt19937/LICENSE.txt" mt19937
-copy_static_license "${SOURCE_ROOT}/extlib/stb/LICENSE.txt" stb
-# Ported code compiled into the library (see licenses/README.md).
-copy_static_license "${SOURCE_ROOT}/licenses/Cycles-NOTICE.txt" Cycles
-copy_static_license "${SOURCE_ROOT}/licenses/Apache-2.0.txt" Cycles
-copy_static_license "${SOURCE_ROOT}/licenses/BSD-3-Clause.txt" Cycles
-copy_static_license "${SOURCE_ROOT}/licenses/Sobol-Joe-Kuo-LICENSE.txt" Sobol-Joe-Kuo
+# In-repository notices: licenses/third_party_notices.tsv is the one list,
+# shared with the Android, Windows and Blender add-on packagers.
+NOTICE_MANIFEST="${SOURCE_ROOT}/licenses/third_party_notices.tsv"
+[ -f "${NOTICE_MANIFEST}" ] || die "third-party notice manifest is missing: ${NOTICE_MANIFEST}"
+macos_notices=0
+notice_seen=$'\n'
+while IFS= read -r notice_line || [ -n "${notice_line}" ]; do
+	# Same rules as tools/third_party_notices.py read_manifest().
+	notice_line="${notice_line%$'\r'}"
+	notice_trimmed="${notice_line#"${notice_line%%[![:space:]]*}"}"
+	case "${notice_trimmed}" in ''|'#'*) continue ;; esac
+	notice_tabs="${notice_line//[!$'\t']/}"
+	[ "${#notice_tabs}" -eq 2 ] || die "malformed line in ${NOTICE_MANIFEST} (want 3 tab-separated fields): ${notice_line}"
+	notice_package="${notice_line%%$'\t'*}"
+	notice_rest="${notice_line#*$'\t'}"
+	notice_path="${notice_rest%%$'\t'*}"
+	notice_dists="${notice_rest#*$'\t'}"
+	notice_package="${notice_package#"${notice_package%%[![:space:]]*}"}"
+	notice_package="${notice_package%"${notice_package##*[![:space:]]}"}"
+	notice_path="${notice_path#"${notice_path%%[![:space:]]*}"}"
+	notice_path="${notice_path%"${notice_path##*[![:space:]]}"}"
+	[[ "${notice_package}" =~ ^[A-Za-z0-9][A-Za-z0-9._+@-]*$ ]] || \
+		die "bad package name in ${NOTICE_MANIFEST}: ${notice_line}"
+	case "${notice_path}" in ''|/*|..|../*|*/..|*/../*) die "path must be repo-relative in ${NOTICE_MANIFEST}: ${notice_line}" ;; esac
+	case "${notice_seen}" in
+		*$'\n'"${notice_package}"$'\t'"${notice_path}"$'\n'*)
+			die "${notice_package} ${notice_path} is listed twice in ${NOTICE_MANIFEST}" ;;
+	esac
+	notice_seen="${notice_seen}${notice_package}"$'\t'"${notice_path}"$'\n'
+	notice_for_macos=0
+	notice_dists="${notice_dists#"${notice_dists%%[![:space:]]*}"}"
+	notice_dists="${notice_dists%"${notice_dists##*[![:space:]]}"}"
+	if [ "${notice_dists}" = "all" ]; then
+		notice_for_macos=1
+		notice_dists=""
+	else
+		notice_dists="${notice_dists},"
+	fi
+	while [ -n "${notice_dists}" ]; do
+		notice_token="${notice_dists%%,*}"
+		notice_dists="${notice_dists#*,}"
+		notice_token="${notice_token#"${notice_token%%[![:space:]]*}"}"
+		notice_token="${notice_token%"${notice_token##*[![:space:]]}"}"
+		case "${notice_token}" in
+			macos) notice_for_macos=1 ;;
+			android|windows|blender) ;;
+			*) die "unknown distribution '${notice_token}' in ${NOTICE_MANIFEST}: ${notice_line}" ;;
+		esac
+	done
+	[ "${notice_for_macos}" -eq 1 ] || continue
+	copy_static_license "${SOURCE_ROOT}/${notice_path}" "${notice_package}"
+	macos_notices=$((macos_notices + 1))
+done < "${NOTICE_MANIFEST}"
+[ "${macos_notices}" -gt 0 ] || die "${NOTICE_MANIFEST} lists no notices for macos"
 
 expected_arches="${XCODE_ARCHS}"
 verify_architectures() {
