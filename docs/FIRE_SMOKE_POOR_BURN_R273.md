@@ -545,6 +545,23 @@ Mean of 23.97–24.90 s (16 frames), same frames as the control and run A.
   the product.
 - Data: `docs/data/fire_r273/t8_y300_rad045_sa_{budget,centreline}_23.96_24.90s.txt`.
 
+## 9. Full 25 s window from zero with the closure (2026-11-20)
+
+`tier8_y300_sa` (`run_tier8_showcase.sh`): yield 0.3, cap 0.45, self-absorption on, sheet gate off.
+
+- Completed: 15,255 steps to 25.091 s in 36.6 h (machine shared), no retries, 235 frames, sealed summary and
+  manifest. The closing radiative-fraction check did not stop the run.
+- **The flame stays lit for the whole window.** Frames 216–231: peak temperature 1476–1526 K, 1.2–2.2 L above
+  1300 K, heat release 25–29 kW. Same as the 2.5 s resume in §8, so the hot state is not a leftover of the restart.
+- Heat release 26.3 kW over the statistics window; integrated radiative fraction 0.366 (0.225 in the old-closure
+  twin `r272_soot/tier8_y300`); puffing 3.34 Hz.
+- Mean of the last 10 s (160 frames): upward soot flux level at 132–135 mg/s from 0.75 m (old closure 90 mg/s);
+  centreline volume fraction 0.87 ppm at 0.14 m (0.43); centreline temperature 1261 K at 0.14 m (1541 K); share of
+  soot above 1300 K 0.20 at the burner (0.29).
+- Movies, same scene and renderer build: `r272_soot/movie_y300/r272_sooty_y300_256x384.mov` (old closure) and
+  `r273_poor_burn/movie_y300_sa/r273_sooty_y300_selfabs_256x384.mov`.
+- Data: `docs/data/fire_r273/tier8_y300_sa_{budget,centreline}_last10s.txt`.
+
 ## Files
 
 - Solver: `src/Library/Utilities/FireProductionSourceKernel.h`; §6 also passes the grid dimensions from

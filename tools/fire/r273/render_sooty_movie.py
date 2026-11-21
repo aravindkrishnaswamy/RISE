@@ -6,7 +6,7 @@ import hashlib, json, pathlib, subprocess, os, sys, datetime
 ROOT=pathlib.Path("/Volumes/SSD/Working/RISE")
 SEQ=pathlib.Path(sys.argv[1]);OUT=pathlib.Path(sys.argv[2]);NAME=sys.argv[3]
 W,H=(sys.argv[4],sys.argv[5]) if len(sys.argv)>5 else ("256","384")
-BINARY=ROOT/"bin/rise"
+BINARY=pathlib.Path(os.environ.get("RISE_RENDER_BINARY",ROOT/"bin/rise"))  # override keeps a long render on one build
 def sha(p):
     h=hashlib.sha256()
     with open(p,"rb") as f:
