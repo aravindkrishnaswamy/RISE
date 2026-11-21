@@ -46,6 +46,24 @@ BUILD_FILES = {
 # manifest (the packagers look them up at packaging time).
 EXTERNAL_EXTLIB = {"oidn"}
 
+# Source files with a third-party copyright or licence line, and the
+# manifest package that carries their notice.  OslNoise is ported from
+# Cycles; it may not be on every branch yet.
+SOURCE_NOTICES = {
+    "src/Library/Sampling/SobolDirectionNumbers.cpp": "Sobol-Joe-Kuo",
+    "src/Library/Utilities/MersenneTwister.cpp": "mt19937",
+    "src/Library/Utilities/MersenneTwister.h": "mt19937",
+    "src/Library/Utilities/UnicodeNFCData.inc": "Unicode",
+    "src/Library/Utilities/OslNoise.cpp": "Cycles",
+    "src/Library/Utilities/OslNoise.h": "Cycles",
+}
+# Third-party code whose terms a notice cannot satisfy; see "Not covered
+# by these notices" in licenses/README.md.
+UNRESOLVED = {
+    "src/Library/Functions/Polynomial.cpp": "OQS quartic solver (ACM TOMS 1010), no "
+                                            "redistribution licence",
+}
+
 
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -86,6 +104,52 @@ class ManifestTest(unittest.TestCase):
                                   "%s compiles extlib/%s (%s) but licenses/third_party_notices.tsv "
                                   "has no %s notice for it" % (dist, name, build_file, dist))
 
+    def test_third_party_source_files_have_a_notice(self):
+        # A source file carrying someone else's copyright or licence line
+        # is ported or vendored code.  Each must map to a manifest package
+        # that every distribution compiling it ships, or to an entry in
+        # NOT_A_NOTICE / UNRESOLVED below.
+        marker = re.compile(r"Copyright\s*(\(c\)|\(C\)|©|[0-9]{4})|Licensed under|"
+                            r"SPDX-License-Identifier|copyright/permission notice")
+        owner = re.compile(r"Copyright.*Aravind Krishnaswamy")
+        roots = ["src/Library", "src/Blender/native", "android/app/src/main/cpp"]
+        found = set()
+        for root in roots:
+            for directory, _, files in os.walk(os.path.join(REPO, root)):
+                for name in files:
+                    if not name.endswith((".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".mm")):
+                        continue
+                    path = os.path.join(directory, name)
+                    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                        text = handle.read()
+                    if any(marker.search(line) and not owner.search(line)
+                           for line in text.splitlines()):
+                        found.add(os.path.relpath(path, REPO).replace(os.sep, "/"))
+        unknown = sorted(found - set(SOURCE_NOTICES) - set(UNRESOLVED))
+        self.assertEqual(unknown, [], "third-party code with no notice mapping; add it to "
+                         "licenses/third_party_notices.tsv and SOURCE_NOTICES")
+        for rel, package in SOURCE_NOTICES.items():
+            if rel not in found:
+                continue
+            for dist in tpn.DISTRIBUTIONS:
+                packages = {pkg for pkg, _ in tpn.manifest_files(REPO, dist)}
+                self.assertIn(package, packages, "%s (%s) not shipped for %s" % (rel, package, dist))
+
+    def test_gui_licence_files_are_shipped(self):
+        # Fonts, icons and other assets bundled into a GUI carry their
+        # licence beside them; each such file must be in the manifest for
+        # the distribution whose bundle contains it.
+        roots = {"build/XCode/rise/RISE-GUI": "macos", "build/VS2022/RISE-GUI": "windows",
+                 "android/app/src/main": "android"}
+        for root, dist in roots.items():
+            shipped = {os.path.normpath(os.path.join(REPO, rel))
+                       for _, rel, dists in tpn.read_manifest(REPO) if dist in dists}
+            for directory, _, files in os.walk(os.path.join(REPO, root)):
+                for name in files:
+                    if re.search(r"(^|[-_.])(licen[cs]e|copying|notice)([-_.]|$)", name, re.I):
+                        path = os.path.normpath(os.path.join(directory, name))
+                        self.assertIn(path, shipped, "%s is not shipped for %s" % (path, dist))
+
     def test_malformed_manifest_is_rejected(self):
         root = tempfile.mkdtemp()
         try:
@@ -93,6 +157,16 @@ class ManifestTest(unittest.TestCase):
                 write(os.path.join(root, tpn.MANIFEST_RELPATH), bad)
                 with self.assertRaises(tpn.NoticeError, msg=bad):
                     tpn.read_manifest(root)
+        finally:
+            shutil.rmtree(root)
+
+    def test_duplicate_line_is_rejected(self):
+        root = tempfile.mkdtemp()
+        try:
+            write(os.path.join(root, tpn.MANIFEST_RELPATH),
+                  "stb\tx/LICENSE\tall\nstb\tx/LICENSE\tandroid\n")
+            with self.assertRaises(tpn.NoticeError):
+                tpn.read_manifest(root)
         finally:
             shutil.rmtree(root)
 
@@ -248,7 +322,7 @@ class MacOSReleaseLoopTest(unittest.TestCase):
             '  [ -f "$1" ] || die "in-tree third-party notice is missing: $1"\n'
             '  mkdir -p "$APP/$2"; cp "$1" "$APP/$2/"\n'
             '}\n' + self.extract_loop() + "\n")
-        result = subprocess.run(["bash", "-c", script],
+        result = subprocess.run(["/bin/bash", "-c", script],
                                 env=dict(os.environ, SOURCE_ROOT=source_root, APP=app),
                                 capture_output=True, text=True)
         return result, app
@@ -264,6 +338,41 @@ class MacOSReleaseLoopTest(unittest.TestCase):
             self.assertEqual(copied, expected)
         finally:
             shutil.rmtree(app)
+
+    def test_loop_matches_python_on_whitespace_and_crlf(self):
+        root = tempfile.mkdtemp()
+        try:
+            for rel in ("a/LICENSE", "b/LICENSE", "c/LICENSE"):
+                write(os.path.join(root, rel), rel)
+            write(os.path.join(root, tpn.MANIFEST_RELPATH),
+                  "# comment\r\n"
+                  "A\ta/LICENSE\tandroid, macos\r\n"
+                  "B\tb/LICENSE\tall \r\n"
+                  "C\tc/LICENSE\twindows\r\n")
+            expected = {(p, os.path.basename(f)) for p, f in tpn.manifest_files(root, "macos")}
+            self.assertEqual(expected, {("A", "LICENSE"), ("B", "LICENSE")})
+            result, app = self.run_loop(root)
+            try:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                copied = {(package, name) for package in os.listdir(app)
+                          for name in os.listdir(os.path.join(app, package))}
+                self.assertEqual(copied, expected)
+            finally:
+                shutil.rmtree(app)
+        finally:
+            shutil.rmtree(root)
+
+    def test_loop_rejects_unknown_distribution(self):
+        root = tempfile.mkdtemp()
+        try:
+            write(os.path.join(root, tpn.MANIFEST_RELPATH),
+                  "stb\textlib/stb/LICENSE.txt\tmacOS\n")
+            result, app = self.run_loop(root)
+            shutil.rmtree(app)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unknown distribution", result.stderr)
+        finally:
+            shutil.rmtree(root)
 
     def test_loop_fails_on_missing_notice(self):
         root = tempfile.mkdtemp()
@@ -287,7 +396,14 @@ class WindowsProjectTest(unittest.TestCase):
                                         '" --distribution windows'), 2, project)
             self.assertEqual(text.count("--vcpkg-installed"), 2, project)
             self.assertEqual(text.count("open-image-denoise="), 2, project)
-            self.assertEqual(text.count("openpgl=$(RiseOpenPglRoot)"), 2, project)
+            self.assertEqual(text.count("openpgl=$(RiseOpenPglRoot.TrimEnd('\\'))"), 2, project)
+            # The stager must be the LAST command of each post-build event:
+            # a batch's exit code is its last command's, so a command after
+            # it could hide a failure.
+            for match in re.finditer(r"<Command>(.*?)</Command>", text, re.S):
+                if "third_party_notices.py" in match.group(1):
+                    last = match.group(1).strip().splitlines()[-1]
+                    self.assertIn("third_party_notices.py", last, project)
 
 
 class BlenderPackageTest(unittest.TestCase):
@@ -301,7 +417,7 @@ class BlenderPackageTest(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def test_zip_carries_addon_bridge_and_notices(self):
-        staged = package_blender_addon.package(REPO, self.bridge, self.output)
+        staged = package_blender_addon.package(REPO, self.bridge, self.output, [])
         with zipfile.ZipFile(self.output) as archive:
             names = set(archive.namelist())
         prefix = "rise_renderer/third_party_licenses/"
@@ -317,7 +433,7 @@ class BlenderPackageTest(unittest.TestCase):
     def test_missing_bridge_writes_no_zip(self):
         os.remove(self.bridge)
         with self.assertRaises(tpn.NoticeError):
-            package_blender_addon.package(REPO, self.bridge, self.output)
+            package_blender_addon.package(REPO, self.bridge, self.output, [])
         self.assertFalse(os.path.exists(self.output))
 
     def test_missing_notice_writes_no_zip(self):
@@ -326,9 +442,72 @@ class BlenderPackageTest(unittest.TestCase):
                         os.path.join(root, "src", "Blender", "addons", "rise_renderer"))
         write(os.path.join(root, tpn.MANIFEST_RELPATH), "stb\textlib/stb/LICENSE.txt\tall\n")
         with self.assertRaises(tpn.NoticeError):
-            package_blender_addon.package(root, self.bridge, self.output)
+            package_blender_addon.package(root, self.bridge, self.output, [])
         self.assertFalse(os.path.exists(self.output))
         self.assertFalse(os.path.exists(self.output + ".partial"))
+
+
+class BlenderDependencyNoticeTest(unittest.TestCase):
+    """dependency_notices on a fake library layout."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.saved = package_blender_addon.external_dependencies
+        brew = os.path.join(self.tmp, "brew")
+        write(os.path.join(brew, "Cellar", "openexr", "3.4", "lib", "libOpenEXR-3_4.33.dylib"), "")
+        write(os.path.join(brew, "Cellar", "openexr", "3.4", "lib", "libIex-3_4.33.dylib"), "")
+        write(os.path.join(brew, "opt", "openexr", "LICENSE.md"), "BSD")
+        write(os.path.join(brew, "lib", "libopenpgl.0.7.1.dylib"), "")
+        write(os.path.join(brew, "share", "doc", "openpgl", "LICENSE.txt"), "Apache")
+        oidn = os.path.join(self.tmp, "oidn", "install")
+        write(os.path.join(oidn, "lib", "libOpenImageDenoise.2.dylib"), "")
+        write(os.path.join(oidn, "doc", "LICENSE.txt"), "Apache")
+        vdb = os.path.join(self.tmp, "blender", "openvdb")
+        write(os.path.join(vdb, "lib", "libopenvdb.dylib"), "")
+        self.deps = [
+            os.path.join(brew, "Cellar", "openexr", "3.4", "lib", "libOpenEXR-3_4.33.dylib"),
+            os.path.join(brew, "Cellar", "openexr", "3.4", "lib", "libIex-3_4.33.dylib"),
+            os.path.join(brew, "lib", "libopenpgl.0.7.1.dylib"),
+            os.path.join(oidn, "lib", "libOpenImageDenoise.2.dylib"),
+            os.path.join(vdb, "lib", "libopenvdb.dylib"),
+        ]
+        package_blender_addon.external_dependencies = lambda bridge: list(self.deps)
+
+    def tearDown(self):
+        package_blender_addon.external_dependencies = self.saved
+        shutil.rmtree(self.tmp)
+
+    def test_library_without_licence_fails_until_overridden(self):
+        with self.assertRaises(tpn.NoticeError) as ctx:
+            package_blender_addon.dependency_notices("bridge", {})
+        self.assertIn("openvdb", str(ctx.exception))
+        override = os.path.join(self.tmp, "vdb-licence")
+        write(os.path.join(override, "LICENSE"), "MPL-2.0")
+        notices = package_blender_addon.dependency_notices("bridge", {"openvdb": override})
+        self.assertEqual(sorted({n[0] for n in notices}),
+                         ["OpenImageDenoise", "openexr", "openpgl", "openvdb"])
+
+    def test_unused_override_fails(self):
+        self.deps = self.deps[:4]
+        with self.assertRaises(tpn.NoticeError):
+            package_blender_addon.dependency_notices("bridge", {"zlib": self.tmp})
+
+    def test_broad_prefix_fails(self):
+        # A prefix holding many packages' licences is not one library's.
+        wide = os.path.join(self.tmp, "usr-local")
+        for index in range(20):
+            write(os.path.join(wide, "share", "doc", "pkg%d" % index, "LICENSE"), "x")
+        write(os.path.join(wide, "lib", "libthing.so.1"), "")
+        self.deps = [os.path.join(wide, "lib", "libthing.so.1")]
+        with self.assertRaises(tpn.NoticeError) as ctx:
+            package_blender_addon.dependency_notices("bridge", {})
+        self.assertIn("too many", str(ctx.exception))
+
+    def test_library_name(self):
+        self.assertEqual(package_blender_addon.library_name("libOpenImageDenoise.2.4.1.dylib"),
+                         "OpenImageDenoise")
+        self.assertEqual(package_blender_addon.library_name("/x/libtbb.so.12"), "tbb")
+        self.assertEqual(package_blender_addon.library_name("libopenvdb.dylib"), "openvdb")
 
 
 if __name__ == "__main__":

@@ -10,18 +10,24 @@ Disk.  Layout:
                                    the notices licenses/third_party_notices.tsv
                                    lists for "blender", with an index
 
-Fails, writing no zip, if the bridge library or any listed notice is
-missing.  The bridge links its image / denoising / guiding / OpenVDB
-libraries dynamically from the build machine (Homebrew on macOS); those
-libraries are not put in the zip, so their notices are not either.  The
-script lists them so a packager knows the zip expects them on the target
-machine.
+Fails, writing no zip, if the bridge library or any notice is missing.
+
+The bridge links its image, denoising, guiding and OpenVDB libraries
+dynamically from the build machine (Homebrew, extlib/oidn/install, a
+Blender library tree) and compiles some of their header code inline.
+Those libraries are not put in the zip, but their notices are: each
+dependency is resolved to its install prefix and that prefix's licence
+files are shipped.  A dependency with no licence file found fails the
+packaging; point at one with --license-root NAME=DIR, where NAME is the
+library's name as the error reports it.  The zip runs only where those
+libraries sit at the paths the bridge was linked against.
 
   make -C src/Blender/native
   python3 tools/package_blender_addon.py            # -> dist/rise_renderer-<ver>-<os>.zip
 """
 
 import argparse
+import glob
 import os
 import platform
 import re
@@ -54,26 +60,139 @@ def addon_version(addon_dir):
     return ".".join(part.strip() for part in match.group(1).split(","))
 
 
+_MAX_NOTICES_PER_LIBRARY = 12
+_HOMEBREW_CELLAR = re.compile(r"^(?P<prefix>.*)/Cellar/(?P<formula>[^/]+)/[^/]+/")
+
+
+def _macos_dependencies(bridge):
+    """Physical paths of the non-system dylibs the bridge links."""
+    out = subprocess.run(["otool", "-L", bridge], capture_output=True,
+                         text=True, check=True).stdout.splitlines()[1:]
+    names = [line.split()[0] for line in out if line.strip()]
+    load = subprocess.run(["otool", "-l", bridge], capture_output=True,
+                          text=True, check=True).stdout.splitlines()
+    rpaths, want = [], False
+    for line in load:
+        line = line.strip()
+        if line == "cmd LC_RPATH":
+            want = True
+        elif want and line.startswith("path "):
+            rpaths.append(line.split()[1])
+            want = False
+    here = os.path.dirname(os.path.abspath(bridge))
+    rpaths = [r.replace("@loader_path", here).replace("@executable_path", here) for r in rpaths]
+    own = os.path.basename(bridge)
+    found = []
+    for name in names:
+        if os.path.basename(name) == own or name.startswith(("/usr/lib/", "/System/")):
+            continue
+        if name.startswith("@rpath/"):
+            candidates = [os.path.join(r, name[len("@rpath/"):]) for r in rpaths]
+        elif name.startswith("@loader_path/"):
+            candidates = [os.path.join(here, name[len("@loader_path/"):])]
+        else:
+            candidates = [name]
+        resolved = next((c for c in candidates if os.path.exists(c)), None)
+        if resolved is None:
+            raise third_party_notices.NoticeError(
+                "cannot resolve the bridge's dependency %s" % name)
+        found.append(os.path.realpath(resolved))
+    return found
+
+
+def _linux_dependencies(bridge):
+    out = subprocess.run(["ldd", bridge], capture_output=True,
+                         text=True, check=True).stdout.splitlines()
+    found = []
+    for line in out:
+        if "=>" not in line:
+            continue
+        path = line.split("=>", 1)[1].split("(")[0].strip()
+        if not path or path == "not found":
+            raise third_party_notices.NoticeError("bridge dependency unresolved: %s" % line.strip())
+        if not path.startswith(("/lib", "/usr/lib")):
+            found.append(os.path.realpath(path))
+    return found
+
+
 def external_dependencies(bridge):
-    """Non-system shared libraries the bridge loads (best effort, for the log)."""
+    """Physical paths of the non-system shared libraries the bridge links."""
     try:
         if sys.platform == "darwin":
-            out = subprocess.run(["otool", "-L", bridge], capture_output=True,
-                                 text=True, check=True).stdout.splitlines()[1:]
-            deps = [line.split()[0] for line in out if line.strip()]
-            # A dylib's first entry is its own install name.
-            own = os.path.basename(bridge)
-            return [d for d in deps
-                    if os.path.basename(d) != own
-                    and not d.startswith(("/usr/lib/", "/System/"))]
+            return _macos_dependencies(bridge)
         if sys.platform.startswith("linux"):
-            out = subprocess.run(["ldd", bridge], capture_output=True,
-                                 text=True, check=True).stdout.splitlines()
-            deps = [line.split("=>")[-1].split("(")[0].strip() for line in out]
-            return [d for d in deps if d and not d.startswith(("/lib", "/usr/lib", "linux-vdso"))]
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return None
+            return _linux_dependencies(bridge)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise third_party_notices.NoticeError("cannot list the bridge's dependencies: %s" % exc)
+    raise third_party_notices.NoticeError(
+        "listing a bridge's dependencies is not supported on %s" % sys.platform)
+
+
+def library_name(path):
+    """libOpenImageDenoise.2.4.1.dylib -> OpenImageDenoise, libtbb.so.12 -> tbb."""
+    name = os.path.basename(path)
+    if name.startswith("lib"):
+        name = name[3:]
+    name = re.split(r"\.(?:dylib|so|dll)\b", name)[0]
+    return re.sub(r"[.-][0-9][0-9._-]*$", "", name) or name
+
+
+def dependency_notices(bridge, overrides):
+    """[(package, licence path, relative name)] for the bridge's dependencies.
+
+    A Homebrew library maps to its formula (the macOS release script's
+    rule); anything else to the prefix above its lib/ directory.  Libraries
+    sharing a package or prefix share one set of notices.  `overrides`
+    maps a package name to a directory to search instead.
+    """
+    groups = {}
+    for path in external_dependencies(bridge):
+        match = _HOMEBREW_CELLAR.match(path)
+        if match:
+            package = match.group("formula")
+            root = os.path.join(match.group("prefix"), "opt", package)
+        elif os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(path)), "Cellar")):
+            # A file directly in a Homebrew prefix's lib/ that is not a
+            # symlink into the Cellar (openpgl): find the formula that owns
+            # it, else the documentation folder named after it.
+            prefix = os.path.dirname(os.path.dirname(path))
+            owners = sorted(glob.glob(os.path.join(prefix, "Cellar", "*", "*", "lib",
+                                                   os.path.basename(path))))
+            if owners:
+                package = owners[0][len(prefix) + len("/Cellar/"):].split("/")[0]
+                root = os.path.join(prefix, "opt", package)
+            else:
+                package = library_name(path)
+                root = os.path.join(prefix, "share", "doc", package)
+        else:
+            libdir = os.path.dirname(path)
+            root = os.path.dirname(libdir) if os.path.basename(libdir).startswith("lib") else libdir
+            package = None
+            for other, (_, other_root) in groups.items():
+                if other_root == root:
+                    package = other
+            package = package or library_name(path)
+        groups.setdefault(package, (path, overrides.get(package, root)))
+    notices = []
+    for package, (path, root) in sorted(groups.items()):
+        try:
+            files = third_party_notices.license_files_under(root)
+        except third_party_notices.NoticeError:
+            raise third_party_notices.NoticeError(
+                "no licence file found for %s (%s) under %s; pass --license-root %s=DIR"
+                % (package, path, root, package))
+        if len(files) > _MAX_NOTICES_PER_LIBRARY:
+            # A prefix this broad (a shared /usr/local, a whole Homebrew
+            # tree) holds other software's licences too.
+            raise third_party_notices.NoticeError(
+                "%d licence files under %s for %s is too many to be one library's; "
+                "pass --license-root %s=DIR" % (len(files), root, package, package))
+        notices.extend((package, f, os.path.relpath(f, root).replace(os.sep, "/")) for f in files)
+    unused = sorted(set(overrides) - set(groups))
+    if unused:
+        raise third_party_notices.NoticeError(
+            "--license-root given for %s, which the bridge does not link" % ", ".join(unused))
+    return notices
 
 
 def _add_tree(archive, root, arc_root):
@@ -90,7 +209,7 @@ def _add_tree(archive, root, arc_root):
                 archive.writestr(info, handle.read())
 
 
-def package(repo_root, bridge, output):
+def package(repo_root, bridge, output, dependency_licenses=None):
     addon_src = os.path.join(repo_root, "src", "Blender", "addons", ADDON_NAME)
     if not os.path.isfile(os.path.join(addon_src, "__init__.py")):
         raise third_party_notices.NoticeError("add-on source is missing: %s" % addon_src)
@@ -114,8 +233,11 @@ def package(repo_root, bridge, output):
         os.makedirs(native_dst)
         shutil.copyfile(bridge, os.path.join(native_dst, bridge_filename()))
         os.chmod(os.path.join(native_dst, bridge_filename()), 0o755)
+        # None: work them out from the bridge.  Tests pass a list.
+        if dependency_licenses is None:
+            dependency_licenses = dependency_notices(bridge, {})
         staged = third_party_notices.stage(
-            repo_root, "blender", os.path.join(addon_dst, NOTICES_DIR))
+            repo_root, "blender", os.path.join(addon_dst, NOTICES_DIR), dependency_licenses)
 
         os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
         partial = output + ".partial"
@@ -145,25 +267,32 @@ def main(argv=None):
     parser.add_argument("--bridge",
                         default=os.path.join(repo_root, "src", "Blender", "native", bridge_filename()))
     parser.add_argument("--output")
+    parser.add_argument("--license-root", action="append", default=[], metavar="NAME=DIR",
+                        help="where to find the licence of a linked library")
     args = parser.parse_args(argv)
     try:
+        overrides = dict(third_party_notices._parse_pair(text, "--license-root")
+                         for text in args.license_root)
+        bridge = os.path.abspath(args.bridge)
         output = args.output
         if not output:
             version = addon_version(os.path.join(repo_root, "src", "Blender", "addons", ADDON_NAME))
             system = {"darwin": "macos", "win32": "windows"}.get(sys.platform, sys.platform)
             output = os.path.join(repo_root, "dist", "%s-%s-%s-%s.zip"
                                   % (ADDON_NAME, version, system, platform.machine().lower()))
-        staged = package(repo_root, os.path.abspath(args.bridge), os.path.abspath(output))
+        if not os.path.isfile(bridge):
+            raise third_party_notices.NoticeError(
+                "bridge library is missing: %s (build it with make -C src/Blender/native)" % bridge)
+        deps = dependency_notices(bridge, overrides)
+        staged = package(repo_root, bridge, os.path.abspath(output), deps)
     except (third_party_notices.NoticeError, OSError) as exc:
         sys.stderr.write("package_blender_addon: error: %s\n" % exc)
         return 1
     print("package_blender_addon: wrote %s (%d notice packages)" % (output, len(staged)))
-    deps = external_dependencies(args.bridge)
-    if deps:
-        print("package_blender_addon: note: the bridge loads these libraries from the build "
-              "machine; they are not in the zip and must be present where it is installed:")
-        for dep in deps:
-            print("    " + dep)
+    print("package_blender_addon: the bridge loads its libraries from these paths, which the "
+          "target machine must have; their notices are in the zip:")
+    for path in external_dependencies(bridge):
+        print("    " + path)
     return 0
 
 

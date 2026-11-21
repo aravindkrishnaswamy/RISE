@@ -130,8 +130,8 @@ val syncRiseAssets = tasks.register<Sync>("syncRiseAssets") {
 // Third-party licence notices
 //
 // librise_jni.so compiles in stb, cgltf, mt19937, the Sobol' direction
-// numbers, the Cycles noise port, libpng and zlib, and the APK ships the
-// NDK's libc++_shared.so.  The in-repo notices are listed once, in
+// numbers, the Cycles noise port, the Unicode NFC tables, libpng and zlib,
+// and the APK ships the NDK's libc++_shared.so.  The in-repo notices are listed once, in
 // licenses/third_party_notices.tsv (lines tagged "android" or "all"); the
 // LLVM notice covering libc++ comes from the NDK the build uses.  The
 // stageThirdPartyNotices task copies them into the generated asset folder
@@ -175,8 +175,14 @@ val stageThirdPartyNotices = tasks.register("stageThirdPartyNotices") {
         val f = File(riseRepoRoot, rel)
         if (f.isFile) inputs.file(f)
     }
-    // The LLVM notice is read from the NDK; key the task on its version.
-    inputs.property("ndkVersion", android.ndkVersion)
+    // libc++_shared.so and the libc++ / compiler-rt code linked into
+    // librise_jni.so are LLVM's; the NDK carries their notice beside the
+    // prebuilt toolchain (one host directory per install).  Resolved when
+    // the task is configured so the file is a real task input.
+    val ndkDir = android.ndkDirectory
+    val llvmNotices = File(ndkDir, "toolchains/llvm/prebuilt")
+        .listFiles()?.map { File(it, "NOTICE") }?.filter { it.isFile }.orEmpty()
+    if (llvmNotices.size == 1) inputs.file(llvmNotices.single())
     outputs.dir(outDir)
     doLast {
         val notices = mutableListOf<Pair<String, File>>()
@@ -185,12 +191,6 @@ val stageThirdPartyNotices = tasks.register("stageThirdPartyNotices") {
             if (!f.isFile) throw GradleException("Third-party notice for $pkg is missing: $f")
             notices += pkg to f
         }
-        // libc++_shared.so and the libc++ / compiler-rt code linked into
-        // librise_jni.so are LLVM's; the NDK carries their notice beside the
-        // prebuilt toolchain (one host directory per install).
-        val ndkDir = android.ndkDirectory
-        val llvmNotices = File(ndkDir, "toolchains/llvm/prebuilt")
-            .listFiles()?.map { File(it, "NOTICE") }?.filter { it.isFile }.orEmpty()
         if (llvmNotices.size != 1) {
             throw GradleException(
                 "Expected one LLVM toolchain NOTICE under $ndkDir/toolchains/llvm/prebuilt, " +
@@ -207,7 +207,8 @@ val stageThirdPartyNotices = tasks.register("stageThirdPartyNotices") {
         combined.append("notices of the third-party code compiled into the app's native\n")
         combined.append("library.  The app's Kotlin, kotlinx.coroutines, AndroidX and\n")
         combined.append("Jetpack Compose libraries are distributed under the Apache\n")
-        combined.append("License, Version 2.0, whose text is included below.\n\n")
+        combined.append("License, Version 2.0, whose text is included below under\n")
+        combined.append("Apache-2.0.\n\n")
         val seen = mutableSetOf<String>()
         for ((pkg, f) in notices) {
             val name = if (pkg == "LLVM-libcxx") "NOTICE.txt" else f.name

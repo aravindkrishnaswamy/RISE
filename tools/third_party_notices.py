@@ -21,6 +21,7 @@ Examples:
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -80,6 +81,8 @@ def read_manifest(repo_root):
                 if unknown or not dist_set:
                     raise NoticeError(
                         "%s:%d: unknown distribution(s) %s" % (path, number, unknown or dists))
+            if any(e[0] == package and e[1] == relpath for e in entries):
+                raise NoticeError("%s:%d: %s %s is listed twice" % (path, number, package, relpath))
             entries.append((package, relpath, dist_set))
     if not entries:
         raise NoticeError("notice manifest lists no notices: %s" % path)
@@ -197,26 +200,72 @@ def _same_tree(a, b):
     return True
 
 
-def _publish(staging, dest):
-    """Replace `dest` with the finished `staging` folder.
+_LOCK_WAIT_SECONDS = 300
+
+
+class _FolderLock(object):
+    """Exclusive lock on one destination folder, held for a whole stage().
 
     The Windows RISE-CLI and RISE-GUI post-build steps stage into the same
-    folder and can run at the same time; each builds its own staging folder,
-    and a rename that loses the race succeeds if the winner published the
-    same files.
+    folder and can run at the same time.  The lock is an OS file lock
+    (flock / msvcrt.locking), so a run that is killed releases it.  The
+    lock file lives in the temp directory, keyed by the destination, so it
+    never lands in a folder that gets shipped.
     """
-    for _ in range(20):
-        if os.path.isdir(dest):
-            shutil.rmtree(dest, ignore_errors=True)
-        try:
-            os.rename(staging, dest)
-            return
-        except OSError:
-            if _same_tree(staging, dest):
-                shutil.rmtree(staging, ignore_errors=True)
-                return
-            time.sleep(0.25)
-    raise NoticeError("could not replace %s" % dest)
+
+    def __init__(self, dest):
+        key = hashlib.sha256(os.path.normcase(dest).encode("utf-8")).hexdigest()[:16]
+        self.path = os.path.join(tempfile.gettempdir(), "rise-notices-%s.lock" % key)
+        self.handle = None
+
+    def __enter__(self):
+        self.handle = open(self.path, "a+b")
+        if os.name == "nt":
+            import msvcrt
+            deadline = time.time() + _LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    self.handle.seek(0)
+                    msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    return self
+                except OSError:
+                    if time.time() > deadline:
+                        self.handle.close()
+                        raise NoticeError("timed out waiting for %s" % self.path)
+                    time.sleep(0.1)
+        import fcntl
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if os.name == "nt":
+            import msvcrt
+            self.handle.seek(0)
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        self.handle.close()
+        return False
+
+
+def _staging_prefix(dest):
+    return ".%s.staging-" % os.path.basename(dest)
+
+
+def _sweep_staging(dest):
+    """Remove staging folders a killed run left beside `dest` (lock held)."""
+    parent, prefix = os.path.dirname(dest), _staging_prefix(dest)
+    for name in os.listdir(parent):
+        if name.startswith(prefix):
+            shutil.rmtree(os.path.join(parent, name), ignore_errors=True)
+
+
+def _publish(staging, dest):
+    """Replace `dest` with the finished `staging` folder (lock held)."""
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    os.rename(staging, dest)
 
 
 def stage(repo_root, distribution, dest, extra=()):
@@ -246,10 +295,16 @@ def stage(repo_root, distribution, dest, extra=()):
             raise NoticeError("third-party notice for %s is missing: %s" % (package, source))
         sources.append((package, source, name))
     dest = os.path.abspath(dest)
-    _check_destination(dest)
     parent = os.path.dirname(dest)
     os.makedirs(parent, exist_ok=True)
-    staging = tempfile.mkdtemp(prefix=".notices-", dir=parent)
+    with _FolderLock(dest):
+        _check_destination(dest)
+        _sweep_staging(dest)
+        staging = tempfile.mkdtemp(prefix=_staging_prefix(dest), dir=parent)
+        return _stage_into(sources, distribution, staging, dest)
+
+
+def _stage_into(sources, distribution, staging, dest):
     try:
         staged = {}
         for package, source, name in sources:

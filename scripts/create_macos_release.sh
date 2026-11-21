@@ -572,14 +572,27 @@ chmod 0644 "${APP}/Contents/Resources/RISE-LICENSE.txt"
 NOTICE_MANIFEST="${SOURCE_ROOT}/licenses/third_party_notices.tsv"
 [ -f "${NOTICE_MANIFEST}" ] || die "third-party notice manifest is missing: ${NOTICE_MANIFEST}"
 macos_notices=0
-while IFS=$'\t' read -r notice_package notice_path notice_dists notice_extra || [ -n "${notice_package}" ]; do
-	case "${notice_package}" in ''|'#'*) continue ;; esac
-	[ -n "${notice_dists}" ] && [ -z "${notice_extra}" ] || \
-		die "malformed line in ${NOTICE_MANIFEST}: ${notice_package} ${notice_path} ${notice_dists} ${notice_extra}"
-	case ",${notice_dists}," in
-		*,all,*|*,macos,*) ;;
-		*) continue ;;
-	esac
+while IFS= read -r notice_line || [ -n "${notice_line}" ]; do
+	notice_line="${notice_line%$'\r'}"
+	case "${notice_line}" in ''|'#'*|[[:space:]]'#'*) continue ;; esac
+	[ -n "${notice_line//[[:space:]]/}" ] || continue
+	IFS=$'\t' read -r notice_package notice_path notice_dists notice_extra <<< "${notice_line}"
+	notice_package="${notice_package//[[:space:]]/}"
+	notice_path="${notice_path#"${notice_path%%[![:space:]]*}"}"
+	notice_path="${notice_path%"${notice_path##*[![:space:]]}"}"
+	notice_dists="${notice_dists//[[:space:]]/}"
+	[ -n "${notice_package}" ] && [ -n "${notice_path}" ] && [ -n "${notice_dists}" ] && [ -z "${notice_extra}" ] || \
+		die "malformed line in ${NOTICE_MANIFEST}: ${notice_line}"
+	notice_for_macos=0
+	IFS=',' read -r -a notice_tokens <<< "${notice_dists}"
+	for notice_token in "${notice_tokens[@]}"; do
+		case "${notice_token}" in
+			all|macos) notice_for_macos=1 ;;
+			android|windows|blender) ;;
+			*) die "unknown distribution '${notice_token}' in ${NOTICE_MANIFEST}: ${notice_line}" ;;
+		esac
+	done
+	[ "${notice_for_macos}" -eq 1 ] || continue
 	copy_static_license "${SOURCE_ROOT}/${notice_path}" "${notice_package}"
 	macos_notices=$((macos_notices + 1))
 done < "${NOTICE_MANIFEST}"
