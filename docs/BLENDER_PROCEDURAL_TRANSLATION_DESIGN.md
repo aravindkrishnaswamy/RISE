@@ -1,8 +1,10 @@
 # Blender Procedural Shader Translation — Design (DRAFT 6)
 
 **Status:** draft 6, 2026-11-14. Nothing here is implemented except
-constant-reflectance GGX and energy-preserving Oren-Nayar (2026-11-19, §5.6)
-and the companion's step P (2026-11-16, DL-633). Draft 4 was
+constant-reflectance GGX and energy-preserving Oren-Nayar (2026-11-19, §5.6),
+the first group of procedural builtins -- gradient noise, fractal noise and
+the Noise Texture node (2026-11-20, §5.2(b)) -- and the companion's step P
+(2026-11-16, DL-633). Draft 4 was
 reviewed by four independent reviewers
 ([round 1](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md)) and draft 5 by a
 second model and harness
@@ -471,14 +473,15 @@ reference-counted scene object like a painter, immutable once built.
 **(b) Builtins.** Ports of the Cycles kernel functions, which are Apache-2.0
 except the Perlin core (BSD-3-Clause, adapted from OSL) and the smooth
 Voronoi / distance-to-edge code (MIT, Inigo Quilez). RISE's own licence is
-BSD-style; the notices are reproduced beside the ported code, as the Joe-Kuo
-Sobol' table's is.
+BSD-style; the copyright notices and licence identifiers are reproduced in
+each ported file's header, the full licence texts are in `licenses/`, and the
+macOS release copies them into the app's `Third-Party Licenses` folder.
 
-| Group | Builtins (working names) | Source of truth |
+| Group | Builtins (names: `osl_` prefix, decided 2026-11-20; rows not yet built still show working names) | Source of truth |
 |---|---|---|
-| Gradient noise | `gnoise` signed, 1D–4D | `kernel/svm/noise.h`: Jenkins lookup3 lattice hash, quintic fade, per-dimension scale constants, the `fmod(p, 100000)` wrap |
-| Fractal noise | `gnoise_fbm`, `_multifractal`, `_hetero`, `_hybrid`, `_ridged` (detail, roughness, lacunarity, offset, gain, normalize) | `kernel/svm/fractal_noise.h`, including the fractional-detail octave |
-| Noise offsets | `gnoise_offset(seed)` | `noisetex.h`; Distortion and the Color output |
+| Gradient noise | `osl_snoise(p, w, dims)` signed, 1D–4D. **Implemented 2026-11-20** | `kernel/svm/noise.h`: Jenkins lookup3 lattice hash, quintic fade, per-dimension scale constants, the `fmod(p, 100000)` wrap |
+| Fractal noise | `osl_fractal(p, w, dims, type, detail, roughness, lacunarity, offset, gain, normalize)`, the five types by Cycles' numbering. **Implemented 2026-11-20** | `kernel/svm/fractal_noise.h`, including the fractional-detail octave |
+| Noise Texture node | `osl_noise_texture(...)` (Fac) and `osl_noise_texture_color(...)` (Color): the node after its Scale, with its detail and roughness clamps, Distortion and the Color output's offsets. **Implemented 2026-11-20** | `noisetex.h` |
 | Voronoi | F1, F2, Smooth F1, Distance to Edge, N-Sphere Radius × Distance / Color / Position outputs; Euclidean, Manhattan, Chebychev, Minkowski; 1D–4D; fractal parameters | `kernel/svm/voronoi.h`: PCG integer cell hashes for 2D–4D (as of Blender 5.0; the hash changed in that release), the float hash in 1D |
 | White noise | `hash_f`, `hash_v`, 1D–4D inputs | `util/hash.h`; see below |
 | Colour | `rgb2hsv`, `hsv2rgb`, `rgb2hsl`, `hsl2rgb`, `blend(mode, t, a, b)` for the 19 Mix modes, with the node's clamp options | `kernel/svm/color_util.h`, `mix.h` |
@@ -489,7 +492,47 @@ Sobol' table's is.
 - **Several results.** Voronoi returns distance, colour and position from
   one cell search, and Noise returns a factor and a colour. Builtins in the
   VM return one value today; these are either split with the search repeated
-  (Phase 1, measured) or given multi-result kernels (Phase 2).
+  (Phase 1, measured) or given multi-result kernels (Phase 2). The Noise
+  Texture node is split this way, into a Fac builtin and a Color builtin.
+  Color's first channel is Fac bit for bit, so a node with both outputs used
+  lowers to one Color call in a `def` and reads Fac as its `.x`: three
+  fractal evaluations rather than four.
+- **As built (group 1, 2026-11-20).** `src/Library/Utilities/OslNoise.*`
+  holds the kernels; `src/Library/Painters/ExpressionOslBuiltins.*` holds the
+  `osl_` signature table and an out-of-line dispatch the VM reaches through
+  two appended opcodes, so no existing builtin moves. A node's dimension
+  count, fractal type and normalize flag are integer-literal arguments, checked
+  at compile time.
+- **Precision, as built.** The kernels evaluate in strict IEEE single
+  precision in the order of Cycles' scalar path, compiled that way on every
+  platform (the file refuses to build under fast-math; built and run so far
+  on macOS arm64 only), so the pattern is the same bits everywhere by
+  construction and equals a strict-IEEE build of Cycles' own sources
+  exactly on the tested inputs, within the documented guards (detail at
+  most 15, a NaN detail read as 0, a non-finite coordinate giving 0).
+  Double precision was tried first and rejected: where Cycles rounds is
+  part of its pattern. Against Cycles' sources rebuilt with Blender's
+  flags, on identical inputs, the fractals and the Noise Texture node's
+  Fac without distortion agree to float rounding at every roughness
+  tested. Elsewhere the high octaves amplify float rounding by roughly
+  (roughness × lacunarity) per octave: on outputs Cycles evaluates at
+  shifted coordinates (Color G and B, distortion), where it is small at
+  low roughness and reaches order one at high roughness with high detail
+  -- as large as the gap between a strict build and a Blender-flags build
+  of the same Cycles source, so Blender's own builds are expected to
+  differ by as much (inferred). In a render every output is also
+  sensitive to the float coordinate each renderer starts from, which can
+  differ by one or more ulps; at roughness 1 and detail 15 one ulp moves
+  undistorted Fac by up to about 1e-2 and the shifted outputs by up to
+  about 0.65 at small coordinates, more at large ones.
+  `src/Library/Utilities/OslNoise.h` tabulates the measurements by
+  roughness at detail 15, with their conditions. Beyond |p| ≈ 5.4e8
+  Cycles' SIMD path wraps 3D/4D coordinates differently from its scalar
+  path; neither result is a meaningful pattern there.
+- **Golden values** come from Cycles' own kernels compiled three ways (SIMD
+  and scalar as Blender builds them, and the scalar path as strict IEEE) by
+  `tools/osl_golden/dump_noise_golden.sh` (Blender commit afc6d7a4, the 5.2
+  alpha); the licences are in `licenses/`.
 - **White Noise matches in distribution, not per pixel.** Cycles hashes the
   raw 32-bit float pattern of its input, with no `floor`. RISE computes in
   double precision, so a last-bit difference upstream changes the whole
@@ -917,6 +960,17 @@ by colour management.
      renderers' inputs are exact in single precision, and a stated looser
      bound at large coordinates, where Cycles' single-precision fractional
      coordinate carries about 6e-5 error at a coordinate near 1000.
+     For the noise builtins (§5.2(b), "Precision, as built") the bound
+     must be RELATIVE to max(1, |value|) -- hetero terrain reaches 1e5 and
+     more, and the multifractals grow past 1 -- and it depends on roughness
+     AND detail together (and, through the float ulp, on coordinate size), since the high octaves amplify a one-ulp
+     difference by roughly (roughness × lacunarity) per octave. The node
+     parity test therefore bounds each configuration by the figures
+     OslNoise.h tabulates (a pixel bound where they are small, a
+     statistical comparison where they approach order one, as at high
+     roughness with high detail). (The builtins equal a strict build of
+     Cycles' sources exactly on identical float inputs;
+     `tests/OslNoiseTest.cpp` gates that.)
    - Discontinuous outputs (Voronoi cell colour, constant ramps, Checker):
      at most 0.1% of pixels differing.
    - White Noise on a non-quantised input: a distribution test, not a pixel
@@ -1073,7 +1127,10 @@ sinks through node groups):
 
 **What may start now, and what may not.** Round 3's verdict is the gate.
 
-- May start: the procedural builtins and their golden tests; the compiler's
+- May start: the procedural builtins and their golden tests (gradient noise,
+  fractal noise and the Noise Texture node **implemented 2026-11-20**,
+  `tests/OslNoiseTest.cpp`; white noise, Voronoi, colour, safe math and
+  transforms next); the compiler's
   unit tests; the lowered-size measurement; the performance baseline;
   constant-reflectance GGX and energy-preserving Oren-Nayar
   (**implemented 2026-11-19**, `tests/BlenderLobeAdditionsTest.cpp`); the
@@ -1126,10 +1183,9 @@ After review round 2:
 
 1. **The evaluator for Phase 2:** the existing VM extended, or a separate
    executor behind the same language. Decided by §8's spike.
-2. **Builtin naming.** `gnoise_*`, `voronoi_*`, `hash_*` are working names.
-   RISE already has `perlin`, `fbm`, `worley_*` with different definitions;
-   the new ones need names that say "the OSL/Cycles definition" without
-   saying "Blender".
+2. **Builtin naming.** **Decided 2026-11-20:** an `osl_` prefix
+   (`osl_snoise`, `osl_fractal`, `osl_noise_texture`, ...). RISE's own
+   `perlin`, `fbm` and `worley_*` keep their different definitions.
 3. **Does Blender's inliner unroll closure nodes and repeat zones** as its
    source suggests (2.7% of materials)?
 4. **Phase 1's fit.** How many Phase 1 graphs lower into the existing

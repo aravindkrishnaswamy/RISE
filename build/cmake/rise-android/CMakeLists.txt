@@ -123,6 +123,10 @@ target_compile_options(rise PRIVATE
 )
 
 set_source_files_properties(
+    "${RISE_LIB}/Utilities/OslNoise.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+set_source_files_properties(
     "${RISE_LIB}/Utilities/FireProductionAdvection.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )

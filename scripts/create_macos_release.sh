@@ -570,6 +570,11 @@ chmod 0644 "${APP}/Contents/Resources/RISE-LICENSE.txt"
 copy_static_license "${SOURCE_ROOT}/extlib/cgltf/LICENSE.txt" cgltf
 copy_static_license "${SOURCE_ROOT}/extlib/mt19937/LICENSE.txt" mt19937
 copy_static_license "${SOURCE_ROOT}/extlib/stb/LICENSE.txt" stb
+# Ported code compiled into the library (see licenses/README.md).
+copy_static_license "${SOURCE_ROOT}/licenses/Cycles-NOTICE.txt" Cycles
+copy_static_license "${SOURCE_ROOT}/licenses/Apache-2.0.txt" Cycles
+copy_static_license "${SOURCE_ROOT}/licenses/BSD-3-Clause.txt" Cycles
+copy_static_license "${SOURCE_ROOT}/licenses/Sobol-Joe-Kuo-LICENSE.txt" Sobol-Joe-Kuo
 
 expected_arches="${XCODE_ARCHS}"
 verify_architectures() {

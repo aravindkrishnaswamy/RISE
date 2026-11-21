@@ -6712,17 +6712,51 @@ namespace RISE
 			//! second expression parser, so an edge case that reads as "one
 			//! literal off" costs nothing -- see ComputeDesignNoteConditionsFromDoc_
 			//! condition E for the calibration evidence this threshold rests on.
+			//!
+			//! One exclusion: a number in an `osl_` builtin's INTEGER-LITERAL
+			//! slot (a node's dimension count, fractal type, normalize flag --
+			//! ExpressionOslBuiltins.h) is not counted.  Those slots refuse a
+			//! param, so advising the author to promote them would advise a
+			//! compile error; without this, a translated
+			//! `osl_noise_texture(...)` call with a few other numbers would
+			//! trip the gate on its literal slots alone.
 			int CountDistinctNumericLiterals_( const std::string& text )
 			{
 				std::set<std::string> distinct;
 				const std::size_t n = text.size();
 				std::size_t i = 0;
+				// Open `osl_` calls: the signature, the paren depth inside the
+				// call, and which argument is being read.
+				struct OslFrame { const RISE::Implementation::OslBuiltins::Sig* sig; int depth; int arg; };
+				std::vector<OslFrame> osl;
+				int depth = 0;
+				const RISE::Implementation::OslBuiltins::Sig* pendingSig = 0;	// an osl_ name just read, awaiting its `(`
 				while( i < n ) {
 					const char ch = text[i];
 					if( std::isalpha( static_cast<unsigned char>( ch ) ) || ch == '_' ) {
 						std::size_t j = i + 1;
 						while( j < n && ( std::isalnum( static_cast<unsigned char>( text[j] ) ) || text[j] == '_' ) ) ++j;
+						pendingSig = RISE::Implementation::OslBuiltins::Find( text.substr( i, j - i ) );
 						i = j;
+						continue;
+					}
+					if( ch == '(' ) {
+						++depth;
+						if( pendingSig ) { OslFrame f = { pendingSig, depth, 0 }; osl.push_back( f ); }
+						pendingSig = 0;
+						++i;
+						continue;
+					}
+					if( !std::isspace( static_cast<unsigned char>( ch ) ) ) pendingSig = 0;
+					if( ch == ')' ) {
+						if( !osl.empty() && osl.back().depth == depth ) osl.pop_back();
+						if( depth > 0 ) --depth;
+						++i;
+						continue;
+					}
+					if( ch == ',' ) {
+						if( !osl.empty() && osl.back().depth == depth ) ++osl.back().arg;
+						++i;
 						continue;
 					}
 					const bool digitStart = std::isdigit( static_cast<unsigned char>( ch ) ) ||
@@ -6739,7 +6773,10 @@ namespace RISE
 							while( k < n && std::isdigit( static_cast<unsigned char>( text[k] ) ) ) ++k;
 							j = k;
 						}
-						distinct.insert( text.substr( i, j - i ) );
+						const bool inLiteralSlot = !osl.empty() && osl.back().depth == depth &&
+							osl.back().arg < osl.back().sig->nArgs &&
+							osl.back().sig->kind[ osl.back().arg ] == RISE::Implementation::OslBuiltins::kIntLiteralArg;
+						if( !inLiteralSlot ) distinct.insert( text.substr( i, j - i ) );
 						i = j;
 						continue;
 					}

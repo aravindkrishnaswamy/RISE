@@ -153,6 +153,16 @@
 //              vec3, matching the stop values) -- variadic, >=2 stops,
 //              clamped ends, positions checked ascending at compile
 //              time when literal.
+//              OSL / CYCLES BUILTINS (`osl_` prefix): ports of the
+//              shading-language functions Cycles implements, so a
+//              translated Blender node graph renders the same pattern.
+//              They have their own signature table, ids and dispatch
+//              (ExpressionOslBuiltins.h, Compiled::kOsl / kOslV3) and
+//              are listed there; the first group is gradient noise,
+//              fractal noise and the Noise Texture node.  Unlike fbm()
+//              they never fade octaves by footprint, and some arguments
+//              must be integer literals.  They are pure functions, so
+//              they compile with context vars off too.
 //
 //  Designed for displacement bakes (compiled once, ~10^5 evals at parse
 //  time) and small procedural textures.  Not a hot per-sample path
@@ -182,6 +192,7 @@
 #include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
 #include "../Interfaces/IPainter.h"		// DL-25: sample(name)'s dispatch target (also pulls in RayIntersectionGeometric.h)
 #include "../Interfaces/IScalarPainter.h"	// DL-25: sample_scalar(name)'s dispatch target -- IScalarPainter, never GetColorNM (no JH uplift)
+#include "ExpressionOslBuiltins.h"	// the `osl_` builtins: their own table, ids and dispatch (Compiled::kOsl / kOslV3)
 
 namespace RISE
 {
@@ -348,10 +359,18 @@ namespace RISE
 					kSplat3, kAddV, kSubV, kMulV, kDivV, kNegV,
 					kSwizzle,			//!< vec3 -> scalar component select (idx = 0/1/2)
 					kFuncV3,			//!< function call returning vec3 (cross/normalize/vec3-mix)
-					kRamp				//!< variadic ramp(t, pos,val, ...) -- see ParseRampCall
+					kRamp,				//!< variadic ramp(t, pos,val, ...) -- see ParseRampCall
+					// The `osl_` builtins (ExpressionOslBuiltins.h).  Their
+					// own opcodes, appended, so their dispatch reaches an
+					// out-of-line OslBuiltins::Call and no existing case of
+					// RunAny / CallFunc / CallFuncVec3 moves.  `fn` is an
+					// OslBuiltins id (its own id space) and `arity` the
+					// scalars popped, exactly as for kFunc / kFuncV3.
+					kOsl,				//!< osl_ builtin returning scalar
+					kOslV3				//!< osl_ builtin returning vec3
 				};
 				//! `arity` = scalars popped, meaningful (and required) for
-				//! kFunc/kFuncV3/kRamp only -- every other op's stack effect
+				//! kFunc/kFuncV3/kRamp/kOsl/kOslV3 only -- every other op's stack effect
 				//! is implied by the opcode itself, so this replaces the
 				//! historical "recover arity from the function id band"
 				//! scheme (banding could not express dot()'s 6-scalar arity
@@ -1297,6 +1316,13 @@ namespace RISE
 						const Compiled& body = ( pass == 0 ) ? p.m_final : p.m_defs[ pass - 1 ];
 						for( std::size_t i = 0; i < body.code.size(); ++i ) {
 							const Compiled::Instr& in = body.code[i];
+							// An `osl_` call qualifies when its signature says
+							// it is expensive (every noise builtin does).
+							if( in.op == Compiled::kOsl || in.op == Compiled::kOslV3 ) {
+								const OslBuiltins::Sig* os = OslBuiltins::FindById( in.fn );
+								if( os && os->memoWorthy ) return true;
+								continue;
+							}
 							if( in.op != Compiled::kFunc ) continue;
 							// The noise band: perlin, fbm, turbulence,
 							// ridged and the four worley forms.  Named
@@ -1334,6 +1360,13 @@ namespace RISE
 				//! must stay OFF -- see ExpressionPainter.h's
 				//! BuildExpressionProgramFromChunkFields doc comment for the
 				//! frozen-contract rationale.
+				//! The flag gates context VARIABLES and the surface-query
+				//! builtins (occlusion ... interior, sample/sample_scalar).
+				//! The other builtins compile on every surface, the UV-only
+				//! one included: the maths, perlin/worley/cellhash and the
+				//! `osl_` family read only their arguments, and fbm/
+				//! turbulence/ridged also read `fw`, which is 0 where context
+				//! vars are off.
 				void EnableContextVars( bool enable = true ) { m_contextVarsEnabled = enable; }
 
 				//! One `sample(name)` / `sample_scalar(name)` call site found by a
@@ -1705,8 +1738,8 @@ namespace RISE
 					// compile-time value-stack bound: simulate the postfix stack
 					// effect so a deferred-operand expression can never overflow
 					// the fixed Eval stack.  Net stack delta is implied by the
-					// opcode, except kFunc/kFuncV3/kRamp whose arity varies --
-					// those read it straight off the instruction.
+					// opcode, except kFunc/kFuncV3/kRamp/kOsl/kOslV3 whose arity
+					// varies -- those read it straight off the instruction.
 					int sp = 0, mx = 0;
 					for( size_t i = 0; i < out.code.size(); ++i ) {
 						const Compiled::Instr& in = out.code[i];
@@ -1719,6 +1752,8 @@ namespace RISE
 						case Compiled::kFunc: sp += ( 1 - in.arity ); break;
 						case Compiled::kFuncV3: sp += ( 3 - in.arity ); break;
 						case Compiled::kRamp: sp += ( in.fn - in.arity ); break;
+						case Compiled::kOsl: sp += ( 1 - in.arity ); break;
+						case Compiled::kOslV3: sp += ( 3 - in.arity ); break;
 						default: sp -= 1; break;	// binary scalar ops
 						}
 						// A negative sp here means SOME opcode's declared stack effect
@@ -2111,6 +2146,17 @@ namespace RISE
 							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
 							st.resize( st.size() - (size_t)in.arity );
 							for( int k = 0; k < in.fn; ++k ) st.push_back( LinScalar() );
+						} break;
+						// An `osl_` call is not affine in anything worth
+						// tracking: like kFunc / kFuncV3, its result carries
+						// neither a value nor a gradient.
+						case Compiled::kOsl:
+						case Compiled::kOslV3:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							const int w = ( in.op == Compiled::kOslV3 ) ? 3 : 1;
+							for( int k = 0; k < w; ++k ) st.push_back( LinScalar() );
 						} break;
 						default:
 							return false;
@@ -2531,7 +2577,11 @@ namespace RISE
 					if( name == "sample" || name == "sample_scalar" ) return ParseSampleCall( name, nameOff, outType );
 
 					const FnSig* sig = FindSig( name );
-					if( !sig ) { SetError( "unknown function `" + name + "`", (ptrdiff_t)nameOff ); return false; }
+					if( !sig ) {
+						if( const OslBuiltins::Sig* os = OslBuiltins::Find( name ) ) return ParseOslCall( *os, nameOff, outType );
+						SetError( "unknown function `" + name + "`", (ptrdiff_t)nameOff );
+						return false;
+					}
 
 					// GEOMETRY-DERIVED SIGNAL BUILTINS (design doc Phase 2).
 					// Gated on the same EnableContextVars flag that gates
@@ -2748,6 +2798,105 @@ namespace RISE
 					}
 					outType = sig->ret;
 					return true;
+				}
+
+				//! An `osl_` builtin call (ExpressionOslBuiltins.h).  Its own
+				//! parser because its signatures differ from FnSig's in two
+				//! ways: up to OslBuiltins::kMaxArgs arguments, and INTEGER
+				//! LITERAL arguments (a node's dimension count, fractal type,
+				//! normalize flag), each proved here to be one integer literal
+				//! in its declared range so the dispatch can read it as an int.
+				//! A literal argument is still pushed on the value stack like
+				//! any scalar.  No `osl_` builtin reads `fw`, so the call is
+				//! emitted with the identity domain scale.
+				bool ParseOslCall( const OslBuiltins::Sig& sig, size_t nameOff, VType& outType )
+				{
+					const std::string name( sig.name );
+					int got = 0;
+					if( Cur().t != Tok::RP ) {
+						for( ;; ) {
+							const size_t argOff = CurOff();
+							if( got >= sig.nArgs ) {
+								SetError( name + "() expects " + std::to_string( sig.nArgs ) + " argument(s)", (ptrdiff_t)nameOff );
+								return false;
+							}
+							const OslBuiltins::ArgKind kind = sig.kind[got];
+							if( kind == OslBuiltins::kIntLiteralArg ) {
+								Scalar lit = Scalar(0);
+								const bool isLit = PeekLiteralScalarArg( lit );
+								const int lo = sig.litMin[got], hi = sig.litMax[got];
+								// A number followed by something other than `,`
+								// or `)` is a syntax error, not a bad literal:
+								// say so rather than blame a valid value.
+								size_t strayOff = argOff;
+								if( !isLit && PeekSignedNumberThenStray( strayOff ) ) {
+									SetError( "missing `,` or `)` after argument " + std::to_string( got + 1 ) + " of " + name + "()",
+										(ptrdiff_t)strayOff );
+									return false;
+								}
+								if( !isLit || lit != std::floor( lit ) || lit < Scalar( lo ) || lit > Scalar( hi ) ) {
+									SetError( name + "() argument " + std::to_string( got + 1 ) + " must be an integer literal from "
+										+ std::to_string( lo ) + " to " + std::to_string( hi ), (ptrdiff_t)argOff );
+									return false;
+								}
+							}
+							VType at;
+							if( !ParseCmp( at ) ) return false;
+							const VType want = ( kind == OslBuiltins::kVec3Arg ) ? kVec3 : kScalar;
+							if( at != want ) {
+								SetError( name + "() argument " + std::to_string( got + 1 ) + " must be " + ( want == kVec3 ? "vec3" : "scalar" ), (ptrdiff_t)argOff );
+								return false;
+							}
+							++got;
+							if( Cur().t == Tok::Comma ) {
+								const size_t commaOff = CurOff();
+								Advance();
+								if( Cur().t == Tok::RP ) {
+									SetError( "unexpected `,` before `)` in " + name + "()", (ptrdiff_t)commaOff );
+									return false;
+								}
+								continue;
+							}
+							if( Cur().t != Tok::RP ) {
+								SetError( "missing `,` or `)` after argument " + std::to_string( got ) + " of " + name + "()", (ptrdiff_t)CurOff() );
+								return false;
+							}
+							break;
+						}
+					}
+					if( got != sig.nArgs ) { SetError( name + "() expects " + std::to_string( sig.nArgs ) + " argument(s)", (ptrdiff_t)nameOff ); return false; }
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "()", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+					Compiled::Instr in;
+					in.op = sig.retVec3 ? Compiled::kOslV3 : Compiled::kOsl;
+					in.val = Scalar(1); in.valo = Scalar(0); in.idx = -1;
+					in.fn = sig.id; in.arity = OslBuiltins::ScalarArity( sig );
+					m_emit->code.push_back( in );
+					outType = sig.retVec3 ? kVec3 : kScalar;
+					return true;
+				}
+
+				//! Does the argument at the CURRENT token start with an optional
+				//! sign and a number followed by something that cannot continue
+				//! an expression -- not `,`, `)`, an operator or `.` -- i.e. a
+				//! numeric literal with stray text after it (`3 4`, `3 u`, or
+				//! `3` at the end of the input)?  `3+1` and `3 .x` are left to
+				//! the "must be an integer literal" message, since they are
+				//! expressions.  (`3.x` without the space reads as `3.`
+				//! followed by `x`, so it gets this message.)  Used only to word ParseOslCall's diagnostic;
+				//! consumes nothing.  On true, `strayOff` is the offset of the
+				//! stray token (or the end of the input), where the diagnostic
+				//! points -- the same place the generic path's points.
+				bool PeekSignedNumberThenStray( size_t& strayOff ) const
+				{
+					size_t i = m_pos;
+					if( i < m_toks->size() && (*m_toks)[i].t == Tok::Op && ( (*m_toks)[i].s == "-" || (*m_toks)[i].s == "+" ) ) ++i;
+					if( i >= m_toks->size() || (*m_toks)[i].t != Tok::Num ) return false;
+					++i;
+					if( i >= m_toks->size() ) return true;
+					const Tok::T after = (*m_toks)[i].t;
+					strayOff = (*m_toks)[i].off;
+					return after != Tok::Comma && after != Tok::RP && after != Tok::Op && after != Tok::Dot;
 				}
 
 				//! Is the argument starting at the CURRENT token exactly one
@@ -3559,6 +3708,26 @@ namespace RISE
 							}
 						}
 						sp = outBase + W;
+					} break;
+					// The `osl_` builtins (ExpressionOslBuiltins.h): an
+					// out-of-line dispatch of their own.  These two cases
+					// are the deliberate, disclosed move of RunAny's
+					// pinned text for that family (ExpressionMemo.h); no
+					// case above changed.
+					case Compiled::kOsl:
+					{
+						sp -= in.arity;
+						Scalar r[3];
+						OslBuiltins::Call( in.fn, &stack[sp], r );
+						stack[sp++] = r[0];
+					} break;
+					case Compiled::kOslV3:
+					{
+						sp -= in.arity;
+						Scalar r[3];
+						OslBuiltins::Call( in.fn, &stack[sp], r );
+						stack[sp] = r[0]; stack[sp+1] = r[1]; stack[sp+2] = r[2];
+						sp += 3;
 					} break;
 					}
 				}
