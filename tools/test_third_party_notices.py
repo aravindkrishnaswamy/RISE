@@ -329,7 +329,7 @@ class ExternalSourcesTest(unittest.TestCase):
         write(os.path.join(bindir, "Qt6Core_5_d.dll"), "")
         with self.assertRaises(tpn.NoticeError) as ctx:
             tpn.audit_dlls(bindir, known, None, tbb_covered=True)
-        self.assertIn("left over from an older qt6core.dll", str(ctx.exception))
+        self.assertIn("another version of qt6core.dll", str(ctx.exception))
         os.remove(os.path.join(bindir, "Qt6Core_5_d.dll"))
         # Dot-folders are searched too.
         write(os.path.join(bindir, ".x", "hidden.dll"), "")

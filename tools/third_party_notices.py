@@ -189,10 +189,11 @@ _MAX_TBB_NOTICES = 12
 def _dll_family(name):
     """OpenEXR-3_2_d.dll -> openexr: the name before a separator-led version."""
     stem = name.lower()[:-len(".dll")]
-    return re.split(r"[-_][0-9]", stem, 1)[0]
+    return re.split(r"[-_][0-9]", stem, maxsplit=1)[0]
 
 
-def audit_dlls(dll_dir, known_names, tbb_root=None, tbb_covered=False, skip=()):
+def audit_dlls(dll_dir, known_names, tbb_root=None, tbb_covered=False, skip=(),
+               staging_prefix=None):
     """Check every DLL under the output folder has a known notice source.
 
     A DLL is accounted for by its file name: one a vcpkg port installs, or
@@ -209,14 +210,15 @@ def audit_dlls(dll_dir, known_names, tbb_root=None, tbb_covered=False, skip=()):
     if not os.path.isdir(dll_dir):
         raise NoticeError("DLL directory is missing: %s" % dll_dir)
     families = {}
-    for known in known_names:
+    for known in sorted(known_names):
         families.setdefault(_dll_family(known), known)
     skip = {os.path.normcase(os.path.abspath(p)) for p in skip}
     unknown, tbb = [], []
     for directory, subdirs, files in os.walk(dll_dir):
         subdirs[:] = [d for d in sorted(subdirs)
                       if os.path.normcase(os.path.abspath(os.path.join(directory, d))) not in skip
-                      and ".staging-" not in d]
+                      and not (staging_prefix and directory == dll_dir
+                               and d.startswith(staging_prefix))]
         for name in sorted(files):
             lower = name.lower()
             if not lower.endswith(".dll") or lower in known_names or _MS_RUNTIME.match(name):
@@ -225,7 +227,7 @@ def audit_dlls(dll_dir, known_names, tbb_root=None, tbb_covered=False, skip=()):
             if _TBB_DLL.match(name):
                 tbb.append(rel)
             elif _dll_family(name) in families:
-                unknown.append("%s (left over from an older %s? delete it)"
+                unknown.append("%s (another version of %s? delete it if left over)"
                                % (rel, families[_dll_family(name)]))
             else:
                 unknown.append(rel)
@@ -544,7 +546,8 @@ def main(argv=None):
                 known_dlls.update(f.lower() for f in files if f.lower().endswith(".dll"))
         if args.check_dlls:
             extra.extend(audit_dlls(args.check_dlls, known_dlls, os.environ.get("TBB_ROOT"),
-                                    tbb_covered, skip=[args.dest]))
+                                    tbb_covered, skip=[args.dest],
+                                    staging_prefix=_staging_prefix(os.path.abspath(args.dest))))
         for text in args.license_file:
             extra.append(_parse_pair(text, "--license-file"))
         staged = stage(args.repo_root, args.distribution, args.dest, extra)
