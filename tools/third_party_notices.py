@@ -186,34 +186,37 @@ _TBB_NOTICE = re.compile(r"^third-party-programs-onetbb.*\.txt$", re.IGNORECASE)
 _MAX_TBB_NOTICES = 12
 
 
-def _dll_stem(name):
-    """OpenEXR-3_2.dll -> openexr, Qt6Cored.dll -> qt6cored: name without version."""
+def _dll_family(name):
+    """OpenEXR-3_2_d.dll -> openexr: the name before a separator-led version."""
     stem = name.lower()[:-len(".dll")]
-    return re.sub(r"[-_.]?[0-9][0-9_.-]*$", "", stem) or stem
+    return re.split(r"[-_][0-9]", stem, 1)[0]
 
 
 def audit_dlls(dll_dir, known_names, tbb_root=None, tbb_covered=False, skip=()):
     """Check every DLL under the output folder has a known notice source.
 
     A DLL is accounted for by its file name: one a vcpkg port installs, or
-    one inside a --license-root install (`known_names`, lower-cased).  A
-    name that differs from a known one only in its version (a DLL left over
-    from an older vcpkg) is accepted with a warning.  Microsoft's runtime
-    DLLs need no notice.  oneTBB's DLLs, which extlib/oidn/build.ps1 copies
-    in, are covered when `tbb_covered` (the OIDN install ships oneTBB's
-    licence list); otherwise `tbb_root` (TBB_ROOT) must hold them, and its
-    licence files are returned to ship as oneTBB.  Anything else is an
-    error.  `skip` lists folders not to search (the notice folder).
+    one inside a --license-root install (`known_names`, lower-cased).
+    Microsoft's runtime DLLs need no notice.  oneTBB's DLLs, which
+    extlib/oidn/build.ps1 copies in, are covered when `tbb_covered` (the
+    OIDN install ships the Apache licence oneTBB is under and oneTBB's
+    third-party list); otherwise `tbb_root` (TBB_ROOT) must hold them, and
+    its licence files are returned to ship as oneTBB.  Anything else is an
+    error, including a DLL left over from an older library version: it
+    would ship with no notice of its own.  `skip` lists folders not to
+    search (the notice folder).
     """
     if not os.path.isdir(dll_dir):
         raise NoticeError("DLL directory is missing: %s" % dll_dir)
-    known_stems = {_dll_stem(n) for n in known_names}
+    families = {}
+    for known in known_names:
+        families.setdefault(_dll_family(known), known)
     skip = {os.path.normcase(os.path.abspath(p)) for p in skip}
-    unknown, stale, tbb = [], [], []
+    unknown, tbb = [], []
     for directory, subdirs, files in os.walk(dll_dir):
         subdirs[:] = [d for d in sorted(subdirs)
                       if os.path.normcase(os.path.abspath(os.path.join(directory, d))) not in skip
-                      and not d.startswith(".")]
+                      and ".staging-" not in d]
         for name in sorted(files):
             lower = name.lower()
             if not lower.endswith(".dll") or lower in known_names or _MS_RUNTIME.match(name):
@@ -221,19 +224,16 @@ def audit_dlls(dll_dir, known_names, tbb_root=None, tbb_covered=False, skip=()):
             rel = os.path.relpath(os.path.join(directory, name), dll_dir)
             if _TBB_DLL.match(name):
                 tbb.append(rel)
-            elif _dll_stem(name) in known_stems:
-                stale.append(rel)
+            elif _dll_family(name) in families:
+                unknown.append("%s (left over from an older %s? delete it)"
+                               % (rel, families[_dll_family(name)]))
             else:
                 unknown.append(rel)
-    for rel in stale:
-        sys.stderr.write("third_party_notices: warning: %s looks like a DLL left over from an "
-                         "older library version; its notice is shipped, but delete it if it "
-                         "is stale\n" % os.path.join(dll_dir, rel))
     if unknown:
         raise NoticeError(
             "%s holds DLLs with no known licence source: %s.  Delete a DLL that is left "
             "over; otherwise add its install with --license-root PACKAGE=DIR (the "
-            "RiseExtraNoticeArgs MSBuild property)" % (dll_dir, ", ".join(unknown)))
+            "RiseExtraNoticeArgs MSBuild property)" % (dll_dir, "; ".join(unknown)))
     if not tbb or tbb_covered:
         return []
     if not tbb_root:

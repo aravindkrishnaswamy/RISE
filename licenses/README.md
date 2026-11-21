@@ -38,8 +38,8 @@ packager itself, and a missing licence there fails too.
 |---|---|---|---|
 | macOS app (`scripts/create_macos_release.sh`) | `RISE-GUI.app/Contents/Resources/Third-Party Licenses/<package>/`; RISE's licence as `Resources/RISE-LICENSE.txt` and `LICENSE.txt` in the DMG | stb, cgltf, mt19937, Sobol', Cycles, Unicode, IBM Plex | every bundled dylib (Homebrew formulae, OIDN and its oneTBB, OpenPGL), via `copy_dependency_license` |
 | Android app (`android/app/build.gradle.kts`, task `stageThirdPartyNotices`) | APK asset folder `licenses/<package>/` plus `licenses/THIRD-PARTY-NOTICES.txt`, which the app shows under **Licences** in the scene bar | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode, libpng, zlib, Apache-2.0 | the NDK's LLVM toolchain `NOTICE` (libc++ in `libc++_shared.so` and the C++ runtime linked into `librise_jni.so`) |
-| Windows (`build/VS2022`, RISE-CLI and RISE-GUI post-build, `tools/third_party_notices.py`) | `Third-Party Licenses\<package>\` next to the executables in `bin\` (`dbin\` for Debug), with an index `README.txt` | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode, IBM Plex, Lucide | every vcpkg port's `copyright` (Qt and its dependencies, OpenEXR / Imath, libpng, zlib, FFmpeg, x265, OpenSSL, ...); OIDN from `extlib\oidn\install` (its Apache licence and third-party lists, including oneTBB's); OpenPGL from `$(RiseOpenPglRoot)` (default `C:\Dev\openpgl-install`). The step then checks every DLL in the output folder and its subfolders, by file name, against these sources and fails on any it cannot account for; the Microsoft C/C++ runtime needs no notice, and oneTBB's DLLs are covered by OIDN's oneTBB list, or by `%TBB_ROOT%`'s licence when that list is absent |
-| Blender add-on (`tools/package_blender_addon.py`) | `rise_renderer/third_party_licenses/<package>/` inside the zip, beside `rise_renderer/native/<bridge>` | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode | the licence of every library the bridge links (libpng, libtiff, OpenEXR / Imath, OIDN, OpenPGL, OpenVDB, oneTBB), found from its install prefix; pass `--license-root NAME=DIR` where none is found (OpenVDB from a Blender library tree has none) |
+| Windows (`build/VS2022`, RISE-CLI and RISE-GUI post-build, `tools/third_party_notices.py`) | `Third-Party Licenses\<package>\` next to the executables in `bin\` (`dbin\` for Debug), with an index `README.txt` | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode, IBM Plex, Lucide | every vcpkg port's `copyright` (Qt and its dependencies, OpenEXR / Imath, libpng, zlib, FFmpeg, x265, OpenSSL, ...); OIDN from `extlib\oidn\install` (its Apache licence and its third-party lists, among them oneTBB's); OpenPGL from `$(RiseOpenPglRoot)` (default `C:\Dev\openpgl-install`). The step then checks every DLL in the output folder and its subfolders, by file name, against these sources and fails on any it cannot account for; the Microsoft C/C++ runtime needs no notice, and oneTBB's DLLs (Apache-2.0, the licence OIDN's `LICENSE.txt` reproduces) are covered by the OIDN install's `third-party-programs-oneTBB.txt`, or by `%TBB_ROOT%`'s licence files when that file is absent |
+| Blender add-on (`tools/package_blender_addon.py`) | `rise_renderer/third_party_licenses/<package>/` inside the zip, beside `rise_renderer/native/<bridge>` | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode | the licence of every library the bridge links (libpng, libtiff, OpenEXR / Imath, OIDN, OpenPGL, OpenVDB, oneTBB), found from its Homebrew formula or the OIDN install; pass `--license-root NAME=DIR` for anything else (OpenVDB from a Blender library tree, every library on Linux) |
 
 Android needs no OIDN, OpenPGL, OpenEXR or TIFF notices: it builds with
 none of them.
@@ -50,10 +50,13 @@ folder. vcpkg's MSBuild integration copies the vcpkg DLLs there
 copies the OIDN DLLs and the oneTBB `tbb12.dll` / `tbbbind*.dll` there.
 A DLL copied into `bin\` by hand passes the check if a DLL of the same
 name is in one of those installs (an `openpgl.dll` from the OpenPGL
-install, say); one that differs from a known DLL only in its version,
-typically left over from an older vcpkg, passes with a warning; anything
-else stops the build until it is deleted or its install is added with
-`/p:RiseExtraNoticeArgs="--license-root NAME=DIR"`. Visual Studio's up-to-date check skips the
+install, say). Anything else stops the build, including a DLL left over
+from an older library version (the error names the library it
+resembles), until it is deleted or its install is added through the
+`RiseExtraNoticeArgs` property: `/p:RiseExtraNoticeArgs="--license-root
+NAME=DIR"` on the msbuild command line, or, for the Visual Studio IDE,
+an environment variable of that name or a `Directory.Build.props`; quote
+a `DIR` with spaces as `\"NAME=C:\My Dir\"`. Visual Studio's up-to-date check skips the
 post-build step when nothing relinks, so after changing only the
 manifest, rebuild RISE-CLI or RISE-GUI (command-line msbuild runs it on
 every build). It needs `python` on `PATH`, as the Library project's
@@ -62,7 +65,9 @@ install as the hard-coded OpenPGL include and library paths.
 
 The Blender packager runs on macOS and Linux (it reads the bridge's
 dependencies with `otool` / `ldd`; the bridge Makefile builds nowhere
-else). The zip contains the add-on and the bridge only. The bridge
+else). On Linux it maps no library automatically, and `ldd` lists
+indirect dependencies too, so each library outside the C/C++ runtime
+needs a `--license-root`. The zip contains the add-on and the bridge only. The bridge
 finds its libraries at the absolute paths it was linked against, so the
 zip installs on machines with the same library layout; the script prints
 those paths.

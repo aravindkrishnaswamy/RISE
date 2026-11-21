@@ -321,11 +321,21 @@ class ExternalSourcesTest(unittest.TestCase):
             tpn.audit_dlls(bindir, known)  # TBB_ROOT unset: unknown
         # OIDN's install ships oneTBB's licence list: no TBB_ROOT needed.
         self.assertEqual(tpn.audit_dlls(bindir, known, None, tbb_covered=True), [])
-        # The MSVC runtime needs no notice; a version-renamed vcpkg DLL left
-        # over from an older build is accepted with a warning.
+        # The MSVC runtime needs no notice.
         write(os.path.join(bindir, "vcruntime140.dll"), "")
-        write(os.path.join(bindir, "Qt6Core_5.dll"), "")
         self.assertEqual(tpn.audit_dlls(bindir, known, None, tbb_covered=True), [])
+        # A version-renamed DLL left over from an older vcpkg fails, naming
+        # the library it resembles.
+        write(os.path.join(bindir, "Qt6Core_5_d.dll"), "")
+        with self.assertRaises(tpn.NoticeError) as ctx:
+            tpn.audit_dlls(bindir, known, None, tbb_covered=True)
+        self.assertIn("left over from an older qt6core.dll", str(ctx.exception))
+        os.remove(os.path.join(bindir, "Qt6Core_5_d.dll"))
+        # Dot-folders are searched too.
+        write(os.path.join(bindir, ".x", "hidden.dll"), "")
+        with self.assertRaises(tpn.NoticeError):
+            tpn.audit_dlls(bindir, known, None, tbb_covered=True)
+        shutil.rmtree(os.path.join(bindir, ".x"))
         # Subfolders are searched (Qt plugins), except the skipped one.
         write(os.path.join(bindir, "Third-Party Licenses", "x", "odd.dll"), "")
         self.assertEqual(tpn.audit_dlls(bindir, known, None, tbb_covered=True,
