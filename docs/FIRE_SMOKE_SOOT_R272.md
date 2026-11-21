@@ -1,6 +1,6 @@
 # r272: methane soot formation switched on, one-parameter fit, full window launched
 
-Last updated 2026-11-17. Design and evidence: [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md),
+Last updated 2026-11-20. Design and evidence: [formation–oxidation draft](FIRE_SMOKE_SOOT_FORMATION_OXIDATION_R252.md),
 [measurements](FIRE_SMOKE_METHANE_SOOT_DATA_R252.md). Data: `docs/data/fire_r272/`. Tools: `tools/fire/r272/`.
 
 ## Result
@@ -128,10 +128,17 @@ Question: does the solver give a heavily smoking fire when set for one, and does
 - **Scene.** `tools/fire/r272/r272_sooty_wide.RISEscene`: wall reflectance 0.7, light power 0.6, camera 4 m back at
   1.6 m. At yield 0.03 the smoke is barely visible; at 0.3 it is a dark column. A fast preview that multiplies the
   soot in existing frames (`tools/fire/r272/scale_carbon.cpp`) gave the same picture before the run.
-- **Artifact.** Smoke that reaches the side of the 2.1 m wide domain shows as a hard-edged dark patch at the upper
-  right. A showcase movie needs that cropped out or a wider domain.
+- **Artifact (corrected 2026-11-20).** The hard-edged dark patch at the upper right is the plume's shadow on the back
+  wall, cut off where the smoke leaves the top of the domain; it is not smoke at the domain side. Moving the light
+  near the camera puts the shadow behind the plume (`tools/fire/r273/r273_sooty_showcase.RISEscene.in`).
 - Data: `sooty_y300_budget_23.96_24.90s.txt`, `sooty_y300_centreline_23.96_24.90s.txt`,
   `tier8_y030_budget_23.96_24.90s.txt`. Only 40 frames exist at this yield (frames 192–231).
+- **Full window from zero (2026-11-20).** `tier8_y300` (`tools/fire/r272/run_tier8.sh` settings, yield 0.3): 15,297
+  steps to 25.09 s, no retries, 235 frames, sealed. Heat release 26.4 kW over the statistics window; radiative
+  fraction 0.225; puffing 3.28 Hz. Mean of the last 10 s (160 frames): upward soot flux level at 90 mg/s from 1.0 m;
+  centreline volume fraction 0.43 ppm in the flame; share of soot above 1300 K 0.29 at the burner, zero from 0.75 m.
+  The 2.5 s resume was representative. Movie: `r272_soot/movie_y300/r272_sooty_y300_256x384.mov`
+  (`tools/fire/r273/render_sooty_movie.py`). Data: `tier8_y300_{budget,centreline}_last10s.txt`.
 
 ## Open
 
