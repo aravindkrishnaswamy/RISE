@@ -2,8 +2,9 @@
 
 **Status:** draft 6, 2026-11-14. Nothing here is implemented except
 constant-reflectance GGX and energy-preserving Oren-Nayar (2026-11-19, §5.6),
-the first group of procedural builtins -- gradient noise, fractal noise and
-the Noise Texture node (2026-11-20, §5.2(b)) -- and the companion's step P
+the first two groups of procedural builtins -- gradient noise, fractal
+noise, the Noise Texture node and White Noise (2026-11-20, §5.2(b)) -- and
+the companion's step P
 (2026-11-16, DL-633). Draft 4 was
 reviewed by four independent reviewers
 ([round 1](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md)) and draft 5 by a
@@ -483,7 +484,7 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
 | Fractal noise | `osl_fractal(p, w, dims, type, detail, roughness, lacunarity, offset, gain, normalize)`, the five types by Cycles' numbering. **Implemented 2026-11-20** | `kernel/svm/fractal_noise.h`, including the fractional-detail octave |
 | Noise Texture node | `osl_noise_texture(...)` (Fac) and `osl_noise_texture_color(...)` (Color): the node after its Scale, with its detail and roughness clamps, Distortion and the Color output's offsets. **Implemented 2026-11-20** | `noisetex.h` |
 | Voronoi | F1, F2, Smooth F1, Distance to Edge, N-Sphere Radius × Distance / Color / Position outputs; Euclidean, Manhattan, Chebychev, Minkowski; 1D–4D; fractal parameters | `kernel/svm/voronoi.h`: PCG integer cell hashes for 2D–4D (as of Blender 5.0; the hash changed in that release), the float hash in 1D |
-| White noise | `hash_f`, `hash_v`, 1D–4D inputs | `util/hash.h`; see below |
+| White noise | `osl_white_noise(p, w, dims)` (Value) and `osl_white_noise_color(p, w, dims)` (Color), 1D–4D. **Implemented 2026-11-20** | `kernel/svm/white_noise.h`, `util/hash.h`; see below |
 | Colour | `rgb2hsv`, `hsv2rgb`, `rgb2hsl`, `hsl2rgb`, `blend(mode, t, a, b)` for the 19 Mix modes, with the node's clamp options | `kernel/svm/color_util.h`, `mix.h` |
 | Safe math | the 41 Math and the Vector Math operations with Cycles' zero-on-undefined results | `kernel/svm/math_util.h` |
 | Componentwise vec3 | `min/max/abs/floor/fract/pow/clamp`, `rotate(v, axis, angle)`, Euler rotation | Vector Math, Vector Rotate |
@@ -509,7 +510,8 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
   on macOS arm64 only), so the pattern is the same bits everywhere by
   construction and equals a strict-IEEE build of Cycles' own sources
   exactly on the tested inputs, within the documented guards (detail at
-  most 15, a NaN detail read as 0, a non-finite coordinate giving 0).
+  most 15, a NaN detail read as 0, a non-finite coordinate giving 0 --
+  except in White Noise, which hashes it as Cycles does).
   Double precision was tried first and rejected: where Cycles rounds is
   part of its pattern. Against Cycles' sources rebuilt with Blender's
   flags, on identical inputs, the fractals and the Noise Texture node's
@@ -517,14 +519,15 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
   tested. Elsewhere the high octaves amplify float rounding by roughly
   (roughness × lacunarity) per octave: on outputs Cycles evaluates at
   shifted coordinates (Color G and B, distortion), where it is small at
-  low roughness and reaches order one at high roughness with high detail
+  low roughness and reaches order one at roughness 1 with high detail, and
+  more above it
   -- as large as the gap between a strict build and a Blender-flags build
   of the same Cycles source, so Blender's own builds are expected to
   differ by as much (inferred). In a render every output is also
   sensitive to the float coordinate each renderer starts from, which can
   differ by one or more ulps; at roughness 1 and detail 15 one ulp moves
-  undistorted Fac by up to about 1e-2 and the shifted outputs by up to
-  about 0.65 at small coordinates, more at large ones.
+  undistorted Fac by up to about 1e-2 and the shifted outputs by order one at
+  small coordinates, more at large ones.
   `src/Library/Utilities/OslNoise.h` tabulates the measurements by
   roughness at detail 15, with their conditions. Beyond |p| ≈ 5.4e8
   Cycles' SIMD path wraps 3D/4D coordinates differently from its scalar
@@ -540,6 +543,10 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
   The hash is ported and applied to the input rounded to float, which is
   exact when the input is itself exact in float (object random, integer
   cell ids) and statistically equivalent otherwise. 20% of materials use it.
+  As built, it is integer arithmetic on the float bit patterns, so it equals
+  Cycles exactly on equal float inputs: all 200 golden rows, which include
+  ±0 (different patterns, different values, as in Cycles), the infinities,
+  a subnormal and the largest float.
 - **No footprint fade.** Unlike RISE's existing `fbm()`, the new noise does
   not fade octaves by pixel footprint: Cycles does not, and the pattern is
   the point. Hand authors should prefer `fbm()`; the documentation says so.
@@ -1128,8 +1135,8 @@ sinks through node groups):
 **What may start now, and what may not.** Round 3's verdict is the gate.
 
 - May start: the procedural builtins and their golden tests (gradient noise,
-  fractal noise and the Noise Texture node **implemented 2026-11-20**,
-  `tests/OslNoiseTest.cpp`; white noise, Voronoi, colour, safe math and
+  fractal noise, the Noise Texture node and White Noise **implemented
+  2026-11-20**, `tests/OslNoiseTest.cpp`; Voronoi, colour, safe math and
   transforms next); the compiler's
   unit tests; the lowered-size measurement; the performance baseline;
   constant-reflectance GGX and energy-preserving Oren-Nayar

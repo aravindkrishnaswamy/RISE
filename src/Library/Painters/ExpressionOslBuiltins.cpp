@@ -27,7 +27,9 @@ namespace RISE
 					kIdSNoise = 1,
 					kIdFractal,
 					kIdNoiseTexture,
-					kIdNoiseTextureColor
+					kIdNoiseTextureColor,
+					kIdWhiteNoise,
+					kIdWhiteNoiseColor
 				};
 
 				const ArgKind S = kScalarArg, V = kVec3Arg, L = kIntLiteralArg;
@@ -56,6 +58,18 @@ namespace RISE
 						{ 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
 						{ 0, 0, 4, OslNoise::kFractalTypeCount - 1, 0, 0, 0, 0, 0, 0, 1 },
 						true, true },
+					// A few integer hashes, judged too cheap to be worth a
+					// memo lookup (not measured; cellhash is treated the same).
+					{ "osl_white_noise", kIdWhiteNoise, 3,
+						{ V, S, L },
+						{ 0, 0, 1 },
+						{ 0, 0, 4 },
+						false, false },
+					{ "osl_white_noise_color", kIdWhiteNoiseColor, 3,
+						{ V, S, L },
+						{ 0, 0, 1 },
+						{ 0, 0, 4 },
+						true, false },
 				};
 
 				const int kTableSize = (int)( sizeof( kTable ) / sizeof( kTable[0] ) );
@@ -155,6 +169,24 @@ namespace RISE
 						out[2] = Finite( color[2] );
 					} else {
 						out[0] = Finite( fac );
+					}
+					return;
+				}
+				case kIdWhiteNoise:
+				case kIdWhiteNoiseColor:
+				{
+					// (p, w, dims)
+					Scalar c[4];
+					const int dims = Lit( a[4] );
+					Gather( a, dims, c );
+					Scalar value = Scalar(0);
+					Scalar color[3] = { Scalar(0), Scalar(0), Scalar(0) };
+					const bool wantColor = ( id == kIdWhiteNoiseColor );
+					OslNoise::WhiteNoise( dims, c, value, wantColor ? color : 0 );
+					if( wantColor ) {
+						out[0] = color[0]; out[1] = color[1]; out[2] = color[2];
+					} else {
+						out[0] = value;
 					}
 					return;
 				}

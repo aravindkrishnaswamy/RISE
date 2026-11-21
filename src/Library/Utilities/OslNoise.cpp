@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OslNoise.cpp - Ports of Cycles' gradient noise, fractal noise and
-//    Noise Texture kernels.  See OslNoise.h for the sources and the
+//  OslNoise.cpp - Ports of Cycles' gradient noise, fractal noise, Noise
+//    Texture and White Noise kernels.  See OslNoise.h for the sources and the
 //    precision contract.
 //
 //  Each function below names the Cycles function it ports and keeps its
@@ -20,8 +20,8 @@
 //      The full licence text is licenses/BSD-3-Clause.txt.
 //
 //    intern/cycles/kernel/svm/fractal_noise.h, kernel/svm/noisetex.h,
-//    util/hash.h, and the helpers mix / floorfrac / saturatef from
-//    util/math_base.h --
+//    kernel/svm/white_noise.h, util/hash.h, and the helpers mix /
+//    floorfrac / saturatef from util/math_base.h --
 //      SPDX-FileCopyrightText: 2011-2022 Blender Foundation
 //      SPDX-License-Identifier: Apache-2.0
 //      Licensed under the Apache License, Version 2.0; a copy is in
@@ -33,7 +33,7 @@
 //
 //    MODIFIED FOR RISE: rewritten as standalone functions, the four
 //    per-dimension overloads of each fractal merged into one, and guards
-//    added for non-finite coordinates and runaway detail.
+//    added for non-finite coordinates (gradient noise) and runaway detail.
 //
 //  Tabs: 4
 //
@@ -145,6 +145,76 @@ namespace RISE
 		float HashFloat2ToFloat( const float kx, const float ky )
 		{
 			return UintToFloatIncl( HashUint2( FloatBits( kx ), FloatBits( ky ) ) );
+		}
+
+		float HashFloat3ToFloat( const float kx, const float ky, const float kz )
+		{
+			return UintToFloatIncl( HashUint3( FloatBits( kx ), FloatBits( ky ), FloatBits( kz ) ) );
+		}
+
+		float HashFloat4ToFloat( const float kx, const float ky, const float kz, const float kw )
+		{
+			return UintToFloatIncl( HashUint4( FloatBits( kx ), FloatBits( ky ), FloatBits( kz ), FloatBits( kw ) ) );
+		}
+
+		//////////////////////////////////////////////////////////////
+		// kernel/svm/white_noise.h (Apache-2.0): svm_node_tex_white_noise,
+		// with util/hash.h's hash_floatN_to_float and
+		// hash_floatN_to_float3.  Integer hashing of float bit patterns,
+		// so floating-point rules do not enter: the only roundings are the
+		// double-to-float input conversion and UintToFloatIncl's
+		// uint-to-float conversion, both correctly rounded (its multiply,
+		// by 1/(2^32-1) rounded to float, which is exactly 2^-32, is
+		// exact).
+		//////////////////////////////////////////////////////////////
+
+		void WhiteNoise( const int dims, const Scalar* p, Scalar& value, Scalar* color )
+		{
+			float c[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			for( int k = 0; k < dims && k < 4; ++k ) c[k] = (float)p[k];
+			switch( dims ) {
+			case 1:
+				value = HashFloatToFloat( c[0] );
+				if( color ) {
+					// hash_float_to_float3
+					color[0] = HashFloatToFloat( c[0] );
+					color[1] = HashFloat2ToFloat( c[0], 1.0f );
+					color[2] = HashFloat2ToFloat( c[0], 2.0f );
+				}
+				return;
+			case 2:
+				value = HashFloat2ToFloat( c[0], c[1] );
+				if( color ) {
+					// hash_float2_to_float3
+					color[0] = HashFloat2ToFloat( c[0], c[1] );
+					color[1] = HashFloat3ToFloat( c[0], c[1], 1.0f );
+					color[2] = HashFloat3ToFloat( c[0], c[1], 2.0f );
+				}
+				return;
+			case 3:
+				value = HashFloat3ToFloat( c[0], c[1], c[2] );
+				if( color ) {
+					// hash_float3_to_float3
+					color[0] = HashFloat3ToFloat( c[0], c[1], c[2] );
+					color[1] = HashFloat4ToFloat( c[0], c[1], c[2], 1.0f );
+					color[2] = HashFloat4ToFloat( c[0], c[1], c[2], 2.0f );
+				}
+				return;
+			case 4:
+				value = HashFloat4ToFloat( c[0], c[1], c[2], c[3] );
+				if( color ) {
+					// hash_float4_to_float3: the components permuted, not extended
+					color[0] = HashFloat4ToFloat( c[0], c[1], c[2], c[3] );
+					color[1] = HashFloat4ToFloat( c[2], c[0], c[3], c[1] );
+					color[2] = HashFloat4ToFloat( c[3], c[2], c[1], c[0] );
+				}
+				return;
+			default:
+				// Cycles' default: Value 0, Color magenta.
+				value = Scalar(0);
+				if( color ) { color[0] = Scalar(1); color[1] = Scalar(0); color[2] = Scalar(1); }
+				return;
+			}
 		}
 
 		//////////////////////////////////////////////////////////////

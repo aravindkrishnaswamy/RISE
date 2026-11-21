@@ -21,7 +21,7 @@
 //  pixel footprint: Cycles does not, and matching Cycles' pattern is the
 //  point.  Hand authors who want anti-aliased noise should prefer fbm().
 //
-//  THE BUILTINS (group 1: gradient and fractal noise).
+//  THE BUILTINS (group 1: gradient and fractal noise; group 2: white noise).
 //
 //    Every noise builtin takes a vec3 `p` and a scalar `w` and reads the
 //    coordinates the dimension count names:
@@ -54,18 +54,28 @@
 //        evaluations, not the four that two separate calls would cost
 //        (design doc §5.2(b), "several results").
 //
+//    osl_white_noise(p, w, dims) -> scalar
+//    osl_white_noise_color(p, w, dims) -> vec3
+//        The White Noise node's Value and Color outputs: lookup3 hashes of
+//        the coordinates' 32-bit float bit patterns, in [0, 1].  Exact
+//        against Cycles when the float coordinates are, but not continuous:
+//        a one-ulp change gives an unrelated value, so a coordinate that is
+//        not exact in float (most of them, in a render) matches Cycles in
+//        distribution, not per pixel.  Color's first channel is Value.
+//
 //  A result that is not finite (a negative roughness can divide by zero
 //  in fBM's normalisation, as it does in Cycles) reads 0.
 //
 //  PRECISION.  The kernels are strict IEEE single precision, equal to a
 //  strict build of Cycles' sources bit for bit on the tested inputs,
-//  within the documented clamps (detail at most 15; non-finite input
-//  reads 0).  Against Cycles as Blender builds it they agree to float
+//  within the documented clamps (detail at most 15; a non-finite
+//  coordinate reads 0, except in White Noise, which hashes it as Cycles
+//  does).  Against Cycles as Blender builds it they agree to float
 //  rounding where float rounding stays small.  The high octaves amplify
 //  rounding by roughly (roughness * lacunarity)^octave: on outputs Cycles
 //  evaluates at shifted coordinates (Color G/B, distortion), high roughness
-//  with high detail parts RISE from Cycles by amounts that reach order one
-//  -- and, inferred from the strict-vs-Blender-flags gap, Cycles' builds
+//  with high detail parts RISE from Cycles by amounts that reach order
+//  one at roughness 1 and more above it -- and, inferred from the strict-vs-Blender-flags gap, Cycles' builds
 //  from each other -- and in a render every output is sensitive to the
 //  float coordinate the two renderers start from.  OslNoise.h tabulates
 //  the measurements and their conditions.

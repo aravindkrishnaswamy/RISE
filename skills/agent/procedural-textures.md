@@ -153,14 +153,19 @@ select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
 `vec3()`, `.x/.y/.z`, `dot`, `cross`, `length`, `normalize`.
 
 The `osl_` builtins are Cycles' / OSL's own definitions, there so a
-Blender material translates to the same pattern: `osl_snoise(p, w, dims)`,
+Blender material translates to the same pattern: `osl_snoise(p, w, dims)`;
 `osl_fractal(p, w, dims, type, detail, roughness, lacunarity, offset, gain,
-normalize)` and the Noise Texture node's `osl_noise_texture(...)` (Fac) and
-`osl_noise_texture_color(...)` (Color), with `dims`, `type` and
-`normalize` integer literals (full list:
-`src/Library/Painters/ExpressionOslBuiltins.h`).  They never fade octaves
-by footprint, so for hand-authored noise prefer `fbm`/`turbulence`/
-`ridged`, which do.
+normalize)`; the Noise Texture node's `osl_noise_texture(...)` (Fac) and
+`osl_noise_texture_color(...)` (Color); and the White Noise node's
+`osl_white_noise(p, w, dims)` and `osl_white_noise_color(p, w, dims)`.
+`dims`, `type` and `normalize` are integer literals (full list:
+`src/Library/Painters/ExpressionOslBuiltins.h`).  The noise ones never fade
+octaves by footprint, so for hand-authored noise prefer `fbm`/`turbulence`/
+`ridged`, which do.  White noise hashes the coordinate's exact float bits,
+so any one-ulp change gives an unrelated value, and a coordinate that is
+not exactly representable in float may round to a different float than
+Cycles computed: feed it integer or cell ids (or use `cellhash`, RISE's
+own hash) when you want a stable per-cell value.
 
 The body also sees `curv`/`curvR` (surface curvature at the hit: positive
 convex, negative concave, 0 flat) plus FIVE ARG-TAKING geometry-signal

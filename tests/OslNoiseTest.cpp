@@ -4,8 +4,11 @@
 //
 //  1. Golden values.  tests/data/osl_noise_golden.inc was dumped from
 //     Cycles' own kernels (tools/osl_golden/dump_noise_golden.sh): the
-//     lookup3 hashes, snoise_1d..4d, every fractal type in every
-//     dimension, and the Noise Texture node's Fac and Color.  Each output
+//     lookup3 hashes, the White Noise node, snoise_1d..4d, every fractal
+//     type in every dimension, and the Noise Texture node's Fac and Color.
+//     The hashes and White Noise are integer arithmetic, so they carry one
+//     value each (the dumper checks that its three builds agree on it).
+//     Each noise output
 //     comes from three builds of Cycles' sources: its SIMD path and its
 //     scalar "standard implementation" as Blender builds them, and the
 //     scalar path as strict IEEE single precision -- the arithmetic
@@ -18,6 +21,8 @@
 //     coordinate layout the dimension count selects.
 //  3. Compile-time checks: literal arguments, ranges, arity, types.
 //  4. Robustness: non-finite coordinates, a runaway detail, NaN detail.
+//     (White Noise has no such guard: like Cycles it hashes any bit
+//     pattern, and Test 1f covers its infinities.)
 //  5. The memo gate sees the new opcodes.
 //
 //  Tabs: 4
@@ -57,6 +62,7 @@ static void Check( const bool ok, const std::string& what )
 
 struct OslHashRow { uint32_t kx, ky, kz, kw, h1, h2, h3, h4; };
 struct OslFloatHashRow { double kx, ky, h1, h2; };
+struct OslWhiteNoiseRow { int dims; double c[4]; double value; double color[3]; };
 struct OslSNoiseRow { int dims; double c[4]; double simd, scalar, ieee; };
 struct OslFractalRow { int dims; double c[4]; int type; double detail, roughness, lacunarity, offset, gain; int normalize; double simd, scalar, ieee; };
 struct OslTextureRow { int dims; double c[4]; int type; double detail, roughness, lacunarity, offset, gain, distortion; int normalize; double simd[4]; double scalar[4]; double ieee[4]; };
@@ -83,10 +89,10 @@ struct OslTextureRow { int dims; double c[4]; int type; double detail, roughness
 // is strict IEEE.  The fractals and an undistorted Fac agree with the
 // SIMD build to float rounding.  Outputs evaluated at shifted coordinates
 // -- Color G/B and anything distorted -- amplify Cycles' rounding by
-// roughly (roughness * lacunarity) per octave, up to order one at high
-// roughness with high detail; that is the gap between a fused and a
-// strict build of the same Cycles source.  The snoise rows' 0.6 is the
-// SIMD path's 3D/4D wrap, which can stop matching fmodf above |p| of
+// roughly (roughness * lacunarity) per octave, to order one at roughness 1
+// with high detail and more above it; that is the gap between a fused and
+// a strict build of the same Cycles source.  The snoise rows' large SIMD
+// distance is the SIMD path's 3D/4D wrap, which can stop matching fmodf above |p| of
 // about 5.4e8 (first seen in this table at 1.1e9).  Errors are relative
 // above 1, because hetero terrain and the multifractals grow past 1.
 // Tests 1c-1e also print the one-ulp input sensitivity, and Test 1e the
@@ -143,6 +149,36 @@ static void TestHashes()
 		Check( (double)OslNoise::HashFloatToFloat( (float)r.kx ) == r.h1, "hash_float_to_float row " + std::to_string( i ) );
 		Check( (double)OslNoise::HashFloat2ToFloat( (float)r.kx, (float)r.ky ) == r.h2, "hash_float2_to_float row " + std::to_string( i ) );
 	}
+}
+
+static void TestWhiteNoiseGolden()
+{
+	std::printf( "Test 1f: the White Noise node's Value and Color against Cycles, exactly (%d rows)\n", COUNT( kWhiteNoiseRows ) );
+	for( int i = 0; i < COUNT( kWhiteNoiseRows ); ++i ) {
+		const OslWhiteNoiseRow& r = kWhiteNoiseRows[i];
+		Scalar value = -1, color[3] = { -1, -1, -1 };
+		OslNoise::WhiteNoise( r.dims, r.c, value, color );
+		char buf[200];
+		std::snprintf( buf, sizeof buf, "white noise row %d (dims %d, c %a %a %a %a): Value %a want %a",
+			i, r.dims, r.c[0], r.c[1], r.c[2], r.c[3], value, r.value );
+		Check( value == r.value, buf );
+		Check( color[0] == r.color[0] && color[1] == r.color[1] && color[2] == r.color[2],
+			"white noise row " + std::to_string( i ) + ": Color matches Cycles" );
+		Scalar valueOnly = -1;
+		OslNoise::WhiteNoise( r.dims, r.c, valueOnly, 0 );
+		Check( valueOnly == value && color[0] == value, "white noise row " + std::to_string( i ) + ": Value without Color is the same, and Color.r is Value" );
+	}
+	// +0 and -0 are different bit patterns, so they hash differently, as
+	// in Cycles (both are rows of the table above).
+	const Scalar pz[4] = { 0.0, 0, 0, 0 }, nz[4] = { -0.0, 0, 0, 0 };
+	Scalar vz = 0, vn = 0;
+	OslNoise::WhiteNoise( 1, pz, vz, 0 );
+	OslNoise::WhiteNoise( 1, nz, vn, 0 );
+	Check( vz != vn, "white noise distinguishes -0 from +0, as Cycles does" );
+	// A dimension count outside 1..4 gives Cycles' fallback.
+	Scalar vb = -1, cb[3] = { -1, -1, -1 };
+	OslNoise::WhiteNoise( 5, pz, vb, cb );
+	Check( vb == 0 && cb[0] == 1 && cb[1] == 0 && cb[2] == 1, "white noise with dims outside 1..4 gives Value 0, Color magenta" );
 }
 
 static void TestSNoiseGolden()
@@ -367,6 +403,17 @@ static void TestVMMatchesKernels()
 			else { c[0] = ctx.P.x; c[1] = ctx.P.y; if( dims >= 3 ) c[2] = ctx.P.z; if( dims == 4 ) c[3] = w; }
 			const std::string tag = " (point " + std::to_string( ip ) + ", dims " + std::to_string( dims ) + ")";
 
+			Prog wn( "osl_white_noise(P, " + Num( w ) + ", " + std::to_string( dims ) + ")" );
+			Prog wc( "osl_white_noise_color(P, " + Num( w ) + ", " + std::to_string( dims ) + ")" );
+			Check( wn.ok && wc.ok, "osl_white_noise[_color] compile" + tag );
+			{
+				Scalar value = 0, color[3] = { 0, 0, 0 };
+				OslNoise::WhiteNoise( dims, c, value, color );
+				Check( wn.ok && wn.prog.Eval( ctx ) == value, "osl_white_noise == WhiteNoise" + tag );
+				const Vector3 vc = wc.ok ? wc.prog.EvalVec3( ctx ) : Vector3( 0, 0, 0 );
+				Check( wc.ok && wc.prog.ResultType() == ExpressionProgram::kVec3 && vc.x == color[0] && vc.y == color[1] && vc.z == color[2],
+					"osl_white_noise_color == WhiteNoise's Color" + tag );
+			}
 			Prog sn( "osl_snoise(P, " + Num( w ) + ", " + std::to_string( dims ) + ")" );
 			Check( sn.ok, "osl_snoise compiles" + tag + ": " + sn.builder.Error() );
 			Check( sn.ok && sn.prog.Eval( ctx ) == OslNoise::SNoise( dims, c ), "osl_snoise == SNoise" + tag );
@@ -431,6 +478,8 @@ static void TestCompileChecks()
 {
 	std::printf( "Test 3: literal, range, arity and type checks\n" );
 	ExpectError( "osl_snoise(P, 0, 5)", "must be an integer literal from 1 to 4" );
+	ExpectError( "osl_white_noise(P, 0, 0)", "must be an integer literal from 1 to 4" );
+	ExpectError( "osl_white_noise_color(u, 0, 3)", "argument 1 must be vec3" );
 	ExpectError( "osl_snoise(P, 0, 0)", "must be an integer literal from 1 to 4" );
 	ExpectError( "osl_snoise(P, 0, 2.5)", "must be an integer literal from 1 to 4" );
 	ExpectError( "osl_snoise(P, 0, u)", "must be an integer literal from 1 to 4" );
@@ -568,12 +617,14 @@ static void TestMemoWorthiness()
 	std::printf( "Test 5: an osl_ noise call makes a short body memo-worthy\n" );
 	Check( Prog( "osl_snoise(P, 0, 3)" ).prog.MemoWorthy(), "osl_snoise" );
 	Check( Prog( "osl_noise_texture_color(P, 0, 3, 1, 2, 0.5, 2, 0, 1, 0, 1).x" ).prog.MemoWorthy(), "osl_noise_texture_color" );
+	Check( !Prog( "osl_white_noise(P, 0, 3)" ).prog.MemoWorthy(), "osl_white_noise alone is not (a few integer hashes)" );
 	Check( !Prog( "u*v" ).prog.MemoWorthy(), "a short arithmetic body is still not" );
 }
 
 int main()
 {
 	TestHashes();
+	TestWhiteNoiseGolden();
 	TestSNoiseGolden();
 	TestFractalGolden();
 	TestTextureGolden();

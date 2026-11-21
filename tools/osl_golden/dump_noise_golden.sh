@@ -5,8 +5,9 @@
 #
 # The first argument is a Blender source checkout.  dump_noise_path.cpp is
 # compiled three times against it, each into a namespace of its own, and
-# all three are linked into the dumper, which writes every output once
-# per build:
+# all three are linked into the dumper, which writes every noise output
+# once per build (the integer hash and White Noise rows once, after
+# checking the builds agree):
 #   simd    Cycles' SIMD path (sse2neon, as Blender's arm64 build compiles
 #           it), with Cycles' own math flags
 #           (CYCLES_MATH_FLAGS in intern/cycles/CMakeLists.txt) -- the
@@ -18,9 +19,9 @@
 #           This is the arithmetic RISE's port reproduces on every
 #           platform, so the test gates on it.
 #
-# Only noisetex.h's noise functions are needed, and its node entry point
-# drags in the whole kernel-globals machinery, so the header is copied up
-# to svm_node_tex_noise into a scratch directory.
+# noisetex.h's node entry point drags in the whole kernel-globals
+# machinery, so that header is copied up to svm_node_tex_noise into a
+# scratch directory; white_noise.h's node is used whole (see below).
 set -eu
 BLENDER=${1:?usage: dump_noise_golden.sh /path/to/blender [out.inc]}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -33,6 +34,12 @@ trap 'rm -rf "$WORK"' EXIT
 sed -e '/#include "kernel\/svm\/util.h"/d' -e '/ccl_device_noinline int svm_node_tex_noise/,$d' \
     "$CY/kernel/svm/noisetex.h" > "$WORK/noisetex_core.h"
 echo 'CCL_NAMESPACE_END' >> "$WORK/noisetex_core.h"
+# white_noise.h is used WHOLE, node entry point included; only its
+# kernel/svm/util.h include goes, replaced by svm_stack_stubs.h (the six
+# SVM stack helpers the node calls, copied from util.h).
+sed -e 's|#include "kernel/svm/util.h"|#include "svm_stack_stubs.h"|' \
+    "$CY/kernel/svm/white_noise.h" > "$WORK/white_noise_core.h"
+cp "$HERE/svm_stack_stubs.h" "$WORK/svm_stack_stubs.h"
 
 MATH="-fno-trapping-math -fno-math-errno -fno-signed-zeros -ffp-contract=on -freciprocal-math"
 IEEE="-fno-math-errno -ffp-contract=off"

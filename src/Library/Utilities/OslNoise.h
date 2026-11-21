@@ -1,7 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OslNoise.h - Gradient noise, fractal noise and the Noise Texture
-//    node as the Open Shading Language and Cycles define them.
+//  OslNoise.h - Gradient noise, fractal noise, the Noise Texture node
+//    and the White Noise node as the Open Shading Language and Cycles
+//    define them.
 //
 //  These are PORTS, not new noise.  They reproduce the CPU kernels of
 //  Blender's Cycles renderer, which follow OSL's definitions, so that a
@@ -22,6 +23,7 @@
 //                     (distortion and the Color output's two offset
 //                     evaluations)
 //    hashes           intern/cycles/util/hash.h (lookup3)
+//    White Noise      intern/cycles/kernel/svm/white_noise.h
 //    helpers          intern/cycles/util/math_base.h (mix, floorfrac,
 //                     saturatef)
 //
@@ -57,7 +59,7 @@
 //  points here.
 //
 //  On identical float inputs, against the SIMD build, relative to
-//  max(1, |value|): one octave of noise agrees to 4.8e-7 (every |p| below
+//  max(1, |value|): one octave of noise agrees to 6.4e-7 (every |p| below
 //  5e8, see below), and the fractals and the Noise Texture node's Fac
 //  without distortion agree to float rounding (below 1e-5) at every
 //  roughness tested.  Where they part is wherever float rounding gets
@@ -88,13 +90,13 @@
 //
 //    roughness   strict vs SIMD,    one-ulp input change moves:
 //                shifted outputs    unshifted Fac    shifted outputs
-//      0.5         1.2e-4             1.9e-6           3.5e-5
-//      0.6         8.2e-4             1.1e-5           3.0e-4
-//      0.7         6.3e-3             9.8e-5           2.8e-3
-//      0.8         3.3e-2             4.5e-4           1.8e-2
-//      0.9         0.18               1.9e-3           0.11
-//      1.0         1.1                8.6e-3           0.65
-//      1.1         2.7                0.091            0.77
+//      0.5         1.6e-4             3.0e-6           4.6e-5
+//      0.6         8.6e-4             7.7e-6           7.4e-4
+//      0.7         4.4e-3             5.5e-5           1.1e-3
+//      0.8         4.1e-2             4.2e-4           3.7e-2
+//      0.9         0.25               2.7e-3           0.097
+//      1.0         0.65               8.5e-3           1.1
+//      1.1         7.3                0.32             0.3
 //
 //  The strict-vs-SIMD column equals, to two figures, the gap between a
 //  strict build and a build of the SAME Cycles source with Blender's math
@@ -114,15 +116,18 @@
 //  spacing exceeds the noise's lattice cell, so neither result is a
 //  meaningful pattern.
 //
-//  NON-FINITE INPUT.  Cycles does not guard: a NaN or infinite coordinate
-//  reaches an int conversion, which is undefined behaviour in C++.  Each
-//  function here returns 0 (and NoiseTexture a zero Color) when any
-//  coordinate it reads is not finite, the same honest neutral the
+//  NON-FINITE INPUT.  Cycles does not guard its gradient noise: a NaN or
+//  infinite coordinate reaches an int conversion, which is undefined
+//  behaviour in C++.  SNoise, Fractal and NoiseTexture return 0 (and
+//  NoiseTexture a zero Color) when any coordinate they read is not
+//  finite, the same honest neutral the
 //  expression VM's other builtins use; a double coordinate beyond float
 //  range rounds to infinity and so also gives 0.  Inside a fractal, an
 //  octave whose scaled coordinate overflows (a huge lacunarity) reads
 //  snoise as 0 -- SNoise checks before its wrap, since fmod of an
-//  infinity is NaN -- and the fractal carries on.
+//  infinity is NaN -- and the fractal carries on.  WhiteNoise is the
+//  exception: it converts nothing to an int, so like Cycles it hashes a
+//  non-finite coordinate's bit pattern (see its own comment).
 //
 //  LICENCES.  RISE's own licence is BSD-style (LICENSE.TXT).  The ported
 //  code carries its sources' licences, reproduced here as they require:
@@ -134,7 +139,7 @@
 //      SPDX-License-Identifier: BSD-3-Clause
 //      The full licence text is licenses/BSD-3-Clause.txt.
 //
-//    fractal_noise.h, noisetex.h, hash.h, math_base.h --
+//    fractal_noise.h, noisetex.h, white_noise.h, hash.h, math_base.h --
 //      SPDX-FileCopyrightText: 2011-2022 Blender Foundation
 //      SPDX-License-Identifier: Apache-2.0
 //      Licensed under the Apache License, Version 2.0; a copy is in
@@ -146,7 +151,7 @@
 //
 //    MODIFIED FOR RISE: rewritten as standalone functions, the four
 //    per-dimension overloads of each fractal merged into one, and guards
-//    added for non-finite coordinates and runaway detail.
+//    added for non-finite coordinates (gradient noise) and runaway detail.
 //    licenses/Cycles-NOTICE.txt summarises these notices for binary
 //    distributions.
 //
@@ -186,6 +191,39 @@ namespace RISE
 		//! docs/BLENDER_PROCEDURAL_TRANSLATION_DESIGN.md §5.2(b).
 		float HashFloatToFloat( float k );
 		float HashFloat2ToFloat( float kx, float ky );
+		float HashFloat3ToFloat( float kx, float ky, float kz );
+		float HashFloat4ToFloat( float kx, float ky, float kz, float kw );
+
+		//////////////////////////////////////////////////////////////
+		// The White Noise node (kernel/svm/white_noise.h)
+		//////////////////////////////////////////////////////////////
+
+		//! The node's Value output, and -- when `color` is non-null -- its
+		//! Color output, for `dims` coordinates (1..4) read as the noise
+		//! builtins read them.  Each is a lookup3 hash of the coordinates'
+		//! 32-bit float BIT PATTERNS (hash_floatN_to_float and
+		//! hash_floatN_to_float3), so the result is integer arithmetic and
+		//! equals Cycles exactly when the float coordinates are the same.
+		//! But it is not a continuous function of them: a coordinate that
+		//! differs by one float ulp hashes to an unrelated value.  RISE
+		//! rounds its double coordinate to float on the way in, which is
+		//! exact when the value is exact in float (an object's random
+		//! number, an integer cell id) and otherwise matches Cycles in
+		//! distribution, not per pixel -- docs/BLENDER_PROCEDURAL_
+		//! TRANSLATION_DESIGN.md §5.2(b).  As in Cycles, -0 and +0 are
+		//! different inputs, and an infinity or NaN is hashed like any other
+		//! bit pattern (no guard is needed: nothing converts it to an int).
+		//! `dims` outside 1..4 gives Cycles' fallback, Value 0 and Color
+		//! (1, 0, 1).  Two render-time differences fall under the
+		//! in-distribution caveat: Cycles enables flush-to-zero for Embree
+		//! on whichever thread constructs the Embree BVH (a TBB worker that
+		//! may later shade), and its CUDA/OptiX kernels are compiled with
+		//! --use_fast_math, which flushes (the other GPU backends use
+		//! fast-math modes that may), so a subnormal coordinate Cycles
+		//! computes can arrive as 0 where RISE hashes it; and RISE's expression memo compares coordinates with
+		//! ==, so a memoised body treats -0 and +0 as one input and returns
+		//! whichever result was cached first.
+		void WhiteNoise( int dims, const Scalar* p, Scalar& value, Scalar* color );
 
 		//////////////////////////////////////////////////////////////
 		// Gradient noise (kernel/svm/noise.h)

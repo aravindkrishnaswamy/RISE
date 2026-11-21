@@ -158,8 +158,8 @@
 //              translated Blender node graph renders the same pattern.
 //              They have their own signature table, ids and dispatch
 //              (ExpressionOslBuiltins.h, Compiled::kOsl / kOslV3) and
-//              are listed there; the first group is gradient noise,
-//              fractal noise and the Noise Texture node.  Unlike fbm()
+//              are listed there; so far gradient noise, fractal
+//              noise, the Noise Texture node and White Noise.  Unlike fbm()
 //              they never fade octaves by footprint, and some arguments
 //              must be integer literals.  They are pure functions, so
 //              they compile with context vars off too.
@@ -1317,7 +1317,8 @@ namespace RISE
 						for( std::size_t i = 0; i < body.code.size(); ++i ) {
 							const Compiled::Instr& in = body.code[i];
 							// An `osl_` call qualifies when its signature says
-							// it is expensive (every noise builtin does).
+							// it is expensive (the gradient and fractal noise
+							// builtins do; white noise, a few hashes, does not).
 							if( in.op == Compiled::kOsl || in.op == Compiled::kOslV3 ) {
 								const OslBuiltins::Sig* os = OslBuiltins::FindById( in.fn );
 								if( os && os->memoWorthy ) return true;

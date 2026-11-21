@@ -12,7 +12,7 @@ ported code: stb, cgltf and mt19937 are not shipped there either).
 | File | Covers |
 |---|---|
 | [Cycles-NOTICE.txt](Cycles-NOTICE.txt) | The copyright notices for the code ported from Blender's Cycles renderer, which licence covers which part, and what was modified: `src/Library/Utilities/OslNoise.h` and `OslNoise.cpp`. |
-| [Apache-2.0.txt](Apache-2.0.txt) | Cycles' fractal noise, Noise Texture node and hashes (Blender Foundation). |
+| [Apache-2.0.txt](Apache-2.0.txt) | Cycles' fractal noise, Noise Texture and White Noise nodes, and hashes (Blender Foundation). |
 | [BSD-3-Clause.txt](BSD-3-Clause.txt) | The Perlin noise core Cycles adapted from Open Shading Language (Sony Pictures Imageworks Inc., et al.). |
 | [Sobol-Joe-Kuo-LICENSE.txt](Sobol-Joe-Kuo-LICENSE.txt) | The Sobol' direction numbers in `src/Library/Sampling/SobolDirectionNumbers.cpp` (Frances Y. Kuo and Stephen Joe). |
 

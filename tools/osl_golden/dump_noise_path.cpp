@@ -17,6 +17,7 @@
 #include "util/types.h"
 #include "kernel/svm/types.h"
 #include "noisetex_core.h"  // noisetex.h up to svm_node_tex_noise; see dump_noise_golden.sh
+#include "white_noise_core.h"  // white_noise.h whole, its util.h include swapped for svm_stack_stubs.h
 
 #define OSL_CAT2(a, b) a##b
 #define OSL_CAT(a, b) OSL_CAT2(a, b)
@@ -54,6 +55,29 @@ float OSL_FN(Fractal)(int dims, const float *c, int type, float detail, float ro
     default:
       return noise_select(make_float4(c[0], c[1], c[2], c[3]), detail, roughness, lacunarity, offset, gain, type, normalize);
   }
+}
+
+// The White Noise node itself: svm_node_tex_white_noise, run on a small
+// SVM stack.  c holds the coordinates in RISE's order (1D: w; 4D: x, y, z,
+// w); the node reads its vector from stack slots 0..2 and w from slot 3,
+// and writes Value to 4 and Color to 5..7.  out = {Value, Color.r, .g, .b}.
+void OSL_FN(WhiteNoise)(int dims, const float *c, float *out)
+{
+  float stack[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  if (dims == 1) {
+    stack[3] = c[0];
+  }
+  else {
+    stack[0] = c[0];
+    stack[1] = c[1];
+    stack[2] = c[2];
+    stack[3] = c[3];
+  }
+  svm_node_tex_white_noise(stack, uint(dims), 0u | (3u << 8), 4u | (5u << 8));
+  out[0] = stack[4];
+  out[1] = stack[5];
+  out[2] = stack[6];
+  out[3] = stack[7];
 }
 
 // svm_node_tex_noise's two clamps, then noise_texture_Nd.  out = {Fac, Color.r, .g, .b}.

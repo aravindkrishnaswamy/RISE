@@ -3,8 +3,8 @@ Blender commit afc6d7a4 (5.2 alpha, 2026-03-17), in
 src/Library/Utilities/OslNoise.h and src/Library/Utilities/OslNoise.cpp.
 The port was modified for RISE: it was rewritten as standalone C++
 functions, the four per-dimension overloads of each fractal were merged
-into one, and guards were added for non-finite coordinates and runaway
-detail.
+into one, and guards were added for non-finite coordinates (gradient noise)
+and runaway detail.
 
 Gradient noise (from intern/cycles/kernel/svm/noise.h), adapted by
 Blender from Open Shading Language:
@@ -15,9 +15,10 @@ Blender from Open Shading Language:
 
   Licensed under the BSD 3-Clause License; see BSD-3-Clause.txt.
 
-Fractal noise, the Noise Texture node, the hashes and three small
-helpers (from intern/cycles/kernel/svm/fractal_noise.h,
-kernel/svm/noisetex.h, util/hash.h and util/math_base.h):
+Fractal noise, the Noise Texture and White Noise nodes, the hashes and
+three small helpers (from intern/cycles/kernel/svm/fractal_noise.h,
+kernel/svm/noisetex.h, kernel/svm/white_noise.h, util/hash.h and
+util/math_base.h):
 
   Copyright (c) 2011-2022 Blender Foundation
 
