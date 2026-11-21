@@ -319,6 +319,23 @@ class ExternalSourcesTest(unittest.TestCase):
         self.assertEqual([(e[0], e[2]) for e in extra], [("oneTBB", "LICENSE.txt")])
         with self.assertRaises(tpn.NoticeError):
             tpn.audit_dlls(bindir, known)  # TBB_ROOT unset: unknown
+        # OIDN's install ships oneTBB's licence list: no TBB_ROOT needed.
+        self.assertEqual(tpn.audit_dlls(bindir, known, None, tbb_covered=True), [])
+        # The MSVC runtime needs no notice; a version-renamed vcpkg DLL left
+        # over from an older build is accepted with a warning.
+        write(os.path.join(bindir, "vcruntime140.dll"), "")
+        write(os.path.join(bindir, "Qt6Core_5.dll"), "")
+        self.assertEqual(tpn.audit_dlls(bindir, known, None, tbb_covered=True), [])
+        # Subfolders are searched (Qt plugins), except the skipped one.
+        write(os.path.join(bindir, "Third-Party Licenses", "x", "odd.dll"), "")
+        self.assertEqual(tpn.audit_dlls(bindir, known, None, tbb_covered=True,
+                                        skip=[os.path.join(bindir, "Third-Party Licenses")]), [])
+        write(os.path.join(bindir, "platforms", "qmystery.dll"), "")
+        with self.assertRaises(tpn.NoticeError):
+            tpn.audit_dlls(bindir, known, None, tbb_covered=True,
+                           skip=[os.path.join(bindir, "Third-Party Licenses")])
+        os.remove(os.path.join(bindir, "platforms", "qmystery.dll"))
+        shutil.rmtree(os.path.join(bindir, "Third-Party Licenses"))
         # A DLL from nowhere fails.
         write(os.path.join(bindir, "mystery.dll"), "")
         with self.assertRaises(tpn.NoticeError) as ctx:
@@ -482,7 +499,10 @@ class WindowsProjectTest(unittest.TestCase):
                                         '" --distribution windows'), 2, project)
             self.assertEqual(text.count("--vcpkg-installed"), 2, project)
             self.assertEqual(text.count("open-image-denoise="), 2, project)
-            self.assertEqual(text.count('--check-dlls "$(OutDir)."'), 2, project)
+            self.assertEqual(text.count('--check-dlls "$(OutDir)." $(RiseExtraNoticeArgs)'), 2,
+                             project)
+            import xml.dom.minidom
+            xml.dom.minidom.parse(os.path.join(REPO, "build", "VS2022", project))
             self.assertEqual(text.count("openpgl=$(RiseOpenPglRoot.TrimEnd('\\'))"), 2, project)
             # The stager must be the LAST command of each post-build event:
             # a batch's exit code is its last command's, so a command after

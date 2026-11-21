@@ -178,39 +178,84 @@ def vcpkg_dll_names(installed_root, triplet):
     return names
 
 
-def audit_dlls(dll_dir, known_names, tbb_root=None):
-    """Check every DLL beside the executables has a known notice source.
+# Microsoft's redistributable C/C++ runtime: its terms ask for no notice.
+_MS_RUNTIME = re.compile(r"^(vcruntime|msvcp|concrt|vccorlib|vcomp|ucrtbase|api-ms-win-)"
+                         r".*\.dll$", re.IGNORECASE)
+_TBB_DLL = re.compile(r"^tbb[a-z0-9_]*\.dll$", re.IGNORECASE)
+_TBB_NOTICE = re.compile(r"^third-party-programs-onetbb.*\.txt$", re.IGNORECASE)
+_MAX_TBB_NOTICES = 12
 
-    `known_names` holds the lower-cased DLL names whose notices are already
-    shipped (vcpkg ports, the --license-root installs).  oneTBB's DLLs are
-    copied in by extlib/oidn/build.ps1 from TBB_ROOT; when one is present
-    and TBB_ROOT is set, TBB_ROOT's licence files are returned to ship as
-    oneTBB.  Any other DLL is an error: its notice cannot be checked.
+
+def _dll_stem(name):
+    """OpenEXR-3_2.dll -> openexr, Qt6Cored.dll -> qt6cored: name without version."""
+    stem = name.lower()[:-len(".dll")]
+    return re.sub(r"[-_.]?[0-9][0-9_.-]*$", "", stem) or stem
+
+
+def audit_dlls(dll_dir, known_names, tbb_root=None, tbb_covered=False, skip=()):
+    """Check every DLL under the output folder has a known notice source.
+
+    A DLL is accounted for by its file name: one a vcpkg port installs, or
+    one inside a --license-root install (`known_names`, lower-cased).  A
+    name that differs from a known one only in its version (a DLL left over
+    from an older vcpkg) is accepted with a warning.  Microsoft's runtime
+    DLLs need no notice.  oneTBB's DLLs, which extlib/oidn/build.ps1 copies
+    in, are covered when `tbb_covered` (the OIDN install ships oneTBB's
+    licence list); otherwise `tbb_root` (TBB_ROOT) must hold them, and its
+    licence files are returned to ship as oneTBB.  Anything else is an
+    error.  `skip` lists folders not to search (the notice folder).
     """
     if not os.path.isdir(dll_dir):
         raise NoticeError("DLL directory is missing: %s" % dll_dir)
-    tbb_names = set()
-    if tbb_root and os.path.isdir(tbb_root):
-        for directory, _, files in os.walk(tbb_root):
-            tbb_names.update(f.lower() for f in files if f.lower().endswith(".dll"))
-    unknown, need_tbb = [], False
-    for name in sorted(os.listdir(dll_dir)):
-        if not name.lower().endswith(".dll") or not os.path.isfile(os.path.join(dll_dir, name)):
-            continue
-        if name.lower() in known_names:
-            continue
-        if name.lower() in tbb_names:
-            need_tbb = True
-            continue
-        unknown.append(name)
+    known_stems = {_dll_stem(n) for n in known_names}
+    skip = {os.path.normcase(os.path.abspath(p)) for p in skip}
+    unknown, stale, tbb = [], [], []
+    for directory, subdirs, files in os.walk(dll_dir):
+        subdirs[:] = [d for d in sorted(subdirs)
+                      if os.path.normcase(os.path.abspath(os.path.join(directory, d))) not in skip
+                      and not d.startswith(".")]
+        for name in sorted(files):
+            lower = name.lower()
+            if not lower.endswith(".dll") or lower in known_names or _MS_RUNTIME.match(name):
+                continue
+            rel = os.path.relpath(os.path.join(directory, name), dll_dir)
+            if _TBB_DLL.match(name):
+                tbb.append(rel)
+            elif _dll_stem(name) in known_stems:
+                stale.append(rel)
+            else:
+                unknown.append(rel)
+    for rel in stale:
+        sys.stderr.write("third_party_notices: warning: %s looks like a DLL left over from an "
+                         "older library version; its notice is shipped, but delete it if it "
+                         "is stale\n" % os.path.join(dll_dir, rel))
     if unknown:
         raise NoticeError(
-            "%s holds DLLs with no known licence source: %s (pass --license-root "
-            "PACKAGE=DIR for the install they come from)" % (dll_dir, ", ".join(unknown)))
-    if need_tbb:
-        return [("oneTBB", path, os.path.relpath(path, tbb_root).replace(os.sep, "/"))
-                for path in license_files_under(tbb_root)]
-    return []
+            "%s holds DLLs with no known licence source: %s.  Delete a DLL that is left "
+            "over; otherwise add its install with --license-root PACKAGE=DIR (the "
+            "RiseExtraNoticeArgs MSBuild property)" % (dll_dir, ", ".join(unknown)))
+    if not tbb or tbb_covered:
+        return []
+    if not tbb_root:
+        raise NoticeError(
+            "%s holds oneTBB DLLs (%s) but no oneTBB licence is known: the OIDN install "
+            "carries no third-party-programs-oneTBB file and TBB_ROOT is not set"
+            % (dll_dir, ", ".join(tbb)))
+    # extlib/oidn/build.ps1 copies them from these two folders only.
+    tbb_names = set()
+    for sub in (os.path.join("redist", "intel64", "vc14"), "bin"):
+        folder = os.path.join(tbb_root, sub)
+        if os.path.isdir(folder):
+            tbb_names.update(f.lower() for f in os.listdir(folder))
+    missing = [rel for rel in tbb if os.path.basename(rel).lower() not in tbb_names]
+    if missing:
+        raise NoticeError("oneTBB DLLs %s are not in TBB_ROOT %s" % (", ".join(missing), tbb_root))
+    files = license_files_under(tbb_root)
+    if len(files) > _MAX_TBB_NOTICES:
+        raise NoticeError("%d licence files under TBB_ROOT %s is too many to be oneTBB's"
+                          % (len(files), tbb_root))
+    return [("oneTBB", path, os.path.relpath(path, tbb_root).replace(os.sep, "/"))
+            for path in files]
 
 
 def _check_destination(dest):
@@ -355,7 +400,11 @@ def _publish(staging, dest):
                 break
             except OSError:
                 if attempt == 19:
-                    os.rename(old, dest)  # put the previous notices back
+                    try:
+                        os.rename(old, dest)  # put the previous notices back
+                    except OSError:
+                        raise NoticeError("could not move the new notices into %s, nor the "
+                                          "old ones back (they are in %s)" % (dest, old))
                     shutil.rmtree(trash, ignore_errors=True)
                     raise NoticeError("could not move the new notices into %s" % dest)
                 time.sleep(0.25)
@@ -472,8 +521,8 @@ def main(argv=None):
     parser.add_argument("--license-file", action="append", default=[],
                         metavar="PACKAGE=FILE", help="ship one extra licence file")
     parser.add_argument("--check-dlls", metavar="DIR",
-                        help="fail if DIR holds a DLL whose notice is not shipped "
-                             "(oneTBB DLLs are matched against %%TBB_ROOT%%)")
+                        help="fail if DIR (searched recursively) holds a DLL whose "
+                             "notice is not shipped")
     args = parser.parse_args(argv)
     try:
         extra = []
@@ -482,16 +531,20 @@ def main(argv=None):
         if args.vcpkg_installed:
             extra.extend(vcpkg_copyrights(args.vcpkg_installed, args.vcpkg_triplet))
         known_dlls = set()
+        tbb_covered = False
         if args.vcpkg_installed:
             known_dlls |= vcpkg_dll_names(args.vcpkg_installed, args.vcpkg_triplet)
         for text in args.license_root:
             package, root = _parse_pair(text, "--license-root")
+            notices = license_files_under(root)
             extra.extend((package, path, os.path.relpath(path, root).replace(os.sep, "/"))
-                         for path in license_files_under(root))
+                         for path in notices)
+            tbb_covered |= any(_TBB_NOTICE.match(os.path.basename(p)) for p in notices)
             for directory, _, files in os.walk(root):
                 known_dlls.update(f.lower() for f in files if f.lower().endswith(".dll"))
         if args.check_dlls:
-            extra.extend(audit_dlls(args.check_dlls, known_dlls, os.environ.get("TBB_ROOT")))
+            extra.extend(audit_dlls(args.check_dlls, known_dlls, os.environ.get("TBB_ROOT"),
+                                    tbb_covered, skip=[args.dest]))
         for text in args.license_file:
             extra.append(_parse_pair(text, "--license-file"))
         staged = stage(args.repo_root, args.distribution, args.dest, extra)

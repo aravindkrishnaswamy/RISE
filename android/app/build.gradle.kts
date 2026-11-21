@@ -222,10 +222,14 @@ val stageThirdPartyNotices = tasks.register("stageThirdPartyNotices") {
         val seen = mutableSetOf<String>()
         for ((pkg, f) in notices) {
             val name = if (pkg == "LLVM-libcxx") "NOTICE.txt" else f.name
-            if (!seen.add("$pkg/$name")) {
-                throw GradleException("Two $pkg notices are both named $name")
-            }
             val target = File(dest, "$pkg/$name")
+            if (!seen.add("$pkg/$name")) {
+                // Identical repeats are fine, as in tools/third_party_notices.py.
+                if (!target.readBytes().contentEquals(f.readBytes())) {
+                    throw GradleException("Two different $pkg notices are both named $name")
+                }
+                continue
+            }
             target.parentFile.mkdirs()
             f.copyTo(target, overwrite = true)
             combined.append("=".repeat(72)).append("\n")

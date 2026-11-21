@@ -355,6 +355,10 @@
        library paths above point at. -->
   <PropertyGroup>
     <RiseOpenPglRoot Condition="'$(RiseOpenPglRoot)'==''">C:\Dev\openpgl-install</RiseOpenPglRoot>
+    <!-- Extra stager arguments (a license-root option naming an install,
+         see tools/third_party_notices.py), set with /p:RiseExtraNoticeArgs=...
+         for a DLL the output folder gets from another install. -->
+    <RiseExtraNoticeArgs Condition="'$(RiseExtraNoticeArgs)'==''"></RiseExtraNoticeArgs>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PostBuildEvent>
@@ -378,7 +382,7 @@ copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Svgd.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libcrypto-3-x64.dll" "$(OutDir)"
 copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
-python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))" --check-dlls "$(OutDir)."
+python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))" --check-dlls "$(OutDir)." $(RiseExtraNoticeArgs)
       </Command>
       <Message>Copying Qt debug DLLs and third-party notices to output...</Message>
     </PostBuildEvent>
@@ -405,7 +409,7 @@ copy /Y "$(QtVcpkgInstalled)bin\Qt6Svg.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libcrypto-3-x64.dll" "$(OutDir)"
 copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
-python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))" --check-dlls "$(OutDir)."
+python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))" --check-dlls "$(OutDir)." $(RiseExtraNoticeArgs)
       </Command>
       <Message>Copying Qt release DLLs and third-party notices to output...</Message>
     </PostBuildEvent>
