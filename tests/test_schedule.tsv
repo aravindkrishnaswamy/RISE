@@ -1,0 +1,116 @@
+# Test run schedule for run_all_tests.sh and run_all_tests.ps1.
+#
+# name<TAB>class<TAB>seconds<TAB>reason
+#
+# class   exclusive  runs alone, before the others, on an otherwise idle
+#                    machine: a check depends on elapsed wall-clock time,
+#                    or the test saturates every core.
+#         wide:N     takes N of the --jobs run slots and shares the
+#                    machine: the test keeps about N cores busy (renders
+#                    larger than one 32-px tile, small thread pools) and
+#                    nothing it checks depends on timing.  N is its measured
+#                    mean cores rounded up.  Wide tests start first, the
+#                    widest first, and pool / single tests fill the slots
+#                    they leave free.
+#         single     takes one slot with its render threads forced to one
+#                    (RISE_OPTIONS_FILE = force_number_of_threads 1 + the
+#                    repo's global.options): its renders spread over a few
+#                    cores without gaining much throughput, and nothing it
+#                    checks depends on the thread count.
+#         pool       takes one slot as it is (the default for any test not
+#                    listed here).
+# seconds run time in a full `--jobs 10` run on a 10-core Apple M1 Max
+#         (2026-11-18), only used to order the tests longest first.  The
+#         runners prefer the time each test took in this checkout's last
+#         run (bin/.test_timings.tsv).  Pool tests under 5 s are not listed.
+# reason  why the test is exclusive, wide or single.  "N cores" is the
+#         measured mean over the test (or its first 60 s), with the peak
+#         3-s window; "on one thread" times were measured with other tests
+#         running.
+#
+# The runner's summary lists tests that kept more cores busy than their
+# slots; give such a test a wide:N entry.  A new test that checks a timing
+# belongs here as exclusive.
+AgentChunkCrudTest	wide:3	52	FinishElement MaterialLook studio renders (~2.1-3 cores)
+AgentEvalLiveTransportTest	pool	7
+AgentFixBlendScaleTest	wide:5	4	4.2 cores (measured)
+AgentLiveCommitTest	pool	7
+AgentLoopbackHttpTest	exclusive	2	wall-clock deadlines (300 ms request budget)
+AgentObjectMapTest	pool	5
+AgentRenderAnchorTest	pool	17
+AgentRenderAsyncTest	exclusive	11	wall-clock deadlines (stop/cancel waits)
+AgentSkillsTest	wide:2	3	trimmed 48x48 snippet renders
+AgentViewModeRenderTest	wide:2	12	1.7 cores (measured)
+AlphaEmitterNormalizationTest	pool	5
+AlphaIntersectionTransportTest	pool	9
+AnimationProgressTest	wide:5	3	4.0 cores (measured)
+AutoRasterizerTest	pool	8
+BDPTDepthCapMISTest	pool	25
+BDPTGuidedContinuationTest	pool	8
+BDPTStrategyBalanceTest	single	194	one render thread so 10 tests share cores cleanly
+BDPTZeroExitanceBSSRDFTest	pool	6
+CallbackOutputRenderScopeTest	wide:5	2	4.7 cores (measured)
+CompositeEnergyConservationTest	pool	8
+ConnectionTypeSplitTest	pool	14
+CstDeriveGoldenTest	pool	22
+DoubleSidedEmitterTest	pool	5
+EntityTemplatesTest	pool	11
+EnvLightBalanceTest	pool	7
+ExteriorIndexInvarianceTest	pool	136
+FabricMaterialChunkTest	pool	5
+FabricRenderTest	pool	11
+FileRasterizerOutputShimTest	exclusive	1	timing windows (concurrent file writers)
+FireSequenceTest	exclusive	0	not measured here (needs OpenVDB); Metal fire solver steps
+FireSimulationSolverTest	pool	31
+GGXHemisphericalAlbedoTest	pool	9
+GeometryPanelJumpTest	exclusive	1	timing windows (30 ms negative windows)
+GradedIndexInteriorFactorTest	pool	13
+HairBSDFTest	pool	24
+HairRenderTest	pool	10
+IORStackSeedingRegressionTest	wide:3	7	2.5 cores (measured)
+InfinitePlaneLuminaireTest	pool	5
+IntermediateCompositionTest	wide:3	2	2.7 cores (measured)
+LayeredWhiteFurnaceTest	pool	8
+LuminarySamplerAreaTest	wide:4	19	multi-threaded renders (D/F/P)
+MLTMutationScheduleTest	pool	7
+MediumEnclosureConnectibilityTest	single	204	one render thread so 10 tests share cores cleanly
+MediumInsideOutsideInvariantTest	single	409	one render thread so 10 tests share cores cleanly
+MotionBlurTimeAverageTest	pool	51
+MultichannelHeterogeneousMediumTest	pool	26
+OpenSheetHalfSpaceSeedingTest	pool	10
+OpenSheetIndexConventionTest	pool	26
+PTGuidingMISPartitionTest	pool	15
+PathTracingThermalEmissionTest	pool	7
+RandomWalkFogEnergyTest	pool	50
+RefractiveRadianceScalingTest	single	78	one render thread so 10 tests share cores cleanly
+SMSDomainReplayTest	pool	11
+SMSExtendedHWSSTest	pool	70
+SMSExtendedPartitionTest	pool	49
+SMSExtendedReferenceTest	pool	51
+SMSMediumAnchorTest	pool	173
+SMSMediumTransmittanceTest	pool	9
+SPFPdfConsistencyTest	pool	13
+SSSBoundaryFurnaceTest	pool	22
+SSSContactContinuationTest	pool	8
+SSSExteriorIndexInvarianceTest	pool	50
+SSSHWSSCompanionTest	pool	8
+SceneEditorCancelRestartTest	exclusive	2	timing window (sleep-paced drag counts)
+SheenDirectionalAlbedoTest	pool	5
+SignalEmitterRecordTest	pool	17
+SignalIntegratorConsistencyTest	pool	19
+SourceHygieneTest	pool	12
+SpectralOnlyEmitterTest	pool	96
+SpectralPainterScaleTest	pool	14
+SpectralSplatIntegralNormalizationTest	pool	5
+ThreadPoolExceptionSafetyTest	exclusive	1	timing window (2 ms settle)
+TimeIndexedMotionBlurTest	wide:4	10	multi-core child renders
+TranslucentLobeConsistencyTest	pool	5
+TransparentShadowPartitionTest	pool	12
+UnlistedEmitterWeightTest	pool	9
+VCMStrategyBalanceTest	single	55	one render thread so 10 tests share cores cleanly
+VCMVolumeMergeTest	pool	62
+ViewportPaneSchedulerTest	exclusive	28	timing windows (130 ms settle waits)
+VolumeAbsorptionAttenuationTest	pool	19
+VolumeEnvFurnaceTest	pool	10
+WeaveGapShadowTransmittanceTest	pool	34
+WetTextureDetailRenderTest	wide:2	1	1.9 cores (measured)

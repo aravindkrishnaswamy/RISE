@@ -95,7 +95,7 @@ static void Check( bool c, const char* n )
 class TestController : public SceneEditController
 {
 public:
-	TestController( IJobPriv& job, unsigned int simulatedRenderMs = 20 )
+	TestController( IJobPriv& job, unsigned int simulatedRenderMs = 2 )
 	: SceneEditController( job, /*interactiveRasterizer*/0 )
 	, mSimulatedRenderMs( simulatedRenderMs )
 	, mCompletedCount( 0 )
@@ -409,7 +409,7 @@ static void TestTwoClientConcurrency()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 
 		// Select the material so the GUI SetProperty(Material) path resolves.
 		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
@@ -493,7 +493,7 @@ static void TestRebindAfterD2()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -561,7 +561,7 @@ static void TestConflictCrossPath()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
@@ -629,7 +629,7 @@ static void TestRenderParkedDuringEdit()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/300 );
+		TestController c( *pJob, /*simulatedRenderMs*/30 );
 		c.Start();
 
 		// Put a pass PROVABLY in flight, then fire an agent commit.  This used
@@ -681,7 +681,7 @@ static void TestAgentSessionLiveMode()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -787,7 +787,7 @@ static void TestActionableRejectionDiagnosticsLive()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -883,7 +883,7 @@ static void TestInsertChunksLive()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1036,7 +1036,7 @@ static void TestCodeThreeRerender()
 	if( !pJob ) { std::remove( tmp ); return; }
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1133,7 +1133,7 @@ static void TestTransformCommitCodeThree()
 	if( !pJob ) { std::remove( tmp ); return; }
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1201,7 +1201,7 @@ static void TestAgentEditMarksDirty()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 
 		// Install a dirty-changed listener BEFORE any edit so we observe the
 		// clean->dirty transition.  It records every callback value + count.
@@ -1470,7 +1470,7 @@ static void TestLiveDispatcherPath()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1617,7 +1617,7 @@ static void TestMidTransactionAgentCommitRefused()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1782,7 +1782,7 @@ static void TestPreviewRenderParked()
 	{
 		// (a) Hold a pass in flight so the callback provably lands mid-pass --
 		// see ArmHeldPass for why "sleep 40 ms and hope" is not good enough.
-		TestController c( *pJob, /*simulatedRenderMs*/300 );
+		TestController c( *pJob, /*simulatedRenderMs*/30 );
 		c.Start();
 		c.ArmHeldPass();
 		c.ForTest_KickRender();
@@ -1814,7 +1814,7 @@ static void TestPreviewRenderParked()
 
 	{
 		// (b) Mid-transaction refusal: the callback must NOT run.
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1861,7 +1861,7 @@ static void TestAgentEditUndoRedo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -1976,7 +1976,7 @@ static void TestAgentEmissiveEditBumpsLightGeneration()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2061,7 +2061,7 @@ static void TestAgentNonMaterialEditDoesNotBumpLightGeneration()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2103,7 +2103,7 @@ static void TestAgentUnknownKindEditBumpsConservatively()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2171,7 +2171,7 @@ static void TestSceneEpochBumpsOnGraphRewire()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
@@ -2251,7 +2251,7 @@ static void TestInterleavedLifoUndo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.SetSelection( SceneEditController::Category::Material, String( "lum" ) );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
@@ -2327,7 +2327,7 @@ static void TestAgentEditDefaultedSlotUndo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2389,7 +2389,7 @@ static void TestCodeThreeUndo()
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2443,7 +2443,7 @@ static void TestConflictGateAfterUndo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2495,7 +2495,7 @@ static void TestUndoToCleanDirtyState()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 		Check( !c.HasUnsavedChanges(), "clean before any edit" );
@@ -2543,7 +2543,7 @@ static void TestMultiTokenParamUndo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2644,7 +2644,7 @@ static void TestOccAwareParamRemoveUndo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2781,7 +2781,7 @@ static void TestArmedCodeThreeRevert()
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2864,7 +2864,7 @@ static void TestUndoRedoAfterSaveMarksDirty()
 		Job* pJob = LoadScene( kBaseScene, tmp );
 		Check( pJob != nullptr, "base scene loads (redo-after-save case)" );
 		if( pJob ) {
-			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			TestController c( *pJob, /*simulatedRenderMs*/2 );
 			c.Start();
 			Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2904,7 +2904,7 @@ static void TestUndoRedoAfterSaveMarksDirty()
 		Job* pJob = LoadScene( kBaseScene, tmp );
 		Check( pJob != nullptr, "base scene loads (undo-after-save case)" );
 		if( pJob ) {
-			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			TestController c( *pJob, /*simulatedRenderMs*/2 );
 			c.Start();
 			Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -2970,7 +2970,7 @@ static void TestChunkInsertUndoRedo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3029,7 +3029,7 @@ static void TestChunkRemoveChunksBatchUndoRedo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3128,7 +3128,7 @@ static void TestReplaceGeometryScaffoldLiveUndoRedo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3214,7 +3214,7 @@ static void TestReplaceGeometryScaffoldConflictIsSuccessEnvelope()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3318,7 +3318,7 @@ static void TestReplaceGeometryScaffoldTransientBlockIsSuccessEnvelope()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3437,7 +3437,7 @@ static void TestReplaceGeometryScaffoldDiagnosedPopulatesDisposition()
 	if( !pJob ) { std::remove( tmp ); return; }
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3535,7 +3535,7 @@ static void TestChunkRemoveChunksBatchRasterizerTargetRefused()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3604,7 +3604,7 @@ static void TestChunkRemoveMiddleUndoRedo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3664,7 +3664,7 @@ static void TestChunkInsertThenParamEditInterleavedLifo()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3729,7 +3729,7 @@ static void TestUndoInsertRefusedWhenReferenced()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3844,7 +3844,7 @@ static void TestRasterizerInsertUndoMatchesReload()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -3918,7 +3918,7 @@ static void TestCodeThreeArmedChunkCrudUndoRedo()
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "U2 fixture scene loads into CodeThreeJob via the CST path" );
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4014,7 +4014,7 @@ static void TestVariantOverlayInsertUndoP1A()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4102,7 +4102,7 @@ static void TestGlueSafeRestoreAfterOutOfBandShiftP1B()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4224,7 +4224,7 @@ static void TestStaleIndexIdentityCheckRefusesP2()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4375,7 +4375,7 @@ static void TestGlueSafeRestoreRightSideAfterOutOfBandShiftP1Round2()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4504,7 +4504,7 @@ static void TestGlueSafeRestoreLastChunkAppendP1Round2()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4629,7 +4629,7 @@ static void TestProposalStagingBasics()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4728,7 +4728,7 @@ static void TestStaleApproveConflict()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4808,7 +4808,7 @@ static void TestReloadInvalidatesStaleProposal()
 	}
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4863,7 +4863,7 @@ static void TestTwoProposalsSameParamSecondIsStale()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -4958,7 +4958,7 @@ static void TestAuthorityMatrixRefusals()
 		if( !pJob ) return;
 
 		{
-			TestController c( *pJob, /*simulatedRenderMs*/20 );
+			TestController c( *pJob, /*simulatedRenderMs*/2 );
 			c.Start();
 			Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -5022,7 +5022,7 @@ static void TestChunkCrudStaging()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -5143,7 +5143,7 @@ static void TestExternalStageBaseVersionCoherentUnderConcurrency()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -5296,7 +5296,7 @@ static void TestProposalWireRoundTrip()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -5512,7 +5512,7 @@ static void TestProposalQueueCapRedProve()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "queue-cap: initial render fires" );
 
@@ -5672,7 +5672,7 @@ static void TestProposalListingTruncation()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "truncation: initial render fires" );
 
@@ -5815,7 +5815,7 @@ static void TestProposalListingUtf8BoundarySafety()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "utf8-boundary: initial render fires" );
 
@@ -5955,7 +5955,7 @@ static void TestProposalHistoryEvictionSurvivesPending()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "history-evict: initial render fires" );
 
@@ -6131,7 +6131,7 @@ static void TestTransientResolveLeavesProposalPending()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/20 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 
@@ -6356,7 +6356,7 @@ static void TestReadVerbsBindDocumentToHeadVersion()
 	if( !pJob ) return;
 
 	{
-		TestController c( *pJob, /*simulatedRenderMs*/5 );
+		TestController c( *pJob, /*simulatedRenderMs*/2 );
 		c.Start();
 		Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render fires" );
 

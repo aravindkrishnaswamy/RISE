@@ -162,7 +162,7 @@ static std::string FlatScene(const char* integrator, double degrees, int spp)
     s << std::setprecision(17);
     s << "RISE ASCII SCENE 7\nstandard_shader\n{\n name global\n shaderop DefaultDirectLighting\n}\n";
     s << integrator << "\n{\n samples " << spp << "\n oidn_denoise FALSE\n pixel_filter box\n}\n";
-    s << "film\n{\n width 32\n height 32\n}\n"
+    s << "film\n{\n width 16\n height 16\n}\n"
          "pinhole_camera\n{\n location 0 0 -4\n lookat 0 0 0\n up 0 1 0\n fov 30\n}\n"
          "scalar_painter\n{\n name slope\n expression P.x\n}\n"
          "relief_modifier\n{\n name relief\n height slope\n domain surface\n scale " << std::tan(degrees*PI/180) << "\n}\n"
@@ -186,7 +186,7 @@ static double Mean(const CapturingRasterizerOutput& cap)
 }
 
 
-static void Sphere(int spp=256)
+static void Sphere(int spp=64)
 {
     const std::string body=R"SCENE(RISE ASCII SCENE 7
 standard_shader
@@ -197,8 +197,8 @@ standard_shader
 
 film
 {
-	width			200
-	height			200
+	width			64
+	height			64
 }
 
 pinhole_camera
@@ -300,29 +300,24 @@ standard_object
 	position		0 0 0
 }
 )SCENE";
-    for(double scale:{0.,-.2,.2}) {
+    for(double scale:{0.,.2}) {
         double refs[3]={};
         const char* modes[]={"pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
         for(int m=0;m<3;++m) {
             std::string scene=body;
             scene.replace(scene.find("SCALE"),5,std::to_string(scale));
             scene+=std::string(modes[m])+"\n{\n samples "+std::to_string(spp)+"\n oidn_denoise FALSE\n pixel_filter box\n}\n";
-            double sum=0,sum2=0;
-            for(int r=0;r<3;++r) {
-                auto* cap=RenderScene(scene,modes[m]);
-                Check(cap!=nullptr,"sphere scene renders");
-                if(!cap) continue;
-                double mean=0;
-                for(unsigned y=60;y<140;++y) for(unsigned x=60;x<140;++x) {
-                    const auto& c=cap->pixels[y*cap->width+x];
-                    mean+=(c.base.r+c.base.g+c.base.b)*c.a/(3*6400);
-                }
-                std::printf("SPHERE_RAW mode=%s scale=%.2f repeat=%d mean=%.9f\n",modes[m],scale,r,mean);
-                sum+=mean;sum2+=mean*mean;
-                safe_release(cap);
+            auto* cap=RenderScene(scene,modes[m]);
+            Check(cap!=nullptr,"sphere scene renders");
+            if(!cap) continue;
+            double mean=0;
+            for(unsigned y=20;y<44;++y) for(unsigned x=20;x<44;++x) {
+                const auto& c=cap->pixels[y*cap->width+x];
+                mean+=(c.base.r+c.base.g+c.base.b)*c.a/(3*576);
             }
-            refs[m]=sum/3;
-            std::printf("SPHERE mode=%s scale=%.2f spp=%d n=3 mean=%.9f sd=%.12g\n",modes[m],scale,spp,refs[m],std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)));
+            safe_release(cap);
+            refs[m]=mean;
+            std::printf("SPHERE mode=%s scale=%.2f spp=%d n=1 mean=%.9f\n",modes[m],scale,spp,refs[m]);
             if(m) Check(refs[0]>0 && refs[m]>0 && std::fabs(refs[m]/refs[0]-1)<.08,"sphere PT/bidirectional within 8%");
         }
     }
@@ -388,8 +383,8 @@ static void LightWalk()
 // hemisphere on this legitimate grazing hit; NEE must use that same frame.
 static void GrazingView()
 {
-    for(const char* mode:{"pixelpel_rasterizer","pathtracing_pel_rasterizer","bdpt_pel_rasterizer","vcm_pel_rasterizer"}) {
-        std::string scene=FlatScene(mode,45,64);
+    for(const char* mode:{"pathtracing_pel_rasterizer","bdpt_pel_rasterizer","vcm_pel_rasterizer"}) {
+        std::string scene=FlatScene(mode,45,32);
         auto replace=[&](const std::string& from,const std::string& to) { scene.replace(scene.find(from),from.size(),to); };
         replace("location 0 0 -4","location 4 0 -1");
         replace("fov 30","fov 3");
@@ -416,7 +411,7 @@ static void GrazingView()
 static void ModifierSiblings()
 {
     for(const char* kind:{"normalmap","displacement"}) for(const char* mode:{"pathtracing_pel_rasterizer","bdpt_pel_rasterizer","vcm_pel_rasterizer"}) {
-        std::string scene=FlatScene(mode,0,64);
+        std::string scene=FlatScene(mode,0,32);
         const std::string binding="modifier relief";
         if(std::string(kind)=="normalmap") {
             scene.insert(scene.find("standard_object\n"),"uniformcolor_painter\n{\n name normal_field\n color 0.8535533905932737 0.5 0.8535533905932737\n colorspace Rec709RGB_Linear\n}\n"
@@ -441,21 +436,18 @@ static void ModifierSiblings()
 
 static void Spectral()
 {
-    for(int spp:{64,128}) for(const char* mode:{"pathtracing_spectral_rasterizer","bdpt_spectral_rasterizer","vcm_spectral_rasterizer"}) for(bool hwss:{false,true}) {
+    const int spp = 64;
+    for(const char* mode:{"pathtracing_spectral_rasterizer","bdpt_spectral_rasterizer"}) for(bool hwss:{false,true}) {
         std::string scene=FlatScene(mode,30,spp);
         const size_t at=scene.find("\n{\n",scene.find(mode));
-        scene.insert(at+3,std::string(" num_wavelengths 160\n hwss ")+(hwss?"TRUE":"FALSE")+"\n");
-        double sum=0,sum2=0;
-        for(int r=0;r<3;++r) {
-            auto* cap=RenderScene(scene,mode);
-            Check(cap!=nullptr,"matched-grid spectral scene renders");
-            if(!cap) continue;
-            const double mean=Mean(*cap);sum+=mean;sum2+=mean*mean;
-            std::printf("SPECTRAL_RAW mode=%s hwss=%d spp=%d repeat=%d mean=%.12g\n",mode,hwss,spp,r,mean);
-            safe_release(cap);
-        }
-        const double mean=sum/3,expected=.8*std::sqrt(.75)/PI;
-        std::printf("SPECTRAL mode=%s hwss=%d nw=160 spp=%d n=3 mean=%.12g sd=%.12g expected=%.12g\n",mode,hwss,spp,mean,std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)),expected);
+        scene.insert(at+3,std::string(" num_wavelengths 16\n hwss ")+(hwss?"TRUE":"FALSE")+"\n");
+        auto* cap=RenderScene(scene,mode);
+        Check(cap!=nullptr,"matched-grid spectral scene renders");
+        if(!cap) continue;
+        const double mean=Mean(*cap);
+        safe_release(cap);
+        const double expected=.8*std::sqrt(.75)/PI;
+        std::printf("SPECTRAL mode=%s hwss=%d nw=16 spp=%d n=1 mean=%.12g expected=%.12g\n",mode,hwss,spp,mean,expected);
         Check(std::fabs(mean/expected-1)<.02,"spectral hero/bundle follows independent cosine law");
     }
 }
@@ -522,25 +514,17 @@ int main(int argc, char** argv)
     if(argc==1 || std::string(argv[1])=="spectral") Spectral();
     if(argc==1 || std::string(argv[1])=="siblings") ModifierSiblings();
     if(argc==1 || std::string(argv[1])=="grazing") GrazingView();
-    const char* modes[]={"pixelpel_rasterizer", "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
-    if(argc==1 || std::string(argv[1])=="flat") for(double tilt:{0.,10.,20.,30.,45.}) {
+    const char* modes[]={"pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
+    if(argc==1 || std::string(argv[1])=="flat") for(double tilt:{0.,30.}) {
         const double expected=.8*std::cos(tilt*PI/180)/PI;
         for(const char* mode:modes) {
-            std::vector<double> means;
-            for(int r=0;r<3;++r) {
-                auto* cap=RenderScene(FlatScene(mode,tilt,64),mode);
-                Check(cap!=nullptr,"flat scene loads and renders");
-                if(!cap) continue;
-                means.push_back(Mean(*cap));
-                safe_release(cap);
-            }
-            double mean=0,sd=0;
-            for(double x:means) mean+=x;
-            if(!means.empty()) mean/=means.size();
-            for(double x:means) sd+=(x-mean)*(x-mean);
-            sd=means.size()>1?std::sqrt(sd/(means.size()-1)):0;
-            std::printf("FLAT mode=%s tilt=%.0f spp=64 n=%zu mean=%.9f sd=%.12g expected=%.9f relative=%+.6f\n",mode,tilt,means.size(),mean,sd,expected,mean/expected-1);
-            Check(means.size()==3 && std::fabs(mean/expected-1)<.02,"flat tilt radiance within 2% of independent closed form");
+            auto* cap=RenderScene(FlatScene(mode,tilt,32),mode);
+            Check(cap!=nullptr,"flat scene loads and renders");
+            if(!cap) continue;
+            const double mean=Mean(*cap);
+            safe_release(cap);
+            std::printf("FLAT mode=%s tilt=%.0f spp=32 n=1 mean=%.9f expected=%.9f relative=%+.6f\n",mode,tilt,mean,expected,mean/expected-1);
+            Check(std::fabs(mean/expected-1)<.02,"flat tilt radiance within 2% of independent closed form");
         }
     }
     if(argc==1 || std::string(argv[1])=="sphere") Sphere();

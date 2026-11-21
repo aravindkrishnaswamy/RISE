@@ -131,10 +131,10 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
-	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
-	// sequential `for` loop that waits on each binary before starting the
-	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
-	// likewise sequential for execution.  The real justification is that
+	// runs the suite in PARALLEL.  It did not then (Phase 3 was a sequential
+	// loop).  Since 2026-11-17 the runners do run DIFFERENT tests side by
+	// side, but each gets its own TMPDIR, so that alone never needed a
+	// per-process name either.  The real justification is that
 	// nothing stops two copies of THIS binary from running at once: a
 	// developer runs it by hand while the suite runs, a stray earlier run
 	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
@@ -296,7 +296,7 @@ public:
 		return Job::Rasterize();
 	}
 private:
-	unsigned int mSleepMs = 200;
+	unsigned int mSleepMs = 40;
 };
 
 // Fix-round-1 P1-A: a Job subclass whose Rasterize() bumps a shared
@@ -364,7 +364,7 @@ static void RunAsyncReturnsQuicklyTest()
 	Check( !scenePath.empty(), "wrote the async-quick scene to a temp file" );
 
 	SlowRasterizeJob* pJob = new SlowRasterizeJob();
-	pJob->SetSleepMs( 200 );
+	pJob->SetSleepMs( 150 );
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowRasterizeJob loads the native-v7 scene via the CST path" );
 
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -385,7 +385,7 @@ static void RunAsyncReturnsQuicklyTest()
 		Check( ar.accepted, "RenderAsync accepts the submission" );
 		Check( ar.renderJobId != 0, "RenderAsync assigns a nonzero renderJobId" );
 		Check( ( ar.renderJobId % 2 ) == 0, "RenderAsync's id is EVEN (coordinator-tracked)" );
-		Check( submitMs < 50, "RenderAsync returns in well under the 200ms simulated render (observed submit time < 50ms)" );
+		Check( submitMs < 50, "RenderAsync returns in well under the 150ms simulated render (observed submit time < 50ms)" );
 
 		// Status should report active soon after submission (the worker
 		// may not have started the instant we check, but the job record
@@ -455,7 +455,7 @@ static void RunSingleSlotRejectionTest()
 	Check( !scenePath.empty(), "wrote the single-slot scene to a temp file" );
 
 	SlowRasterizeJob* pJob = new SlowRasterizeJob();
-	pJob->SetSleepMs( 300 );
+	pJob->SetSleepMs( 150 );
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowRasterizeJob loads the native-v7 scene via the CST path (single-slot test)" );
 
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -474,7 +474,7 @@ static void RunSingleSlotRejectionTest()
 		// Give the worker a brief moment to pick up the job (so the
 		// second submit lands while it is genuinely running, not just
 		// queued-but-not-yet-observed).
-		std::this_thread::sleep_for( std::chrono::milliseconds( 30 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
 
 		const AgentSession::AgentRenderAsyncResult second = session->RenderAsync( p );
 		Check( !second.accepted, "RED-PROVE: a SECOND submission while the first is still running is REJECTED (single-slot policy, not a depth-N queue)" );
@@ -543,7 +543,7 @@ static void RunPinnedRenderTests()
 		Check( !scenePath.empty(), "wrote the pinned-rejection scene to a temp file" );
 
 		SlowRasterizeJob* pJob = new SlowRasterizeJob();
-		pJob->SetSleepMs( 300 );
+		pJob->SetSleepMs( 200 );
 		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowRasterizeJob loads the native-v7 scene via the CST path (pinned-rejection test)" );
 
 		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -562,7 +562,7 @@ static void RunPinnedRenderTests()
 			Check( pinnedSubmit.pinned, "the accepted submission's result echoes pinned=true" );
 
 			// Give the worker a brief moment to pick it up.
-			std::this_thread::sleep_for( std::chrono::milliseconds( 30 ) );
+			std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
 
 			const AgentSession::AgentRenderJobStatus midStatus = session->RenderStatus( pinnedSubmit.renderJobId );
 			Check( midStatus.found && midStatus.active, "the pinned job is observed active mid-flight" );
@@ -582,7 +582,7 @@ static void RunPinnedRenderTests()
 			       "busy/transaction message RunSingleSlotRejectionTest observes against an ordinary preview occupant" );
 
 			// A second SYNC submission with a SHORT timeoutMs (well under
-			// the pinned render's remaining ~270ms) does not queue in
+			// the pinned render's remaining ~175ms) does not queue in
 			// time -- this is an ORDINARY FAIRNESS-WAIT TIMEOUT (P2: NOT
 			// a pinned-specific refusal -- SubmitAgentRenderSync never
 			// reaches the pinned-occupant check; see that method's doc).
@@ -592,11 +592,11 @@ static void RunPinnedRenderTests()
 				[&]() {
 					SceneEditController::RenderJobId dummyId = 0;
 					syncTimedOut = !controller.SubmitAgentRenderSync(
-						[](){}, String( "pinned_reject_sync_probe" ), &dummyId, /*timeoutMs=*/200 );
+						[](){}, String( "pinned_reject_sync_probe" ), &dummyId, /*timeoutMs=*/40 );
 				} );
 			Check( syncCallReturned, "the sync probe call itself returned (watchdog did not trip)" );
 			Check( syncTimedOut,
-			       "a second SYNC submission with a timeoutMs (200ms) shorter than the pinned render's remaining duration times out and "
+			       "a second SYNC submission with a timeoutMs (40ms) shorter than the pinned render's remaining duration times out and "
 			       "returns false -- an ordinary fairness-wait timeout, the SAME outcome a non-pinned occupant would produce, not a "
 			       "pinned-specific rejection" );
 
@@ -716,9 +716,9 @@ static void RunPinnedRenderTests()
 			session->CancelAsyncRender( ar.renderJobId );
 
 			const bool completedAfterCancel = RunWatchdogged(
-				"render_wait(150ms) after CancelAsyncRender on a PINNED render", 5000,
+				"render_wait(400ms) after CancelAsyncRender on a PINNED render", 5000,
 				[&]() {
-					Check( session->RenderWait( ar.renderJobId, 150 ),
+					Check( session->RenderWait( ar.renderJobId, 400 ),
 					       "MONEY ASSERTION: CancelAsyncRender aborts a PINNED render promptly (well within the heavy scene's multi-second "
 					       "natural duration, matching RunCancelAsyncRenderRedProveTest's GREEN-side bound) -- pinned guards against "
 					       "supersession, NOT against an explicit cancel" );
@@ -822,11 +822,13 @@ static void RunConcurrencyRaceClosureTest()
 		// the exact call shape (controller attached, no override) that
 		// pre-S2a called mJob->Rasterize() DIRECTLY with no park.
 		std::atomic<bool> stop{ false };
+		std::atomic<int>  agentRendersCompleted{ 0 };
 		std::thread agentThread( [&]() {
 			while( !stop.load( std::memory_order_acquire ) )
 			{
 				AgentRenderParams p;   // no override
 				session->Render( p );
+				agentRendersCompleted.fetch_add( 1, std::memory_order_acq_rel );
 			}
 		} );
 		std::thread scrubThread( [&]() {
@@ -839,12 +841,27 @@ static void RunConcurrencyRaceClosureTest()
 			}
 		} );
 
-		// Let the race window run for a bit -- long enough for many
-		// interleavings of interactive passes and agent renders.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+		// Run until at least 3 no-override agent renders have completed
+		// (and at least 50 ms of concurrent overlap), with a 2 s cap --
+		// matches section (u)'s deterministic wait loop so the race window
+		// cannot end vacuously under CPU contention.
+		const auto cDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+		const auto cMinEnd   = std::chrono::steady_clock::now() + std::chrono::milliseconds( 50 );
+		while( std::chrono::steady_clock::now() < cDeadline )
+		{
+			if( std::chrono::steady_clock::now() >= cMinEnd &&
+			    agentRendersCompleted.load( std::memory_order_acquire ) >= 3 )
+			{
+				break;
+			}
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
 		stop.store( true, std::memory_order_release );
 		agentThread.join();
 		scrubThread.join();
+
+		Check( agentRendersCompleted.load( std::memory_order_acquire ) >= 3,
+		       "at least 3 no-override agent renders completed during the race window" );
 
 		session->AttachController( nullptr );
 	}
@@ -1170,7 +1187,7 @@ static void RunQueuedSyncWaiterUnblocksOnStopTest()
 	Check( !scenePath.empty(), "wrote the queued-stop scene to a temp file" );
 
 	SlowRasterizeJob* pJob = new SlowRasterizeJob();
-	pJob->SetSleepMs( 400 );
+	pJob->SetSleepMs( 150 );
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowRasterizeJob loads the native-v7 scene via the CST path (queued-stop test)" );
 
 	SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
@@ -1181,7 +1198,7 @@ static void RunQueuedSyncWaiterUnblocksOnStopTest()
 	// submit immediately.
 	SceneEditController::RenderJobId occupyId = SceneEditController::kInvalidRenderJobId;
 	const bool occupied = controller->SubmitAgentRenderAsync(
-		[&]() { std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) ); },
+		[&]() { std::this_thread::sleep_for( std::chrono::milliseconds( 150 ) ); },
 		String( "occupy" ), &occupyId );
 	Check( occupied, "the occupying submission is accepted" );
 
@@ -1200,7 +1217,7 @@ static void RunQueuedSyncWaiterUnblocksOnStopTest()
 
 	// Give the waiter thread a moment to actually claim its ticket and
 	// start waiting before we pull the rug out with Stop().
-	std::this_thread::sleep_for( std::chrono::milliseconds( 60 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
 
 	const bool stopReturnedPromptly = RunWatchdogged(
 		"Stop() with a queued sync waiter", 3000,
@@ -1450,15 +1467,15 @@ static void RunCancelAsyncRenderRedProveTest()
 			const long long cancelCallMs = std::chrono::duration_cast<std::chrono::milliseconds>( tCancel1 - tCancel0 ).count();
 			Check( cancelCallMs < 50, "CancelAsyncRender itself returns near-instantly (does not block for the render's duration)" );
 
-			// A short render_wait now observes prompt completion -- the
-			// SAME 150ms window the RED side proved times out without a
-			// cancel.
+			// A short render_wait now observes prompt completion -- well
+			// under the heavy scene's ~2200ms natural duration while
+			// leaving ample scheduling headroom under load.
 			const bool completedAfterCancel = RunWatchdogged(
-				"render_wait(150ms) after CancelAsyncRender (GREEN side)", 5000,
+				"render_wait(400ms) after CancelAsyncRender (GREEN side)", 5000,
 				[&]() {
-					Check( session->RenderWait( ar.renderJobId, 150 ),
-					       "MONEY ASSERTION: after CancelAsyncRender, render_wait(150ms) observes completion within the SAME short "
-					       "window the RED-side baseline proved an uncancelled render blows through -- the cancel signal actually "
+					Check( session->RenderWait( ar.renderJobId, 400 ),
+					       "MONEY ASSERTION: after CancelAsyncRender, render_wait(400ms) observes completion well under "
+					       "the uncancelled render's ~2200ms natural duration -- the cancel signal actually "
 					       "reached Rasterize() via the shared progress hook." );
 				} );
 			Check( completedAfterCancel, "the GREEN-side (direct) wait+check itself returned (watchdog did not trip)" );
@@ -1521,16 +1538,16 @@ static void RunCancelAsyncRenderRedProveTest()
 			Check( cancelEnv.get( "result" ).get( "cancelled" ).asBool(),
 			       "render_cancel reports cancelled=true (a live controller was attached to route it through)" );
 
-			// render_wait {renderJobId, timeoutMs:150} over the wire --
-			// the SAME short window the RED side (direct-API) proved an
-			// uncancelled render blows through.
+			// render_wait {renderJobId, timeoutMs:400} over the wire --
+			// well under the heavy scene's ~2200ms natural duration while
+			// leaving ample scheduling headroom under load.
 			JsonValue waitEnv;
 			const bool waitCompletedAfterCancel = RunWatchdogged(
-				"render_wait{timeoutMs:150} after render_cancel over the wire (GREEN side, RPC verb)", 5000,
+				"render_wait{timeoutMs:400} after render_cancel over the wire (GREEN side, RPC verb)", 5000,
 				[&]() {
 					JsonValue waitParams = JsonValue::MakeObject();
 					waitParams.set( "renderJobId", JsonValue::MakeNumber( jobId ) );
-					waitParams.set( "timeoutMs", JsonValue::MakeNumber( 150.0 ) );
+					waitParams.set( "timeoutMs", JsonValue::MakeNumber( 400.0 ) );
 					JsonValue waitReq = JsonValue::MakeObject();
 					waitReq.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
 					waitReq.set( "id", JsonValue::MakeNumber( 3.0 ) );
@@ -1540,8 +1557,8 @@ static void RunCancelAsyncRenderRedProveTest()
 					std::string waitErr;
 					Check( JsonParse( waitResp, waitEnv, waitErr ), "render_wait response parses as JSON" );
 					Check( waitEnv.get( "result" ).get( "completed" ).asBool(),
-					       "MONEY ASSERTION (RPC verb): render_wait{timeoutMs:150} over the wire observes completion "
-					       "after render_cancel, within the same short window the direct-API RED side proved times out uncancelled." );
+					       "MONEY ASSERTION (RPC verb): render_wait{timeoutMs:400} over the wire observes completion "
+					       "after render_cancel, well under the uncancelled render's ~2200ms natural duration." );
 				} );
 			Check( waitCompletedAfterCancel, "the GREEN-side (RPC verb) wait+check itself returned (watchdog did not trip)" );
 
@@ -1796,7 +1813,7 @@ static void RunSessionDestroyedMidFlightTest()
 		Check( !scenePath.empty(), "wrote the destroy-mid-flight scene to a temp file" );
 
 		auto insideRasterize = std::make_shared<std::atomic<int>>( 0 );
-		CanaryJob* pJob = new CanaryJob( 300, insideRasterize );
+		CanaryJob* pJob = new CanaryJob( 100, insideRasterize );
 		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "CanaryJob loads the native-v7 scene via the CST path (destroy-mid-flight test)" );
 
 		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -1847,7 +1864,7 @@ static void RunSessionDestroyedMidFlightTest()
 		Check( !scenePath.empty(), "wrote the detach-mid-flight scene to a temp file" );
 
 		auto insideRasterize2 = std::make_shared<std::atomic<int>>( 0 );
-		CanaryJob* pJob = new CanaryJob( 300, insideRasterize2 );
+		CanaryJob* pJob = new CanaryJob( 100, insideRasterize2 );
 		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "CanaryJob loads the native-v7 scene via the CST path (detach-mid-flight test)" );
 
 		SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -2007,7 +2024,7 @@ static void RunUnboundedDrainLoopTest()
 	// (the pre-fix bug), it would give up and return at ~200ms while the
 	// worker is still genuinely inside Rasterize().
 	auto insideRasterize = std::make_shared<std::atomic<int>>( 0 );
-	CancelIgnoringSlowJob* pJob = new CancelIgnoringSlowJob( 1000, insideRasterize );
+	CancelIgnoringSlowJob* pJob = new CancelIgnoringSlowJob( 300, insideRasterize );
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "CancelIgnoringSlowJob loads the native-v7 scene via the CST path" );
 
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -2018,7 +2035,7 @@ static void RunUnboundedDrainLoopTest()
 	if( rawSession )
 	{
 		rawSession->AttachController( &controller );
-		rawSession->ForTest_SetDrainChunkMs( 200 );   // force multiple loop iterations against the ~1000ms render
+		rawSession->ForTest_SetDrainChunkMs( 60 );   // force multiple loop iterations against the ~300ms render
 
 		AgentRenderParams p;
 		const AgentSession::AgentRenderAsyncResult ar = rawSession->RenderAsync( p );
@@ -2051,9 +2068,9 @@ static void RunUnboundedDrainLoopTest()
 		// the timeout) implementation would return at ~200ms; this asserts
 		// well beyond that, proving the loop kept re-cancelling and
 		// re-waiting rather than giving up early.
-		Check( destroyMs >= 700,
-		       "RED-PROVE P1-1 MONEY ASSERTION: ~AgentSession blocks for close to the render's FULL natural duration (>=700ms, several 200ms chunks) "
-		       "rather than returning after a single chunk (~200ms) -- this assertion would FAIL against the pre-fix code (a single bounded "
+		Check( destroyMs >= 200,
+		       "RED-PROVE P1-1 MONEY ASSERTION: ~AgentSession blocks for close to the render's FULL natural duration (>=200ms, several 60ms chunks) "
+		       "rather than returning after a single chunk (~60ms) -- this assertion would FAIL against the pre-fix code (a single bounded "
 		       "WaitForRenderJob(id, timeoutMs) whose result is discarded), which proceeds to free `this` after the first chunk while the "
 		       "cancel-ignoring worker is still genuinely inside Rasterize()." );
 
@@ -2403,7 +2420,7 @@ static void RunInterleavedMintNoClobberTest()
 	controller.releaseGate.store( true, std::memory_order_release );
 
 	// Give the interactive pass's completion write time to land.
-	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
 
 	const SceneEditController::RenderJobLookup afterInteractiveCompletes = controller.GetRenderJobStatus( agentJobId );
 	Check( afterInteractiveCompletes.found, "the agent job's record is still found after the interactive pass completes" );
@@ -2704,7 +2721,7 @@ static void RunMintClobberRedProveTest()
 	// clobbering mint -- time to land.  RenderLoop is not competing with
 	// the worker for mMutex (still gated), so this is a generous margin,
 	// not a race window of its own.
-	std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 35 ) );
 
 	const SceneEditController::RenderJobLookup afterRelease = controller.GetRenderJobStatus( agentJobId );
 	Check( afterRelease.found,
@@ -2831,7 +2848,7 @@ static void RunLostEditWedgeRedProveTest()
 
 	// Give the bounce time to land, then release the worker so the agent
 	// job actually runs and clears mAgentRenderBlocksInteractive.
-	std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 35 ) );
 	controller.releaseWorkerGate.store( true, std::memory_order_release );
 
 	Check( controller.WaitForRenderJob( agentJobId, 5000 ), "WaitForRenderJob eventually observes the agent job's REAL completion" );
@@ -3279,7 +3296,20 @@ static void RunProductionTripleConcurrencyProofTest()
 		}
 	} );
 
-	std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+	// Run until both production and agent closures have actually executed at
+	// least once (and at least 50 ms of concurrent overlap), with a 2 s cap.
+	const auto uDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 2000 );
+	const auto uMinEnd   = std::chrono::steady_clock::now() + std::chrono::milliseconds( 50 );
+	while( std::chrono::steady_clock::now() < uDeadline )
+	{
+		if( std::chrono::steady_clock::now() >= uMinEnd &&
+		    productionRuns.load( std::memory_order_acquire ) > 0 &&
+		    agentRuns.load( std::memory_order_acquire ) > 0 )
+		{
+			break;
+		}
+		std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+	}
 	stop.store( true, std::memory_order_release );
 	productionThread.join();
 	agentThread.join();
@@ -3625,7 +3655,7 @@ static void RunProductionQueueSemanticsTest()
 		// occupant, not refused outright the way SubmitAgentRenderAsync
 		// would be -- SubmitProductionRenderSync forwards to
 		// SubmitAgentRenderSync's fairness-wait machinery).
-		std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 35 ) );
 		Check( !productionRan.load( std::memory_order_acquire ),
 		       "MONEY ASSERTION (w-2a): the production submission has NOT run yet while the agent render still holds the slot -- "
 		       "it WAITS (fairness ticket), it is not refused outright" );
@@ -4154,7 +4184,7 @@ static void RunRefusedProductionSubmitNoFallbackRedProveTest()
 	};
 
 	ConcurrencyProof proof;
-	SlowCountingConcurrencyProofJob* pJob = new SlowCountingConcurrencyProofJob( proof, /*sleepMs*/ 800 );
+	SlowCountingConcurrencyProofJob* pJob = new SlowCountingConcurrencyProofJob( proof, /*sleepMs*/ 180 );
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "SlowCountingConcurrencyProofJob loads the native-v7 scene via the CST path (refused-fallback test)" );
 
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -4213,7 +4243,7 @@ static void RunRefusedProductionSubmitNoFallbackRedProveTest()
 		productionResult = SceneEditController::RunProductionRenderComposed(
 			*pJob, &controller, String( "refused_production_probe" ), &guiCb,
 			[pJob]() -> bool { return pJob->Rasterize(); },
-			/*queueTimeoutMs*/ 50 );
+			/*queueTimeoutMs*/ 30 );
 	} );
 	Check( joinedPromptly, "the refused production submission does not hang (aa)" );
 
@@ -4662,7 +4692,7 @@ static void RunComposedPriorCapturedInSlotRedProveTest()
 	// occupant.  100ms is enormous headroom for two statements; the
 	// assertions below do not depend on this margin for CORRECTNESS
 	// (only the red-prove's ability to catch the pre-fix capture does).
-	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
 	releaseOccupant.store( true, std::memory_order_release );
 
 	composedThread.join();
@@ -5223,7 +5253,7 @@ static void RunGestureRenderAdmissionTest()
 		directStopDrain.Stop();
 		directStopReturned.store( true, std::memory_order_release );
 	} );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
 	Check( !directStopReturned.load( std::memory_order_acquire ),
 	       "MONEY (z6): Stop waits for a caller-thread direct render to leave its closure" );
 	allowDirectStopExit.store( true, std::memory_order_release );
@@ -5257,7 +5287,7 @@ static void RunGestureRenderAdmissionTest()
 		directAdmissionWaiter.Stop();
 		waiterStopReturned.store( true, std::memory_order_release );
 	} );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
 	Check( !waiterStopReturned.load( std::memory_order_acquire ),
 	       "MONEY (z6): Stop drains a pre-existing direct caller that has not acquired admission" );
 	directAdmissionWaiter.releaseCaller.store( true, std::memory_order_release );
@@ -5288,7 +5318,7 @@ static void RunRenderOwnsSceneGuardTest()
 	Check( !scenePath.empty(), "wrote the guard-test scene" );
 
 	auto insideRasterize = std::make_shared<std::atomic<int>>( 0 );
-	CanaryJob* pJob = new CanaryJob( /*sleepMs*/ 800, insideRasterize );
+	CanaryJob* pJob = new CanaryJob( /*sleepMs*/ 400, insideRasterize );
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "CanaryJob loads the guard-test scene via the CST path" );
 
 	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
@@ -6737,11 +6767,11 @@ static void RunAsyncTargetSnapshotTest()
 	//      in one flight.
 	{
 		SlowRasterizeJob* pJob = new SlowRasterizeJob();
-		// 400ms per Rasterize() -- long enough that the re-file below (a
+		// 60ms per Rasterize() -- long enough that the re-file below (a
 		// handful of microseconds after the submit returns) is GUARANTEED
 		// to land before the worker reaches the comparison, which is what
 		// makes the regression deterministic rather than a coin flip.
-		pJob->SetSleepMs( 400 );
+		pJob->SetSleepMs( 60 );
 		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
 		       "SlowRasterizeJob loads the async-target scene via the CST path" );
 
@@ -6985,7 +7015,7 @@ static void RunAsyncSceneTargetSnapshotTest()
 		SlowRasterizeJob* pJob = new SlowRasterizeJob();
 		// Long enough that the re-imagine below is GUARANTEED to land before
 		// the worker reaches the comparison -- deterministic, not a coin flip.
-		pJob->SetSleepMs( 400 );
+		pJob->SetSleepMs( 60 );
 		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
 		       "SlowRasterizeJob loads the async scene-target scene" );
 

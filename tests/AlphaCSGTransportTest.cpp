@@ -41,8 +41,9 @@ inline double Render( const std::string& sceneText, const char* tag )
 
 static void Replace(std::string& s,const std::string& a,const std::string& b){auto at=s.find(a);if(at==std::string::npos)std::exit(2);s.replace(at,a.size(),b);}
 int main(){
- for(unsigned mode=0;mode<3;++mode)for(unsigned w=0;w<3;++w){
- auto r=mode==0?RastPT(1024):mode==1?RastBDPT(1024):RastVCM(1024);const std::string family=mode==0?"pathtracing":mode==1?"bdpt":"vcm";
+ for(unsigned mode=0;mode<3;++mode)for(unsigned w:{0u,2u}){
+ const unsigned spp=w==0?64u:128u;
+ auto r=mode==0?RastPT(spp):mode==1?RastBDPT(spp):RastVCM(spp);const std::string family=mode==0?"pathtracing":mode==1?"bdpt":"vcm";
  if(mode){Replace(r,"max_light_depth 8","max_light_depth 1");Replace(r,"max_eye_depth 8","max_eye_depth 2");}
  if(w){Replace(r,family+"_pel_rasterizer",family+"_spectral_rasterizer");Replace(r,"{\n","{\n hwss "+std::string(w==2?"true":"false")+"\n");}
  auto s=ReceiverScene(kOmni,false,0,kTight);Replace(s,"color 0.01 0.01 0.01","color 0 0 0");

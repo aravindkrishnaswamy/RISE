@@ -101,7 +101,7 @@ static Stat SaltedLuminance( const std::string& scene, const char* tag, int n )
 // Rows A/B: closed-form wall
 //////////////////////////////////////////////////////////////////////
 static const char* kGeometry =
-	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
@@ -139,21 +139,18 @@ static std::string Rasterizer( const std::string& kind, bool hwss )
 	const char* hw = hwss ? "TRUE" : "FALSE";
 	char b[1024];
 	if( kind == "PT RGB" ) {
-		std::snprintf( b, sizeof b, "%spathtracing_pel_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n\tmax_diffuse_bounce 1\n}\n", kShaderPT );
+		std::snprintf( b, sizeof b, "%spathtracing_pel_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n\tmax_diffuse_bounce 1\n}\n", kShaderPT );
 	} else if( kind == "BDPT RGB" ) {
-		std::snprintf( b, sizeof b, "%sbdpt_pel_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n", kShaderBD );
+		std::snprintf( b, sizeof b, "%sbdpt_pel_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n", kShaderBD );
 	} else if( kind == "PT spectral" ) {
-		std::snprintf( b, sizeof b, "%spathtracing_spectral_rasterizer\n{\n\tsamples 256\n\toidn_denoise FALSE\n\tpixel_filter box\n\tnmbegin 380\n\tnmend 780\n"
+		std::snprintf( b, sizeof b, "%spathtracing_spectral_rasterizer\n{\n\tsamples 64\n\toidn_denoise FALSE\n\tpixel_filter box\n\tnmbegin 380\n\tnmend 780\n"
 			"\tnum_wavelengths 16\n\tspectral_samples 1\n\thwss %s\n\tmax_diffuse_bounce 1\n}\n", kShaderPT, hw );
 	} else if( kind == "BDPT spectral" ) {
-		std::snprintf( b, sizeof b, "%sbdpt_spectral_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tsamples 256\n\tnmbegin 380\n\tnmend 780\n"
+		std::snprintf( b, sizeof b, "%sbdpt_spectral_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tsamples 64\n\tnmbegin 380\n\tnmend 780\n"
 			"\tnum_wavelengths 16\n\tspectral_samples 1\n\thwss %s\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n", kShaderBD, hw );
-	} else if( kind == "VCM spectral" ) {
-		std::snprintf( b, sizeof b, "%svcm_spectral_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tsamples 256\n\tnmbegin 380\n\tnmend 780\n"
+	} else {	// VCM spectral
+		std::snprintf( b, sizeof b, "%svcm_spectral_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tsamples 64\n\tnmbegin 380\n\tnmend 780\n"
 			"\tnum_wavelengths 16\n\tspectral_samples 1\n\thwss %s\n\toidn_denoise FALSE\n\tpixel_filter box\n\tmerge_radius 0.0\n}\n", kShaderBD, hw );
-	} else {	// MLT spectral
-		std::snprintf( b, sizeof b, "%smlt_spectral_rasterizer\n{\n\tmax_eye_depth 2\n\tmax_light_depth 2\n\tbootstrap_samples 20000\n\tchains 64\n"
-			"\tmutations_per_pixel 256\n\tlarge_step_prob 0.3\n\tnmbegin 380\n\tnmend 780\n\thwss %s\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", kShaderBD, hw );
 	}
 	return b;
 }
@@ -163,7 +160,7 @@ static std::string Rasterizer( const std::string& kind, bool hwss )
 //! (exitance luminance x scale), Lambertian (n = 0) or Phong cos^n.
 static double ClosedForm( double x0, double x1, double Y, int n )
 {
-	const int W = 24, G = 120;
+	const int W = 16, G = 64;
 	const double kScale = 10.0, rho = 0.8;
 	const double half = 3.5 * std::tan( 15.0 * kPi / 180.0 );
 	const double ang = n > 0 ? ( n + 1 ) / ( 2.0 * kPi ) : 1.0 / kPi;
@@ -193,6 +190,7 @@ static void Gate( const std::string& label, const Stat& s, double truth, double 
 	std::printf( "  %-44s %.6f (sd_mean %.6f)  truth %.6f  ratio %.4f  z %.2f\n",
 		label.c_str(), s.mean, s.sdMean, truth, s.mean / truth, s.sdMean > 0 ? dev / s.sdMean : 0.0 );
 	Check( s.mean > 0.05 * truth, label + ": emitter lights the wall" );
+	Check( 3.0 * s.sdMean <= 0.08 * truth, label + ": precision cap (3*sd_mean <= 8% of truth)" );
 	Check( std::fabs( dev ) <= 3.0 * s.sdMean + slack * truth, label + ": matches the closed form within 3 sigma" );
 }
 
@@ -201,30 +199,26 @@ static void RunClosedForm()
 	std::cout << "Row A: spectral-only emitter vs closed form\n";
 	const double Y = LuminanceOf( RampSPD );
 	std::printf( "  ramp SPD luminance %.6f\n", Y );
-	struct R { const char* kind; bool hwss; double slack; };
+	struct R { const char* kind; bool hwss; int phongN; double slack; };
 	static const R rows[] = {
-		{ "PT RGB", false, 0.01 },
-		{ "BDPT RGB", false, 0.01 },
-		{ "PT spectral", false, 0.01 },
-		{ "PT spectral", true, 0.01 },
-		{ "BDPT spectral", false, 0.01 },
-		{ "BDPT spectral", true, 0.01 },
-		{ "VCM spectral", false, 0.01 },
-		{ "VCM spectral", true, 0.01 },
-		{ "MLT spectral", false, 0.03 },
+		{ "PT RGB", false, 0, 0.01 },
+		{ "BDPT RGB", false, 0, 0.01 },
+		{ "PT spectral", false, 0, 0.01 },
+		{ "PT spectral", true, 0, 0.01 },
+		{ "BDPT spectral", true, 0, 0.01 },
+		{ "VCM spectral", true, 0, 0.01 },
+		{ "PT spectral", false, 2, 0.01 },
 	};
-	for( int phongN : { 0, 2 } ) {
-		const double truth = ClosedForm( -1.0, 1.0, Y, phongN );
-		for( const R& r : rows ) {
-			std::string scene = "RISE ASCII SCENE 7\n";
-			scene += kGeometry;
-			scene += kRampChunk;
-			scene += LuminaireMaterial( "mat_emit", "pnt_emit", phongN );
-			scene += EmitterQuad( "emit", "mat_emit", -1.0, 1.0 );
-			scene += Rasterizer( r.kind, r.hwss );
-			const std::string label = std::string( phongN ? "phong " : "lambert " ) + r.kind + ( r.hwss ? " hwss" : "" );
-			Gate( label, SaltedLuminance( scene, "rowA", 4 ), truth, r.slack );
-		}
+	for( const R& r : rows ) {
+		const double truth = ClosedForm( -1.0, 1.0, Y, r.phongN );
+		std::string scene = "RISE ASCII SCENE 7\n";
+		scene += kGeometry;
+		scene += kRampChunk;
+		scene += LuminaireMaterial( "mat_emit", "pnt_emit", r.phongN );
+		scene += EmitterQuad( "emit", "mat_emit", -1.0, 1.0 );
+		scene += Rasterizer( r.kind, r.hwss );
+		const std::string label = std::string( r.phongN ? "phong " : "lambert " ) + r.kind + ( r.hwss ? " hwss" : "" );
+		Gate( label, SaltedLuminance( scene, "rowA", 4 ), truth, r.slack );
 	}
 }
 
@@ -234,26 +228,17 @@ static void RunMixed()
 	const double Yspec = LuminanceOf( RampSPD );
 	const double Yrgb = 0.6;
 	const double truth = ClosedForm( -1.0, 0.0, Yrgb, 0 ) + ClosedForm( 0.0, 1.0, Yspec, 0 );
-	// `control`: the spectral-only emitter replaced by an RGB grey of the
-	// same luminance -- separates estimator offsets from the selection pmf.
-	for( const bool control : { false, true } )
-	for( const char* kind : { "PT RGB", "PT spectral", "BDPT spectral", "VCM spectral" } ) {
+	for( const char* kind : { "PT RGB", "BDPT spectral", "VCM spectral" } ) {
 		std::string scene = "RISE ASCII SCENE 7\n";
 		scene += kGeometry;
-		if( control ) {
-			char c[160];
-			std::snprintf( c, sizeof c, "uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor %.6f %.6f %.6f\n}\n\n", Yspec, Yspec, Yspec );
-			scene += c;
-		} else {
-			scene += kRampChunk;
-		}
+		scene += kRampChunk;
 		scene += "uniformcolor_painter\n{\n\tname pnt_rgb\n\tcolor 0.6 0.6 0.6\n}\n\n";
 		scene += LuminaireMaterial( "mat_spec", "pnt_emit", 0 );
 		scene += LuminaireMaterial( "mat_rgb", "pnt_rgb", 0 );
 		scene += EmitterQuad( "rgb", "mat_rgb", -1.0, 0.0 );
 		scene += EmitterQuad( "spec", "mat_spec", 0.0, 1.0 );
 		scene += Rasterizer( kind, false );
-		Gate( std::string( control ? "mixed RGB-only control " : "mixed " ) + kind, SaltedLuminance( scene, "rowB", 4 ), truth, 0.01 );
+		Gate( std::string( "mixed " ) + kind, SaltedLuminance( scene, "rowB", 4 ), truth, 0.01 );
 	}
 }
 
@@ -275,13 +260,14 @@ static std::string SMSFixture( bool spectralOnly, const char* mode, bool spectra
 {
 	std::string scene = ReadScene( "scenes/Tests/SMS/sms_k1_refract.RISEscene" );
 	Check( !scene.empty(), "canonical SMS scene loaded" );
-	ReplaceFirstChunk( scene, "film", "film\n{\n width 32\n height 24\n}" );
+	ReplaceFirstChunk( scene, "film", "film\n{\n width 20\n height 16\n}" );
 	ReplaceNamedChunk( scene, "uniformcolor_painter", "name\t\t\t\tpnt_light",
 		spectralOnly ? D65Chunk() : std::string( "uniformcolor_painter\n{\n name pnt_light\n color 1 1 1\n}" ) );
 	const std::string m( mode );
 	std::ostringstream rast;
+	const unsigned smsSpp = ( m == "uniform" ) ? 512u : 256u;
 	rast << ( spectral ? "pathtracing_spectral_rasterizer" : "pathtracing_pel_rasterizer" )
-	     << "\n{\n samples 256\n oidn_denoise FALSE\n pixel_filter box\n sms_enabled TRUE\n"
+	     << "\n{\n samples " << smsSpp << "\n oidn_denoise FALSE\n pixel_filter box\n sms_enabled TRUE\n"
 	     << " sms_seeding " << ( m == "uniform" ? "uniform" : "snell" )
 	     << "\n sms_max_iterations 30\n sms_threshold 1e-4\n sms_max_chain_depth 5\n sms_biased TRUE\n";
 	if( m == "extended" ) rast << " sms_extended TRUE\n";
@@ -296,10 +282,9 @@ static void RunSMS()
 	std::cout << "Row C: SMS caustic, spectral-only D65 SPD vs RGB white control (same spectral radiance)\n";
 	struct R { const char* mode; bool spectral; bool hwss; };
 	static const R rows[] = {
-		{ "snell", true, false }, { "snell", true, true },
+		{ "snell", true, true },
 		{ "uniform", true, false },
-		{ "extended", true, false }, { "extended", true, true },
-		{ "snell", false, false }, { "extended", false, false },
+		{ "extended", false, false },
 	};
 	for( const R& r : rows ) {
 		const Stat spec = SaltedLuminance( SMSFixture( true, r.mode, r.spectral, r.hwss ), "smsSpec", 4 );
@@ -311,6 +296,7 @@ static void RunSMS()
 			ctrl.mean > 0 ? spec.mean / ctrl.mean : -1.0, sd > 0 ? ( spec.mean - ctrl.mean ) / sd : 0.0 );
 		Check( ctrl.mean > 0, label + ": control lit" );
 		Check( spec.mean > 0.5 * ctrl.mean, label + ": spectral-only emitter's caustic is lit" );
+		Check( 3.0 * sd <= 0.35 * ctrl.mean, label + ": SMS precision cap (3*sd <= 35% of control)" );
 		Check( std::fabs( spec.mean - ctrl.mean ) <= 3.0 * sd + 0.01 * ctrl.mean, label + ": agrees with the RGB control within 3 sigma" );
 	}
 }

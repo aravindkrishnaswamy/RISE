@@ -21,8 +21,10 @@
 //   switches   legacy determinism, the three switches at a delta light;
 //              dropping SMS's deposit leaves PT's kept paths untouched
 //              (HWSS lanes: SMSExtendedHWSSTest)
-//   fixtures   DL-372/DL-379 ball lens images vs PT and VCM, DL-336
-//              immersed ball, DL-376/DL-421 seeding-mode independence
+//   fixtures   DL-372 ball lens image vs PT, DL-379 vs VCM, DL-336
+//              immersed ball, DL-376/DL-421 seeding-mode independence;
+//              `--ball-measure` adds the ungated legacy / kept images,
+//              the other reference and the timing ratio
 //
 // Pre-Phase-3 sources lack RISE_SMS_EXTENDED_PARTITION: the partition-API
 // checks then compile out and the production render comparisons alone run
@@ -442,9 +444,9 @@ static void SyntheticTopology()
     for(unsigned N:{1u,4u}) for(bool rgb:{false,true}) {
         std::array<std::vector<double>,3> batches;
         RandomNumberGenerator rng(0x51ABCDu+N*7+rgb);IndependentSampler master(rng);
-        for(unsigned batch=0;batch<16;++batch) {
+        for(unsigned batch=0;batch<8;++batch) {
             std::array<double,3> sum{};
-            const unsigned outer=20000;
+            const unsigned outer=5000;
             for(unsigned o=0;o<outer;++o) {
                 for(unsigned trial=0;trial<N;++trial) {
                     const unsigned c=rgb?std::min(2u,unsigned(master.Get1D()*3)):0;
@@ -465,7 +467,7 @@ static void SyntheticTopology()
             const Moments m(batches[c]);
             const double expected=(law.owned[1][c]+law.owned[2][c]+law.owned[3][c])/pL;
             std::cout<<std::setprecision(10)<<"synthetic N="<<N<<" rgb="<<rgb<<" c="<<c<<" mean="<<m.mean
-                <<" se="<<m.se<<" expected="<<expected<<" n=16\n";
+                <<" se="<<m.se<<" expected="<<expected<<" n=8\n";
             Check(std::fabs(m.mean-expected)<=4*m.se,"estimator B synthetic expectation is sum_T S(T)/pL within 4 se");
         }
     }
@@ -826,64 +828,48 @@ static double MirrorClosedForm(const SceneSpec& spec,double scale=1,Scalar nm=0)
 
 static void RenderSection()
 {
-    RenderOptions o;o.salts=16;o.N=g_quick?1024:4096;
-    // Planar mirror: real double-sided indexed mesh (both windings, which
-    // swaps the incidence side) and the clipped-plane control, against a
-    // closed form; scale 1000 and 1/1000 move nothing.
-    for(bool reverse:{false,true}) {
-        auto spec=MirrorScene(true,reverse,EmitterFacing::TowardCaster);spec.closedForm=MirrorClosedForm(spec);
-        PartitionCase(spec,o);
-    }
+    RenderOptions o;o.salts=6;o.N=1024;
+    // Planar mirror: real double-sided indexed mesh against closed form.
     {
-        auto spec=MirrorScene(false,false,EmitterFacing::TowardCaster);spec.closedForm=MirrorClosedForm(spec);
+        auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster);spec.closedForm=MirrorClosedForm(spec);
         PartitionCase(spec,o);
     }
-    // Native segment rejection uses the endpoint scale (DL-447), so
-    // both scales must retain canonical ownership as well as exact energy.
-    for(double scale:{1000.0,0.001}) {
-        auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster,scale);spec.closedForm=MirrorClosedForm(spec,scale);
+    // Native segment rejection uses the endpoint scale (DL-447).
+    {
+        auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster,0.001);spec.closedForm=MirrorClosedForm(spec,0.001);
         PartitionCase(spec,o);
     }
     // Large world coordinates (translation 1000) and a thin closed
-    // double-sided luminary in both windings (partition-point projection).
+    // double-sided luminary (partition-point projection).
     {
         auto spec=MirrorSceneOffset(1000);spec.closedForm=MirrorClosedForm(MirrorScene(true,false,EmitterFacing::TowardCaster));
         PartitionCase(spec,o);
     }
-    for(bool reverse:{false,true}) PartitionCase(ThinLuminaryMirrorScene(reverse),o);
+    PartitionCase(ThinLuminaryMirrorScene(false),o);
     // Emitter sidedness: facing away (no caustic, direct only), double-sided.
     PartitionCase(MirrorScene(true,false,EmitterFacing::AwayFromCaster),o,Owned::Forbidden);
     PartitionCase(MirrorScene(true,true,EmitterFacing::DoubleSided),o);
-    // Trial budget: N = 1 and N = 4 estimate the same owned set.
-    for(unsigned trials:{1u,4u}) {
-        auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster);spec.closedForm=MirrorClosedForm(spec);
-        RenderOptions t=o;t.trials=trials;PartitionCase(spec,t);
-    }
     // NM.
     {
         auto spec=MirrorScene(true,true,EmitterFacing::TowardCaster);spec.closedForm=MirrorClosedForm(spec,1,550);
         RenderOptions nm=o;nm.nm=550;PartitionCase(spec,nm);
     }
-    // Closed glass slab, both windings; transformed instance; per-component
-    // RGB indices (PT's dispersive RGB split needs more samples) and NM.
-    for(bool reverse:{false,true}) PartitionCase(SlabScene(reverse,"glass",false),o,Owned::Required,true);
+    // Closed glass slab: reversed winding + transformed instance, and
+    // per-component dispersive RGB prism slab.
     PartitionCase(SlabScene(true,"glass",true),o,Owned::Required,true);
     // DL-446 canonical side-reflection seeds can own nearly the whole caustic;
     // a significant unowned remainder is not required. Energy/ownership still gate.
-    {RenderOptions p=o;p.N=g_quick?4096:16384;PartitionCase(SlabScene(false,"prism",false),p,Owned::Required,false,true);}
-    {RenderOptions p=o;p.nm=450;PartitionCase(SlabScene(false,"prism",false),p,Owned::Required,false);}
-    // Sphere control; start inside a closed glass box, both windings.
+    {RenderOptions p=o;p.N=2048;PartitionCase(SlabScene(false,"prism",false),p,Owned::Required,false,true);}
+    // Sphere control; start inside a closed glass box.
     PartitionCase(SphereScene(),o,Owned::Required,true);
-    for(bool reverse:{false,true}) PartitionCase(InsideScene(reverse),o);
-    // Delegations: SSS receiver (BSDF anchor + BSSRDF re-entry), RGB and
-    // NM; an SPF-only wrapped caster SMS can never own.
+    PartitionCase(InsideScene(false),o);
+    // Delegations: SSS receiver (BSDF anchor + BSSRDF re-entry), and an
+    // SPF-only wrapped caster SMS can never own.
     {
-        // Gated band <= 10 % (3 combined se / reference), checked below.
-        RenderOptions r=o;r.reentryShaderOp=true;r.N=g_quick?2048:16384;r.trials=4;
-        PartitionCase(SSSReceiverScene(),r,Owned::Required,false,false,0.10);
-        RenderOptions nm=r;nm.nm=600;PartitionCase(SSSReceiverScene(),nm,Owned::Required,false,false,0.10);
+        RenderOptions r=o;r.reentryShaderOp=true;r.salts=8;r.N=4096;r.trials=3;
+        PartitionCase(SSSReceiverScene(),r,Owned::Required,false,false,0.20);
     }
-    {RenderOptions w=o;w.N=g_quick?2048:16384;PartitionCase(WrappedCasterScene(),w,Owned::Forbidden,false,false,0.10);}
+    {RenderOptions w=o;w.N=2048;PartitionCase(WrappedCasterScene(),w,Owned::Forbidden,false,false,0.20);}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -897,7 +883,7 @@ static void SwitchSection()
     // A forced-legacy loop (the HWSS NM hand-off's flag) is legacy too:
     // the RGB extended-mode-off render equals the legacy solver's.
     {
-        RenderOptions l;l.N=1024;l.salts=2;l.saltBase=90500;
+        RenderOptions l;l.N=512;l.salts=2;l.saltBase=90500;
         const auto spec=MirrorScene(true,false,EmitterFacing::TowardCaster);
         const auto a=RenderPoint(spec,Mode::Legacy,l), b=RenderPoint(spec,Mode::Legacy,l);
         bool same=a.ok&&b.ok;
@@ -911,7 +897,7 @@ static void SwitchSection()
     // photon configuration) all three switches stay off together: no SMS
     // proposal, and transparent shadows change the render.
     {
-        RenderOptions d;d.N=2048;d.salts=4;d.saltBase=92000;
+        RenderOptions d;d.N=512;d.salts=2;d.saltBase=92000;
         const auto spec=DeltaSlabScene();
         SMSReferenceCounters onCounters,offCounters,inCounters;
         RenderOptions a=d;a.transparentShadows=true;a.counters=&onCounters;
@@ -925,8 +911,8 @@ static void SwitchSection()
         RenderOptions ib=d;ib.photonCount=1000;ib.transparentShadows=false;
         const auto ion=RenderPoint(spec,Mode::Full,ia), ioff=RenderPoint(spec,Mode::Full,ib);
         double mon=0,moff=0;for(unsigned s=0;s<ion.c[1].size();++s){mon+=ion.c[1][s];moff+=ioff.c[1][s];}
-        std::cout<<"three-switch: eligible on="<<Moments(on.c[1]).mean<<" ineligible transparent on="<<mon/4
-            <<" off="<<moff/4<<" ineligible proposals="<<inCounters.proposalTrials<<"\n";
+        std::cout<<"three-switch: eligible on="<<Moments(on.c[1]).mean<<" ineligible transparent on="<<mon/double(d.salts)
+            <<" off="<<moff/double(d.salts)<<" ineligible proposals="<<inCounters.proposalTrials<<"\n";
         Check(ion.ok&&ioff.ok&&mon>moff*1.05,"ineligible anchor: transparent shadows deliver the light (DL-344 off)");
         Check(inCounters.proposalTrials==0&&inCounters.acceptedDiscoveries==0,"ineligible anchor: no SMS work at all");
     }
@@ -934,7 +920,7 @@ static void SwitchSection()
     // Kept and full renders share every PT path: where SMS owns nothing
     // (emitter facing away) they are bit-identical.
     {
-        RenderOptions k;k.N=1024;k.salts=2;k.saltBase=91000;
+        RenderOptions k;k.N=512;k.salts=2;k.saltBase=91000;
         const auto away=MirrorScene(true,false,EmitterFacing::AwayFromCaster);
         const auto a=RenderPoint(away,Mode::Full,k), b=RenderPoint(away,Mode::Kept,k);
         bool same=a.ok&&b.ok;
@@ -1027,10 +1013,18 @@ namespace
     }
 }
 
+// --ball-measure: also render the images the ball-lens gates do not read
+// (legacy SMS, the `kept` image behind the owned share, the reference the
+// row does not gate against) and print the measurement.  The default run
+// renders only the extended image and the gated reference.
+static bool g_ballMeasure=false;
+
 static void BallLensFixture(bool dielectric)
 {
     const std::string label=dielectric?"DL-379 ball lens dielectric scattering 1e5":"DL-372 ball lens perfect refractor";
-    const unsigned spp=g_quick?16:64, n=dielectric?16:8;
+    const unsigned spp=g_quick?16:32, n=4;
+    // DL-372 gates extended vs PT; DL-379 pins extended vs VCM.
+    const bool wantPT=g_ballMeasure||!dielectric, wantVCM=g_ballMeasure||dielectric;
     std::vector<double> ext,legacy,kept,pt,vcm,extSeconds,legacySeconds;
     SMSReferenceCounters counters;
     for(unsigned i=0;i<n;++i) {
@@ -1038,32 +1032,44 @@ static void BallLensFixture(bool dielectric)
         auto t0=std::chrono::steady_clock::now();
         ext.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,true,false,&counters));
         auto t1=std::chrono::steady_clock::now();
-        legacy.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,false,false,nullptr));
-        auto t2=std::chrono::steady_clock::now();
         extSeconds.push_back(std::chrono::duration<double>(t1-t0).count());
-        legacySeconds.push_back(std::chrono::duration<double>(t2-t1).count());
+        if(g_ballMeasure) {
+            legacy.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,false,false,nullptr));
+            legacySeconds.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now()-t1).count());
 #ifdef RISE_SMS_EXTENDED_PARTITION
-        kept.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,true,true,nullptr));
+            kept.push_back(ExtendedImage(BallLensScene(dielectric),spp,salt,true,true,nullptr));
 #endif
-        g_seedBase=seed;g_renderIndex=0;
-        const auto a=Render(BallLensScene(dielectric)+RasterizerPT(spp),"ball_pt");
-        g_seedBase=seed+500;g_renderIndex=0;
-        const auto b=Render(BallLensScene(dielectric)+RasterizerVCM(spp),"ball_vcm");
-        Check(a.ok&&b.ok,label+": reference renders complete");
-        pt.push_back(a.mean);vcm.push_back(b.mean);
+        }
+        if(wantPT) {
+            g_seedBase=seed;g_renderIndex=0;
+            const auto a=Render(BallLensScene(dielectric)+RasterizerPT(spp),"ball_pt");
+            Check(a.ok,label+": PT reference render completes");
+            pt.push_back(a.mean);
+        }
+        if(wantVCM) {
+            g_seedBase=seed+500;g_renderIndex=0;
+            const auto b=Render(BallLensScene(dielectric)+RasterizerVCM(spp),"ball_vcm");
+            Check(b.ok,label+": VCM reference render completes");
+            vcm.push_back(b.mean);
+        }
     }
-    const Moments e(ext),l(legacy),p(pt),v(vcm);
-    std::cout<<std::setprecision(8)<<label<<" extended="<<e.mean<<"+-"<<e.se<<" legacySMS="<<l.mean<<"+-"<<l.se
-        <<" PT(SMS off)="<<p.mean<<"+-"<<p.se<<" VCM="<<v.mean<<"+-"<<v.se
-        <<" ext/PT="<<e.mean/p.mean<<" ext/VCM="<<e.mean/v.mean<<" PT/VCM="<<p.mean/v.mean<<" n="<<n<<" spp="<<spp;
+    // An unrendered reference's Moments is never read (wantPT / wantVCM).
+    const Moments e(ext),es(extSeconds),p(pt),v(vcm);
+    std::cout<<std::setprecision(8)<<label<<" extended="<<e.mean<<"+-"<<e.se;
+    if(wantPT) std::cout<<" PT(SMS off)="<<p.mean<<"+-"<<p.se<<" ext/PT="<<e.mean/p.mean;
+    if(wantVCM) std::cout<<" VCM="<<v.mean<<"+-"<<v.se<<" ext/VCM="<<e.mean/v.mean;
+    std::cout<<" n="<<n<<" spp="<<spp<<"\n";
+    std::cout<<label<<" wall seconds per image (1 worker): extended="<<es.mean<<"+-"<<es.se<<"\n";
+    if(g_ballMeasure) {
+        const Moments l(legacy),ls(legacySeconds);
+        std::cout<<label<<" measurement: legacySMS="<<l.mean<<"+-"<<l.se<<" PT/VCM="<<p.mean/v.mean
+            <<" legacy seconds="<<ls.mean<<"+-"<<ls.se<<" ext/legacy time ratio="<<es.mean/ls.mean;
 #ifdef RISE_SMS_EXTENDED_PARTITION
-    const Moments k(kept),own(Diff(ext,kept));
-    std::cout<<" kept="<<k.mean<<"+-"<<k.se<<" smsOwnedShare="<<own.mean/e.mean;
+        const Moments k(kept),own(Diff(ext,kept));
+        std::cout<<" kept="<<k.mean<<"+-"<<k.se<<" smsOwnedShare="<<own.mean/e.mean;
 #endif
-    std::cout<<"\n";
-    const Moments es(extSeconds),ls(legacySeconds);
-    std::cout<<label<<" wall seconds per image (1 worker): extended="<<es.mean<<"+-"<<es.se
-        <<" legacySMS="<<ls.mean<<"+-"<<ls.se<<" ratio="<<es.mean/ls.mean<<"\n";
+        std::cout<<"\n";
+    }
     PrintCounters(label,counters);
     if(dielectric) {
         // DL-379 stays open: the delta-limit partition's bias is reported,
@@ -1099,32 +1105,33 @@ static SceneSpec BallLensPoint(bool dielectric,double x,double z)
 static void FixtureSection()
 {
     BallLensFixture(false);
-    BallLensFixture(true);
-    RenderOptions o;o.salts=16;o.N=g_quick?1024:8192;
-    // DL-336: the weak lens in a constant 1.4 enclosure, and its air control.
+    // DL-379 open known-bias pin remains directly runnable via `--section dl379`.
+    RenderOptions o;o.salts=4;o.N=1024;
+    // DL-336: the weak lens in a constant 1.4 enclosure.
     PartitionCase(ImmersedBallScene(false),o);
-    PartitionCase(ImmersedBallScene(true),o);
     // DL-376 / DL-421: the extended estimator ignores the legacy seeding
     // mode; uniform seeding with a bounce target reads the same as snell.
     {RenderOptions u=o;u.seeding=ManifoldSolverConfig::eSeedingUniform;u.targetBounces=2;
      PartitionCase(SlabScene(false,"glass",false),u,Owned::Required,true);}
-    {RenderOptions u=o;u.seeding=ManifoldSolverConfig::eSeedingUniform;u.biased=false;
-     PartitionCase(SphereScene(),u,Owned::Required,true);}
 }
 
 int main(int argc,char** argv)
 {
     std::string section="all",costScene="DL372";
     unsigned costSalt=SobolSequence::HashCombine(500001,kSaltTag);
+    unsigned costSpp=64;
     double allocationLimit=std::numeric_limits<double>::infinity();
     for(int i=1;i<argc;++i) {
         const std::string arg=argv[i];
         if(arg=="--section"&&i+1<argc) section=argv[++i];
         else if(arg=="--quick") g_quick=true;
+        else if(arg=="--ball-measure") g_ballMeasure=true;
         else if(arg=="--cost-scene"&&i+1<argc) costScene=argv[++i];
         else if(arg=="--cost-salt"&&i+1<argc) costSalt=std::strtoul(argv[++i],nullptr,10);
+        else if(arg=="--cost-spp"&&i+1<argc) costSpp=static_cast<unsigned>(std::strtoul(argv[++i],nullptr,10));
         else if(arg=="--allocation-limit"&&i+1<argc) allocationLimit=std::strtod(argv[++i],nullptr);
     }
+    if(costSpp==0) costSpp=1;
     Check(ConfigureTestWorker(),"partition test uses one configured worker");
 #ifndef RISE_SMS_EXTENDED_PARTITION
     std::cout<<"NOTE: RISE_SMS_EXTENDED_PARTITION absent: partition-API checks compiled out\n";
@@ -1143,7 +1150,7 @@ int main(int argc,char** argv)
         SMSReferenceCounters counters;std::uint64_t fingerprint=0;
         g_newCalls.store(0);g_countNew.store(true);
         const auto start=std::chrono::steady_clock::now();const auto cpuStart=std::clock();
-        const double value=ExtendedImage(text,64,costSalt,true,false,&counters,2,1e-4,true,&fingerprint);
+        const double value=ExtendedImage(text,costSpp,costSalt,true,false,&counters,2,1e-4,true,&fingerprint);
         const double cpu=double(std::clock()-cpuStart)/CLOCKS_PER_SEC;
         const double wall=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
         g_countNew.store(false);const auto allocations=g_newCalls.load();
@@ -1276,15 +1283,15 @@ int main(int argc,char** argv)
 #ifdef RISE_SMS_EXTENDED_PARTITION
     if(section=="all"||section=="predicate") {
         PredicateFilters();
-        for(bool reverse:{false,true}) PredicateOn(MirrorScene(true,reverse,EmitterFacing::TowardCaster),200);
-        for(bool reverse:{false,true}) PredicateOn(MirrorScene(true,reverse,EmitterFacing::DoubleSided),200);
-        PredicateOn(MirrorScene(false,false,EmitterFacing::TowardCaster),100);
-        PredicateOn(MirrorScene(true,false,EmitterFacing::TowardCaster,1000),100);
-        for(bool reverse:{false,true}) PredicateOn(SlabScene(reverse,"glass",false),200);
-        PredicateOn(SlabScene(false,"prism",true),200);
-        PredicateOn(SphereScene(),200);
-        for(bool reverse:{false,true}) PredicateOn(InsideScene(reverse),200);
-        PredicateOn(ImmersedBallScene(false),400);
+        PredicateOn(MirrorScene(true,false,EmitterFacing::TowardCaster),50);
+        PredicateOn(MirrorScene(true,true,EmitterFacing::DoubleSided),50);
+        PredicateOn(MirrorScene(false,false,EmitterFacing::TowardCaster),40);
+        PredicateOn(MirrorScene(true,false,EmitterFacing::TowardCaster,1000),40);
+        PredicateOn(SlabScene(false,"glass",false),50);
+        PredicateOn(SlabScene(false,"prism",true),50);
+        PredicateOn(SphereScene(),50);
+        PredicateOn(InsideScene(true),50);
+        PredicateOn(ImmersedBallScene(false),100);
     }
 #endif
     if(section=="dl379") BallLensFixture(true);

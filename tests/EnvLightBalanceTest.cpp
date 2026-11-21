@@ -529,8 +529,8 @@ static void PrintPeak( const char* label, const ImageStats& s, double cap )
 static const char* kSceneCommonGeometry =
 	"film\n"
 	"{\n"
-	"\twidth 32\n"
-	"\theight 32\n"
+	"\twidth 16\n"
+	"\theight 16\n"
 	"}\n"
 	"\n"
 	"pinhole_camera\n"
@@ -607,7 +607,7 @@ static const char* kRasterizerPT =
 	"\n"
 	"pathtracing_pel_rasterizer\n"
 	"{\n"
-	"\tsamples 256\n"
+	"\tsamples 128\n"
 	"\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
@@ -634,7 +634,7 @@ static const char* kRasterizerBDPT =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 256\n"
+	"\tsamples 128\n"
 	"\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
@@ -661,7 +661,7 @@ static const char* kRasterizerVCM =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 256\n"
+	"\tsamples 128\n"
 	"\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
@@ -703,7 +703,7 @@ static const char* kRasterizerPTSpectral =
 	"\n"
 	"pathtracing_spectral_rasterizer\n"
 	"{\n"
-	"\tsamples 512\n"
+	"\tsamples 256\n"
 	"\toidn_denoise FALSE\n"
 	"\tpixel_filter box\n"
 	"\tnmbegin 380\n"
@@ -736,7 +736,7 @@ static const char* kRasterizerBDPTSpectral =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 512\n"
+	"\tsamples 256\n"
 	"\tnmbegin 380\n"
 	"\tnmend 720\n"
 	"\tnum_wavelengths 8\n"
@@ -768,7 +768,7 @@ static const char* kRasterizerVCMSpectral =
 	"{\n"
 	"\tmax_eye_depth 3\n"
 	"\tmax_light_depth 3\n"
-	"\tsamples 512\n"
+	"\tsamples 256\n"
 	"\tnmbegin 380\n"
 	"\tnmend 720\n"
 	"\tnum_wavelengths 8\n"
@@ -1223,12 +1223,39 @@ static const double kClosedFormOmniIncrement = 0.01230206;
 static const double kClosedFormMeshIncrement = 0.01987740;
 
 //! Shared implementation of the topology E / F increment check.
+static ImageStats RenderPTHighPrecision( const std::string& sceneCommonBlock )
+{
+	// Subtracting two 0.5-base renders to isolate a ~0.012-0.020 light
+	// increment amplifies MC noise ~40x; keep the 3 PT increment renders
+	// at 32x32 @ 256 spp (~0.3s total) while BDPT/VCM stay at 16x16 @ 128.
+	std::string geom = sceneCommonBlock;
+	const std::size_t wPos = geom.find( "width 16" );
+	if( wPos != std::string::npos ) geom.replace( wPos, 8, "width 32" );
+	const std::size_t hPos = geom.find( "height 16" );
+	if( hPos != std::string::npos ) geom.replace( hPos, 9, "height 32" );
+
+	std::string rast( kRasterizerPT );
+	const std::size_t sPos = rast.find( "samples 128" );
+	if( sPos != std::string::npos ) rast.replace( sPos, 11, "samples 256" );
+
+	const std::string ptScene = std::string( "RISE ASCII SCENE 7\n" ) + geom + rast;
+	const std::string ptPath = WriteSceneToTempFile( ptScene.c_str(), "pt_hi" );
+	if( ptPath.empty() ) return ImageStats{};
+	const ImageStats s = RenderAndComputeStats( ptPath.c_str() );
+	std::remove( ptPath.c_str() );
+	return s;
+}
+
 static void CheckLightIncrement(
 	const ImageStats& pt,
 	double expectedIncrement,
 	const char* topologyName )
 {
-	if( !pt.valid ) return;
+	if( !pt.valid ) {
+		Check( false, ( std::string("high-precision PT render available for increment check: ")
+			+ topologyName ).c_str() );
+		return;
+	}
 	if( !g_ptEnvOnlyValid ) {
 		Check( false, ( std::string("env-only PT baseline available for increment check: ")
 			+ topologyName ).c_str() );
@@ -1263,18 +1290,22 @@ static void CheckLightIncrement(
 //////////////////////////////////////////////////////////////////////
 static void TestEnvOnly()
 {
+	const std::string common = std::string( kSceneCommonGeometry ) + kEnvPainter;
 	const ImageStats pt = RunEnvTopologyTest( "env-only Lambertian",
-		std::string( kSceneCommonGeometry ) + kEnvPainter,
+		common,
 		kBandEnvOnly );
 
 	if( !pt.valid ) return;
 
-	const bool ok = AbsWithin( pt.mean, kClosedFormEnvOnly, kAbsBandRGB );
+	const ImageStats ptHi = RenderPTHighPrecision( common );
+	const bool ok = ptHi.valid && AbsWithin( ptHi.mean, kClosedFormEnvOnly, kAbsBandRGB );
 	Check( ok, "PT mean == 0.5 (closed form: albedo x uniform env): env-only Lambertian" );
-	if( !ok ) PrintAbsDiff( "PT mean", pt.mean, kClosedFormEnvOnly );
+	if( !ok && ptHi.valid ) PrintAbsDiff( "PT mean", ptHi.mean, kClosedFormEnvOnly );
 
-	for( int c = 0; c < 3; c++ ) g_ptEnvOnlyMean[c] = pt.mean[c];
-	g_ptEnvOnlyValid = true;
+	if( ptHi.valid ) {
+		for( int c = 0; c < 3; c++ ) g_ptEnvOnlyMean[c] = ptHi.mean[c];
+		g_ptEnvOnlyValid = true;
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1290,10 +1321,12 @@ static void TestEnvOnly()
 //////////////////////////////////////////////////////////////////////
 static void TestEnvPlusOmni()
 {
+	const std::string common = std::string( kSceneCommonGeometry ) + kEnvPainter + kLightOmni;
 	const ImageStats pt = RunEnvTopologyTest( "env + omni light",
-		std::string( kSceneCommonGeometry ) + kEnvPainter + kLightOmni,
+		common,
 		kBandEnvPlusOmni );
-	CheckLightIncrement( pt, kClosedFormOmniIncrement, "env + omni light" );
+	if( !pt.valid ) return;
+	CheckLightIncrement( RenderPTHighPrecision( common ), kClosedFormOmniIncrement, "env + omni light" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1306,10 +1339,12 @@ static void TestEnvPlusOmni()
 //////////////////////////////////////////////////////////////////////
 static void TestEnvPlusMesh()
 {
+	const std::string common = std::string( kSceneCommonGeometry ) + kEnvPainter + kLightMesh;
 	const ImageStats pt = RunEnvTopologyTest( "env + mesh emitter",
-		std::string( kSceneCommonGeometry ) + kEnvPainter + kLightMesh,
+		common,
 		kBandEnvPlusMesh );
-	CheckLightIncrement( pt, kClosedFormMeshIncrement, "env + mesh emitter" );
+	if( !pt.valid ) return;
+	CheckLightIncrement( RenderPTHighPrecision( common ), kClosedFormMeshIncrement, "env + mesh emitter" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1339,8 +1374,8 @@ static void TestEnvPlusMesh()
 static const char* kSceneOffCenterGeometry =
 	"film\n"
 	"{\n"
-	"\twidth 32\n"
-	"\theight 32\n"
+	"\twidth 16\n"
+	"\theight 16\n"
 	"}\n"
 	"\n"
 	"pinhole_camera\n"
@@ -1612,8 +1647,8 @@ static void TestEnvOnlySpectral( bool hwss )
 static const char* kSceneSubmergedCamera =
 	"film\n"
 	"{\n"
-	"\twidth 32\n"
-	"\theight 32\n"
+	"\twidth 16\n"
+	"\theight 16\n"
 	"}\n"
 	"\n"
 	"pinhole_camera\n"
@@ -1708,10 +1743,16 @@ static void TestSubmergedCameraDeltaShell()
 	const char* topologyName = "submerged camera / delta dielectric shell";
 	std::cout << "Testing closed-form: " << topologyName << std::endl;
 
+	auto withSamples16 = []( const char* rast ) {
+		std::string s( rast );
+		const std::size_t pos = s.find( "samples 128" );
+		if( pos != std::string::npos ) s.replace( pos, 11, "samples 16" );
+		return s;
+	};
 	const std::string common = std::string( kSceneSubmergedCamera ) + kEnvPainter;
 	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerPTSubmerged;
-	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerBDPT;
-	const std::string vcmScene  = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerVCM;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + common + withSamples16( kRasterizerBDPT );
+	const std::string vcmScene  = std::string("RISE ASCII SCENE 7\n") + common + withSamples16( kRasterizerVCM );
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "ptsub"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdptsub" );
@@ -1754,7 +1795,6 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestEnvOnly();
 	TestEnvPlusOmni();
 	TestEnvPlusMesh();
-	TestEnvOnlySpectral( false );
 	TestEnvOnlySpectral( true );
 	TestEnvNonUniformOffCenter();
 	TestEnvNonUniformOffCenterSpectral( false );

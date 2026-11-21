@@ -21,7 +21,7 @@ Before prioritizing new work, note what is **complete in production** as of Nove
 
 ## Tier 0 — Immediate Bug Fixes, Active Correctness Debts & Parity Quick Wins (**COMPLETED 2026-11-16**)
 
-All 14 Tier 0 items are **complete on `master`** (leaving **0 active unparked** items in [DEBT_LEDGER.md](DEBT_LEDGER.md); all cross-platform and macOS-buildable items are red-proven and verified green on macOS, while native MSVC/Qt6 compilation and runtime execution of the Windows-only `DL-632` test targets and `0.3.1`/`0.3.2` Qt6 GUI widgets remain gated on a Windows host):
+All 14 Tier 0 items are **complete on `master`** (leaving **0 active unparked** items in [DEBT_LEDGER.md](DEBT_LEDGER.md) on that date, before DL-633..DL-635 were opened 2026-11-16; all cross-platform and macOS-buildable items are red-proven and verified green on macOS, while native MSVC/Qt6 compilation and runtime execution of the Windows-only `DL-632` test targets and `0.3.1`/`0.3.2` Qt6 GUI widgets remain gated on a Windows host):
 
 ### 0.1 Code & Scene Hygiene Bugs (**COMPLETED**)
 

@@ -18,7 +18,7 @@ from .hair_material_math import (
     melanin_to_eumelanin_pheomelanin,
     offset_radians_to_alpha_degrees,
 )
-from .blender_compat import uses_nodes
+from .blender_compat import rna_key, uses_nodes
 from .light_math import (
     AREA_LIGHT_DISK_SEGMENTS,
     area_light_exitance,
@@ -587,7 +587,7 @@ class _ExportState:
         self.modifier_cache: dict[tuple, str] = {}
         self.medium_cache: dict[tuple, str] = {}
         # Cache of unpacked (or otherwise resolved-to-disk) image
-        # filepaths, keyed by id(bpy.types.Image).  Some scenes embed
+        # filepaths, keyed by the image's RNA pointer (rna_key).  Some scenes embed
         # the HDRI / texture inside the .blend; we transparently
         # round-trip them through a temp file because RISE's painter
         # loaders only accept filepaths.
@@ -704,7 +704,7 @@ def _unpack_image_to_disk(image, state: _ExportState | None) -> str | None:
 
     cache = state.image_path_cache if state is not None else None
     if cache is not None:
-        cached = cache.get(id(image))
+        cached = cache.get(rna_key(image))
         if cached and os.path.exists(cached):
             return cached
 
@@ -732,7 +732,7 @@ def _unpack_image_to_disk(image, state: _ExportState | None) -> str | None:
         return None
 
     safe_stem = _safe_name(image.name_full or image.name or "image")
-    out_path = os.path.join(out_dir, f"{safe_stem}_{id(image):x}{extension}")
+    out_path = os.path.join(out_dir, f"{safe_stem}_{rna_key(image):x}{extension}")
 
     try:
         # PackedFile.data is a bytes-like attribute in Blender 3.x+;
@@ -745,7 +745,7 @@ def _unpack_image_to_disk(image, state: _ExportState | None) -> str | None:
         return None
 
     if cache is not None:
-        cache[id(image)] = out_path
+        cache[rna_key(image)] = out_path
     return out_path
 
 
@@ -1222,9 +1222,9 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
         seen: set[int] = set()
         while stack:
             upstream = stack.pop()
-            if upstream is None or id(upstream) in seen or len(seen) > 64:
+            if upstream is None or rna_key(upstream) in seen or len(seen) > 64:
                 continue
-            seen.add(id(upstream))
+            seen.add(rna_key(upstream))
             if getattr(upstream, "mute", False):
                 continue
             label = _UNTRANSLATED_PROCEDURAL_TEXTURES.get(upstream.bl_idname)
@@ -1434,7 +1434,7 @@ def _walk_socket_for_image_node(socket, *, max_depth: int = 16):
         node, depth = stack.pop()
         if depth > max_depth:
             continue
-        node_id = id(node)
+        node_id = rna_key(node)
         if node_id in visited:
             continue
         visited.add(node_id)
@@ -1616,9 +1616,9 @@ def _skip_reroutes(node, *, max_depth: int = 16):
 
     seen = set()
     while node is not None and node.bl_idname == "NodeReroute":
-        if id(node) in seen or len(seen) > max_depth:
+        if rna_key(node) in seen or len(seen) > max_depth:
             return None
-        seen.add(id(node))
+        seen.add(rna_key(node))
         if not node.inputs or not node.inputs[0].is_linked:
             return None
         node = node.inputs[0].links[0].from_node
@@ -3243,7 +3243,7 @@ def _export_hair_object(object_instance, original_object, state: _ExportState):
         )
         return
     safe_stem = _safe_name(original_object.name_full)
-    file_path = os.path.join(out_dir, f"{safe_stem}_{id(original_object):x}.hair")
+    file_path = os.path.join(out_dir, f"{safe_stem}_{rna_key(original_object):x}.hair")
     try:
         hair_file_writer.write_hair_file(
             file_path,
@@ -3289,7 +3289,7 @@ def _find_hair_bsdf_through_surface(output_node):
     depth = 0
     while depth < 16:
         depth += 1
-        node_id = id(cursor)
+        node_id = rna_key(cursor)
         if node_id in visited:
             return None
         visited.add(node_id)
@@ -3357,7 +3357,7 @@ def _hair_graph_supported(node, material_name: str, state: _ExportState) -> bool
                 "Using the default hair material.",
             )
             return False
-        node_id = id(current)
+        node_id = rna_key(current)
         if node_id in visited:
             continue
         visited.add(node_id)
@@ -4404,11 +4404,11 @@ def _walk_world_for_environment(output_node):
 
     while queue:
         node, cam, ind, last_background = queue.pop(0)
-        key = id(node)
+        key = rna_key(node)
         prev_cam, prev_ind, prev_bg = visited.get(key, (False, False, None))
         new_cam = prev_cam or cam
         new_ind = prev_ind or ind
-        if new_cam == prev_cam and new_ind == prev_ind and prev_bg is last_background:
+        if new_cam == prev_cam and new_ind == prev_ind and prev_bg == last_background:
             continue
         visited[key] = (new_cam, new_ind, last_background)
 
@@ -4529,9 +4529,9 @@ def _find_sky_texture_node(start_node, *, max_depth: int = 16):
         node, depth = stack.pop()
         if depth > max_depth:
             continue
-        if id(node) in visited:
+        if rna_key(node) in visited:
             continue
-        visited.add(id(node))
+        visited.add(rna_key(node))
 
         bl = node.bl_idname
         if bl == "ShaderNodeTexSky":

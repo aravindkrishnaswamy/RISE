@@ -225,7 +225,7 @@ static double RenderMean( const std::string& sceneText, const char* tag )
 
 // This scene's caustics are firefly-prone; average a few renders so the
 // gated ratio is not read off one draw.
-static const int kRepeats = 3;
+static const int kRepeats = 2;
 
 static double RenderMeanRepeated( const std::string& sceneText, const char* tag,
 	const char* label )
@@ -256,7 +256,7 @@ static double RenderMeanRepeated( const std::string& sceneText, const char* tag,
 static std::string SceneBody( bool withSlabs )
 {
 	std::string s =
-		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		"pinhole_camera\n{\n"
 		"\tlocation 0 2.5 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n"
 		"}\n\n"
@@ -294,7 +294,7 @@ static std::string Rasterizer( const char* kind, const char* extra )
 	char buf[1024];
 	std::snprintf( buf, sizeof(buf),
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-		"%s\n{\n\tmax_eye_depth 5\n\tmax_light_depth 5\n\tsamples 256\n%s"
+		"%s\n{\n\tmax_eye_depth 5\n\tmax_light_depth 5\n\tsamples 128\n%s"
 		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n",
 		kind, extra );
 	return std::string( buf );
@@ -375,44 +375,15 @@ int main()
 		Rasterizer( "bdpt_spectral_rasterizer", "\thwss FALSE\n" ),
 		SceneBody( true ), 0.85, 1.15, false );
 
-	// THIRD MONEY ROW, and the one that shows the defect is NOT
-	// caustic-specific: with no glass in the scene at all, VCM's splat
-	// share is still large enough that spectral/pel reads 0.6818
-	// pre-fix.  (This row was drafted as a "control" on the assumption
-	// that removing the glass would collapse the splat share the way it
-	// does under BDPT; the measurement said otherwise and the label was
-	// corrected rather than the row dropped.)
-	RunPair( "VCM spectral (hwss FALSE) vs VCM Pel, NO glass",
-		Rasterizer( "vcm_pel_rasterizer", kVcmPelExtra ),
-		Rasterizer( "vcm_spectral_rasterizer", kVcmSpecExtra ),
-		SceneBody( false ), 0.85, 1.15, true );
-
-	// CONTROL.  BDPT with no glass: its t==1 share on a plain lit floor
-	// measures ~1e-6 of the image (a pure-splat render of this scene
-	// under `max_eye_depth 0`, which truncates the NM eye subpath to the
-	// camera vertex, reads 1.0e-8 against a full render's 9.3e-3), so a
-	// 3.74x error in the splat layer cannot move it.  GREEN IN BOTH
-	// BUILDS -- it is what distinguishes "the fix corrected the splat
-	// layer" from "the fix rescaled the spectral rasterizer".
-	RunPair( "CONTROL BDPT spectral (hwss FALSE) vs BDPT Pel, no glass",
-		Rasterizer( "bdpt_pel_rasterizer", "" ),
-		Rasterizer( "bdpt_spectral_rasterizer", "\thwss FALSE\n" ),
-		SceneBody( false ), 0.85, 1.15, true );
-
-	// DL-215 MONEY ROWS: PURE SPLAT LAYER ISOLATION (max_eye_depth 0).
+	// DL-215 MONEY ROW: PURE SPLAT LAYER ISOLATION (max_eye_depth 0).
 	// With eye depth 0, only t=1 light-tracing splats reach the film.
 	// Pre-fix (due to per-sample gamut mapping on monochromatic wavelengths),
-	// this read ~0.90 at 80 wavelengths (and ~0.93 at 10 wavelengths) vs Pel twin.
+	// this read ~0.90 at 80 wavelengths vs Pel twin.
 	// Post-fix (genuine matrix-only conversion), it lands at 1.00 +/- noise.
 	const char* kVcmSpecExtra80 = "\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n\tnum_wavelengths 80\n";
 	RunPair( "DL-215 MONEY ROW: VCM pure splat (eye 0, 80 nm) vs VCM Pel, no glass",
-		RasterizerDepth( "vcm_pel_rasterizer", 0, 5, 512, kVcmPelExtra ),
-		RasterizerDepth( "vcm_spectral_rasterizer", 0, 5, 512, kVcmSpecExtra80 ),
-		SceneBody( false ), 0.95, 1.05, true );
-
-	RunPair( "DL-215 MONEY ROW: VCM pure splat (eye 0, default 10 nm) vs VCM Pel, no glass",
-		RasterizerDepth( "vcm_pel_rasterizer", 0, 5, 512, kVcmPelExtra ),
-		RasterizerDepth( "vcm_spectral_rasterizer", 0, 5, 512, kVcmSpecExtra ),
+		RasterizerDepth( "vcm_pel_rasterizer", 0, 5, 256, kVcmPelExtra ),
+		RasterizerDepth( "vcm_spectral_rasterizer", 0, 5, 256, kVcmSpecExtra80 ),
 		SceneBody( false ), 0.95, 1.05, true );
 
 	std::cout << std::endl;

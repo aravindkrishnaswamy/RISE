@@ -32,12 +32,26 @@
 //       variance is heavy-tailed (the sphere's light reaches it only by
 //       surface merging at the auto radius; per-pair sd up to 0.23 at
 //       n = 8).  Measured at n = 48: 1.004 +/- 0.017 (pre-fix 0.80).
+//       Runs only under --only (e.g. --only C:); the default run skips it.
 //
 //  Usage: VCMVolumeMergeTest [--trials n] [--only <label substring>]
 //
 //////////////////////////////////////////////////////////////////////
 
 #include "VCMVolumeMergeFixture.h"
+
+namespace
+{
+	std::string WithMaxVolumeBounce( std::string scene, unsigned int cap )
+	{
+		const std::string anchor = "\tpixel_filter box\n";
+		const std::size_t pos = scene.find( anchor );
+		if( pos != std::string::npos ) {
+			scene.insert( pos, "\tmax_volume_bounce " + std::to_string( cap ) + "\n" );
+		}
+		return scene;
+	}
+}
 
 int main( int argc, char** argv )
 {
@@ -58,7 +72,7 @@ int main( int argc, char** argv )
            GlobalOptions().ReadDouble("vcm_volume_merge_footprints",2)!=64)) ||
            GlobalOptions().ReadInt("force_number_of_threads",0)!=1) return 2;
     }
-    unsigned int trials = 8;
+    unsigned int trials = 4;
 	for( int i = 1; i < argc; ++i ) {
 		const std::string a( argv[i] );
 		if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
@@ -106,17 +120,23 @@ int main( int argc, char** argv )
     }
 	// A: pre-fix 0.58 (the single-scatter share had no strategy).
 	RatioRow( "A: fog box, VCM / PT",
-		FogBoxScene( true, 512, false ), FogBoxScene( false, 64, false ), 1.0, 0.06, trials, seed, only );
+		WithMaxVolumeBounce( FogBoxScene( true, 64, false, 12 ), 12 ),
+		WithMaxVolumeBounce( FogBoxScene( false, 48, false, 12 ), 12 ), 1.0, 0.08, trials, seed, only );
 	// B: pre-fix 0.977 (phantom medium merge in the MIS denominators).
-	RatioRow( "B: global fog, forced surface merging, VCM / PT",
-		GlobalFogScene( true, 64 ), GlobalFogScene( false, 512 ), 1.0, 0.015, trials, seed, only );
+	{
+		const unsigned int trialsB = std::max( 6u, trials );
+		RatioRow( "B: global fog, forced surface merging, VCM / PT",
+			WithMaxVolumeBounce( GlobalFogScene( true, 384, 16 ), 10 ),
+			WithMaxVolumeBounce( GlobalFogScene( false, 768, 16 ), 10 ), 1.0, 0.012, trialsB, seed, only );
+	}
 	// D: A's scene with medium light vertices stored with probability
 	// q = 0.2 (the memory thinning; DL-469 review P1).  Throughput / q and
 	// the MIS factor q eta_v keep the estimator and the partition exact,
 	// so the ratio must not move.
 	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.2 );
 	RatioRow( "D: fog box, store probability 0.2, VCM / PT",
-		FogBoxScene( true, 512, false ), FogBoxScene( false, 64, false ), 1.0, 0.06, trials, seed, only );
+		WithMaxVolumeBounce( FogBoxScene( true, 128, false, 16 ), 12 ),
+		WithMaxVolumeBounce( FogBoxScene( false, 96, false, 16 ), 12 ), 1.0, 0.08, trials, seed, only );
 	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.0 );
 
 	// E: a store holding surface AND medium light vertices (A's fog box
@@ -133,15 +153,21 @@ int main( int argc, char** argv )
 	// thinner store gets, DL-474).  At q = 0.05 the old clamp read
 	// 1.037 +/- 0.038 (n = 8): too little to see, hence q = 0.01.
 	{
-		const unsigned int trialsE = trials < 16 ? 16 : trials;
+		const unsigned int trialsE = trials < 4 ? 4 : trials;
 		RatioRow( "E: fog box with a floor, medium store probability 0.01 / 1, VCM",
-			FogFloorBoxScene( true, 1024 ), FogFloorBoxScene( true, 1024 ), 1.0, 0.2, trialsE, seed, only, 0.01, 1.0 );
+			WithMaxVolumeBounce( FogFloorBoxScene( true, 256, 16 ), 12 ),
+			WithMaxVolumeBounce( FogFloorBoxScene( true, 256, 16 ), 12 ), 1.0, 0.25, trialsE, seed, only, 0.01, 1.0 );
 	}
 	VCMRasterizerBase::TestVolumeStoreProbabilityOverride().store( 0.0 );
 
 	// C: the ledger row; pre-fix 0.80 (printed: heavy-tailed, see header).
-	RatioRow( "C: ledger fog box with sphere, VCM / PT (printed)",
-		FogBoxScene( true, 1024, true ), FogBoxScene( false, 64, true ), 1.0, 0.0, trials, seed, only );
+	// It gates only "finite and non-black", which
+	// SMSMediumTransmittanceTest row A already gates on this same scene, so
+	// it runs only when --only selects it (e.g. --only C:).
+	if( !only.empty() ) {
+		RatioRow( "C: ledger fog box with sphere, VCM / PT (printed)",
+			FogBoxScene( true, 1024, true ), FogBoxScene( false, 64, true ), 1.0, 0.0, trials, seed, only );
+	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;

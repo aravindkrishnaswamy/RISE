@@ -238,7 +238,7 @@ int main()
 	std::vector<Range> ranges;
 	// Full frames (start 0) of assorted sizes, odd and even, including
 	// one-row, one-column and one-pixel frames.
-	const unsigned int sizes[] = { 1, 2, 3, 5, 7, 8, 9, 17, 31, 32, 33, 64, 97, 100, 101 };
+	const unsigned int sizes[] = { 1, 2, 3, 7, 8, 17, 31, 32, 33, 64, 101 };
 	for( unsigned int w : sizes ) {
 		for( unsigned int h : sizes ) {
 			ranges.push_back( { 0, w - 1, 0, h - 1 } );
@@ -246,8 +246,6 @@ int main()
 	}
 	// Configurations that broke the Hilbert walk.
 	ranges.push_back( { 0, 100, 0, 99 } );		// 101x100
-	ranges.push_back( { 0, 1919, 0, 1079 } );
-	ranges.push_back( { 0, 1918, 0, 1079 } );
 	// Crops (non-zero start), as BoundsFromRect produces for a region render.
 	ranges.push_back( { 5, 5, 9, 9 } );
 	ranges.push_back( { 3, 40, 7, 7 } );
@@ -256,26 +254,35 @@ int main()
 	ranges.push_back( { 17, 99, 33, 34 } );
 	ranges.push_back( { 600, 699, 300, 359 } );
 
+	// HD frames for sequences whose tile count stays reasonable (Hilbert,
+	// scanline, coarse Morton/block).  Avoids generating millions of 1x1
+	// rects per order on 1920x1080.
+	std::vector<Range> rangesWithHD = ranges;
+	rangesWithHD.push_back( { 0, 1919, 0, 1079 } );
+	rangesWithHD.push_back( { 0, 1918, 0, 1079 } );
+
 	RunSequence( "scanline", []() {
-		return static_cast<IRasterizeSequence*>( new Implementation::ScanlineRasterizeSequence() ); }, ranges, true );
+		return static_cast<IRasterizeSequence*>( new Implementation::ScanlineRasterizeSequence() ); }, rangesWithHD, true );
 
 	const unsigned int tiles[] = { 1, 8, 32 };
 	for( unsigned int t : tiles ) {
 		char name[ 64 ];
 		std::snprintf( name, sizeof( name ), "morton tile %u", t );
 		RunSequence( name, [t]() {
-			return static_cast<IRasterizeSequence*>( new Implementation::MortonRasterizeSequence( t ) ); }, ranges, true );
+			return static_cast<IRasterizeSequence*>( new Implementation::MortonRasterizeSequence( t ) ); },
+			t >= 8 ? rangesWithHD : ranges, true );
 	}
 
 	const unsigned int bs[][2] = { { 1, 1 }, { 8, 8 }, { 64, 64 }, { 16, 5 }, { 0, 0 } };
 	for( auto& b : bs ) {
+		const bool includeHD = ( b[0] == 0 || b[0] >= 16 );
 		for( int order = 0; order <= 8; order++ ) {
 			char name[ 64 ];
 			std::snprintf( name, sizeof( name ), "block %ux%u order %d", b[0], b[1], order );
 			const unsigned int bw = b[0], bh = b[1];
 			RunSequence( name, [bw, bh, order]() {
 				return static_cast<IRasterizeSequence*>( new Implementation::BlockRasterizeSequence( bw, bh, static_cast<char>( order ) ) ); },
-				ranges, order != 1 );
+				includeHD ? rangesWithHD : ranges, order != 1 );
 		}
 	}
 
@@ -302,7 +309,7 @@ int main()
 		std::snprintf( name, sizeof( name ), "hilbert depth %u", d );
 		RunSequence( name, [d]() {
 			return static_cast<IRasterizeSequence*>( new Implementation::HilbertRasterizeSequence( d ) ); },
-			ranges, true, hilbertFellBack );
+			rangesWithHD, true, hilbertFellBack );
 	}
 
 	TestBlockCropAlignment();

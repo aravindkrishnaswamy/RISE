@@ -1285,7 +1285,7 @@ namespace
 		auto readerBody = [&]() {
 			std::vector<uint8_t> buf( 8 * 8 * 4, 0 );
 			ViewTransform xf = ViewTransform::Identity();
-			while ( !stop.load() ) {
+			for ( int iter = 0; iter < 2000; ++iter ) {
 				const Rect roi( 0, 0, 8, 8 );
 				store->Render( buf.data(), 8 * 4, roi,
 				               TargetFormat::RGBA8_sRGB, xf );
@@ -1312,26 +1312,21 @@ namespace
 			}
 		};
 
-		// Two reader threads to amplify contention vs the single
-		// writer.  Run for 500 ms — long enough on Apple Silicon
-		// (where reorderings are rare events) to accumulate
-		// thousands of cross-thread interleavings.  This is still
-		// far short of what TSan would catch immediately, but it's
-		// the best stress signal we can get without TSan integration.
+		// Two reader threads running 2000 deterministic tile reads each
+		// against the single active writer — zero timing dependency.
 		std::thread r1( readerBody );
 		std::thread r2( readerBody );
 
-		std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
-		stop.store( true );
-		writer.join();
 		r1.join();
 		r2.join();
+		stop.store( true );
+		writer.join();
 
 		std::ostringstream os;
 		os << "concurrent readers (2) saw " << iterations.load()
 		   << " tile reads, " << tornReads.load() << " torn";
 		Check( tornReads.load() == 0, os.str() );
-		Check( iterations.load() > 100, "reader threads ran enough iterations to stress" );
+		Check( iterations.load() == 4000, "reader threads ran all 4000 deterministic iterations" );
 
 		store->release();
 	}
@@ -1760,6 +1755,7 @@ namespace
 		std::mutex* startMutex = nullptr;
 		std::condition_variable* startCondition = nullptr;
 		unsigned int* entered = nullptr;
+		unsigned int* attempted = nullptr;
 
 		void OnTileComplete( const Rect&, uint64_t ) override
 		{
@@ -1773,6 +1769,16 @@ namespace
 			}
 			try { victimStore->RemoveObserver(victim); }
 			catch( const std::runtime_error& ) { rejections.fetch_add(1u); }
+			// Stay in the callback until both removals were attempted:
+			// a callback that returned first would let the other removal
+			// find no callback in flight and succeed, which is correct.
+			{
+				std::unique_lock<std::mutex> lock(*startMutex);
+				++*attempted;
+				startCondition->notify_all();
+				startCondition->wait_for(lock,std::chrono::milliseconds(2000),
+					[this]() { return *attempted == 2u; });
+			}
 		}
 	};
 
@@ -1789,9 +1795,11 @@ namespace
 		std::mutex callbackMutex;
 		std::condition_variable callbackCondition;
 		unsigned int entered = 0u;
+		unsigned int attempted = 0u;
 		firstObserver.startMutex = secondObserver.startMutex = &callbackMutex;
 		firstObserver.startCondition = secondObserver.startCondition = &callbackCondition;
 		firstObserver.entered = secondObserver.entered = &entered;
+		firstObserver.attempted = secondObserver.attempted = &attempted;
 		firstStore->AddObserver(&firstObserver);
 		secondStore->AddObserver(&secondObserver);
 

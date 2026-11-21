@@ -242,10 +242,10 @@ namespace RISE
 		/// END vertex, alongside the `pdfRev` it just computed, and restored
 		/// with it before that strategy returns -- exactly like `pdfRev`,
 		/// this is scratch state for one MISWeight call, never a persistent
-		/// property of a generated subpath.  The set predicate is SET
-		/// MEMBERSHIP in the NEE light table, not "the pdf came out zero";
-		/// see the set-site comment in BDPTIntegrator.cpp for why the
-		/// distinction matters under `light_bvh`.
+		/// property of a generated subpath.  It is set when the emitter is
+		/// NOT in the light table SampleLight() draws from, which since
+		/// DL-348 is exactly when `PdfSelectLuminary` is zero; see the
+		/// set-site comment in BDPTIntegrator.cpp.
 		///
 		/// RELATIONSHIP TO isDelta: none -- the flag's correctness does not
 		/// depend on the vertex's delta-ness, and nothing here assumes it is

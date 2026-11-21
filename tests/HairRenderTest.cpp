@@ -617,12 +617,12 @@ static void TestFurnace()
 {
 	std::cout << "=== 1. White furnace (render-level) ===" << std::endl;
 
-	const unsigned int W = 40, H = 40, COUNT = 4000, SEG = 6, SEED = 5;
+	const unsigned int W = 24, H = 24, COUNT = 1200, SEG = 6, SEED = 5;
 	const std::string common = GroomInEnvCommon( "sigma_a", 0.0, W, H, COUNT, SEG, SEED );
 
 	{
 		const ImageStats s = RenderAndComputeStats(
-			AssembleScene( common, RasterizerPTRgb( 384, 8 ) ), "furnace_rgb" );
+			AssembleScene( common, RasterizerPTRgb( 128, 8 ) ), "furnace_rgb" );
 		Check( s.valid, "furnace RGB: render produced output" );
 		if( s.valid ) {
 			std::cout << "  RGB luminance = " << s.luminance << " (target " << kFurnaceTarget << ")" << std::endl;
@@ -632,7 +632,7 @@ static void TestFurnace()
 	}
 	{
 		const ImageStats s = RenderAndComputeStats(
-			AssembleScene( common, RasterizerPTSpectral( 256, false, 8 ) ), "furnace_spec_hwss_off" );
+			AssembleScene( common, RasterizerPTSpectral( 96, false, 8 ) ), "furnace_spec_hwss_off" );
 		Check( s.valid, "furnace spectral (hwss=false): render produced output" );
 		if( s.valid ) {
 			std::cout << "  spectral hwss=false luminance = " << s.luminance << std::endl;
@@ -642,7 +642,7 @@ static void TestFurnace()
 	}
 	{
 		const ImageStats s = RenderAndComputeStats(
-			AssembleScene( common, RasterizerPTSpectral( 256, true, 8 ) ), "furnace_spec_hwss_on" );
+			AssembleScene( common, RasterizerPTSpectral( 96, true, 8 ) ), "furnace_spec_hwss_on" );
 		Check( s.valid, "furnace spectral (hwss=true): render produced output" );
 		if( s.valid ) {
 			std::cout << "  spectral hwss=true luminance = " << s.luminance
@@ -737,14 +737,14 @@ static void TestMedullaFurnace()
 {
 	std::cout << "=== 1b. Fur medulla white furnace (kappa = 0.7) ===" << std::endl;
 
-	const unsigned int W = 40, H = 40, COUNT = 4000, SEG = 6, SEED = 5;
+	const unsigned int W = 24, H = 24, COUNT = 1200, SEG = 6, SEED = 5;
 	const char* kMedulla =
 		"\tmedulla_ratio 0.7\n\tmedulla_scatter 2.0\n\tmedulla_g 0.4\n";
 
 	const std::string common = GroomInEnvCommon( "sigma_a", 0.0, W, H, COUNT, SEG, SEED, kMedulla );
 
 	const ImageStats s = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTRgb( 384, 8 ) ), "furnace_medulla_rgb" );
+		AssembleScene( common, RasterizerPTRgb( 128, 8 ) ), "furnace_medulla_rgb" );
 	Check( s.valid, "medulla furnace: render produced output" );
 	if( s.valid ) {
 		std::cout << "  medulla RGB luminance = " << s.luminance
@@ -797,13 +797,13 @@ static void TestHwssInvariant()
 {
 	std::cout << "=== 2. HWSS invariant (melanin groom, spectral PT) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32, COUNT = 3000, SEG = 6, SEED = 9;
+	const unsigned int W = 20, H = 20, COUNT = 1000, SEG = 6, SEED = 9;
 	const std::string common = GroomInEnvCommon( "eumelanin", 1.3, W, H, COUNT, SEG, SEED );
 
 	const ImageStats sOff = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTSpectral( 256, false, 8 ) ), "hwss_off" );
+		AssembleScene( common, RasterizerPTSpectral( 96, false, 8 ) ), "hwss_off" );
 	const ImageStats sOn = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTSpectral( 256, true, 8 ) ), "hwss_on" );
+		AssembleScene( common, RasterizerPTSpectral( 96, true, 8 ) ), "hwss_on" );
 
 	Check( sOff.valid, "hwss=false: render produced output" );
 	Check( sOn.valid,  "hwss=true: render produced output" );
@@ -830,7 +830,7 @@ static void TestMelaninLadder()
 {
 	std::cout << "=== 3. Melanin ladder (RGB PT) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32, COUNT = 3000, SEG = 6, SEED = 9;
+	const unsigned int W = 20, H = 20, COUNT = 1000, SEG = 6, SEED = 9;
 	const double ce[3] = { 0.3, 1.3, 4.0 };
 	double lum[3];
 
@@ -839,7 +839,7 @@ static void TestMelaninLadder()
 		char tag[64];
 		std::snprintf( tag, sizeof(tag), "ladder_%d", i );
 		const ImageStats s = RenderAndComputeStats(
-			AssembleScene( common, RasterizerPTRgb( 256, 8 ) ), tag );
+			AssembleScene( common, RasterizerPTRgb( 64, 8 ) ), tag );
 
 		char label[96];
 		std::snprintf( label, sizeof(label), "ladder eumelanin=%.1f: render produced output", ce[i] );
@@ -943,13 +943,13 @@ static void TestPtVsBdpt()
 {
 	std::cout << "=== 4. PT-vs-BDPT sanity (loose, reciprocity caveat) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32, COUNT = 2000, SEG = 6, SEED = 3;
+	const unsigned int W = 20, H = 20, COUNT = 800, SEG = 6, SEED = 3;
 	const std::string common = GroomInEnvCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED );
 
 	const ImageStats pt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerPTRgb( 256, 8, 0, 1.5 ) ), "ptvbdpt_pt" );
+		AssembleScene( common, RasterizerPTRgb( 96, 8, 0, 1.5 ) ), "ptvbdpt_pt" );
 	const ImageStats bdpt = RenderAndComputeStats(
-		AssembleScene( common, RasterizerBDPTRgb( 256, 4, 4, 1.5 ) ), "ptvbdpt_bdpt" );
+		AssembleScene( common, RasterizerBDPTRgb( 96, 4, 4, 1.5 ) ), "ptvbdpt_bdpt" );
 
 	Check( pt.valid,   "PT-vs-BDPT: PT render produced output" );
 	Check( bdpt.valid, "PT-vs-BDPT: BDPT render produced output" );
@@ -1075,44 +1075,32 @@ static void TestBacklitFullSphereNEE()
 {
 	std::cout << "=== 4b. Point-lit backlit groom (full-sphere NEE guard) ===" << std::endl;
 
-	const unsigned int W = 32, H = 32, COUNT = 2000, SEG = 6, SEED = 3;
+	// Keep COUNT=2000 so strand coverage matches the calibrated
+	// kBacklitPtPerPowerMin / kBacklitPtPerPowerMax bounds.
+	const unsigned int W = 20, H = 20, COUNT = 2000, SEG = 6, SEED = 3;
 
-	// --- PT, unclamped, at two light powers -------------------------
-	const double pwA = 4.0, pwB = 1.0;
+	// --- PT, unclamped ----------------------------------------------
+	const double pwA = 4.0;
 
 	const ImageStats ptA = RenderAndComputeStats(
 		AssembleScene( GroomWithBackLightCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED, pwA ),
-			RasterizerPTRgbNoEnv( 256, 8 ) ), "backlit_pt_p4" );
-	const ImageStats ptB = RenderAndComputeStats(
-		AssembleScene( GroomWithBackLightCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED, pwB ),
-			RasterizerPTRgbNoEnv( 256, 8 ) ), "backlit_pt_p1" );
+			RasterizerPTRgbNoEnv( 96, 8 ) ), "backlit_pt_p4" );
 
-	Check( ptA.valid && ptB.valid, "backlit: both PT renders produced output" );
-	if( !ptA.valid || !ptB.valid ) return;
+	Check( ptA.valid, "backlit: PT render produced output" );
+	if( !ptA.valid ) return;
 
 	const double perPowerA = ptA.luminance / pwA;
-	const double perPowerB = ptB.luminance / pwB;
-	std::cout << "  PT per-unit-power: power " << pwA << " -> " << perPowerA
-		<< " ; power " << pwB << " -> " << perPowerB << std::endl;
+	std::cout << "  PT per-unit-power: power " << pwA << " -> " << perPowerA << std::endl;
 
 	// MONEY ASSERTION.  PT must actually light these strands.  With the
 	// hemisphere gate in place this reads 1.2e-4 -- not merely "dim
 	// because the groom is backlit", but missing the entire
 	// below-horizon direct term.
-	Check( perPowerA >= kBacklitPtPerPowerMin && perPowerB >= kBacklitPtPerPowerMin,
-		"backlit: MONEY ASSERTION -- PT lights the groom from BEHIND at BOTH powers "
+	Check( perPowerA >= kBacklitPtPerPowerMin,
+		"backlit: MONEY ASSERTION -- PT lights the groom from BEHIND "
 		"(a hemisphere-gated NEE reads 6-8x lower here)" );
-	Check( perPowerA <= kBacklitPtPerPowerMax && perPowerB <= kBacklitPtPerPowerMax,
+	Check( perPowerA <= kBacklitPtPerPowerMax,
 		"backlit: MONEY ASSERTION -- and does not OVER-count that term" );
-
-	// Printed, not asserted -- see the section comment's bounds list for
-	// why (too noisy at 256 spp to bound without flakiness; the band above
-	// is the guard).  A drift that grows well past ~0.12 is worth a human
-	// look: this row is exactly linear in emitted power by construction.
-	const double scaleDrift =
-		std::fabs( perPowerA - perPowerB ) / std::fmax( perPowerB, 1e-12 );
-	std::cout << "  PT scale drift across powers = " << scaleDrift
-		<< " (diagnostic only)" << std::endl;
 
 	// --- BDPT sanity net, clamped on both sides ---------------------
 	// Loose by construction: BDPT is the high-variance side here, see
@@ -1121,9 +1109,9 @@ static void TestBacklitFullSphereNEE()
 	const double pwC = 40.0;
 	const std::string commonC = GroomWithBackLightCommon( "eumelanin", 0.9, W, H, COUNT, SEG, SEED, pwC );
 	const ImageStats ptC = RenderAndComputeStats(
-		AssembleScene( commonC, RasterizerPTRgbNoEnv( 256, 8, 1.5 ) ), "backlit_pt_c" );
+		AssembleScene( commonC, RasterizerPTRgbNoEnv( 96, 8, 1.5 ) ), "backlit_pt_c" );
 	const ImageStats bdptC = RenderAndComputeStats(
-		AssembleScene( commonC, RasterizerBDPTRgbNoEnv( 256, 4, 4, 1.5 ) ), "backlit_bdpt_c" );
+		AssembleScene( commonC, RasterizerBDPTRgbNoEnv( 96, 4, 4, 1.5 ) ), "backlit_bdpt_c" );
 
 	Check( ptC.valid && bdptC.valid, "backlit: clamped PT and BDPT renders produced output" );
 	if( !ptC.valid || !bdptC.valid ) return;

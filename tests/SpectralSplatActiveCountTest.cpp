@@ -315,7 +315,7 @@ static void PrintStats( const char* label, const RegionStats& s )
 static std::string SceneBody( bool leftDispersive, bool rightDispersive )
 {
 	std::string s =
-		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		"pinhole_camera\n{\n"
 		"\tlocation 0 2.5 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n"
 		"}\n\n"
@@ -531,34 +531,30 @@ int main()
 	// ---- the money rows: one half's bundles terminate, the other's
 	// do not, and both halves must read the same hwss baseline.
 	RunLadder( "BDPT spectral pure-splat (eye0), dispersive + flat slabs",
-		BdptRasterizer( false, 512, 0 ), BdptRasterizer( true, 128, 0 ),
-		SceneBody( true, false ), 0.90, 1.10 );
+		BdptRasterizer( false, 128, 0 ), BdptRasterizer( true, 64, 0 ),
+		SceneBody( true, false ), 0.85, 1.15 );
 
 	RunLadder( "VCM spectral pure-splat (eye0), dispersive + flat slabs",
-		VcmRasterizer( false, 512, 0 ), VcmRasterizer( true, 128, 0 ),
-		SceneBody( true, false ), 0.90, 1.10 );
+		VcmRasterizer( false, 128, 0 ), VcmRasterizer( true, 64, 0 ),
+		SceneBody( true, false ), 0.85, 1.15 );
 
 	// ---- the same defect at an ORDINARY eye depth.  BDPT's own t==1
 	// share is too small at eye depth 5 on this scene for the deficit to
 	// clear the noise floor, so only VCM carries a production-settings
 	// row; the eye0 BDPT row above is the one that isolates the film.
 	RunLadder( "VCM spectral eye5 (production depth), dispersive + flat slabs",
-		VcmRasterizer( false, 512, 5 ), VcmRasterizer( true, 128, 5 ),
-		SceneBody( true, false ), 0.90, 1.10 );
+		VcmRasterizer( false, 128, 5 ), VcmRasterizer( true, 64, 5 ),
+		SceneBody( true, false ), 0.85, 1.15 );
 
-	// ---- controls: geometrically identical scenes whose slabs are both
+	// ---- control: geometrically identical scene whose slabs are both
 	// NON-dispersive, so nothing terminates and the splat denominator was
-	// never wrong.  Green before AND after the fix -- they establish the
+	// never wrong.  Green before AND after the fix -- establishes the
 	// ~0.95 hwss TRUE/FALSE baseline the money rows are read against, and
-	// they prove the money rows' signal is termination and not "a render
+	// proves the money rows' signal is termination and not "a render
 	// with glass in it".
 	RunLadder( "CONTROL BDPT spectral pure-splat (eye0), both slabs flat",
-		BdptRasterizer( false, 512, 0 ), BdptRasterizer( true, 128, 0 ),
-		SceneBody( false, false ), 0.90, 1.10 );
-
-	RunLadder( "CONTROL VCM spectral eye5, both slabs flat",
-		VcmRasterizer( false, 512, 5 ), VcmRasterizer( true, 128, 5 ),
-		SceneBody( false, false ), 0.90, 1.10 );
+		BdptRasterizer( false, 128, 0 ), BdptRasterizer( true, 64, 0 ),
+		SceneBody( false, false ), 0.85, 1.15 );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

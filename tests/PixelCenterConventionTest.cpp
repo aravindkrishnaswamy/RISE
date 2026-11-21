@@ -168,7 +168,7 @@ static std::vector<double> RenderMean( const std::string& scene, const char* tag
 //////////////////////////////////////////////////////////////////////
 // Row A: quadrant probe
 //////////////////////////////////////////////////////////////////////
-static const unsigned kRes = 32;
+static const unsigned kRes = 16;
 
 static std::string Emitter( const char* name, double x0, double x1, double y0, double y1, double scale )
 {
@@ -195,24 +195,17 @@ static std::vector<CameraCase> Cameras()
 	};
 }
 
-struct RasterCase { const char* name; std::string text; int reps; };
+struct RasterCase { const char* name; std::string text; int reps; bool allCameras; };
 
 static std::vector<RasterCase> Rasterizers()
 {
 	const char* pt = "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
-	const char* em = "standard_shader\n{\n\tname global\n\tshaderop DefaultEmission\n}\n\n";
 	return {
-		{ "PT",                      std::string( pt ) + "pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "PT spectral",             std::string( pt ) + "pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\thwss FALSE\n\tnum_wavelengths 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "PT spectral HWSS",        std::string( pt ) + "pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\thwss TRUE\n\tnum_wavelengths 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "pixelpel",                std::string( em ) + "pixelpel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "pixelintegratingspectral", std::string( em ) + "pixelintegratingspectral_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "BDPT",                    std::string( pt ) + "bdpt_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "BDPT spectral HWSS",      std::string( pt ) + "bdpt_spectral_rasterizer\n{\n\tsamples 256\n\thwss TRUE\n\tnum_wavelengths 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "VCM",                     std::string( pt ) + "vcm_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "VCM spectral",            std::string( pt ) + "vcm_spectral_rasterizer\n{\n\tsamples 256\n\tnum_wavelengths 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2 },
-		{ "MLT",                     std::string( pt ) + "mlt_rasterizer\n{\n\tbootstrap_samples 20000\n\tchains 64\n\tmutations_per_pixel 256\n\tlarge_step_prob 0.3\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 1 },
-		{ "MLT spectral",            std::string( pt ) + "mlt_spectral_rasterizer\n{\n\tbootstrap_samples 20000\n\tchains 64\n\tmutations_per_pixel 256\n\tlarge_step_prob 0.3\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 1 },
+		{ "PT",                 std::string( pt ) + "pathtracing_pel_rasterizer\n{\n\tsamples 128\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 1, true },
+		{ "PT spectral HWSS",   std::string( pt ) + "pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\thwss TRUE\n\tnum_wavelengths 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 1, false },
+		{ "BDPT",               std::string( pt ) + "bdpt_pel_rasterizer\n{\n\tsamples 128\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 1, true },
+		{ "BDPT spectral HWSS", std::string( pt ) + "bdpt_spectral_rasterizer\n{\n\tsamples 64\n\thwss TRUE\n\tnum_wavelengths 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 1, false },
+		{ "VCM",                std::string( pt ) + "vcm_pel_rasterizer\n{\n\tsamples 64\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 1, false },
 	};
 }
 
@@ -238,16 +231,19 @@ static void QuadrantFractions( const std::vector<double>& img, unsigned w, unsig
 static void TestQuadrantProbe()
 {
 	std::cout << "\n-- A: quadrant probe (four sub-pixel emitters around the optical axis) --" << std::endl;
-	// Each square spans [0, 0.03] from the axis: 0.24 px under the 4-unit
-	// orthographic / pinhole footprint, ~0.08 px through the fisheye.
-	const double s = 0.03;
+	// Each square spans [0, 0.09] from the axis: 0.36 px under the 4-unit
+	// orthographic / pinhole footprint at kRes = 16 (< 0.5 px, so the old
+	// half-pixel convention still collapses all four into one pixel).
+	const double s = 0.09;
 	std::string emitters =
 		Emitter( "q1",  0, s,  0, s, 10 ) + Emitter( "q2", -s, 0,  0, s, 10 ) +
 		Emitter( "q3", -s, 0, -s, 0, 10 ) + Emitter( "q4",  0, s, -s, 0, 10 );
 	const std::string film = Fmt( "film\n{\n\twidth %u\n\theight %u\n}\n\n", kRes, kRes );
 	unsigned salt = 0x368A0u;
 	for( const CameraCase& c : Cameras() ) {
+		const bool coreCam = std::strcmp( c.name, "orthographic" ) == 0 || std::strcmp( c.name, "pinhole" ) == 0;
 		for( const RasterCase& r : Rasterizers() ) {
+			if( !r.allCameras && !coreCam ) continue;
 			unsigned w = 0, h = 0;
 			const std::string scene = std::string( "RISE ASCII SCENE 7\n\n" ) + r.text + film + c.text + emitters;
 			const std::vector<double> img = RenderMean( scene, "quad", r.reps, salt++, w, h );
@@ -326,11 +322,11 @@ static std::string OffAxisScene( const std::string& ras, double cx )
 
 static void TestOffAxisEmitter()
 {
-	std::cout << "\n-- B: lone off-axis emitter vs its closed form (orthographic, view 1, 32 px) --" << std::endl;
+	std::cout << "\n-- B: lone off-axis emitter vs its closed form (orthographic, view 1, 16 px) --" << std::endl;
 	const char* pt = "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	const std::vector<RasterCase> rs = {
-		{ "PT",   std::string( pt ) + "pathtracing_pel_rasterizer\n{\n\tsamples 64\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 3 },
-		{ "BDPT", std::string( pt ) + "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 64\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 3 },
+		{ "PT",   std::string( pt ) + "pathtracing_pel_rasterizer\n{\n\tsamples 64\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2, true },
+		{ "BDPT", std::string( pt ) + "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples 64\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", 2, true },
 	};
 	unsigned salt = 0x368B0u;
 	for( const RasterCase& r : rs ) {

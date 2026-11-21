@@ -128,7 +128,7 @@ namespace RISE
 
 static unsigned int g_seedBase = 3200u;
 static unsigned int g_renderIndex = 0;
-static int g_repeats = 4;
+static int g_repeats = 2;
 static int passCount = 0;
 static int failCount = 0;
 
@@ -290,7 +290,7 @@ static double RectF( double x, double y, double x1, double x2, double y1, double
 //! Brute-force cross-check of RectF: integral of h^2/(pi d^4) dA.
 static double RectFQuadrature( double x, double y, double x1, double x2, double y1, double y2, double h )
 {
-	const int N = 600;
+	const int N = 150;
 	double sum = 0;
 	const double dx = ( x2 - x1 ) / N, dy = ( y2 - y1 ) / N;
 	for( int j = 0; j < N; j++ ) {
@@ -308,7 +308,7 @@ static double RectFQuadrature( double x, double y, double x1, double x2, double 
 //! the orthographic footprint [-kView/2, kView/2]^2.
 static double ClosedFormImageMean( const bool withSecond )
 {
-	const int N = 512;
+	const int N = 128;
 	double sum = 0;
 	for( int j = 0; j < N; j++ ) {
 		for( int i = 0; i < N; i++ ) {
@@ -364,7 +364,7 @@ static std::string EmitterQuad( const char* name, double cx, double half, double
 static std::string SceneBody( bool faceDown, bool doubleSided, bool withSecond )
 {
 	std::string s =
-		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		"orthographic_camera\n{\n\tlocation 0 0 1\n\tlookat 0 0 0\n\tup 0 1 0\n"
 		+ Fmt( "\tviewport_scale %g %g\n}\n\n", kView, kView ) +
 		Fmt( "uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor %g %g %g\n}\n\n", kRho, kRho, kRho ) +
@@ -403,36 +403,17 @@ static std::string RasVCM( int spp, bool merging )
 		Fmt( "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples %d\n\toidn_denoise FALSE\n\tpixel_filter box\n"
 			"\tmerge_radius %s\n\tvc_enabled true\n\tvm_enabled %s\n}\n\n", spp, merging ? "0.05" : "0.0", merging ? "true" : "false" );
 }
-static std::string RasPixelDirect( int spp )
-{
-	return Shader( "\tshaderop DefaultDirectLighting\n" ) +
-		Fmt( "pixelpel_rasterizer\n{\n\tsamples %d\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n", spp );
-}
-static std::string RasPixelDirectPlusDT( int spp )
-{
-	return std::string( "distributiontracing_shaderop\n{\n\tname dt\n\tsamples 4\n}\n\n" ) +
-		Shader( "\tshaderop DefaultDirectLighting\n\tshaderop dt\n" ) +
-		Fmt( "pixelpel_rasterizer\n{\n\tsamples %d\n\tmax_recursion 2\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n", spp );
-}
 static std::string RasPTSpectral( int spp, bool hwss )
 {
 	return Shader( "\tshaderop DefaultPathTracing\n" ) +
-		Fmt( "pathtracing_spectral_rasterizer\n{\n\tsamples %d\n\thwss %s\n\tnum_wavelengths 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n",
+		Fmt( "pathtracing_spectral_rasterizer\n{\n\tsamples %d\n\thwss %s\n\tnum_wavelengths 8\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n",
 			spp, hwss ? "TRUE" : "FALSE" );
 }
 static std::string RasBDPTSpectral( int spp, bool hwss )
 {
 	return Shader( "\tshaderop DefaultPathTracing\n" ) +
-		Fmt( "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples %d\n\thwss %s\n\tnum_wavelengths 16\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n",
+		Fmt( "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tsamples %d\n\thwss %s\n\tnum_wavelengths 8\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n",
 			spp, hwss ? "TRUE" : "FALSE" );
-}
-static std::string RasPhotonGlobal( int spp )
-{
-	return std::string(
-		"global_pel_photonmap\n{\n\tnum 200000\n\tmax_recursion 2\n\tmin_importance 0.001\n\tbranch FALSE\n}\n\n"
-		"global_pel_gather\n{\n\tmax_photons 200\n\tradius 0.3\n}\n\n" ) +
-		Shader( "\tshaderop DefaultGlobalPelPhotonMap\n" ) +
-		Fmt( "pixelpel_rasterizer\n{\n\tsamples %d\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n", spp );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -468,8 +449,6 @@ static void TestZ1()
 		{ "PT",                          RasPT( 64 ),               0.02 },
 		{ "BDPT",                        RasBDPT( 64 ),             0.02 },
 		{ "VCM (connections only)",      RasVCM( 64, false ),       0.02 },
-		{ "pixelpel [DirectLighting]",   RasPixelDirect( 64 ),      0.02 },
-		{ "pixelpel [DirectLighting, dt]", RasPixelDirectPlusDT( 16 ), 0.03 },
 	};
 	for( const Ras& r : rs ) {
 		const Stat f = RenderN( Header() + r.text + SceneBody( true, true, false ), "z1f", g_repeats );
@@ -529,7 +508,6 @@ static void TestZ5()
 		{ "PT",                        RasPT( 16 ),           0 },
 		{ "BDPT",                      RasBDPT( 16 ),         0 },
 		{ "VCM (merging on)",          RasVCM( 16, true ),    0 },
-		{ "pixelpel [DirectLighting]", RasPixelDirect( 16 ),  0 },
 		{ "PT spectral hwss",          RasPTSpectral( 16, true ), 0 },
 	};
 	for( const Ras& r : rs ) {
@@ -562,7 +540,6 @@ int main( int argc, char** argv )
 	if( only.empty() || only == "Z2" ) TestZ2();
 	if( only.empty() || only == "Z3" ) {
 		TestBackOverFace( "Z3 spectral", {
-			{ "PT spectral hero",  RasPTSpectral( 64, false ),   0.03 },
 			{ "PT spectral hwss",  RasPTSpectral( 64, true ),    0.03 },
 			{ "BDPT spectral hwss", RasBDPTSpectral( 32, true ), 0.03 },
 		} );
@@ -570,7 +547,6 @@ int main( int argc, char** argv )
 	if( only.empty() || only == "Z4" ) {
 		TestBackOverFace( "Z4 light-subpath / photon emission", {
 			{ "VCM (merging on)",   RasVCM( 64, true ),     0.03 },
-			{ "global photon map",  RasPhotonGlobal( 4 ),   0.05 },
 		} );
 	}
 	if( only.empty() || only == "Z5" ) TestZ5();

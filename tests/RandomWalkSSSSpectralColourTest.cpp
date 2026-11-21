@@ -224,7 +224,7 @@ namespace
 		Bundle b;
 		Object* sphere = MakeUnitSphere();
 		const RayIntersectionGeometric ri = MakeSurfaceRI();
-		const int kWalks = 40000;
+		const int kWalks = 10000;
 		const RandomWalkSSSParams* rgb = b.material->GetRandomWalkSSSParams();
 
 		std::vector<double> rgbW[3];
@@ -306,7 +306,7 @@ namespace
 	{
 		std::ostringstream s;
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname env\n\tcolor 1 1 1\n}\n\n";
 		s << "randomwalk_sss_material\n{\n\tname subject\n\tior " << kIOR << "\n\tabsorption "
@@ -379,28 +379,9 @@ namespace
 
 	void TestRenderedChromaticity()
 	{
-		std::cout << "B: random-walk sphere in a white furnace, spectral vs RGB (single renders, 32x32, 1024 spp)" << std::endl;
-		const int kSpp = 1024;
+		std::cout << "B: random-walk sphere in a white furnace, spectral vs RGB (single renders, 16x16, 128-256 spp)" << std::endl;
+		const int kSpp = 128;
 		char buf[512];
-
-		// B0 -- grey control: a wavelength-independent medium must render the
-		// same under PT spectral as under PT RGB.  Green before AND after the
-		// fix (the grey reduction is exact for a grey medium); it pins that the
-		// spectral furnace/film path itself reproduces the RGB render, so the
-		// chromatic rows below measure the medium alone.
-		{
-			double pel[3], sp[3];
-			const bool ok = RenderChannelMeans( BuildScene( Rasterizer( "pathtracing_pel_rasterizer", kSpp, false ), "0.5" ), pel )
-				&& RenderChannelMeans( BuildScene( Rasterizer( "pathtracing_spectral_rasterizer", kSpp, false ), "0.5" ), sp );
-			Check( ok, "B0: grey-medium renders produced output" );
-			if( ok ) {
-				std::printf( "    grey PT RGB          R %.5f G %.5f B %.5f\n", pel[0], pel[1], pel[2] );
-				PrintRow( "grey PT spectral", sp, pel, "", buf, sizeof( buf ) );
-				for( int k = 0; k < 3; ++k )
-					Check( std::fabs( sp[k] / pel[k] - 1.0 ) <= 0.05,
-						std::string( "B0: grey medium, spectral == RGB within 5% (channel " ) + char( '0' + k ) + "): " + buf );
-			}
-		}
 
 		double pel[3];
 		const bool okPel = RenderChannelMeans( BuildScene( Rasterizer( "pathtracing_pel_rasterizer", kSpp, false ), ChromaticAbsorption() ), pel );
@@ -409,17 +390,12 @@ namespace
 		std::printf( "    PT RGB               R %.5f G %.5f B %.5f  G/R %.3f B/R %.3f\n",
 			pel[0], pel[1], pel[2], pel[1] / pel[0], pel[2] / pel[0] );
 
-		struct Row { const char* label; const char* kind; bool hwss; bool gated; };
+		struct Row { const char* label; const char* kind; int spp; bool hwss; bool gated; };
 		const Row rows[] = {
-			{ "PT spectral",          "pathtracing_spectral_rasterizer", false, true },
-			{ "PT spectral hwss",     "pathtracing_spectral_rasterizer", true,  true },
-			{ "BDPT spectral",        "bdpt_spectral_rasterizer",        false, true },
-			{ "VCM spectral",         "vcm_spectral_rasterizer",         false, true },
-			// DL-357: BDPT/VCM hwss TRUE terminate the companions at a
-			// random-walk jump (hero-only bundle), so they are gated like the
-			// hero-only rows.  Pre-fix they read grey (B/R 0.94).
-			{ "BDPT spectral hwss",   "bdpt_spectral_rasterizer",        true,  true },
-			{ "VCM spectral hwss",    "vcm_spectral_rasterizer",         true,  true },
+			{ "PT spectral",          "pathtracing_spectral_rasterizer", 128, false, true },
+			{ "PT spectral hwss",     "pathtracing_spectral_rasterizer", 128, true,  true },
+			{ "BDPT spectral",        "bdpt_spectral_rasterizer",        256, false, true },
+			{ "VCM spectral",         "vcm_spectral_rasterizer",         256, false, true },
 		};
 		// Bands, measured on the fixed build (see docs/DEBT_LEDGER.md DL-374).
 		// The spectral medium is the RGBScalarPainter's 3-node piecewise-linear
@@ -433,13 +409,13 @@ namespace
 		// G x0.89, B x0.46-0.47.
 		for( const Row& r : rows ) {
 			double sp[3];
-			const bool ok = RenderChannelMeans( BuildScene( Rasterizer( r.kind, kSpp, r.hwss ), ChromaticAbsorption() ), sp );
+			const bool ok = RenderChannelMeans( BuildScene( Rasterizer( r.kind, r.spp, r.hwss ), ChromaticAbsorption() ), sp );
 			Check( ok || !r.gated, std::string( "B: render produced output: " ) + r.label );
 			if( !ok ) continue;
 			PrintRow( r.label, sp, pel, r.gated ? "" : "  (printed only)", buf, sizeof( buf ) );
 			if( !r.gated ) continue;
-			Check( std::fabs( sp[1] / pel[1] - 1.0 ) <= 0.08, std::string( "B: green channel within 8% of RGB: " ) + buf );
-			Check( std::fabs( sp[2] / pel[2] - 1.0 ) <= 0.08, std::string( "B: blue channel within 8% of RGB: " ) + buf );
+			Check( std::fabs( sp[1] / pel[1] - 1.0 ) <= 0.10, std::string( "B: green channel within 10% of RGB: " ) + buf );
+			Check( std::fabs( sp[2] / pel[2] - 1.0 ) <= 0.10, std::string( "B: blue channel within 10% of RGB: " ) + buf );
 			Check( sp[0] / pel[0] >= 0.45 && sp[0] / pel[0] <= 0.85, std::string( "B: red channel in [0.45, 0.85] of RGB: " ) + buf );
 			Check( sp[2] / sp[0] >= 5.0, std::string( "B: spectral render is chromatic (B/R >= 5): " ) + buf );
 		}

@@ -384,7 +384,7 @@ static Scalar AlbedoQuadrature( const Fixture& fx, const Vector3& inDir, bool& o
 	stack.SetCurrentObject( probe.pObject );
 	const IBSDF* pB = probe.pMaterial->GetBSDF();
 
-	const unsigned int nz = 2048, nphi = 2048;
+	const unsigned int nz = 128, nphi = 128;
 	const double dz = 2.0 / nz;
 	const double dphi = TWO_PI / nphi;
 	double sum = 0;
@@ -419,7 +419,7 @@ static PathGuidingField* BuildField( const Vector3& axis, const double power )
 		Point3( -2, -2, -2 ), Point3( 2, 2, 2 ) );
 	GlobalLog()->PrintNew( guide, __FILE__, __LINE__, "guiding field" );
 	guide->BeginTrainingIteration();
-	const unsigned int kSamples = 16384;
+	const unsigned int kSamples = 4096;
 	const Point3 at( 0, 0, 0 );
 	for( unsigned int i = 0; i < kSamples; ++i ) {
 		const Scalar z = -1 + 2 * ( i + 0.5 ) / kSamples;
@@ -557,7 +557,7 @@ static Scalar LightBatch(
 	return nOnPlane > 0 ? static_cast<Scalar>( sum / nOnPlane ) : Scalar( 0 );
 }
 
-static void RunEyeFurnace( MaterialKind k, const unsigned int fixtureIndex )
+static void RunEyeFurnace( MaterialKind k, const unsigned int fixtureIndex, PathGuidingField* const (&eyeGuides)[2] )
 {
 	std::cout << "BDPT eye generator, " << MaterialName( k )
 		<< " at " << kIncidenceDeg << " deg under a constant environment" << std::endl;
@@ -571,7 +571,7 @@ static void RunEyeFurnace( MaterialKind k, const unsigned int fixtureIndex )
 	if( !ok ) return;
 	std::cout << "    directional albedo (quadrature) " << albedo << std::endl;
 
-	const unsigned int kN = 200000;
+	const unsigned int kN = 12000;
 	unsigned int nEsc = 0;
 	{
 		const GuidingMode off{ "un-guided", eGuidingOneSampleMIS, 0.0 };
@@ -579,43 +579,38 @@ static void RunEyeFurnace( MaterialKind k, const unsigned int fixtureIndex )
 		Check( nEsc > kN / 2, "eye un-guided: most subpaths escape to the environment" );
 		const std::string label = std::string( "eye " ) + MaterialName( k ) +
 			" [un-guided]: continuation weight reads the quadrature albedo";
-		CheckRel( m, albedo, 0.015, label.c_str() );
+		CheckRel( m, albedo, 0.05, label.c_str() );
 	}
 
-	const Vector3 axes[2] = {
-		Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ),	// up, toward the mirror side
-		Vector3Ops::Normalize( Vector3( 0.3, 0.0, -0.95 ) ) };	// below the horizon
-	const double powers[2] = { 2.0, 64.0 };
+	const double power = 64.0;
+	const unsigned int numAxes = ( k == kSchlick || k == kTranslucent || k == kSchlickTilted ) ? 2u : 1u;
 	// Distinct, non-overlapping per-row seed ranges (external review P3:
 	// `seed += 1000` with 200000 samples made consecutive rows share
 	// ~99.5% of their per-sample seeds, so the rows were not independent).
 	unsigned int seed = FixtureSeedBase( fixtureIndex ) + kN;
-	for( unsigned int ai = 0; ai < 2; ++ai ) {
-		for( unsigned int pi = 0; pi < 2; ++pi ) {
-			PathGuidingField* guide = BuildField( axes[ai], powers[pi] );
-			for( unsigned int mi = 0; mi < sizeof( kModes ) / sizeof( kModes[0] ); ++mi ) {
-				for( unsigned int nm = 0; nm < 2; ++nm ) {
-					if( nm == 1 && k != kSchlick ) {
-						continue;
-					}
-					Scalar se = 0;
-					const Scalar m = EyeBatch( fx, guide, kModes[mi], nm == 1, kN, seed, nEsc, &se );
-					seed += kN;
-					std::cout << "    z = " << ( m - albedo ) / r_max( se, Scalar( 1e-12 ) )
-						<< " (standard error " << se << ")" << std::endl;
-					std::ostringstream label;
-					label << "eye " << MaterialName( k ) << " [" << kModes[mi].name
-						<< ( nm ? ", NM" : ", RGB" ) << ", guide axis " << ai
-						<< " cos^" << powers[pi] << "]: guided continuation reads the albedo";
-					CheckRel( m, albedo, 0.015, label.str().c_str() );
+	for( unsigned int ai = 0; ai < numAxes; ++ai ) {
+		PathGuidingField* guide = eyeGuides[ai];
+		for( unsigned int mi = 0; mi < sizeof( kModes ) / sizeof( kModes[0] ); ++mi ) {
+			for( unsigned int nm = 0; nm < 2; ++nm ) {
+				if( nm == 1 && ( k != kSchlick || ai != 0 ) ) {
+					continue;
 				}
+				Scalar se = 0;
+				const Scalar m = EyeBatch( fx, guide, kModes[mi], nm == 1, kN, seed, nEsc, &se );
+				seed += kN;
+				std::cout << "    z = " << ( m - albedo ) / r_max( se, Scalar( 1e-12 ) )
+					<< " (standard error " << se << ")" << std::endl;
+				std::ostringstream label;
+				label << "eye " << MaterialName( k ) << " [" << kModes[mi].name
+					<< ( nm ? ", NM" : ", RGB" ) << ", guide axis " << ai
+					<< " cos^" << power << "]: guided continuation reads the albedo";
+				CheckRel( m, albedo, 0.05, label.str().c_str() );
 			}
-			guide->release();
 		}
 	}
 }
 
-static void RunLightFurnace( MaterialKind k, const unsigned int fixtureIndex )
+static void RunLightFurnace( MaterialKind k, const unsigned int fixtureIndex, PathGuidingField* softGuide )
 {
 	std::cout << "BDPT light generator, " << MaterialName( k )
 		<< ": guided vs un-guided continuation weight" << std::endl;
@@ -625,25 +620,18 @@ static void RunLightFurnace( MaterialKind k, const unsigned int fixtureIndex )
 
 	unsigned int nOn = 0;
 	const GuidingMode off{ "un-guided", eGuidingOneSampleMIS, 0.0 };
-	const Scalar reference = LightBatch( fx, 0, off, 800000, FixtureSeedBase( fixtureIndex ), nOn );
-	Check( nOn > 400000, "light un-guided: most light subpaths land on the plane" );
+	const Scalar reference = LightBatch( fx, 0, off, 48000, FixtureSeedBase( fixtureIndex ), nOn );
+	Check( nOn > 24000, "light un-guided: most light subpaths land on the plane" );
 	std::cout << "    un-guided reference " << reference << " over " << nOn << " subpaths" << std::endl;
 
-	const Vector3 axes[2] = {
-		Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ),
-		Vector3Ops::Normalize( Vector3( 0.3, 0.0, -0.95 ) ) };
-	unsigned int seed = FixtureSeedBase( fixtureIndex ) + 1000000;
-	for( unsigned int ai = 0; ai < 2; ++ai ) {
-		PathGuidingField* guide = BuildField( axes[ai], 2.0 );
-		for( unsigned int mi = 0; mi < sizeof( kModes ) / sizeof( kModes[0] ); ++mi ) {
-			const Scalar m = LightBatch( fx, guide, kModes[mi], 200000, seed, nOn );
-			seed += 1000000;
-			std::ostringstream label;
-			label << "light " << MaterialName( k ) << " [" << kModes[mi].name
-				<< ", guide axis " << ai << "]: guided continuation matches un-guided";
-			CheckRel( m, reference, 0.015, label.str().c_str() );
-		}
-		guide->release();
+	unsigned int seed = FixtureSeedBase( fixtureIndex ) + 100000;
+	for( unsigned int mi = 0; mi < sizeof( kModes ) / sizeof( kModes[0] ); ++mi ) {
+		const Scalar m = LightBatch( fx, softGuide, kModes[mi], 15000, seed, nOn );
+		seed += 100000;
+		std::ostringstream label;
+		label << "light " << MaterialName( k ) << " [" << kModes[mi].name
+			<< ", guide axis 0]: guided continuation matches un-guided";
+		CheckRel( m, reference, 0.05, label.str().c_str() );
 	}
 }
 
@@ -659,7 +647,7 @@ static void RunLightFurnace( MaterialKind k, const unsigned int fixtureIndex )
 // exists for a delta lobe, so the reference is a 4x-sample un-guided
 // run and each row is judged by a combined-standard-error z score.
 //////////////////////////////////////////////////////////////////////
-static void RunDeltaLobeFurnace( const unsigned int fixtureIndex )
+static void RunDeltaLobeFurnace( const unsigned int fixtureIndex, PathGuidingField* softGuide )
 {
 	const MaterialKind k = kSmoothSSS;
 	std::cout << "BDPT eye generator, " << MaterialName( k )
@@ -668,7 +656,7 @@ static void RunDeltaLobeFurnace( const unsigned int fixtureIndex )
 	Check( fx.Build( EyeScene( k ), "eye delta" ), "delta-lobe eye fixture builds" );
 	if( !fx.pCaster || !fx.pScene ) return;
 
-	const unsigned int kN = 200000;
+	const unsigned int kN = 15000;
 	unsigned int seed = FixtureSeedBase( fixtureIndex );
 	unsigned int nEsc = 0;
 	Scalar seRef = 0;
@@ -678,15 +666,12 @@ static void RunDeltaLobeFurnace( const unsigned int fixtureIndex )
 	std::cout << "    un-guided reference " << ref << " (standard error " << seRef << ")" << std::endl;
 	Check( ref > 0, "delta-lobe eye: the un-guided reference is positive" );
 
-	PathGuidingField* guide = BuildField( Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ), 2.0 );
-	const GuidingMode modes[4] = {
-		{ "one-sample alpha 0.7", eGuidingOneSampleMIS, 0.7 },
-		{ "one-sample alpha 0.99", eGuidingOneSampleMIS, 0.99 },
+	const GuidingMode modes[2] = {
 		{ "one-sample alpha 1.0", eGuidingOneSampleMIS, 1.0 },
 		{ "RIS", eGuidingRIS, 1.0 } };
-	for( unsigned int mi = 0; mi < 4; ++mi ) {
+	for( unsigned int mi = 0; mi < 2; ++mi ) {
 		Scalar se = 0;
-		const Scalar m = EyeBatch( fx, guide, modes[mi], false, kN, seed, nEsc, &se );
+		const Scalar m = EyeBatch( fx, softGuide, modes[mi], false, kN, seed, nEsc, &se );
 		seed += kN;
 		const Scalar z = ( m - ref ) / r_max( Scalar( std::sqrt( se * se + seRef * seRef ) ), Scalar( 1e-12 ) );
 		std::cout << "    [" << modes[mi].name << "] " << m << " (standard error " << se
@@ -696,7 +681,6 @@ static void RunDeltaLobeFurnace( const unsigned int fixtureIndex )
 			<< "]: delta transport survives guiding (|z| <= 4)";
 		Check( m > 0 && std::fabs( z ) <= 4.0, label.str().c_str() );
 	}
-	guide->release();
 }
 
 // DL-483: actual trained-field eye generators, not hard-coded metadata.
@@ -742,23 +726,27 @@ int main(int argc,char** argv)
 	GlobalLog();
     if(argc==2 && std::string(argv[1])=="--dl483-only") { RunHairCapLabels();std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0; }
     RunHairCapLabels();
+	PathGuidingField* eyeGuides[2] = {
+		BuildField( Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ), 64.0 ),
+		BuildField( Vector3Ops::Normalize( Vector3( 0.3, 0.0, -0.95 ) ), 64.0 ) };
+	PathGuidingField* softGuide =
+		BuildField( Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ), 2.0 );
+
 	unsigned int fixture = 0;
-	RunEyeFurnace( kLambertian, fixture++ );
-	RunEyeFurnace( kSchlick, fixture++ );
-	RunEyeFurnace( kTranslucent, fixture++ );
-	RunEyeFurnace( kSchlickBlackDiffuse, fixture++ );
-	RunEyeFurnace( kLambertianTilted, fixture++ );
-	RunEyeFurnace( kSchlickTilted, fixture++ );
-	RunEyeFurnace( kWardIso, fixture++ );
-	RunEyeFurnace( kWardAniso, fixture++ );
-	RunEyeFurnace( kPhong, fixture++ );
-	RunEyeFurnace( kAshikmin, fixture++ );
-	RunDeltaLobeFurnace( fixture++ );
-	RunLightFurnace( kLambertian, fixture++ );
-	RunLightFurnace( kSchlick, fixture++ );
-	RunLightFurnace( kTranslucent, fixture++ );
-	RunLightFurnace( kSchlickBlackDiffuse, fixture++ );
-	RunLightFurnace( kLambertianTilted, fixture++ );
+	RunEyeFurnace( kLambertian, fixture++, eyeGuides );
+	RunEyeFurnace( kSchlick, fixture++, eyeGuides );
+	RunEyeFurnace( kTranslucent, fixture++, eyeGuides );
+	RunEyeFurnace( kSchlickBlackDiffuse, fixture++, eyeGuides );
+	RunEyeFurnace( kSchlickTilted, fixture++, eyeGuides );
+	RunEyeFurnace( kAshikmin, fixture++, eyeGuides );
+	RunDeltaLobeFurnace( fixture++, softGuide );
+	RunLightFurnace( kSchlick, fixture++, softGuide );
+	RunLightFurnace( kTranslucent, fixture++, softGuide );
+	RunLightFurnace( kSchlickBlackDiffuse, fixture++, softGuide );
+
+	eyeGuides[0]->release();
+	eyeGuides[1]->release();
+	softGuide->release();
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

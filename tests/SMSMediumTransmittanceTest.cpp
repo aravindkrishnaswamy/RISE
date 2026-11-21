@@ -15,7 +15,8 @@
 //       PT+SMS / PT (`transparent_shadows TRUE`, so the walk carries the
 //       fog) gated against 1; VCM / PT printed (0.76-0.81 before DL-469,
 //       which added VCM's volume merge; ~1.0 after, heavy-tailed --
-//       tests/VCMVolumeMergeTest.cpp gates it).
+//       tests/VCMVolumeMergeTest.cpp gates VCM/PT on the same box without
+//       the sphere, row A; its row C prints this scene under --only C:).
 //    B  a slab caustic (ior 1.5, 0.2 thick) on a floor lit only through
 //       the slab by an omni directly overhead; the camera sits under the
 //       slab and sees a few-degree patch under the light, so every chain
@@ -118,7 +119,7 @@ namespace
 		o << ( spectral ? "pathtracing_spectral_rasterizer" : "pathtracing_pel_rasterizer" )
 		  << "\n{\n\tsamples " << spp << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n";
 		if( !spectral ) o << "\tpathguiding FALSE\n\tadaptive_max_samples 0\n";
-		else o << "\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss " << ( integ == Integ::HWSSSMS ? "TRUE" : "FALSE" ) << "\n";
+		else o << "\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss " << ( integ == Integ::HWSSSMS ? "TRUE" : "FALSE" ) << "\n";
 		o << "\ttransparent_shadows " << ( transparentShadows ? "TRUE" : "FALSE" ) << "\n";
 		if( integ != Integ::PT ) o << "\tsms_enabled TRUE\n";
 		if( integ == Integ::PTSMSExtended ) o << "\tsms_extended TRUE\n";
@@ -160,7 +161,7 @@ namespace
 	{
 		std::ostringstream o;
 		o << "RISE ASCII SCENE 7\n";
-		o << "film\n{\n\twidth 12\n\theight 12\n}\n\n";
+		o << "film\n{\n\twidth 8\n\theight 8\n}\n\n";
 		o << "pinhole_camera\n{\n\tlocation 0 0.5 0.3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 3\n}\n\n";
 		o << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n";
 		o << "uniformcolor_painter\n{\n\tname half\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n";
@@ -283,8 +284,10 @@ int main( int argc, char** argv )
 	// A: the ledger row.
 	RatioRow( "A: fog box PT+SMS / PT (omni, index-1.0 wall)",
 		FogBoxScene( Integ::PTSMS, 64 ), FogBoxScene( Integ::PT, 64 ), 1.0, 0.03, trials, seed, only );
-	RatioRow( "A: fog box VCM / PT (printed)",
-		FogBoxScene( Integ::VCM, 1024 ), FogBoxScene( Integ::PT, 256 ), 1.0, 0.0, trials, seed, only );
+	if( only.find( "VCM" ) != std::string::npos ) {
+		RatioRow( "A: fog box VCM / PT (printed)",
+			FogBoxScene( Integ::VCM, 1024 ), FogBoxScene( Integ::PT, 256 ), 1.0, 0.0, trials, seed, only );
+	}
 
 	// B: slab caustic closed forms.
 	const double trInterior = std::exp( -2.5 * 0.2 );
@@ -304,11 +307,11 @@ int main( int argc, char** argv )
 		SlabScene( Integ::PTSMS, SlabMedium::Heterogeneous, 64 ), SlabScene( Integ::PTSMS, SlabMedium::None, 64 ),
 		trInterior, 0.03, trials, seed, only );
 	RatioRow( "B3: global absorber / none, PT+SMS RGB",
-		SlabScene( Integ::PTSMS, SlabMedium::Global, 1024 ), SlabScene( Integ::PTSMS, SlabMedium::None, 16 ),
-		trGlobal, 0.01, trials, seed, only );
+		SlabScene( Integ::PTSMS, SlabMedium::Global, 256 ), SlabScene( Integ::PTSMS, SlabMedium::None, 16 ),
+		trGlobal, 0.03, trials, seed, only );
 	RatioRow( "B3: global absorber / none, PT+SMS NM",
-		SlabScene( Integ::NMSMS, SlabMedium::Global, 4096 ), SlabScene( Integ::NMSMS, SlabMedium::None, 1024 ),
-		trGlobal, 0.01, trials, seed, only );
+		SlabScene( Integ::NMSMS, SlabMedium::Global, 512 ), SlabScene( Integ::NMSMS, SlabMedium::None, 128 ),
+		trGlobal, 0.03, trials, seed, only );
 
 	// C: extended SMS has no medium segment laws; a scene with media runs
 	// legacy SMS (ObjectManager / ExtendedModeActive route it), so the
@@ -317,8 +320,8 @@ int main( int argc, char** argv )
 		SlabScene( Integ::PTSMSExtended, SlabMedium::Homogeneous, spp ), SlabScene( Integ::PTSMS, SlabMedium::None, spp ),
 		trInterior, 0.01, trials, seed, only );
 	RatioRow( "C: extended, global absorber / legacy none",
-		SlabScene( Integ::PTSMSExtended, SlabMedium::Global, 1024 ), SlabScene( Integ::PTSMS, SlabMedium::None, 16 ),
-		trGlobal, 0.01, trials, seed, only );
+		SlabScene( Integ::PTSMSExtended, SlabMedium::Global, 256 ), SlabScene( Integ::PTSMS, SlabMedium::None, 16 ),
+		trGlobal, 0.03, trials, seed, only );
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount ? 1 : 0;

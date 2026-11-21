@@ -438,17 +438,30 @@ namespace
 
 		std::atomic<bool> stop{ false };
 		std::atomic<unsigned long> splatTorn{ 0 }, splatBadValue{ 0 }, filteredTorn{ 0 }, resolves{ 0 };
+		// Resolve calls, per mode, that overlapped a writer's bracket from
+		// ++started to ++commits (its BatchCommit and Splat): at least one
+		// bracket not closed when the call began had opened by the time it
+		// returned.  Writers start once a resolver has finished a pass and
+		// keep writing past their 400 commits until every mode has had such
+		// a call, so each check below is exercised even on a busy machine.
+		std::atomic<unsigned long> commits{ 0 }, started{ 0 };
+		std::atomic<unsigned long> overlapResolves[3] = { { 0 }, { 0 }, { 0 } };
+		auto allModesOverlapped = [&]() {
+			return overlapResolves[0].load() > 0 && overlapResolves[1].load() > 0 && overlapResolves[2].load() > 0;
+		};
 		std::vector<std::thread> threads;
 		for( int w = 0; w < 3; ++w ) {
 			threads.emplace_back( [&]() {
-				for( int i = 0; i < 400; ++i ) {
+				while( resolves.load() == 0 ) std::this_thread::yield();
+				for( int i = 0; i < 400 || !allModesOverlapped(); ++i ) {
+					++started;
 					splat->BatchCommit( all.data(), all.size() );
 					filtered->Splat( 32.0, 8.0, XYZPel( c ), *flat );
+					++commits;
 				}
 			} );
 		}
 		const unsigned int resolvers = 4;
-		std::atomic<unsigned int> writersDone{ 0 };
 		for( unsigned int rI = 0; rI < resolvers; ++rI ) {
 			threads.emplace_back( [&, rI]() {
 				const unsigned int y0 = rI * ( FH / resolvers ), y1 = y0 + FH / resolvers - 1;
@@ -457,9 +470,11 @@ namespace
 					for( int mode = 0; mode < 3; ++mode ) {
 						for( unsigned int y = y0; y <= y1; ++y ) for( unsigned int x = 0; x < FW; ++x )
 							target->SetPEL( x, y, RISEColor( 0, 0, 0, 0 ) );
+						const unsigned long finishedBefore = commits.load();
 						if( mode == 0 ) splat->Resolve( *target, 1.0, &region );
 						else if( mode == 1 ) splat->Unresolve( *target, 1.0, &region );
 						else filtered->Resolve( *target, &region );
+						if( started.load() > finishedBefore ) ++overlapResolves[mode];
 						for( unsigned int y = y0; y <= y1; ++y ) {
 							const RISEColor first = target->GetPEL( 0, y );
 							for( unsigned int x = 0; x < FW; ++x ) {
@@ -483,17 +498,18 @@ namespace
 		for( int w = 0; w < 3; ++w ) threads[w].join();
 		stop.store( true );
 		for( size_t i = 3; i < threads.size(); ++i ) threads[i].join();
-		(void)writersDone;
-		std::cout << "  resolves performed concurrently with writers: " << resolves.load() << "\n";
-		Check( resolves.load() > 0, "resolvers ran" );
+		std::cout << "  resolves: " << resolves.load() << ", of which during writes (splat resolve / unresolve / filtered resolve): "
+			<< overlapResolves[0].load() << " / " << overlapResolves[1].load() << " / " << overlapResolves[2].load() << "\n";
+		Check( allModesOverlapped(), "every resolve mode ran while writers were writing" );
 		Check( splatTorn.load() == 0, "SplatFilm Resolve/Unresolve rows are whole-batch snapshots (" + std::to_string( splatTorn.load() ) + " torn pixels)" );
 		Check( splatBadValue.load() == 0, "SplatFilm resolved pixels are whole multiples of the record (" + std::to_string( splatBadValue.load() ) + ")" );
 		Check( filteredTorn.load() == 0, "FilteredFilm Resolve rows read colorSum/weightSum consistently (" + std::to_string( filteredTorn.load() ) + ")" );
 
-		// Final state, single-threaded: 3*400 commits per pixel.
+		// Final state, single-threaded: one record per pixel per commit.
 		for( unsigned int y = 0; y < FH; ++y ) for( unsigned int x = 0; x < FW; ++x ) target->SetPEL( x, y, RISEColor( 0, 0, 0, 0 ) );
 		splat->Resolve( *target, 1.0 );
-		Check( std::fabs( target->GetPEL( 5, 5 ).base.r - 1200 * c.r ) < 1e-9, "SplatFilm final count is 1200 records" );
+		Check( std::fabs( target->GetPEL( 5, 5 ).base.r - double( commits.load() ) * c.r ) < 1e-9 * double( commits.load() ),
+			"SplatFilm final count is one record per commit (" + std::to_string( commits.load() ) + ")" );
 	}
 
 	// D ------------------------------------------------------------------

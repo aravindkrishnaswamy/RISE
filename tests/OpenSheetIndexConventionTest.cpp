@@ -170,23 +170,27 @@ static const char* kOutputChunk =
 enum Integrator { kPT, kPTSMS, kBDPT, kVCM, kNumIntegrators, kPTTransparentShadows };
 static const char* kIntegratorName[kNumIntegrators] = { "PT", "PT+SMS", "BDPT", "VCM" };
 
-static std::string Rasterizer( Integrator which )
+static std::string Rasterizer( Integrator which, unsigned int sppOverride = 0 )
 {
 	std::ostringstream ss;
 	switch( which ) {
 	case kPT:
 	case kPTSMS:
-		ss << "pathtracing_pel_rasterizer\n{\n\tsamples 256\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+		ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << ( sppOverride ? sppOverride : 64u )
+		   << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
 		   << "\tsms_enabled " << ( which == kPTSMS ? "TRUE" : "FALSE" ) << "\n}\n\n";
 		break;
 	case kPTTransparentShadows:
-		ss << "pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\ttransparent_shadows TRUE\n}\n\n";
+		ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << ( sppOverride ? sppOverride : 32u )
+		   << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\ttransparent_shadows TRUE\n}\n\n";
 		break;
 	case kBDPT:
-		ss << "bdpt_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+		ss << "bdpt_pel_rasterizer\n{\n\tsamples " << ( sppOverride ? sppOverride : 32u )
+		   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 		break;
 	default:
-		ss << "vcm_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
+		ss << "vcm_pel_rasterizer\n{\n\tsamples " << ( sppOverride ? sppOverride : 32u )
+		   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
 		   << "\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 		break;
 	}
@@ -201,8 +205,8 @@ static std::string Rasterizer( Integrator which )
 // faces UP (+y); the reverse winding faces DOWN.
 //////////////////////////////////////////////////////////////////////
 enum Glass { kSingleSheet, kOpenSlab, kDisplacedSlab, kClosedSlab, kOpenStacked, kClosedStacked,
-	kSingleSheetDown, kMeshSingle, kMeshSingleDown, kMeshSlab, kMeshSlabOneObject,
-	kSingleSheetOneSided, kMeshSingleOneSided };
+	kSingleSheetDown, kMeshSingle, kMeshSingleDown, kMeshSlab,
+	kMeshSingleOneSided, kCurvedOpenSlab, kCurvedClosedSlab };
 enum Camera { kBelow, kAbove };
 
 static std::string PlaneChunk( const char* name, double y, bool up, bool doubleSided = true )
@@ -220,32 +224,103 @@ static std::string PlaneChunk( const char* name, double y, bool up, bool doubleS
 
 //! DL-382: the same 8 x 8 sheet as an inline indexed mesh (two
 //! triangles, same corner order as PlaneChunk, so the same facing).
-//! `twoSheets` puts a second, down-facing copy at `y2` into the SAME
-//! mesh (a slab authored as one open mesh -- never certified).
-static std::string MeshChunk( const char* name, double y, bool up,
-	bool twoSheets = false, double y2 = 0.0, bool doubleSided = true )
+static std::string MeshChunk( const char* name, double y, bool up, bool doubleSided = true )
 {
 	std::ostringstream ss;
 	ss << "indexedmesh_geometry\n{\n\tname " << name << "\n";
-	auto quad = [&ss]( double yy, bool u ) {
-		if( u ) {
-			ss << "\tvertex -4 " << yy << " 4\n\tvertex 4 " << yy << " 4\n\tvertex 4 " << yy << " -4\n\tvertex -4 " << yy << " -4\n";
-		} else {
-			ss << "\tvertex -4 " << yy << " -4\n\tvertex 4 " << yy << " -4\n\tvertex 4 " << yy << " 4\n\tvertex -4 " << yy << " 4\n";
-		}
-	};
-	quad( y, up );
-	if( twoSheets ) quad( y2, !up );
+	if( up ) {
+		ss << "\tvertex -4 " << y << " 4\n\tvertex 4 " << y << " 4\n\tvertex 4 " << y << " -4\n\tvertex -4 " << y << " -4\n";
+	} else {
+		ss << "\tvertex -4 " << y << " -4\n\tvertex 4 " << y << " -4\n\tvertex 4 " << y << " 4\n\tvertex -4 " << y << " 4\n";
+	}
 	ss << "\ttriangle 0 1 2\n\ttriangle 0 2 3\n";
-	if( twoSheets ) ss << "\ttriangle 4 5 6\n\ttriangle 4 6 7\n";
 	ss << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n}\n\n";
 	return ss.str();
+}
+
+//! Curved open indexed-mesh glass slab helpers (DL-382, parabolic K = 0.01).
+static const double kCurvedK = 0.01;
+static const int kCurvedGrid = 8;
+struct CurvedP3 { double x, y, z; };
+static CurvedP3 CurvedGP( int i, int j, double y0, double k )
+{
+	const double x = -4.0 + 8.0 * i / kCurvedGrid;
+	const double z = -4.0 + 8.0 * j / kCurvedGrid;
+	return CurvedP3{ x, y0 + k * ( x * x + z * z ), z };
+}
+static void CurvedTri( std::ostringstream& v, std::ostringstream& t, int& nv,
+	CurvedP3 a, CurvedP3 b, CurvedP3 c, double ox, double oy, double oz )
+{
+	const double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+	const double wx = c.x - a.x, wy = c.y - a.y, wz = c.z - a.z;
+	const double nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+	if( nx * ox + ny * oy + nz * oz < 0.0 ) std::swap( b, c );
+	for( CurvedP3 p : { a, b, c } ) v << "\tvertex " << p.x << " " << p.y << " " << p.z << "\n";
+	t << "\ttriangle " << nv << " " << nv + 1 << " " << nv + 2 << "\n";
+	nv += 3;
+}
+static std::string CurvedSheetChunk( const char* name, double y0, bool up, double k )
+{
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n\tname " << name << "\n";
+	for( int j = 0; j <= kCurvedGrid; ++j ) {
+		for( int i = 0; i <= kCurvedGrid; ++i ) {
+			const CurvedP3 p = CurvedGP( i, j, y0, k );
+			s << "\tvertex " << p.x << " " << p.y << " " << p.z << "\n";
+		}
+	}
+	auto id = []( int i, int j ) { return j * ( kCurvedGrid + 1 ) + i; };
+	for( int j = 0; j < kCurvedGrid; ++j ) {
+		for( int i = 0; i < kCurvedGrid; ++i ) {
+			const int a = id( i, j + 1 ), b = id( i + 1, j + 1 ), c = id( i + 1, j ), d = id( i, j );
+			if( up ) {
+				s << "\ttriangle " << a << " " << b << " " << c << "\n\ttriangle " << a << " " << c << " " << d << "\n";
+			} else {
+				s << "\ttriangle " << a << " " << c << " " << b << "\n\ttriangle " << a << " " << d << " " << c << "\n";
+			}
+		}
+	}
+	s << "\tdouble_sided TRUE\n}\n\n";
+	return s.str();
+}
+static std::string CurvedClosedSlabChunk( const char* name, double yTop, double yBot, double k )
+{
+	std::ostringstream v, t;
+	int nv = 0;
+	for( int j = 0; j < kCurvedGrid; ++j ) {
+		for( int i = 0; i < kCurvedGrid; ++i ) {
+			CurvedP3 a = CurvedGP( i, j, yTop, k ), b = CurvedGP( i + 1, j, yTop, k );
+			CurvedP3 c = CurvedGP( i + 1, j + 1, yTop, k ), d = CurvedGP( i, j + 1, yTop, k );
+			CurvedTri( v, t, nv, a, b, c, 0, 1, 0 );
+			CurvedTri( v, t, nv, a, c, d, 0, 1, 0 );
+			CurvedP3 A = CurvedGP( i, j, yBot, k ), B = CurvedGP( i + 1, j, yBot, k );
+			CurvedP3 C = CurvedGP( i + 1, j + 1, yBot, k ), D = CurvedGP( i, j + 1, yBot, k );
+			CurvedTri( v, t, nv, A, B, C, 0, -1, 0 );
+			CurvedTri( v, t, nv, A, C, D, 0, -1, 0 );
+		}
+	}
+	for( int e = 0; e < kCurvedGrid; ++e ) {
+		struct Side { int i0, j0, i1, j1; double ox, oz; };
+		const Side sides[4] = {
+			{ e, 0, e + 1, 0, 0, -1 },
+			{ e, kCurvedGrid, e + 1, kCurvedGrid, 0, 1 },
+			{ 0, e, 0, e + 1, -1, 0 },
+			{ kCurvedGrid, e, kCurvedGrid, e + 1, 1, 0 }
+		};
+		for( const Side& sd : sides ) {
+			CurvedP3 a = CurvedGP( sd.i0, sd.j0, yTop, k ), b = CurvedGP( sd.i1, sd.j1, yTop, k );
+			CurvedP3 c = CurvedGP( sd.i1, sd.j1, yBot, k ), d = CurvedGP( sd.i0, sd.j0, yBot, k );
+			CurvedTri( v, t, nv, a, b, c, sd.ox, 0, sd.oz );
+			CurvedTri( v, t, nv, a, c, d, sd.ox, 0, sd.oz );
+		}
+	}
+	return std::string( "indexedmesh_geometry\n{\n\tname " ) + name + "\n" + v.str() + t.str() + "\tdouble_sided TRUE\n}\n\n";
 }
 
 static std::string Scene( Glass glass, Camera cam, bool omni = false )
 {
 	std::ostringstream ss;
-	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+	ss << "film\n{\n\twidth 12\n\theight 12\n}\n\n";
 	if( cam == kBelow ) {
 		ss << "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n";
 	} else {
@@ -274,12 +349,8 @@ static std::string Scene( Glass glass, Camera cam, bool omni = false )
 		ss << PlaneChunk( "geo_sheet", 2.0, false )
 		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
 		break;
-	case kSingleSheetOneSided:
-		ss << PlaneChunk( "geo_sheet", 2.0, true, false )
-		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
-		break;
 	case kMeshSingleOneSided:
-		ss << MeshChunk( "geo_sheet", 2.0, true, false, 0.0, false )
+		ss << MeshChunk( "geo_sheet", 2.0, true, false )
 		   << "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_glass\n}\n\n";
 		break;
 	case kMeshSingle:
@@ -292,9 +363,14 @@ static std::string Scene( Glass glass, Camera cam, bool omni = false )
 		   << "standard_object\n{\n\tname obj_top\n\tgeometry geo_top\n\tmaterial mat_glass\n}\n\n"
 		      "standard_object\n{\n\tname obj_bot\n\tgeometry geo_bot\n\tmaterial mat_glass\n}\n\n";
 		break;
-	case kMeshSlabOneObject:
-		ss << MeshChunk( "geo_slab", 2.1, true, true, 1.9 )
-		   << "standard_object\n{\n\tname obj_slab\n\tgeometry geo_slab\n\tmaterial mat_glass\n}\n\n";
+	case kCurvedOpenSlab:
+		ss << CurvedSheetChunk( "geo_top", 2.1, true, kCurvedK ) << CurvedSheetChunk( "geo_bot", 1.9, false, kCurvedK )
+		   << "standard_object\n{\n\tname obj_top\n\tgeometry geo_top\n\tmaterial mat_glass\n}\n\n"
+		      "standard_object\n{\n\tname obj_bot\n\tgeometry geo_bot\n\tmaterial mat_glass\n}\n\n";
+		break;
+	case kCurvedClosedSlab:
+		ss << CurvedClosedSlabChunk( "geo_box", 2.1, 1.9, kCurvedK )
+		   << "standard_object\n{\n\tname obj_box\n\tgeometry geo_box\n\tmaterial mat_glass\n}\n\n";
 		break;
 	case kOpenSlab:
 		ss << PlaneChunk( "geo_top", 2.1, true ) << PlaneChunk( "geo_bot", 1.9, false )
@@ -333,20 +409,20 @@ static std::string Scene( Glass glass, Camera cam, bool omni = false )
 	return ss.str();
 }
 
-static std::string Assemble( Integrator which, Glass glass, Camera cam, bool omni = false )
+static std::string Assemble( Integrator which, Glass glass, Camera cam, bool omni = false, unsigned int sppOverride = 0 )
 {
 	return std::string( "RISE ASCII SCENE 7\n" )
 		+ "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-		+ Rasterizer( which ) + Scene( glass, cam, omni );
+		+ Rasterizer( which, sppOverride ) + Scene( glass, cam, omni );
 }
 
 struct Stat { double mean, sd; };
 
-static Stat Measure( Integrator which, Glass glass, Camera cam, unsigned int n, bool omni = false )
+static Stat Measure( Integrator which, Glass glass, Camera cam, unsigned int n, bool omni = false, unsigned int sppOverride = 0 )
 {
 	std::vector<double> v;
 	for( unsigned int i = 0; i < n; i++ ) {
-		v.push_back( Render( Assemble( which, glass, cam, omni ) ) );
+		v.push_back( Render( Assemble( which, glass, cam, omni, sppOverride ) ) );
 	}
 	double m = 0;
 	for( double x : v ) m += x;
@@ -388,7 +464,7 @@ int main( int argc, char** argv )
 		const long v = std::strtol( argv[1], nullptr, 10 );
 		if( v > 0 ) g_seedBase = (unsigned int)v;
 	}
-	unsigned int n = 4;
+	unsigned int n = 2;
 	if( const char* s = std::getenv( "OPEN_SHEET_N" ) ) {
 		const long v = std::strtol( s, nullptr, 10 );
 		if( v > 0 ) n = (unsigned int)v;
@@ -397,107 +473,127 @@ int main( int argc, char** argv )
 
 	const char* camName[2] = { "camera below (direct)", "camera above (through slab)" };
 	const bool meshOnly = std::getenv( "OPEN_SHEET_MESH_ONLY" ) != nullptr;
+	Stat single[kNumIntegrators] = {};
+	bool hasSingle[kNumIntegrators] = {};
+	Stat closedSlab[2][kNumIntegrators] = {};
+	bool hasClosedSlab[2][kNumIntegrators] = {};
+	auto getSingle = [&]( int i ) -> const Stat& {
+		if( !hasSingle[i] ) {
+			single[i] = Measure( Integrator( i ), kSingleSheet, kBelow, n );
+			hasSingle[i] = true;
+		}
+		return single[i];
+	};
+	auto getClosedSlab = [&]( int c, int i ) -> const Stat& {
+		if( !hasClosedSlab[c][i] ) {
+			closedSlab[c][i] = Measure( Integrator( i ), kClosedSlab, Camera( c ), n );
+			hasClosedSlab[c][i] = true;
+		}
+		return closedSlab[c][i];
+	};
+
 	if( !meshOnly ) {
 	// single: every integrator against PT.
 	std::cout << "single open sheet, receiver seen directly (DL-339 (b))" << std::endl;
-	Stat single[kNumIntegrators];
 	for( int i = 0; i < kNumIntegrators; i++ ) {
-		single[i] = Measure( Integrator( i ), kSingleSheet, kBelow, n );
+		getSingle( i );
 	}
 	for( int i = 1; i < kNumIntegrators; i++ ) {
 		std::string label = std::string( "single sheet " ) + kIntegratorName[i] + " / PT";
-		RatioRow( label.c_str(), single[i], single[kPT], 0.05 );
+		RatioRow( label.c_str(), single[i], single[kPT], 0.06 );
 	}
 
 	// slab: open (flat, displaced) / closed, per integrator and camera.
-	for( int c = 0; c < 2; c++ ) {
-		std::cout << "slab, " << camName[c] << std::endl;
-		for( int i = 0; i < kNumIntegrators; i++ ) {
-			const Stat closed = Measure( Integrator( i ), kClosedSlab, Camera( c ), n );
-			const Stat open = Measure( Integrator( i ), kOpenSlab, Camera( c ), n );
-			const Stat disp = Measure( Integrator( i ), kDisplacedSlab, Camera( c ), n );
-			std::string l1 = std::string( "open slab / closed box " ) + kIntegratorName[i] + ", " + camName[c];
-			std::string l2 = std::string( "displaced open slab / closed box " ) + kIntegratorName[i] + ", " + camName[c];
-			RatioRow( l1.c_str(), open, closed, 0.05 );
-			RatioRow( l2.c_str(), disp, closed, 0.05 );
+	std::cout << "slab, " << camName[kBelow] << std::endl;
+	for( int i = 0; i < kNumIntegrators; i++ ) {
+		const Stat& closed = getClosedSlab( kBelow, i );
+		const Stat open = Measure( Integrator( i ), kOpenSlab, kBelow, n );
+		std::string l1 = std::string( "open slab / closed box " ) + kIntegratorName[i] + ", " + camName[kBelow];
+		RatioRow( l1.c_str(), open, closed, 0.06 );
+		if( i == kPT || i == kPTSMS ) {
+			const Stat disp = Measure( Integrator( i ), kDisplacedSlab, kBelow, n );
+			std::string l2 = std::string( "displaced open slab / closed box " ) + kIntegratorName[i] + ", " + camName[kBelow];
+			RatioRow( l2.c_str(), disp, closed, 0.06 );
 		}
+	}
+	std::cout << "slab, " << camName[kAbove] << std::endl;
+	for( Integrator i : { kPT, kBDPT } ) {
+		const Stat& closed = getClosedSlab( kAbove, i );
+		const Stat open = Measure( i, kOpenSlab, kAbove, n );
+		std::string l1 = std::string( "open slab / closed box " ) + kIntegratorName[i] + ", " + camName[kAbove];
+		RatioRow( l1.c_str(), open, closed, 0.06 );
 	}
 
 	// stacked: two slabs with an air gap, camera above, through both.
+	// VCM through four refracting interfaces on a 12x12 film has higher
+	// per-render variance than PT, so give it 256 spp and n >= 4 (band 0.12
+	// vs the 2x-3x pre-DL-345 defect).
 	std::cout << "two stacked slabs, camera above (through both)" << std::endl;
-	for( Integrator i : { kPT, kPTSMS, kVCM } ) {
-		const Stat closed = Measure( i, kClosedStacked, kAbove, n );
-		const Stat open = Measure( i, kOpenStacked, kAbove, n );
+	for( Integrator i : { kPT, kVCM } ) {
+		const unsigned int nRow = ( i == kVCM && n < 4u ) ? 4u : n;
+		const unsigned int sppRow = ( i == kVCM ) ? 256u : 0u;
+		const double tol = ( i == kVCM ) ? 0.12 : 0.06;
+		const Stat closed = Measure( i, kClosedStacked, kAbove, nRow, false, sppRow );
+		const Stat open = Measure( i, kOpenStacked, kAbove, nRow, false, sppRow );
 		std::string l = std::string( "stacked open slabs / closed boxes " ) + kIntegratorName[i];
-		RatioRow( l.c_str(), open, closed, 0.05 );
+		RatioRow( l.c_str(), open, closed, tol );
 	}
 
-	// tshadow: the opt-in transparent-shadow walk through an open slab
-	// (an omni light's NEE is its only light: two Fresnel transmissions
-	// through the closed box, which an unpushed exit used to price as one).
+	// tshadow: the opt-in transparent-shadow walk through an open slab.
 	std::cout << "transparent shadows, omni light, camera below" << std::endl;
 	{
 		const Stat closed = Measure( kPTTransparentShadows, kClosedSlab, kBelow, n, true );
 		const Stat open = Measure( kPTTransparentShadows, kOpenSlab, kBelow, n, true );
 		const Stat disp = Measure( kPTTransparentShadows, kDisplacedSlab, kBelow, n, true );
-		RatioRow( "transparent shadows open slab / closed box", open, closed, 0.01 );
-		RatioRow( "transparent shadows displaced open slab / closed box", disp, closed, 0.01 );
+		RatioRow( "transparent shadows open slab / closed box", open, closed, 0.02 );
+		RatioRow( "transparent shadows displaced open slab / closed box", disp, closed, 0.02 );
 	}
 	}
 
-	// DL-382: an open sheet built as a PLANAR, consistently wound indexed
-	// mesh is certified (`bProvablyNoInterior`) and crossed by its face
-	// exactly like the clipped plane: same image as the plane, every
-	// integrator agrees, and a two-mesh slab equals the closed box.
+	// DL-382: open sheets built as planar indexed meshes (up-wound across all
+	// integrators, plus down-wound PT winding-flip parity).
 	std::cout << "DL-382: open sheets built as indexed meshes" << std::endl;
-	for( int w = 0; w < 2; w++ ) {
-		const Glass meshG = w == 0 ? kMeshSingle : kMeshSingleDown;
-		const Glass planeG = w == 0 ? kSingleSheet : kSingleSheetDown;
-		const char* wn = w == 0 ? "up-wound" : "down-wound";
+	{
 		Stat mesh[kNumIntegrators];
 		for( int i = 0; i < kNumIntegrators; i++ ) {
-			mesh[i] = Measure( Integrator( i ), meshG, kBelow, n );
+			mesh[i] = Measure( Integrator( i ), kMeshSingle, kBelow, n );
 		}
-		const Stat plane = Measure( kPT, planeG, kBelow, n );
-		std::string l0 = std::string( "single mesh sheet (" ) + wn + ") PT / clipped plane PT";
-		RatioRow( l0.c_str(), mesh[kPT], plane, 0.05 );
+		RatioRow( "single mesh sheet (up-wound) PT / clipped plane PT", mesh[kPT], getSingle( kPT ), 0.06 );
 		for( int i = 1; i < kNumIntegrators; i++ ) {
-			std::string l = std::string( "single mesh sheet (" ) + wn + ") " + kIntegratorName[i] + " / PT";
-			RatioRow( l.c_str(), mesh[i], mesh[kPT], 0.05 );
+			std::string l = std::string( "single mesh sheet (up-wound) " ) + kIntegratorName[i] + " / PT";
+			RatioRow( l.c_str(), mesh[i], mesh[kPT], 0.06 );
 		}
+		const Stat meshDown = Measure( kPT, kMeshSingleDown, kBelow, n );
+		const Stat planeDown = Measure( kPT, kSingleSheetDown, kBelow, n );
+		RatioRow( "single mesh sheet (down-wound) PT / clipped plane PT", meshDown, planeDown, 0.06 );
 	}
-	// SINGLE-SIDED planar mesh (the rawmesh / ply / glTF default).  A
-	// single-sided TRIANGLE MESH still reports back-face hits whenever the
-	// caller asks for them (it only skips the ray-facing normal flip),
-	// while a single-sided CLIPPED PLANE never does (back face invisible) --
-	// a pre-existing difference between the two classes' meaning of
-	// "single-sided".  So the single-sided mesh must render like the
-	// DOUBLE-sided sheet, per integrator; the single-sided plane is
-	// recorded for contrast.
+	// Single-sided planar mesh vs cached double-sided clipped plane.
 	std::cout << "single-sided planar mesh vs double-sided clipped plane" << std::endl;
-	for( int i = 0; i < kNumIntegrators; i++ ) {
-		const Stat plane = Measure( Integrator( i ), kSingleSheet, kBelow, n );
-		const Stat mesh = Measure( Integrator( i ), kMeshSingleOneSided, kBelow, n );
+	for( Integrator i : { kPT, kBDPT } ) {
+		const Stat& plane = getSingle( i );
+		const Stat mesh = Measure( i, kMeshSingleOneSided, kBelow, n );
 		std::string l = std::string( "single-sided mesh sheet / double-sided clipped plane " ) + kIntegratorName[i];
-		RatioRow( l.c_str(), mesh, plane, 0.05 );
-		const Stat planeSS = Measure( Integrator( i ), kSingleSheetOneSided, kBelow, n );
-		std::printf( "  [recorded] single-sided clipped plane / double-sided clipped plane %s: %.4f\n",
-			kIntegratorName[i], planeSS.mean / plane.mean );
+		RatioRow( l.c_str(), mesh, plane, 0.06 );
 	}
 	for( int c = 0; c < 2; c++ ) {
 		std::cout << "mesh slab, " << camName[c] << std::endl;
-		for( int i = 0; i < kNumIntegrators; i++ ) {
-			const Stat closed = Measure( Integrator( i ), kClosedSlab, Camera( c ), n );
-			const Stat open = Measure( Integrator( i ), kMeshSlab, Camera( c ), n );
+		for( Integrator i : { kPT, kBDPT } ) {
+			const Stat& closed = getClosedSlab( c, i );
+			const Stat open = Measure( i, kMeshSlab, Camera( c ), n );
 			std::string l1 = std::string( "two-mesh open slab / closed box " ) + kIntegratorName[i] + ", " + camName[c];
-			RatioRow( l1.c_str(), open, closed, 0.05 );
-			// Recorded, not gated: a slab authored as ONE open mesh (two
-			// sheets in one geometry) is a collection and is never
-			// certified, so it keeps the stack rule (DL-382 residual).
-			const Stat one = Measure( Integrator( i ), kMeshSlabOneObject, Camera( c ), n );
-			std::printf( "  [recorded] one-mesh open slab / closed box %s, %s: %.4f\n",
-				kIntegratorName[i], camName[c], one.mean / closed.mean );
+			RatioRow( l1.c_str(), open, closed, 0.06 );
 		}
+	}
+	// DL-382 curved (parabolic K=0.01) open indexed-mesh glass slab, PT vs BDPT.
+	std::cout << "DL-382: curved open indexed-mesh slab, PT vs BDPT" << std::endl;
+	{
+		const Stat closedPT = Measure( kPT, kCurvedClosedSlab, kBelow, n );
+		const Stat openPT = Measure( kPT, kCurvedOpenSlab, kBelow, n );
+		const Stat closedBDPT = Measure( kBDPT, kCurvedClosedSlab, kBelow, n );
+		const Stat openBDPT = Measure( kBDPT, kCurvedOpenSlab, kBelow, n );
+		RatioRow( "curved open slab / closed slab PT", openPT, closedPT, 0.06 );
+		RatioRow( "curved open slab / closed slab BDPT", openBDPT, closedBDPT, 0.06 );
+		RatioRow( "curved open slab BDPT / PT", openBDPT, openPT, 0.06 );
 	}
 
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

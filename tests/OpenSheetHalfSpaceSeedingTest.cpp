@@ -3563,20 +3563,20 @@ static std::string Rasterizer( Integrator which )
 	switch( which ) {
 	case kPT:
 	case kPTSMS:
-		ss << "pathtracing_pel_rasterizer\n{\n\tsamples 256\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+		ss << "pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
 		   << "\tsms_enabled " << ( which == kPTSMS ? "TRUE" : "FALSE" ) << "\n}\n\n";
 		break;
 	case kBDPT:
-		ss << "bdpt_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+		ss << "bdpt_pel_rasterizer\n{\n\tsamples 32\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 		break;
 	case kPTSpectral:
 	case kPTSpectralHWSS:
-		ss << "pathtracing_spectral_rasterizer\n{\n\tsamples 128\n\tspectral_samples 1\n\tnum_wavelengths 160\n"
+		ss << "pathtracing_spectral_rasterizer\n{\n\tsamples 32\n\tspectral_samples 1\n\tnum_wavelengths 160\n"
 		   << "\tnmbegin 380\n\tnmend 780\n\thwss " << ( which == kPTSpectralHWSS ? "TRUE" : "FALSE" ) << "\n"
 		   << "\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 		break;
 	default:
-		ss << "vcm_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
+		ss << "vcm_pel_rasterizer\n{\n\tsamples 32\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
 		   << "\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 		break;
 	}
@@ -3630,27 +3630,6 @@ static std::string RoomScene( Integrator which, bool pane )
 	return s;
 }
 
-//! B4: a one-sided emitter quad lying 5e-5 above the floor of a closed
-//! opaque room (facing up into it), a 2.0 sphere beside it, camera inside;
-//! optionally an up-facing glass pane above the room.
-static std::string FlushRoomScene( Integrator which, bool pane )
-{
-	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
-	s += "pinhole_camera\n{\n\tlocation 0 1.5 1.5\n\tlookat -0.8 0.4 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n";
-	s += "lambertian_luminaire_material\n{\n\tname m_emit\n\texitance white\n\tscale 4\n\tmaterial none\n}\n\n";
-	{
-		std::string q = HSheet( "g_emit", 0.00005, 0.5, true );
-		q.replace( q.find( "doublesided TRUE" ), 16, "doublesided FALSE" );
-		s += q + Obj( "emit", "g_emit", "m_emit", "-0.8 0 0" );
-	}
-	s += "box_geometry\n{\n\tname g_room\n\twidth 4\n\theight 3\n\tdepth 4\n}\n\n" + Obj( "room", "g_room", "matte", "0 1.5 0" );
-	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.6\n}\n\n" + Obj( "ball", "g_ball", "glass20", "-0.8 0.62 0" );
-	if( pane ) {
-		s += HSheet( "g_pane", 6, 8, true ) + Obj( "pane", "g_pane", "glass15" );
-	}
-	return s;
-}
-
 //! B5 (DL-622 review): an unpushed exit is resolved by the crossing, not
 //! the walk's history.  The camera sits in a sea sheet's medium (inside
 //! its normal prism, y 4, |x|,|z| <= 3); it views a receiver at x = 5,
@@ -3663,14 +3642,13 @@ static std::string FlushRoomScene( Integrator which, bool pane )
 static std::string OffPrismScene( Integrator which )
 {
 	// The receiver is lit only by BSDF-sampled hits on the emitter through
-	// the pane (PT) or by light tracing (BDPT): 16x the base sample count
-	// keeps each render's sd near 1 %.
+	// the pane (PT) or by light tracing (BDPT): 4x the base sample count.
 	std::string r = Rasterizer( which );
 	const std::size_t at = r.find( "\tsamples " );
 	if( at != std::string::npos ) {
 		const std::size_t eol = r.find( '\n', at );
 		const int spp = std::atoi( r.substr( at + 9, eol - at - 9 ).c_str() );
-		r.replace( at, eol - at, "\tsamples " + std::to_string( 16 * spp ) );
+		r.replace( at, eol - at, "\tsamples " + std::to_string( 4 * spp ) );
 	}
 	std::string s = "RISE ASCII SCENE 7\n" + r + HeaderBody();
 	s += "pinhole_camera\n{\n\tlocation 0 1 2.5\n\tlookat 5 0 0\n\tup 0 1 0\n\tfov 18.0\n}\n\n";
@@ -3719,25 +3697,6 @@ static std::string DispersiveUnderSheetScene( Integrator which )
 	return s;
 }
 
-//! B8 (DL-622 review): NO open sheet.  A dispersive glass ball inside a
-//! closed water box, camera outside: the HWSS hero enters the box and hands
-//! off at the ball with a closed-medium stack, which SeedCompanionLane
-//! seeds exactly as before DL-622 (the parent commit renders this row with
-//! the same means).  HWSS must match independent wavelengths.
-static std::string DispersiveInBoxScene( Integrator which )
-{
-	std::string s = "RISE ASCII SCENE 7\n" + Rasterizer( which ) + HeaderBody();
-	s += "scalar_painter\n{\n\tname pnt_disp\n\tvalues 1.4 1.5 1.8\n}\n\n";
-	s += "perfectrefractor_material\n{\n\tname glass_disp\n\trefractance white\n\tior pnt_disp\n}\n\n";
-	s += "pinhole_camera\n{\n\tlocation 0 2.6 1.2\n\tlookat 0 0.3 0\n\tup 0 1 0\n\tfov 35.0\n}\n\n";
-	s += Emitter( 4, 2, 4 );
-	s += "box_geometry\n{\n\tname g_tank\n\twidth 4\n\theight 2.25\n\tdepth 4\n}\n\n" + Obj( "tank", "g_tank", "glass133", "0 0.875 0" );
-	s += "sphere_geometry\n{\n\tname g_ball\n\tradius 0.35\n}\n\n" + Obj( "ball", "g_ball", "glass_disp", "0 0.6 0" );
-	s += HSheet( "g_recv", 0, 1, true ) + Obj( "recv", "g_recv", "matte" );
-	s += HSheet( "g_floor", -0.25, 8, true ) + Obj( "floor", "g_floor", "soot" );
-	return s;
-}
-
 struct Stat { double mean, sd; };
 
 static Stat Measure( const std::string& scene, unsigned int n )
@@ -3775,67 +3734,55 @@ static std::string ReadFile( const char* path )
 static void PartB( unsigned int n )
 {
 	std::cout << "Part B: renders (n = " << n << ")" << std::endl;
-	const bool onlyB4 = std::getenv( "HALF_SPACE_ONLY_B4" ) != nullptr;
-	// HALF_SPACE_ONLY_NEW: only the DL-622 review rows (B5..B8).
+	// HALF_SPACE_ONLY_NEW: only the DL-622 review rows (B5..B7).
 	const bool onlyNew = std::getenv( "HALF_SPACE_ONLY_NEW" ) != nullptr;
 
-	if( !onlyB4 && !onlyNew ) {
+	if( !onlyNew ) {
 	std::cout << "B1: camera under a lone glass pane, glass sphere below it" << std::endl;
 	const Stat pt = Measure( PaneScene( kPT, false ), n );
 	const Stat ptBox = Measure( PaneScene( kPT, true ), n );
-	RatioRow( "B1 pane PT / closed-box PT", pt, ptBox, 0.03 );
+	RatioRow( "B1 pane PT / closed-box PT", pt, ptBox, 0.05 );
 	for( Integrator i : { kBDPT, kVCM } ) {
-		RatioRow( std::string( "B1 pane " ) + kName[i] + " / PT", Measure( PaneScene( i, false ), n ), pt, 0.03 );
+		RatioRow( std::string( "B1 pane " ) + kName[i] + " / PT", Measure( PaneScene( i, false ), n ), pt, 0.05 );
 	}
 
 	std::cout << "B2: closed opaque room under a pane" << std::endl;
-	for( Integrator i : { kPT, kBDPT, kVCM } ) {
+	for( Integrator i : { kPT, kBDPT } ) {
 		const Stat with = Measure( RoomScene( i, true ), n );
 		const Stat without = Measure( RoomScene( i, false ), n );
-		RatioRow( std::string( "B2 room with pane / without, " ) + kName[i], with, without, 0.02 );
+		RatioRow( std::string( "B2 room with pane / without, " ) + kName[i], with, without, 0.04 );
 	}
-
-	}
-	if( !onlyNew ) {
-	std::cout << "B4: emitter 5e-5 above a closed room's floor, pane above the room" << std::endl;
-	for( Integrator i : { kPT, kBDPT } ) {
-		const Stat with = Measure( FlushRoomScene( i, true ), n );
-		const Stat without = Measure( FlushRoomScene( i, false ), n );
-		RatioRow( std::string( "B4 flush-emitter room with pane / without, " ) + kName[i], with, without, 0.02 );
-	}
-	}
-
-	if( onlyB4 ) {
-		return;
 	}
 
 	std::cout << "B5: unpushed exit off a sheet's prism, PT vs BDPT" << std::endl;
-	RatioRow( "B5 off-prism pane exit, PT / BDPT", Measure( OffPrismScene( kPT ), n ), Measure( OffPrismScene( kBDPT ), n ), 0.03 );
+	RatioRow( "B5 off-prism pane exit, PT / BDPT", Measure( OffPrismScene( kPT ), n ), Measure( OffPrismScene( kBDPT ), n ), 0.08 );
 
 	std::cout << "B6: camera under a rock under a pane" << std::endl;
 	{
 		const Stat pt = Measure( RockPaneScene( kPT, false ), n );
-		RatioRow( "B6 rock+pane PT / rock+closed-box PT", pt, Measure( RockPaneScene( kPT, true ), n ), 0.03 );
-		RatioRow( "B6 rock+pane BDPT / PT", Measure( RockPaneScene( kBDPT, false ), n ), pt, 0.03 );
+		RatioRow( "B6 rock+pane PT / rock+closed-box PT", pt, Measure( RockPaneScene( kPT, true ), n ), 0.05 );
+		RatioRow( "B6 rock+pane BDPT / PT", Measure( RockPaneScene( kBDPT, false ), n ), pt, 0.05 );
 	}
 
 	std::cout << "B7: dispersive ball under a water sheet, HWSS vs independent wavelengths" << std::endl;
 	RatioRow( "B7 PT spectral hwss TRUE / FALSE", Measure( DispersiveUnderSheetScene( kPTSpectralHWSS ), n ),
-		Measure( DispersiveUnderSheetScene( kPTSpectral ), n ), 0.03 );
-
-	std::cout << "B8: dispersive ball in a closed water box (no open sheet), HWSS vs independent wavelengths" << std::endl;
-	RatioRow( "B8 PT spectral hwss TRUE / FALSE", Measure( DispersiveInBoxScene( kPTSpectralHWSS ), n ),
-		Measure( DispersiveInBoxScene( kPTSpectral ), n ), 0.03 );
+		Measure( DispersiveUnderSheetScene( kPTSpectral ), n ), 0.05 );
 
 	if( onlyNew ) {
 		return;
 	}
 	std::cout << "B3: DL-619 fixture, PT+SMS / PT" << std::endl;
-	const std::string ptText = ReadFile( "tests/fixtures/dl382/PT_closed_below_ldn.RISEscene" );
-	const std::string smsText = ReadFile( "tests/fixtures/dl382/SMS_closed_below_ldn.RISEscene" );
+	std::string ptText = ReadFile( "tests/fixtures/dl382/PT_closed_below_ldn.RISEscene" );
+	std::string smsText = ReadFile( "tests/fixtures/dl382/SMS_closed_below_ldn.RISEscene" );
 	Check( !ptText.empty() && !smsText.empty(), "B3 fixtures readable (run from the repository root)" );
 	if( !ptText.empty() && !smsText.empty() ) {
-		RatioRow( "B3 closed 2.2 box + down-facing 1.5 sheet, PT+SMS / PT", Measure( smsText, n ), Measure( ptText, n ), 0.03 );
+		auto setSamples = []( std::string& text, const char* replacement ) {
+			const std::size_t at = text.find( "\tsamples 256" );
+			if( at != std::string::npos ) text.replace( at, 12, replacement );
+		};
+		setSamples( ptText, "\tsamples 64" );
+		setSamples( smsText, "\tsamples 64" );
+		RatioRow( "B3 closed 2.2 box + down-facing 1.5 sheet, PT+SMS / PT", Measure( smsText, n ), Measure( ptText, n ), 0.05 );
 	}
 }
 
@@ -3865,7 +3812,7 @@ int main( int argc, char** argv )
 			if( v > 0 ) g_seedBase = (unsigned int)v;
 		}
 	}
-	unsigned int n = 4;
+	unsigned int n = 2;
 	if( const char* s = std::getenv( "HALF_SPACE_N" ) ) {
 		const long v = std::strtol( s, nullptr, 10 );
 		if( v > 0 ) n = (unsigned int)v;

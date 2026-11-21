@@ -118,7 +118,8 @@ OBJSTANDALONE = \
 # editing a header invalidates exactly the .o files that included it -- no
 # more `make clean` after touching IJob.h or any other interface header.
 ALL_OBJS = $(OBJLIB) $(FIREPRODUCTIONNOMETALSTUBS) $(FIREPRODUCTIONFP64OBJECTS) \
-	$(FIREPRODUCTIONTRACEOBJECTS) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE)
+	$(FIREPRODUCTIONTRACEOBJECTS) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE) \
+	$(OBJTESTLIB)
 ALL_DEPS = $(ALL_OBJS:.o=.d)
 
 # -MMD: emit a Make-format header-dependency snippet alongside each .o,
@@ -137,17 +138,49 @@ RENDERER_OPTIMIZATION = $(if $(findstring -O3,$(CXXFLAGS)),O3,$(if $(findstring 
 RENDERER_LTO = $(if $(findstring -flto=thin,$(CXXFLAGS)),thin,$(if $(findstring -flto,$(CXXFLAGS)),full,off))
 CPPFLAGS += -I$(CURDIR)
 
-$(RENDERER_BUILD_HEADER) : FORCE_RENDERER_BUILD_IDENTITY
-	@python3 ../../../tools/generate_renderer_build_identity_header.py \
-		--repo-root ../../.. --output $@ \
-		--fp-contraction $(RENDERER_FP_CONTRACTION) \
-		--optimization-mode $(RENDERER_OPTIMIZATION) \
-		--lto-mode $(RENDERER_LTO)
+# The single-letter flags are MAKEFLAGS's first word, or MAKEFLAGS starts
+# with a space when there are none (the GNU make manual's idiom; later words
+# can be -Oline, -I<dir> or VAR=value on make 4.x).  -n is a dry run and -t
+# only touches, so neither regenerates the build identity below nor records
+# the test link mode: a -t after a mode switch must not make objects compiled
+# in the old mode look current.  -q regenerates the build identity, so its
+# answer is about the current source state; with a test goal it also records
+# the test link mode (deleting the test objects and binaries after a switch,
+# as below).
+# GNU make 3.81 (macOS /usr/bin/make) instead puts --long options first and
+# the single-letter flags after them as -x words; 4.x's later -x words can be
+# -Oline or -I<dir>, so only 3.81 reads them.
+ifeq ($(MAKE_VERSION),3.81)
+MAKE_FLAG_WORD = $(firstword -$(MAKEFLAGS)) $(filter-out --%,$(filter -%,$(MAKEFLAGS)))
+else
+MAKE_FLAG_WORD = $(firstword -$(MAKEFLAGS))
+endif
+MAKE_DRY_RUN = $(findstring n,$(MAKE_FLAG_WORD))$(findstring t,$(MAKE_FLAG_WORD))
+MAKE_SKIP_GENERATED = $(MAKE_DRY_RUN)$(filter clean,$(MAKECMDGOALS))
+
+# The build identity (source revision, dirty-state hash, FP / optimization /
+# LTO modes) is regenerated when make reads this file, not by a phony rule:
+# the generator rewrites the header only when its content changes, so Job.o
+# recompiles exactly when the identity moves, and `make -q` can still say a
+# target is up to date (a phony prerequisite would make every target that
+# reaches Job.o look out of date to -q).  A dry run, -t and clean leave it
+# alone.
+RENDERER_IDENTITY_GEN = python3 ../../../tools/generate_renderer_build_identity_header.py \
+	--repo-root ../../.. \
+	--fp-contraction $(RENDERER_FP_CONTRACTION) \
+	--optimization-mode $(RENDERER_OPTIMIZATION)
+ifeq ($(MAKE_SKIP_GENERATED),)
+RENDERER_IDENTITY_STATUS := $(shell $(RENDERER_IDENTITY_GEN) --output $(RENDERER_BUILD_HEADER) --lto-mode $(RENDERER_LTO) || echo failed)
+ifneq ($(RENDERER_IDENTITY_STATUS),)
+$(error generate_renderer_build_identity_header.py failed for $(RENDERER_BUILD_HEADER))
+endif
+endif
 
 $(PATHLIBRARY)Job.o : $(RENDERER_BUILD_HEADER)
-
-FORCE_RENDERER_BUILD_IDENTITY :
-.PHONY: FORCE_RENDERER_BUILD_IDENTITY
+# Only when the header is missing: a dry run in a fresh tree, or after the
+# clean of a `make clean all`.
+$(RENDERER_BUILD_HEADER) :
+	@$(RENDERER_IDENTITY_GEN) --output $@ --lto-mode $(RENDERER_LTO)
 
 # Rules section
 # Normally you would define target upstairs and build it here, but 
@@ -166,6 +199,151 @@ ARCHIVE_LINK_LIBRISE = -Wl,--start-group $(LIBRISE_A) -Wl,--end-group
 endif
 
 librise : $(LIBRISE_A)
+
+# Test binaries link against their own copy of the library, compiled WITHOUT
+# link-time optimisation, whenever the platform config builds the library with
+# -flto (macOS).  With -flto every one of the ~530 test links re-ran LTO code
+# generation over the whole library slice it pulled in (~50 s of one core
+# each): a clean `make -j10 tests` took 2098 s, and so did relinking every test
+# after a one-line library change.  Measured now (2026-11-18, 10-core M-series,
+# both libraries, 523 non-LTO + 8 LTO test links): a clean `make -j10 tests`
+# takes 235 s, and rebuilding the tests after touching one library source
+# 63-65 s, most of it the eight LTO links below (the non-LTO relinks alone
+# took 18 s before those eight were added).  After the fire-solver merge
+# (eight LTO tests at the time, plus three fire binaries that link the LTO objects
+# directly) a clean `make -j10 tests` took 242 s here, where FireSequenceTest
+# and its oracle do not build (they need OpenVDB).
+# Costs: same -O3 / -ffast-math flags but no cross-TU inlining (what the Linux
+# build has always done), measured ~0-9 % slower test runs (+3 % on a
+# six-test sample); and a library edit compiles twice, once per library
+# (about 50 s more for a full library rebuild).  The shipped
+# binaries (`make all`, Xcode) are unaffected.  (The TESTS_LINK_LTO tests
+# below, and the three fire binaries with their own link rules, also need the
+# LTO library, so `make tests` builds both.)
+#
+# TESTS_LINK_LTO keeps the old LTO build for the tests whose results depend
+# on LTO code generation: SSSNearUnityFresnelTest (last-bit compensated-
+# arithmetic oracle sensitive to cross-TU FMA), FireSimulationSolverTest (an
+# r80 recorded cycling-state replay), and FireProductionSolverTest (a pinned
+# r83 table-package digest).  All other tests link against the non-LTO
+# librise_test.a archive.
+# `make TEST_LTO=1 tests` links every test against the LTO library instead,
+# for checking something that depends on LTO code generation (run the suite
+# that way with `TEST_LTO=1 ./run_all_tests.sh`).  The mode is recorded in
+# $(TEST_MODE_STAMP), so the next make that builds tests after a switch
+# rebuilds them; dry runs leave the record alone (but see the stamp rule for
+# -t), and `clean` deletes it.
+TESTS_LINK_LTO = SSSNearUnityFresnelTest FireSimulationSolverTest FireProductionSolverTest
+
+ifneq ($(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),)
+ifeq ($(filter-out 0,$(strip $(TEST_LTO))),)
+TESTLIB_SPLIT = 1
+endif
+endif
+
+ifdef TESTLIB_SPLIT
+TESTOBJ_DIR = $(PATHDEST)testobj/
+TEST_IDENTITY_DIR = $(TESTOBJ_DIR)identity/
+TEST_RENDERER_BUILD_HEADER = $(TEST_IDENTITY_DIR)$(RENDERER_BUILD_HEADER)
+TEST_CPPFLAGS = -I$(TEST_IDENTITY_DIR) $(filter-out -flto -flto=%,$(CPPFLAGS))
+TEST_CXXFLAGS = $(filter-out -flto -flto=%,$(CXXFLAGS))
+OBJTESTLIB = $(patsubst ../../../%,$(TESTOBJ_DIR)%,$(OBJLIB))
+LIBRISE_TEST_A = $(PATHDEST)librise_test.a
+ifdef IS_MACOS_BUILD
+ARCHIVE_LINK_LIBRISE_TEST = -Wl,-dead_strip $(LIBRISE_TEST_A)
+else
+ARCHIVE_LINK_LIBRISE_TEST = -Wl,--start-group $(LIBRISE_TEST_A) -Wl,--end-group
+endif
+TEST_LINK_MODE = split
+LTO_TESTS = $(TESTS_LINK_LTO)
+
+$(LIBRISE_TEST_A) : $(OBJTESTLIB) $(ARCHIVE_BUILD_DEFS)
+	@mkdir -p $(PATHDEST)
+	@echo Creating test archive
+	@rm -f $(LIBRISE_TEST_A)
+	@ar rcs $(LIBRISE_TEST_A) $(OBJTESTLIB)
+
+$(TESTOBJ_DIR)%.o : ../../../%.cpp
+	@mkdir -p $(dir $@)
+	@echo Compiling for tests: $<
+	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(TESTOBJ_DIR)%.o : ../../../%.mm
+	@mkdir -p $(dir $@)
+	@echo "Compiling for tests (ObjC++): $<"
+	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+# Library files with their own compile flags (see the per-file rules near the
+# end of this file) keep them in the test copy: the fire production
+# operators compile without fast-math or FP contraction (FireCase's rule only
+# drops LTO, which the test copy does anyway).
+TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
+	FireProductionAdvection.o FireProductionProjection.o \
+	FireProductionTransport.o FireProductionSource.o FireProductionForce.o)
+TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
+	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
+	FireProductionForceMac.o)
+
+$(filter $(OBJTESTLIB),$(TEST_SAFE_FP32_OBJS)) : $(TESTOBJ_DIR)%.o : ../../../%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling for tests (safe fp32): $<"
+	@$(CXX) $(TEST_CPPFLAGS) $(filter-out -ffast-math,$(TEST_CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(filter $(OBJTESTLIB),$(TEST_SAFE_FP32_MM_OBJS)) : $(TESTOBJ_DIR)%.o : ../../../%.mm
+	@mkdir -p $(dir $@)
+	@echo "Compiling for tests (safe fp32 ObjC++): $<"
+	@$(CXX) $(TEST_CPPFLAGS) $(filter-out -ffast-math,$(TEST_CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+# The test copy's Job.o records its own build identity: the same source state
+# with LTO off (TEST_CPPFLAGS puts this directory ahead of -I$(CURDIR)).
+ifeq ($(MAKE_SKIP_GENERATED),)
+TEST_RENDERER_IDENTITY_STATUS := $(shell $(RENDERER_IDENTITY_GEN) --output $(TEST_RENDERER_BUILD_HEADER) --lto-mode off || echo failed)
+ifneq ($(TEST_RENDERER_IDENTITY_STATUS),)
+$(error generate_renderer_build_identity_header.py failed for $(TEST_RENDERER_BUILD_HEADER))
+endif
+endif
+$(TEST_RENDERER_BUILD_HEADER) :
+	@$(RENDERER_IDENTITY_GEN) --output $@ --lto-mode off
+
+$(TESTOBJ_DIR)src/Library/Job.o : $(TEST_RENDERER_BUILD_HEADER)
+else
+TEST_CPPFLAGS = $(CPPFLAGS)
+TEST_CXXFLAGS = $(CXXFLAGS)
+OBJTESTLIB =
+LIBRISE_TEST_A = $(LIBRISE_A)
+ARCHIVE_LINK_LIBRISE_TEST = $(ARCHIVE_LINK_LIBRISE)
+TEST_LINK_MODE = $(if $(filter -flto%,$(CPPFLAGS) $(CXXFLAGS)),lto,plain)
+LTO_TESTS =
+endif
+
+# Per-test flags: an LTO_TESTS test compiles and links exactly as before.
+TEST_CPPFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CPPFLAGS),$(TEST_CPPFLAGS))
+TEST_CXXFLAGS_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(CXXFLAGS),$(TEST_CXXFLAGS))
+TEST_ARCHIVE_FOR = $(if $(filter $(1),$(LTO_TESTS)),$(ARCHIVE_LINK_LIBRISE),$(ARCHIVE_LINK_LIBRISE_TEST))
+
+# The test link mode in use, rewritten only when it changes.  Every
+# pattern-built test object and binary depends on it; a switch is acted on by
+# the next make with a test goal (below), which deletes them.
+TEST_MODE_STAMP = $(PATHDEST).test-link-mode
+# Only a make that builds tests records the mode; any other (`make all`, say,
+# beside a suite running in the other mode) leaves the record and the test
+# binaries alone.  A mode change also deletes the test objects and binaries:
+# make 3.81 compares whole-second mtimes, so an object or binary made in the
+# same second as the new record would otherwise count as up to date.
+# Every goal that builds test objects or binaries must be listed here,
+# including aliases of `tests` such as `test`.
+TEST_GOALS = $(filter test tests build-test/% $(PATHTESTDEST)% $(PATHTESTS)%,$(MAKECMDGOALS))
+ifeq ($(MAKE_SKIP_GENERATED),)
+ifneq ($(TEST_GOALS),)
+$(shell mkdir -p $(PATHDEST) && { [ "`cat $(TEST_MODE_STAMP) 2>/dev/null`" = "$(TEST_LINK_MODE) $(LTO_TESTS)" ] || { rm -rf $(OBJTESTS) $(PATHTESTDEST); echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $(TEST_MODE_STAMP); }; })
+endif
+endif
+# Only when the record is missing, e.g. after the clean of `make clean tests`;
+# `make -n` prints this and `make -t` touches an empty record only when
+# something below it is out of date; the next real make with a test goal
+# replaces an empty record (deleting the test objects and binaries).
+$(TEST_MODE_STAMP) :
+	@mkdir -p $(PATHDEST) && echo "$(TEST_LINK_MODE) $(LTO_TESTS)" > $@
 
 # Depend on $(ARCHIVE_BUILD_DEFS) in addition to $(OBJLIB) so removing a
 # translation unit from Filelist (or changing platform gates in Config.*)
@@ -282,9 +460,9 @@ $(PATHTESTS)FireSequenceTest.o : $(PATHTESTS)FireSequenceTest.cpp
 
 $(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(abspath ../../..)"'
 
-$(PATHTESTS)%.o : $(PATHTESTS)%.cpp
+$(PATHTESTS)%.o : $(PATHTESTS)%.cpp $(TEST_MODE_STAMP)
 	@echo Compiling: $<
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) $(call TEST_CXXFLAGS_FOR,$*) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 .PHONY: check-fire-production-fp64 check-fire-production-trace
 check-fire-production-fp64 : ../../../tools/generate_fire_production_fp64_mirror.py $(FIREPRODUCTIONFP64ORIGINALS) $(FIREPRODUCTIONFP64SOURCES)
@@ -314,10 +492,20 @@ ifdef IS_MACOS_BUILD
 		echo 'calibration owner unexpectedly contains a production Metal implementation'; rm -f $@; exit 1; fi
 endif
 
-$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A)
+$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
+	@mkdir -p $(PATHTESTDEST)
+	@echo Linking $@
+	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) -o $@ $(PATHTESTS)$*.o $(call TEST_ARCHIVE_FOR,$*) $(LDLIBS)
+
+# The LTO_TESTS link only the LTO library (a static pattern rule wins over
+# the pattern rule above, so they do not wait on, or relink for, the test
+# library).
+ifneq ($(strip $(LTO_TESTS)),)
+$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A) $(TEST_MODE_STAMP)
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS)
+endif
 
 # Targeted diagnostic builds (for reproducible certification audits/timings).
 build-tool/% : $(PATHTOOLDEST)%
@@ -351,12 +539,14 @@ tools : $(LIBRISE_A)
 	fi; \
 	echo "tools: all built successfully"
 
-# Build the library .o files and static archive needed to link tests. Used by
+# Build the library .o files and static archive needed to link tests (the
+# non-LTO test copy where the platform splits them, see LIBRISE_TEST_A). Used by
 # run_all_tests.sh as a one-shot library-build phase before per-test builds.
-test-objs : $(LIBRISE_A)
+test-objs : $(LIBRISE_TEST_A)
 	@:
 
-# Build and run all tests
+# Build and run all tests (`test` is in TEST_GOALS, so it records the test
+# link mode like `tests`).
 test : tests
 	@echo Running all tests
 	@sh ../../../run_all_tests.sh
@@ -443,7 +633,7 @@ clean:
 	@rm -rf $(PATHDEST)rise $(PATHDEST)risempi $(PATHDEST)librise.a $(PATHDEST)meshconverter $(PATHDEST)imageconverter $(PATHDEST)biospecbsdfmaker $(PATHDEST)drise_server $(PATHDEST)drise_client $(PATHDEST)drise_submitter $(OBJS) $(OBJMPI) $(OBJLIB)
 	@rm -rf $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o $(PATHSRCSDRISE)drise_client.o $(PATHSRCSDRISE)drise_submitter.o
 	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
-	@rm -rf $(OBJTESTS) $(PATHTESTDEST)
+	@rm -rf $(OBJTESTS) $(PATHTESTDEST) $(PATHDEST)testobj $(PATHDEST)librise_test.a $(TEST_MODE_STAMP)
 	@rm -rf $(OBJTOOLS) $(PATHTOOLDEST)
 	@find $(CLEAN_OBJECT_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files
@@ -482,7 +672,7 @@ clean:
 # prerequisites: it was compiled by an older make (pre -MMD), orphaned when a
 # .d was deleted, or carried in from another tree.  It therefore looks up to
 # date against its lone .cpp prerequisite even after a header it includes has
-# changed.  Test and tool binaries link $(LIBRISE_A) + the per-binary .o (and
+# changed.  Test and tool binaries link a library archive + the per-binary .o (and
 # standalone binaries link $(OBJLIB) + the per-binary .o), and compile/link are
 # separate rules, so such
 # a stale object is RELINKED in place when a library-header change rebuilds the

@@ -6533,26 +6533,49 @@ int main()
 		Check(shippedBuildsClean,
 			"shipped build projects never define projected-Heun test instrumentation" );
 		bool productionProbeOwnershipClean=true;
+		std::size_t filesScanned=0u;
+		std::error_code ec;
 		const fs::path forcePath=repoRoot/"src"/"Library"/"Utilities"/
 			"FireProductionForce.cpp";
 		const fs::path calibrationPath=repoRoot/"tests"/
 			"FireProductionCalibrationTest.cpp";
 		const fs::path sequencePath=repoRoot/"tests"/"FireSequenceTest.cpp";
 		const fs::path hygienePath=repoRoot/"tests"/"SourceHygieneTest.cpp";
-		for(const auto& entry:fs::recursive_directory_iterator(repoRoot)){
-			const std::string extension=entry.path().extension().string();
-			const bool sourceFile=extension==".cpp"||extension==".h"||
-				extension==".cc"||extension==".hpp"||extension==".m"||extension==".mm"||
-				extension==".c"||extension==".cxx"||extension==".swift"||
-				extension==".inl"||extension==".inc"||extension==".ipp"||
-				extension==".tpp"||extension==".metal"||extension==".s"||
-				extension==".S"||extension==".asm"||extension==".pch";
-			if(!entry.is_regular_file()||!sourceFile||entry.path()==forcePath||
-				entry.path()==calibrationPath||entry.path()==sequencePath||
-				entry.path()==hygienePath)continue;
-			productionProbeOwnershipClean=productionProbeOwnershipClean&&
-				readFile(entry.path()).find(hookSymbol)==std::string::npos;
+		{
+			fs::recursive_directory_iterator it(repoRoot,ec),end;
+			for(;!ec&&it!=end;it.increment(ec)){
+				const bool isDir=it->is_directory(ec);
+				if(ec){break;}
+				if(isDir){
+					const std::string d=it->path().filename().string();
+					const std::string rel=fs::relative(it->path(),repoRoot,ec).generic_string();
+					if(ec){break;}
+					if(d==".git"||d=="_out"||d=="DerivedData"||d=="node_modules"||
+						d=="worktrees"||rel=="extlib"||rel=="bin"||rel=="dbin"||
+						rel=="rendered"||rel=="scenes"||(d=="build"&&rel!="build")){
+						it.disable_recursion_pending();
+					}
+					continue;
+				}
+				const bool isReg=it->is_regular_file(ec);
+				if(ec){break;}
+				const std::string extension=it->path().extension().string();
+				const bool sourceFile=extension==".cpp"||extension==".h"||
+					extension==".cc"||extension==".hpp"||extension==".m"||extension==".mm"||
+					extension==".c"||extension==".cxx"||extension==".swift"||
+					extension==".inl"||extension==".inc"||extension==".ipp"||
+					extension==".tpp"||extension==".metal"||extension==".s"||
+					extension==".S"||extension==".asm"||extension==".pch";
+				if(!isReg||!sourceFile||it->path()==forcePath||
+					it->path()==calibrationPath||it->path()==sequencePath||
+					it->path()==hygienePath)continue;
+				++filesScanned;
+				productionProbeOwnershipClean=productionProbeOwnershipClean&&
+					readFile(it->path()).find(hookSymbol)==std::string::npos;
+			}
 		}
+		Check(!ec&&filesScanned>500u,
+			"projected-Heun probe walk scanned repository sources" );
 		productionProbeOwnershipClean=productionProbeOwnershipClean&&
 			countToken(force,hookSymbol)==9u&&countToken(force,hookDeclaration)==3u&&
 			force.find(hookDeclaration+"\n{")==std::string::npos&&

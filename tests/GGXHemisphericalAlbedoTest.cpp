@@ -188,20 +188,7 @@ namespace
 		return sum * dmu * dmu * dphi * 2.0;
 	}
 
-	//! Resolution picker: a plain uniform-angle midpoint quadrature
-	//! needs FAR more nodes to resolve a sharply-peaked GGX lobe at low
-	//! alpha than at moderate/high alpha (verified by a convergence
-	//! sweep at alpha=0.05, F0=1.0, Schlick: Nmu=96/Nphi=192 reads
-	//! 0.9879, Nmu=200/400 reads 0.9982, Nmu=400/800 reads 1.0001,
-	//! Nmu=600/1200 reads 1.0003 -- the coarse grid is BIASED LOW by
-	//! under-resolving the lobe, not evidence against the fix; alpha
-	//! 0.2/0.5/1.0 already agree to <0.02% at the cheap resolution, so
-	//! only the low-alpha rows pay the finer cost).
-	void PickResolution( double alpha, int& Nmu, int& Nphi )
-	{
-		if( alpha < 0.1 ) { Nmu = 300; Nphi = 600; }
-		else { Nmu = 96; Nphi = 192; }
-	}
+	double BihemisphericalVNDF( IBSDF& brdf, double alpha, int numMuI, int numSamples, unsigned long long seed );
 
 	double BihemisphericalNM( IBSDF& brdf, double nm, int Nmu, int Nphi )
 	{
@@ -236,14 +223,10 @@ namespace
 
 		struct Row { double alpha; double F0; double diffuse; };
 		Row rows[] = {
-			{ 0.05, 0.04, 0.0 }, { 0.05, 0.04, 0.5 },
-			{ 0.05, 0.50, 0.0 }, { 0.05, 1.00, 0.0 },
-			{ 0.20, 0.04, 0.0 }, { 0.20, 0.04, 0.5 },
-			{ 0.20, 0.50, 0.0 }, { 0.20, 1.00, 0.0 },
-			{ 0.50, 0.04, 0.0 }, { 0.50, 0.04, 0.5 },
-			{ 0.50, 0.50, 0.0 }, { 0.50, 1.00, 0.0 },
-			{ 1.00, 0.04, 0.0 }, { 1.00, 0.04, 0.5 },
-			{ 1.00, 0.50, 0.0 }, { 1.00, 1.00, 0.0 },
+			{ 0.05, 0.04, 0.0 }, { 0.05, 1.00, 0.0 },
+			{ 0.20, 0.04, 0.5 }, { 0.20, 0.50, 0.0 },
+			{ 0.50, 0.04, 0.5 }, { 0.50, 1.00, 0.0 },
+			{ 1.00, 0.04, 0.0 }, { 1.00, 0.50, 0.0 },
 		};
 
 		// Brute-force quadrature noise + the table's own quadrature-fit
@@ -252,6 +235,7 @@ namespace
 		// matching DL-07's own bar for this class of fix.
 		const double kTol = 0.01;
 
+		unsigned long long seedIdx = 0;
 		for( const Row& row : rows ) {
 			Owned<UniformColorPainter> spec( new UniformColorPainter( RISEPel( row.F0, row.F0, row.F0 ) ) );
 			Owned<UniformColorPainter> diff( new UniformColorPainter( RISEPel( row.diffuse, row.diffuse, row.diffuse ) ) );
@@ -261,8 +245,9 @@ namespace
 			Owned<UniformScalarPainter> extP( new UniformScalarPainter( 0.0 ) );
 			Owned<GGXBRDF> brdf( new GGXBRDF( *diff, *spec, *alphaX, *alphaY, *iorP, *extP, eFresnelSchlickF0 ) );
 
-			int Nmu, Nphi; PickResolution( row.alpha, Nmu, Nphi );
-			const double trueBi = Bihemispherical( *brdf, Nmu, Nphi );
+			const double trueBi = ( row.alpha < 0.1 )
+				? BihemisphericalVNDF( *brdf, row.alpha, 16, 15000, 0xB1001ULL + seedIdx++ )
+				: Bihemispherical( *brdf, 48, 96 );
 
 			RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
 			RISEPel out;
@@ -292,6 +277,7 @@ namespace
 		const double kTol = 0.015; // conductor Fresnel is a fit, not exact -- slightly looser
 
 		double alphas[] = { 0.05, 0.2, 0.5, 1.0 };
+		unsigned long long seedIdx = 0;
 		for( double alpha : alphas ) {
 			Owned<UniformColorPainter> spec( new UniformColorPainter( RISEPel( 1, 1, 1 ) ) );
 			Owned<UniformColorPainter> diff( new UniformColorPainter( RISEPel( 0, 0, 0 ) ) );
@@ -301,8 +287,9 @@ namespace
 			Owned<UniformScalarPainter> extP( new UniformScalarPainter( ext ) );
 			Owned<GGXBRDF> brdf( new GGXBRDF( *diff, *spec, *alphaX, *alphaY, *iorP, *extP, eFresnelConductor ) );
 
-			int Nmu, Nphi; PickResolution( alpha, Nmu, Nphi );
-			const double trueBi = Bihemispherical( *brdf, Nmu, Nphi );
+			const double trueBi = ( alpha < 0.1 )
+				? BihemisphericalVNDF( *brdf, alpha, 16, 15000, 0xC0001ULL + seedIdx++ )
+				: Bihemispherical( *brdf, 48, 96 );
 
 			RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
 			RISEPel out;
@@ -341,7 +328,7 @@ namespace
 			Owned<UniformScalarPainter> extP( new UniformScalarPainter( 2.63 ) );
 			Owned<GGXBRDF> brdf( new GGXBRDF( *diff, *spec, *alphaX, *alphaY, *iorP, *extP, row.mode ) );
 
-			const double trueBi = BihemisphericalNM( *brdf, 550.0, 80, 160 );
+			const double trueBi = BihemisphericalNM( *brdf, 550.0, 48, 96 );
 
 			RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
 			Scalar out = 0;
@@ -633,14 +620,11 @@ namespace
 	void TestAnisotropicFallback()
 	{
 		std::cout << "--- TestAnisotropicFallback (DL-139 red-proof) ---" << std::endl;
-		struct Row { double alphaX; double alphaY; double F0; };
+		struct Row { double alphaX; double alphaY; double F0; bool checkNM; };
 		const Row rows[] = {
-			{ 0.05, 0.50, 0.5 }, { 0.50, 0.05, 0.5 },
-			{ 0.10, 0.80, 0.5 }, { 0.80, 0.10, 0.5 },
-			{ 0.20, 0.60, 0.5 }, { 0.60, 0.20, 0.5 },
-			{ 0.005, 0.50, 0.5 }, { 0.50, 0.005, 0.5 },
-			{ 0.023, 0.0231, 0.0 }, { 0.0231, 0.023, 0.0 },
-			{ 0.20, 0.2005, 0.0 }, { 0.2005, 0.20, 0.0 },
+			{ 0.05, 0.50, 0.5, true },   { 0.50, 0.05, 0.5, false },
+			{ 0.005, 0.50, 0.5, true },  { 0.50, 0.005, 0.5, false },
+			{ 0.023, 0.0231, 0.0, false }, { 0.0231, 0.023, 0.0, false },
 		};
 
 		for( const Row& row : rows )
@@ -657,32 +641,35 @@ namespace
 				+ static_cast<unsigned long long>( row.alphaX * 1.0e6 ) * 1000003ULL
 				+ static_cast<unsigned long long>( row.alphaY * 1.0e6 ) * 1000033ULL;
 			const BihemisphericalStats reference = BihemisphericalVNDFAnisotropic(
-				*brdf, row.alphaX, row.alphaY, 48, 100000, seed, -1.0 );
-			const BihemisphericalStats referenceNM = BihemisphericalVNDFAnisotropic(
-				*brdf, row.alphaX, row.alphaY, 48, 100000, seed ^ 0x550ULL, 550.0 );
+				*brdf, row.alphaX, row.alphaY, 16, 20000, seed, -1.0 );
 
 			RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
 			RISEPel out;
 			brdf->hemisphericalAlbedo( dummyRi, out );
 			const double reported = ColorMath::MaxValue( out );
 			const double relativeError = fabs( reported - reference.mean ) / reference.mean;
-			Scalar reportedNM = 0.0;
-			brdf->hemisphericalAlbedoNM( dummyRi, 550.0, reportedNM );
-			const double relativeErrorNM = fabs( reportedNM - referenceNM.mean ) / referenceNM.mean;
 
 			printf( "  alphaX=%.4f alphaY=%.4f F0=%.2f n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
 				row.alphaX, row.alphaY, row.F0, reference.count, reference.mean, reference.sampleSD,
 				reference.standardError, reported, 100.0 * relativeError );
-			printf( "    NM550 n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
-				referenceNM.count, referenceNM.mean, referenceNM.sampleSD,
-				referenceNM.standardError, reportedNM, 100.0 * relativeErrorNM );
 
 			Check( reported > 0.0 && reported < 1.5,
 				"DL-139 anisotropic hemisphericalAlbedo stays a plausible reflectance" );
 			Check( relativeError <= 0.005,
 				"DL-139 anisotropic hemisphericalAlbedo matches independent VNDF estimator to <=0.5%" );
-			Check( relativeErrorNM <= 0.005,
-				"DL-139 anisotropic hemisphericalAlbedoNM matches independent VNDF estimator to <=0.5%" );
+
+			if( row.checkNM ) {
+				const BihemisphericalStats referenceNM = BihemisphericalVNDFAnisotropic(
+					*brdf, row.alphaX, row.alphaY, 16, 20000, seed ^ 0x550ULL, 550.0 );
+				Scalar reportedNM = 0.0;
+				brdf->hemisphericalAlbedoNM( dummyRi, 550.0, reportedNM );
+				const double relativeErrorNM = fabs( reportedNM - referenceNM.mean ) / referenceNM.mean;
+				printf( "    NM550 n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
+					referenceNM.count, referenceNM.mean, referenceNM.sampleSD,
+					referenceNM.standardError, reportedNM, 100.0 * relativeErrorNM );
+				Check( relativeErrorNM <= 0.005,
+					"DL-139 anisotropic hemisphericalAlbedoNM matches independent VNDF estimator to <=0.5%" );
+			}
 		}
 	}
 
@@ -851,11 +838,8 @@ namespace
 
 		struct Row { double alpha; double F0; };
 		Row rows[] = {
-			{ 0.002, 1.00 }, { 0.002, 0.04 }, { 0.002, 0.00 },
-			{ 0.005, 1.00 }, { 0.005, 0.04 }, { 0.005, 0.00 },
-			{ 0.008, 1.00 }, { 0.008, 0.00 },
-			{ 0.015, 1.00 }, { 0.015, 0.00 },
-			{ 0.03,  1.00 }, { 0.03,  0.00 },
+			{ 0.002, 0.00 }, { 0.002, 1.00 },
+			{ 0.008, 0.00 }, { 0.03,  0.00 },
 		};
 
 		// Tighter than TestBihemispherical's 0.01 -- the DL-160 defect

@@ -349,6 +349,34 @@ long CountLines( const std::string& s ) {
 	long n = 0; for( char c : s ) if( c == '\n' ) ++n; return n;
 }
 
+void CollectChunkKeywords( const SeqRef& s, std::set<std::string>& out ) {
+	if( !s ) return;
+	CollectChunkKeywords( s->left, out );
+	if( s->item && s->item->kind == NodeKind::Chunk && !s->item->role.empty() ) {
+		out.insert( s->item->role );
+	}
+	CollectChunkKeywords( s->right, out );
+}
+
+bool HasHeavyKeyword( const std::set<std::string>& kws ) {
+	static const char* kHeavy[] = {
+		"gltf_import", "3ds_geometry", "rawmesh_geometry", "rawmesh2_geometry",
+		"obj_geometry", "ply_geometry", "displaced_geometry"
+	};
+	for( const char* k : kHeavy ) {
+		if( kws.count( k ) ) return true;
+	}
+	return false;
+}
+
+std::string TestSubdirOf( const std::string& path ) {
+	const std::string prefix = "scenes/Tests/";
+	if( path.rfind( prefix, 0 ) != 0 ) return std::string();
+	const size_t slash = path.find( '/', prefix.size() );
+	if( slash == std::string::npos ) return prefix;
+	return path.substr( 0, slash + 1 );
+}
+
 //////////////////////////////////////////////////////////////////////
 // GENERATE mode: re-derive the whole corpus, capture the golden manifest.
 //////////////////////////////////////////////////////////////////////
@@ -390,9 +418,11 @@ int Generate() {
 }
 
 //////////////////////////////////////////////////////////////////////
-// VERIFY mode (default): re-derive each golden scene, assert digest == golden.
+// VERIFY mode (default: stratified keyword/directory subset + full-corpus
+// CST parse & manifest completeness; --full: derives and digest-checks
+// every golden scene).
 //////////////////////////////////////////////////////////////////////
-int Verify() {
+int Verify( bool fullCorpus ) {
 	std::vector<GoldenEntry> golden = ReadGolden();
 	if( golden.empty() ) {
 		std::printf( "CstDeriveGoldenTest: SKIP -- no golden manifest at %s (run from repo root; --generate to create it).\n", kGoldenPath );
@@ -424,8 +454,71 @@ int Verify() {
 	std::set<std::string> goldenPaths;
 	for( const GoldenEntry& e : golden ) goldenPaths.insert( e.path );
 
-	int ok = 0, fail = 0;
-	for( const GoldenEntry& e : golden ) {
+	std::vector<bool> deriveSelected( golden.size(), fullCorpus );
+	int parseFail = 0;
+	if( !fullCorpus ) {
+		// Cheap ParseToCst completeness check on ALL golden scenes + greedy
+		// stratified selection covering every chunk keyword present in the
+		// corpus and every scenes/Tests/<subdir>/ directory using the smallest
+		// representative scenes first.
+		std::vector<std::set<std::string> > sceneKeywords( golden.size() );
+		std::vector<bool> isHeavy( golden.size(), false );
+		for( size_t i = 0; i < golden.size(); ++i ) {
+			const std::string text = ReadFile( golden[i].path );
+			const Document d = ParseToCst( Migrate( text ) );
+			if( DocItemCount( d ) <= 0 ) {
+				++parseFail;
+				std::printf( "PARSE_FAIL %s -- empty CST in golden scene\n", golden[i].path.c_str() );
+				continue;
+			}
+			CollectChunkKeywords( d.items, sceneKeywords[i] );
+			isHeavy[i] = HasHeavyKeyword( sceneKeywords[i] ) || golden[i].bytes > 200000;
+		}
+
+		std::vector<size_t> order( golden.size() );
+		for( size_t i = 0; i < golden.size(); ++i ) order[i] = i;
+		std::sort( order.begin(), order.end(), [&]( size_t a, size_t b ) {
+			if( isHeavy[a] != isHeavy[b] ) return !isHeavy[a];
+			if( golden[a].bytes != golden[b].bytes ) return golden[a].bytes < golden[b].bytes;
+			return golden[a].path < golden[b].path;
+		} );
+
+		std::set<std::string> coveredKeywords;
+		std::set<std::string> coveredSubdirs;
+		size_t selectedCount = 0;
+		for( size_t idx : order ) {
+			bool addsCoverage = false;
+			for( const std::string& kw : sceneKeywords[idx] ) {
+				if( !coveredKeywords.count( kw ) ) { addsCoverage = true; break; }
+			}
+			const std::string subdir = TestSubdirOf( golden[idx].path );
+			if( !subdir.empty() && !coveredSubdirs.count( subdir ) ) {
+				addsCoverage = true;
+			}
+			if( addsCoverage ) {
+				deriveSelected[idx] = true;
+				++selectedCount;
+				coveredKeywords.insert( sceneKeywords[idx].begin(), sceneKeywords[idx].end() );
+				if( !subdir.empty() ) coveredSubdirs.insert( subdir );
+			}
+		}
+		for( size_t idx : order ) {
+			if( selectedCount >= 50 ) break;
+			if( deriveSelected[idx] || isHeavy[idx] ) continue;
+			if( TestSubdirOf( golden[idx].path ).empty() ) continue;
+			deriveSelected[idx] = true;
+			++selectedCount;
+		}
+		std::printf( "CstDeriveGoldenTest: stratified mode -- %zu of %zu golden scenes selected for full derive+digest "
+			"(covering %zu chunk keywords, %zu Tests subdirs; all %zu parsed via ParseToCst). Pass --full for all.\n",
+			selectedCount, golden.size(), coveredKeywords.size(), coveredSubdirs.size(), golden.size() );
+		std::fflush( stdout );
+	}
+
+	int ok = 0, fail = parseFail;
+	for( size_t i = 0; i < golden.size(); ++i ) {
+		if( !deriveSelected[i] ) continue;
+		const GoldenEntry& e = golden[i];
 		const std::string dump = DeriveDump( e.path );
 		const std::string digest = Sha256Hex( dump );
 		if( digest == e.digest ) { ++ok; }
@@ -506,5 +599,11 @@ int main( int argc, char** argv ) {
 		std::fprintf( stderr, "(derive diagnostics: %zu)\n", diagCount );
 		return 0;
 	}
-	return Verify();
+	bool fullCorpus = false;
+	for( int i = 1; i < argc; ++i ) {
+		if( std::strcmp( argv[i], "--full" ) == 0 ) {
+			fullCorpus = true;
+		}
+	}
+	return Verify( fullCorpus );
 }

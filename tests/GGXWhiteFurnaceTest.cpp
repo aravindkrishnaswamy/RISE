@@ -600,6 +600,141 @@ static bool TestMaterialPointwiseConsistency(
 }
 
 // ============================================================
+//  Test 8: Dispersive thin-film conductor interface range (DL-37)
+//  A passive dispersive spectrum can yield an out-of-gamut RGB
+//  preview component > 1; GGXInterfaceFresnel::Directional must
+//  project to [0,1] before complements so (1-A_i)(1-A_o) stays
+//  non-negative and Mean() integrates the projected directional
+//  function consistently.
+// ============================================================
+
+namespace
+{
+	class NotchedIOR : public UniformScalarPainter
+	{
+	public:
+		NotchedIOR() : UniformScalarPainter( 2.0 ) {}
+		Scalar GetValueAtNM( const RayIntersectionGeometric&, Scalar nm ) const override
+		{
+			return ( nm >= 505.0 && nm <= 530.0 ) ? Scalar( 1.0 ) : Scalar( 2.0 );
+		}
+	};
+
+	class DiffuseDraw : public ISampler
+	{
+		unsigned int count = 0;
+	public:
+		Scalar Get1D() override { return count++ == 0 ? Scalar( 0.0 ) : Scalar( 0.5 ); }
+		Point2 Get2D() override { const Scalar u = Get1D(); const Scalar v = Get1D(); return Point2( u, v ); }
+		void StartStream( int ) override {}
+	};
+}
+
+static bool TestThinFilmDispersiveRange()
+{
+	auto* white = new UniformColorPainter( RISEPel( 1.0 ) );
+	auto* black = new UniformColorPainter( RISEPel( 0.0 ) );
+	auto* alpha = new UniformScalarPainter( 0.16 );
+	auto* eta   = new NotchedIOR();
+	auto* zero  = new UniformScalarPainter( 0.0 );
+	auto* film  = new UniformScalarPainter( 1.5 );
+	auto* spf   = new GGXSPF( *white, *white, *alpha, *alpha, *eta, *zero, eFresnelThinFilmConductor, nullptr, film, zero, zero );
+	auto* bare  = new GGXBRDF( *black, *white, *alpha, *alpha, *eta, *zero, eFresnelThinFilmConductor, nullptr, film, zero, zero );
+	auto* mixed = new GGXBRDF( *white, *white, *alpha, *alpha, *eta, *zero, eFresnelThinFilmConductor, nullptr, film, zero, zero );
+
+	const Scalar mu = 0.001;
+	Ray ray( Point3( 0, 0, 1 ), Vector3( std::sqrt( 1.0 - mu * mu ), 0, -mu ) );
+	RasterizerState state = { 0, 0 };
+	RayIntersectionGeometric ri( ray, state );
+	ri.bHit = true;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = ri.vNormal;
+	ri.ambientIOR = 1.0;
+
+	bool good = true;
+	const GGXInterfaceFresnel iface { ri, eFresnelThinFilmConductor, *white, *eta, *zero, film, zero, zero };
+	const RISEPel grazingA = iface.Directional( mu );
+	const RISEPel ifaceMean = iface.Mean();
+	const RISEPel transGrazing = GGXInterfaceFresnel::Transmission( grazingA, ifaceMean );
+	for( int c = 0; c < 3; ++c ) {
+		if( !std::isfinite( grazingA[c] ) || grazingA[c] < 0.0 || grazingA[c] > 1.0 ) good = false;
+		if( !std::isfinite( ifaceMean[c] ) || ifaceMean[c] < 0.0 || ifaceMean[c] > 1.0 ) good = false;
+		if( !std::isfinite( transGrazing[c] ) || transGrazing[c] < 0.0 || transGrazing[c] > 1.0 ) good = false;
+	}
+
+	DiffuseDraw sampler;
+	ScatteredRayContainer rays;
+	IORStack stack = MakeTestIORStack( g_stubObject );
+	spf->Scatter( ri, sampler, rays, stack );
+	if( rays.Count() != 1 ) good = false;
+	for( unsigned int i = 0; i < rays.Count(); ++i ) {
+		for( int c = 0; c < 3; ++c ) {
+			if( !std::isfinite( rays[i].kray[c] ) || rays[i].kray[c] < 0.0 ) good = false;
+		}
+	}
+
+	RISEPel integrated( 0.0 );
+	const int quadrature = 2048;
+	for( int i = 0; i < quadrature; ++i ) {
+		const Scalar cosine = ( i + 0.5 ) / quadrature;
+		const RISEPel value = iface.Directional( cosine );
+		for( int c = 0; c < 3; ++c ) {
+			if( !std::isfinite( value[c] ) || value[c] < 0.0 || value[c] > 1.0 ) good = false;
+		}
+		integrated = integrated + value * ( 2.0 * cosine / quadrature );
+	}
+
+	RISEPel bareMean( 0.0 ), mixedMean( 0.0 );
+	if( !bare->hemisphericalAlbedo( ri, bareMean ) || !mixed->hemisphericalAlbedo( ri, mixedMean ) ) good = false;
+	Scalar maxMeanErr = 0.0;
+	Scalar maxGuideErr = 0.0;
+	for( int c = 0; c < 3; ++c ) {
+		const Scalar meanErr = std::fabs( ifaceMean[c] - integrated[c] );
+		if( !std::isfinite( meanErr ) || meanErr > 2e-4 ) good = false;
+		maxMeanErr = r_max( maxMeanErr, meanErr );
+
+		const Scalar reference = ( 1.0 - integrated[c] ) * ( 1.0 - integrated[c] );
+		const Scalar guideErr = std::fabs( ( mixedMean[c] - bareMean[c] ) - reference );
+		if( !std::isfinite( guideErr ) || guideErr > 2e-4 ) good = false;
+		maxGuideErr = r_max( maxGuideErr, guideErr );
+	}
+
+	if( rays.Count() == 1 ) {
+		const Vector3 light = rays[0].ray.Dir();
+		const RISEPel diffuse = mixed->value( light, ri ) - bare->value( light, ri );
+		for( int c = 0; c < 3; ++c ) {
+			if( !std::isfinite( diffuse[c] ) || diffuse[c] < -1e-12 ) good = false;
+		}
+		const Scalar testNMs[3] = { 450.0, 517.5, 650.0 };
+		for( int k = 0; k < 3; ++k ) {
+			DiffuseDraw nmSampler;
+			ScatteredRayContainer nmRays;
+			spf->ScatterNM( ri, nmSampler, testNMs[k], nmRays, stack );
+			if( nmRays.Count() != 1 ) good = false;
+			for( unsigned int i = 0; i < nmRays.Count(); ++i ) {
+				if( !std::isfinite( nmRays[i].krayNM ) || nmRays[i].krayNM < 0.0 ) good = false;
+			}
+		}
+	}
+
+	std::cout << "  Thin-film dispersive range: maxMeanErr=" << std::setprecision(6) << maxMeanErr
+	          << " maxGuideErr=" << maxGuideErr << ( good ? "  OK" : "  FAIL" ) << std::endl;
+
+	mixed->release();
+	bare->release();
+	spf->release();
+	film->release();
+	zero->release();
+	eta->release();
+	alpha->release();
+	black->release();
+	white->release();
+	return good;
+}
+
+// ============================================================
 //  Main
 // ============================================================
 
@@ -710,6 +845,10 @@ int main()
 			}
 		}
 	}
+
+	// Test 8: Dispersive thin-film conductor interface range (DL-37)
+	std::cout << std::endl << "--- Test 8: Dispersive Thin-Film Conductor Interface Range ---" << std::endl;
+	allPassed &= TestThinFilmDispersiveRange();
 
 	g_stubObject->release();
 

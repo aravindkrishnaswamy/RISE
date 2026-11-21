@@ -70,7 +70,7 @@ import tempfile
 from typing import Optional
 
 import bpy
-from .blender_compat import uses_nodes
+from .blender_compat import rna_key, uses_nodes
 from .tangent_bake import find_material_output
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def _find_principled_through_surface(output_node):
     depth = 0
     while depth < 16:
         depth += 1
-        node_id = id(cursor)
+        node_id = rna_key(cursor)
         if node_id in visited:
             return None
         visited.add(node_id)
@@ -237,7 +237,7 @@ def classify_material(material) -> str:
         node, depth = stack.pop()
         if depth > 16:
             return "complex"
-        node_id = id(node)
+        node_id = rna_key(node)
         if node_id in visited:
             continue
         visited.add(node_id)
@@ -505,7 +505,7 @@ def _bake_one_channel(
         return False
     tex_node = next(
         (n for n in nt.nodes if n.bl_idname == "ShaderNodeTexImage"
-         and n.image is image),
+         and n.image == image),
         None,
     )
     if tex_node is None:

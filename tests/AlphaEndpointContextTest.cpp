@@ -99,8 +99,8 @@ static void SMSMaterialCrossing(){
 }
 int main(){
  SMSContext();DirectContexts();SMSMaterialCrossing();
- for(unsigned w=0;w<3;++w){
-  auto r=RastPT(1024);if(w){Replace(r,"pathtracing_pel_rasterizer","pathtracing_spectral_rasterizer");Replace(r,"{\n","{\n hwss "+std::string(w==2?"true":"false")+"\n");}
+ for(unsigned w:{0u,2u}){
+  auto r=RastPT(64);if(w){Replace(r,"pathtracing_pel_rasterizer","pathtracing_spectral_rasterizer");Replace(r,"{\n","{\n hwss "+std::string(w==2?"true":"false")+"\n");}
   auto s=ReceiverScene(kArea,false,0,kTight);Replace(s,"color 0.01 0.01 0.01","color 0 0 0");
   const double base=Render(Assemble(r,s),"endpoint opaque control");
   const std::string expression="scalar_painter\n{\n name endpoint_alpha\n expression P.y/4\n}\n";

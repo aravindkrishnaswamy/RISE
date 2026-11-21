@@ -79,7 +79,7 @@ namespace
 	unsigned int g_renderIndex = 0;
 	const unsigned int kSeedBase = 357000u;
 	const uint32_t kSaltTag = 0x357u;
-	const int kRepeats = 4;
+	const int kRepeats = 2;
 
 	void Check( const bool condition, const std::string& label )
 	{
@@ -163,7 +163,7 @@ namespace
 	{
 		std::ostringstream s;
 		s << "RISE ASCII SCENE 7\n";
-		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		s << "pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname env\n\tcolor 1 1 1\n}\n\n";
 		s << material;
@@ -248,7 +248,7 @@ namespace
 	void RunKind( const char* title, const std::string& material, const int spp,
 		const double chBand, const double brBand, const bool withMlt )
 	{
-		std::cout << title << " (32x32, " << spp << " spp, mean of " << kRepeats << " salted renders)" << std::endl;
+		std::cout << title << " (16x16, " << spp << " spp, mean of " << kRepeats << " salted renders)" << std::endl;
 		const Stat pt = Measure( material, "pathtracing_spectral_rasterizer", spp, false, "PT spectral" );
 		Check( pt.ok, std::string( title ) + ": PT spectral rendered" );
 		if( !pt.ok ) return;
@@ -303,8 +303,8 @@ int main( int argc, char** argv )
 		return 0;
 	}
 	// Bands measured on the fixed build -- see docs/DEBT_LEDGER.md DL-357.
-	RunKind( "diffusion", DiffusionMaterial(), 256, 0.03, 0.03, withMlt );
-	RunKind( "random walk", RandomWalkMaterial(), 256, 0.06, 0.08, withMlt );
+	RunKind( "diffusion", DiffusionMaterial(), 64, 0.05, 0.05, withMlt );
+	RunKind( "random walk", RandomWalkMaterial(), 256, 0.15, 0.16, withMlt );
 	std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
 }

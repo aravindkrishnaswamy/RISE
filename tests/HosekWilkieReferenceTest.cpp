@@ -28,6 +28,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #define _USE_MATH_DEFINES
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -153,7 +154,6 @@ int main()
 		HosekWilkieSpectralRadianceMap* rmap = new HosekWilkieSpectralRadianceMap(
 			Scalar(60) * kDeg, Scalar(45) * kDeg, Scalar(3),
 			RISEPel( 0.3, 0.3, 0.3 ), Scalar(1) );
-		rmap->addref();
 
 		const Ray rUp(    Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
 		const Ray rDown(  Point3( 0, 0, 0 ), Vector3( 0, -1, 0 ) );

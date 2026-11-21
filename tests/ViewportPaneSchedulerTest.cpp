@@ -1490,14 +1490,11 @@ struct Fixture
 // separate mSuppressInitialRender one-shot and zeroes the render/cancel
 // counters), so the pre-Start kick survives into the loop.
 static const unsigned int kWaitMs   = 4000;
-static const unsigned int kSettleMs = 250;
-// The no-growth interval WaitForSequenceQuiescence must observe before it will
-// call a rotation settled.  300 ms, not kSettleMs, so the guaranteed minimum
-// observation window is never SHORTER than the fixed 300 ms drain sleep this
-// mechanism replaced in the (j) / (j2) shrink scenarios -- a condition-based
-// wait that observed for less time than the sleep it replaced would trade one
-// flake for a weaker assertion.
-static const unsigned int kDrainSettleMs = 300;
+// Must stay strictly above SceneEditController's production kRefineWakeMs (100 ms)
+// so SettlesAt / WaitForSequenceQuiescence genuinely outlast the idle-refinement
+// wake window (80 ms headroom above kRefineWakeMs).
+static const unsigned int kSettleMs = 180;
+static const unsigned int kDrainSettleMs = 200;
 
 static bool CaptureNamedCamera( Job& job, const char* name,
 	CameraSnapshot& out )
@@ -1777,7 +1774,7 @@ static void RunGesturePinningTest()
 	f.ctrl->ReleaseMintedPass();
 	Check( f.ctrl->WaitForPassCount( nAtRelease + 3, kWaitMs ),
 	       "the 3-pass release sequence lands (primary, final-regular, polish)" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );   // drain any EXTRA passes
+	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );   // drain any EXTRA passes
 	{
 		const std::vector<unsigned int> seq = f.ctrl->Sequence();
 		const std::size_t delta = seq.size() - nAtRelease;
@@ -1878,7 +1875,8 @@ static void RunVariantPropertyScrubRecoveryTest()
 	f.ctrl->ForTest_KickRender();
 	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 2, kWaitMs ), "initial TwoH rotation completes" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
+	std::size_t initialSettled = 0;
+	const bool initialQuiesced = f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, initialSettled );
 	{
 		const std::vector<unsigned int> initial = f.ctrl->Sequence();
 		bool saw0 = false, saw1 = false;
@@ -1886,7 +1884,7 @@ static void RunVariantPropertyScrubRecoveryTest()
 			if( initial[i] == 0 ) saw0 = true;
 			if( initial[i] == 1 ) saw1 = true;
 		}
-		Check( saw0 && saw1 && f.ctrl->SettlesAt( initial.size(), kSettleMs ),
+		Check( saw0 && saw1 && initialQuiesced && initialSettled >= 2,
 		       "initial rotation covers both panes and quiesces" );
 	}
 	f.ctrl->ClearSequence();
@@ -2731,7 +2729,8 @@ static void RunShrinkPreservesUnrelatedPropertyScrubTest()
 	f.ctrl->EndPropertyScrub();
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 	       "concurrent-shrink scrub End resumes all three panes" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( kSettleMs ) );
+	std::size_t recoverySettled = 0;
+	const bool recoveryQuiesced = f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, recoverySettled );
 	{
 		const std::vector<unsigned int> recovery = f.ctrl->Sequence();
 		bool saw0 = false, saw1 = false, saw2 = false, sawHidden = false;
@@ -2741,8 +2740,7 @@ static void RunShrinkPreservesUnrelatedPropertyScrubTest()
 			else if( recovery[i] == 2 ) saw2 = true;
 			else sawHidden = true;
 		}
-		Check( saw0 && saw1 && saw2 && !sawHidden
-		    && f.ctrl->SettlesAt( recovery.size(), kSettleMs ),
+		Check( saw0 && saw1 && saw2 && !sawHidden && recoveryQuiesced && recoverySettled >= 4,
 		       "concurrent-shrink recovery covers every visible pane and quiesces" );
 	}
 }
@@ -2829,12 +2827,8 @@ static void RunPaneZeroAliasUnderSecondaryPrimaryTest()
 	f.ctrl->ForTest_KickRender();
 	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ), "a full Quad rotation runs (pane 2's free-fly realized)" );
-	// Let the legitimate adaptive refinement tail drain before taking the
-	// quiescence baseline.  Sampling Sequence().size() immediately after the
-	// fourth layout quantum raced that tail and made this unrelated setup
-	// assertion intermittently fail on otherwise-correct runs.
-	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
-	Check( f.ctrl->SettlesAt( f.ctrl->Sequence().size(), kSettleMs ), "settles" );
+	std::size_t kSettled = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, kSettled ) && kSettled >= 4, "settles" );
 
 	// The primary pane reports its OWN free-fly (config-backed for a
 	// secondary) -- confirms the setup took.
@@ -3419,14 +3413,14 @@ static void RunActiveCameraGestureInvalidatesNamedPaneTest()
 		"pane-0 camera gesture ends" );
 	Check( f.ctrl->WaitForPassCount( 1, kWaitMs ),
 		"gesture release starts its refresh chain" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
+	std::size_t releaseSettled = 0;
+	const bool releaseQuiesced = f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, releaseSettled );
 	const std::vector<unsigned int> releaseSeq = f.ctrl->Sequence();
 	bool releaseSawBoundPane = false;
 	for( std::size_t i = 0; i < releaseSeq.size(); ++i ) {
 		if( releaseSeq[i] == 1 ) releaseSawBoundPane = true;
 	}
-	Check( releaseSawBoundPane
-	    && f.ctrl->SettlesAt( releaseSeq.size(), kSettleMs ),
+	Check( releaseSawBoundPane && releaseQuiesced && releaseSettled >= 1,
 		"gesture release refreshes the bound pane and settles" );
 
 	CameraSnapshot after;
@@ -3547,9 +3541,8 @@ static void RunNamedCameraGestureRoutingTest()
 	f.ctrl->Start( true );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 		"initial live Quad rotation completes" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
-	Check( f.ctrl->SettlesAt(
-			f.ctrl->Sequence().size(), kSettleMs ),
+	std::size_t initQuadSettled = 0;
+	Check( f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, initQuadSettled ) && initQuadSettled >= 4,
 		"initial live Quad rotation settles" );
 
 	f.ctrl->ClearSequence();
@@ -3566,14 +3559,14 @@ static void RunNamedCameraGestureRoutingTest()
 		"live named-camera pan ends" );
 	Check( f.ctrl->WaitForPassCount( 4, kWaitMs ),
 		"gesture release resumes the Quad refresh" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+	std::size_t releaseQuadSettled = 0;
+	const bool releaseQuadQuiesced = f.ctrl->WaitForSequenceQuiescence( kSettleMs, kWaitMs, releaseQuadSettled );
 	const std::vector<unsigned int> releaseSeq = f.ctrl->Sequence();
 	bool releaseSawPane2 = false;
 	for( std::size_t i = 0; i < releaseSeq.size(); ++i ) {
 		if( releaseSeq[i] == 2 ) releaseSawPane2 = true;
 	}
-	Check( releaseSawPane2
-	    && f.ctrl->SettlesAt( releaseSeq.size(), kSettleMs ),
+	Check( releaseSawPane2 && releaseQuadQuiesced && releaseQuadSettled >= 4,
 		"MONEY (T3/reconcile): release refreshes the sibling pane bound to side" );
 	f.ctrl->Stop();
 	CameraSnapshot liveSide;
@@ -4506,7 +4499,7 @@ static void RunPointerWatchdogAfterRefinementSettlesTest()
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
 		"layout Quad" );
-	f.ctrl->ForTest_SetPointerWatchdogMs( 1200 );
+	f.ctrl->ForTest_SetPointerWatchdogMs( 500 );
 	f.ctrl->Start( true );
 	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
 	Check( f.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ),
@@ -4514,14 +4507,14 @@ static void RunPointerWatchdogAfterRefinementSettlesTest()
 	f.ctrl->OnPointerMove( Point2( 12, 9 ) );
 
 	bool reachedScaleOne = false;
-	for( unsigned int i = 0; i < 20 && !reachedScaleOne; ++i )
+	for( unsigned int i = 0; i < 30 && !reachedScaleOne; ++i )
 	{
 		int phase = -1;
 		unsigned int divisor = 0;
 		reachedScaleOne = f.ctrl->GetPaneRefinementStatus( 0, phase, divisor )
 			&& divisor == 1;
 		if( !reachedScaleOne )
-			std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+			std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
 	}
 	Check( reachedScaleOne && !f.ctrl->ForTest_PointerGestureStale(),
 		"precondition: the gesture reaches scale 1 before its watchdog deadline" );
@@ -4529,9 +4522,9 @@ static void RunPointerWatchdogAfterRefinementSettlesTest()
 	f.ctrl->ClearSequence();
 	f.ctrl->ForTest_KickRender();
 	bool sawSibling = false;
-	for( unsigned int i = 0; i < 45 && !sawSibling; ++i )
+	for( unsigned int i = 0; i < 60 && !sawSibling; ++i )
 	{
-		std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
 		const std::vector<unsigned int> seq = f.ctrl->Sequence();
 		for( std::size_t k = 0; k < seq.size(); ++k )
 			if( seq[k] != 0 ) { sawSibling = true; break; }
@@ -4567,8 +4560,8 @@ static void RunActiveDragSurvivesSlowPassesTest()
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
 		"layout Quad" );
-	f.ctrl->SetSlowPassMs( 400 );                     // a BeautyVariant-class quantum
-	f.ctrl->ForTest_SetPointerWatchdogMs( 120 );      // far SHORTER than one pass
+	f.ctrl->SetSlowPassMs( 120 );                     // a BeautyVariant-class quantum
+	f.ctrl->ForTest_SetPointerWatchdogMs( 40 );       // far SHORTER than one pass
 	f.ctrl->Start( /*suppressInitialRender*/ true );
 
 	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
@@ -4578,7 +4571,7 @@ static void RunActiveDragSurvivesSlowPassesTest()
 	// blocks for the in-flight pass, which is the whole point: the pointer is
 	// active the entire time even though few edits complete.
 	bool wentStale = false;
-	for( unsigned int i = 0; i < 12 && !wentStale; ++i )
+	for( unsigned int i = 0; i < 5 && !wentStale; ++i )
 	{
 		f.ctrl->OnPointerMove( Point2( 9.0 + i, 8.0 + i ) );
 		if( f.ctrl->ForTest_PointerGestureStale() ) wentStale = true;
@@ -4607,7 +4600,7 @@ static void RunPointerMoveWatchdogHandoffTest()
 
 	Check( f.ctrl->SetViewportLayout( SceneEditController::ViewportLayout::Quad ),
 		"layout Quad" );
-	f.ctrl->ForTest_SetPointerWatchdogMs( 80 );
+	f.ctrl->ForTest_SetPointerWatchdogMs( 40 );
 	f.ctrl->Start( true );
 	f.ctrl->SetTool( SceneEditController::Tool::OrbitCamera );
 	Check( f.ctrl->OnPanePointerDown( 0, Point2( 8, 8 ) ),
@@ -4618,7 +4611,7 @@ static void RunPointerMoveWatchdogHandoffTest()
 	} );
 	Check( f.ctrl->WaitForPointerMoveAdmission( kWaitMs ),
 		"move reached the definitive admitted/in-flight handoff" );
-	std::this_thread::sleep_for( std::chrono::milliseconds( 240 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
 	Check( !f.ctrl->ForTest_PointerGestureStale(),
 		"MONEY (w5): watchdog cannot stale a move after it was admitted but before its in-flight publication" );
 	f.ctrl->ForTest_SetPointerWatchdogMs( 0 );

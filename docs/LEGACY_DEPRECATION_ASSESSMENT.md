@@ -409,6 +409,8 @@ Replace the boolean `ChunkDescriptor::deprecated` with a tier (keeping `deprecat
 | **Frozen** | yes, bit-identical | `` `X` is LEGACY and UNSUPPORTED (frozen <date>): it renders as before but receives no fixes. Use Y; migrate with tools/migrate_legacy.py. `` | won't-fix (see 10.2) | **refuse insert** (as `ambient_light` today); editing existing chunks still allowed | sorted last, badged "(legacy, unsupported)"; hidden behind "show legacy" in add-node menus |
 | **Removed** (ON HOLD, owner ruling 2026-10-09) | parse **error** naming the replacement and migrator (the v5-header pattern) | n/a | rows closed | n/a | gone |
 
+Bit-identity covers frozen code itself; a fix in supported code that a frozen render shares (RayCaster, LightSampler, `pathtracing_shaderop`) can still move it, and its pins are then re-pinned (owner ruling #17). Example: DL-633 re-weights emitter hits after a RayCaster volume scatter, which moves a legacy render through a participating medium (no shipped legacy scene has one).
+
 Also needed: a **parameter-level** flag (`ParameterDescriptor::deprecated`) for cases like
 `tangent_rotation` and, after D13, `defaultshader` on pure rasterizers. Non-chunk surfaces
 need their own marking: the Blender enum items (relabel "(legacy)"), `use_world_ambient`,

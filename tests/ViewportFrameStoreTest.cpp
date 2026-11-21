@@ -1834,9 +1834,7 @@ namespace
 		opts.bpp        = 8;
 		opts.viewTransform = ViewTransform::Identity();
 
-		const auto start = std::chrono::steady_clock::now();
-		while ( std::chrono::steady_clock::now() - start
-		        < std::chrono::milliseconds( 200 ) )
+		for ( int i = 0; i < 20; ++i )
 		{
 			const std::string path = MakeTempPath() + "_midrender.ppm";
 			const bool ok = vfs->SaveAs( path, enc, opts );
@@ -1857,8 +1855,8 @@ namespace
 		label << "mid-render SaveAs: " << saveOk.load() << " / " << saveCount.load()
 		      << " saves produced non-empty files";
 		Check( saveOk.load() == saveCount.load(), label.str() );
-		Check( saveCount.load() > 5,
-			"mid-render SaveAs: ran enough iterations to stress contention" );
+		Check( saveCount.load() == 20,
+			"mid-render SaveAs: ran all 20 iterations to stress contention" );
 
 		safe_release( img );
 		vfs->release();
@@ -1921,10 +1919,15 @@ namespace
 			}
 		} );
 
-		// Run for 200 ms — enough to accumulate many reallocs +
-		// reads.  Without the chain-mutex fix this would crash
-		// almost immediately due to UAF.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+		// Wait deterministically until both threads have completed at least
+		// 50 iterations (with a generous 5 s deadlock ceiling).  Without the
+		// chain-mutex fix this crashes almost immediately due to UAF.
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 5 );
+		while ( ( reallocs.load() < 50 || reads.load() < 50 ) &&
+		        std::chrono::steady_clock::now() < deadline )
+		{
+			std::this_thread::yield();
+		}
 		stop.store( true );
 		writer.join();
 		reader.join();
@@ -1932,8 +1935,8 @@ namespace
 		std::ostringstream os;
 		os << "chain race: " << reallocs.load() << " reallocs + "
 		   << reads.load() << " reads completed without crash / UAF";
-		Check( reallocs.load() > 5, os.str() );
-		Check( reads.load() > 5,
+		Check( reallocs.load() >= 50, os.str() );
+		Check( reads.load() >= 50,
 			"chain race: reader thread ran enough iterations to stress" );
 
 		safe_release( img32 );

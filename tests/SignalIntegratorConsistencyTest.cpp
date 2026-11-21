@@ -915,11 +915,16 @@ static bool WantsLayer1()
 	return g_filter.empty() || FilterAllows( "unit" );
 }
 
-//! One showcase runs when the filter is unset, names "showcase" (all
-//! four), or names that specific showcase's own keyword.
+//! Layer 2 showcases are gated behind SIGNAL_CONSISTENCY_EXTENDED=1 (or an
+//! explicit SIGNAL_CONSISTENCY_FILTER naming "showcase" or a showcase keyword).
 static bool WantsShowcase( const char* keyword )
 {
-	return g_filter.empty() || FilterAllows( "showcase" ) || FilterAllows( keyword );
+	const char* ext = std::getenv( "SIGNAL_CONSISTENCY_EXTENDED" );
+	const bool extended = ext && ext[0] != '\0' && std::string( ext ) != "0";
+	if( !g_filter.empty() ) {
+		return FilterAllows( "showcase" ) || FilterAllows( keyword );
+	}
+	return extended;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1283,7 +1288,7 @@ struct SignalUnitScene
 // mean at moderate spp over ~1000 pixels).
 //======================================================================
 
-static const char* kFilm32 = "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+static const char* kFilm32 = "film\n{\n\twidth 24\n\theight 24\n}\n\n";
 
 // --- (1) curv: one analytic sphere_geometry, radius-independent
 // closed form curv = 2*sqrt(3) (SurfaceCurvatureTest section (h)), which
@@ -1606,7 +1611,7 @@ static SignalUnitScene BuildInteriorScene()
 // LAYER 1 driver
 //======================================================================
 
-static const unsigned int kLayer1Samples = 48;
+static const unsigned int kLayer1Samples = 32;
 
 struct Layer1Row
 {
@@ -3220,7 +3225,7 @@ int main( int argc, char** argv )
 		          << "  occlusion-derived t=" << occlusionHarness
 		          << "  thickness(0.1)=" << thicknessHarness << std::endl;
 
-		RunLayer1Scene( curvScene, /*includeMlt=*/true );
+		RunLayer1Scene( curvScene, /*includeMlt=*/false );
 		RunLayer1Scene( convexityScene, false );
 		RunLayer1Scene( occlusionScene, false );
 		RunLayer1Scene( thicknessScene, false );

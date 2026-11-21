@@ -344,7 +344,7 @@ def _run_bake(output_path):
     obj = next(o for o in scene.objects if o.get("rise_bake_target", False))
     for other in scene.objects:
         other.select_set(False)
-        if other is not obj and other.name == obj.get("rise_source_name"):
+        if other != obj and other.name == obj.get("rise_source_name"):
             other.hide_render = True
             other.name = "RISE original bake source"
     bpy.context.view_layer.objects.active = obj

@@ -1680,6 +1680,10 @@ bool RayCaster::CastRayImpl_(
 					// `bsdfPdf` carries the density the direction was really
 					// drawn from (the guided mixture when guiding fired).
 					rs2.bsdfMisPdf = phasePdf;
+					// DL-633: volume NEE excludes no object; an emitter this ray
+					// reaches is weighted by the light-table rule in either op.
+					rs2.pNEESelfObject = 0;
+					rs2.emitterHitFollowsLightTable = true;
 					rs2.bsdfPdf = effectivePdf;
 					// DL-72 round 3: the volume analogue of BSDF*cos is the
 					// phase VALUE at the sampled direction (no cosine in free
@@ -2634,6 +2638,10 @@ bool RayCaster::CastRayNMImpl_(
 					// really came from (DL-74 P2-5).  See the RGB copy's
 					// comment for the full derivation.
 					rs2.bsdfMisPdf = phasePdf;
+					// DL-633: volume NEE excludes no object; an emitter this ray
+					// reaches is weighted by the light-table rule in either op.
+					rs2.pNEESelfObject = 0;
+					rs2.emitterHitFollowsLightTable = true;
 					rs2.bsdfPdf = effectivePdf;
 					// DL-72 (round 3, this pass): NM sibling of the RGB
 					// volume-continuation fix above -- same derivation

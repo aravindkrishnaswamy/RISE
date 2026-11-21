@@ -158,7 +158,9 @@ void PathTracingShaderOp::PerformOperation(
 		// continuation's exit hit -- trains its optimal-MIS moment
 		// consistently with the escape arm (DL-148).  1.0 (no-op) for an
 		// ordinary top-level camera-ray dispatch.
-		rs.castRRCompensation );
+		rs.castRRCompensation,
+		// DL-633: the object the producing vertex's light sampling excluded.
+		rs.pNEESelfObject );
 }
 
 
@@ -213,7 +215,10 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		// DL-74 -- see the RGB twin above.
 		rs.MisPartnerPdf(),
 		// DL-185 -- see the RGB twin above.
-		rs.castRRCompensation );
+		rs.castRRCompensation,
+		false, nullptr, false,
+		// DL-633 -- see the RGB twin above.
+		rs.pNEESelfObject );
 }
 
 
@@ -269,5 +274,8 @@ void PathTracingShaderOp::PerformOperationHWSS(
 		// constructed `RAY_STATE` (`rs.castRRCompensation == 1.0`), so
 		// this closes the training-consistency gap without moving any
 		// rendered pixel.
-		rs.castRRCompensation );
+		rs.castRRCompensation,
+		0,
+		// DL-633 -- see the RGB twin above.
+		rs.pNEESelfObject );
 }

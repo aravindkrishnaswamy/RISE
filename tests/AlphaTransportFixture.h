@@ -229,7 +229,7 @@ inline std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 	const bool wide = ( cam == kWide );
 	std::ostringstream ss;
 	ss <<
-		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"film\n{\n\twidth 8\n\theight 8\n}\n\n"
 		"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov " << ( wide ? "10.0" : "2.0" ) << "\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho
 			<< "\n\tcolorspace Rec709RGB_Linear\n}\n\n"

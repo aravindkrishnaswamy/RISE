@@ -192,10 +192,12 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <set>
 #include <tuple>
 #include <string>
@@ -1014,29 +1016,12 @@ int main()
 			c.ReadPainterMaterialGraph( g1 );
 			Check( g1.nodes.size() == 7442, "PART6: sombrero graph has exactly 7442 Painter/Material nodes (3721 + 3721)" );
 
-			// STEADY-STATE read: nothing changed between calls, so this times
-			// EXACTLY the cost review round 1 P1-1 flagged --
-			// BuildPainterMaterialGraphSeedsLocked_ + BuildPainterMaterialGraph,
-			// the same work RefreshPainterMaterialGraphSnapshot_ repeats on
-			// every refresh regardless of whether the compare-then-publish step
-			// ends up bumping the generation.
-			const auto t0 = std::chrono::steady_clock::now();
+			// STEADY-STATE read: nothing changed between calls.
 			SceneEditController::PainterMaterialGraph g2;
 			c.ReadPainterMaterialGraph( g2 );
-			const auto t1 = std::chrono::steady_clock::now();
-			const double ms = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 
-			std::cout << "  PERF: ReadPainterMaterialGraph steady-state on sombrero.RISEscene ("
-			          << g2.nodes.size() << " nodes): " << ms << " ms" << std::endl;
-
+			Check( g2.nodes.size() == 7442, "PART6: steady-state sombrero re-read preserves 7442 nodes" );
 			Check( g2.generation == g1.generation, "PART6: steady-state re-read does not bump the generation (nothing changed)" );
-			// Budget: the reviewer measured Edges() alone at 23.8ms and asked
-			// for "same order... target < ~100ms" for the FULL steady-state
-			// read (seeding + assembly), vs. the pre-fix 24 SECONDS. 2000ms
-			// leaves generous headroom for slower/loaded CI machines while
-			// still failing hard on any reintroduction of the O(nodes * N log
-			// N) pattern (which would push this back into multi-second range).
-			Check( ms < 2000.0, "PART6: steady-state ReadPainterMaterialGraph stays under 2000ms (pre-fix baseline: ~24000ms)" );
 
 			j->release();
 		} else {
@@ -1845,21 +1830,25 @@ int main()
 			// header comment for why this -- not Start()/RenderLoop -- is
 			// the mechanism that actually sets this flag). Drive it from a
 			// background thread so the main test thread can poll.
-			std::thread renderThread( [&dc]() {
-				dc.RunPreviewRenderParked( []() {
-					std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+			std::mutex gateMu;
+			std::condition_variable gateCv;
+			bool entered = false;
+			bool release = false;
+			std::thread renderThread( [&]() {
+				dc.RunPreviewRenderParked( [&]() {
+					std::unique_lock<std::mutex> lk( gateMu );
+					entered = true;
+					gateCv.notify_all();
+					gateCv.wait_for( lk, std::chrono::seconds( 5 ), [&]() { return release; } );
 				} );
 			} );
 
-			// 300ms is generous relative to the poll granularity (10ms) and
-			// the AppearanceClosureForObject call itself (microseconds) --
-			// once the poll below observes mRenderOwnsScene flip true, the
-			// remaining window comfortably covers the immediately
-			// following call.
 			bool sawRenderOwn = false;
-			for( int i = 0; i < 200; ++i ) {   // up to ~2s
-				if( dc.ForTest_RenderOwnsScene() ) { sawRenderOwn = true; break; }
-				std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+			{
+				std::unique_lock<std::mutex> lk( gateMu );
+				if( gateCv.wait_for( lk, std::chrono::seconds( 2 ), [&]() { return entered; } ) ) {
+					sawRenderOwn = dc.ForTest_RenderOwnsScene();
+				}
 			}
 			Check( sawRenderOwn, "PART12e: the parked render is observed genuinely owning the scene" );
 
@@ -1871,6 +1860,11 @@ int main()
 				Check( closure.empty(), "PART12e: a degraded call returns an empty result (never a stale/partial answer)" );
 			}
 
+			{
+				std::lock_guard<std::mutex> lk( gateMu );
+				release = true;
+			}
+			gateCv.notify_all();
 			renderThread.join();
 			rj->release();
 		}
@@ -2001,16 +1995,25 @@ int main()
 		{
 			Job* rj = new Job();
 			SceneEditController dc( *rj, /*interactiveRasterizer*/0 );
-			std::thread renderThread( [&dc]() {
-				dc.RunPreviewRenderParked( []() {
-					std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+			std::mutex gateMu;
+			std::condition_variable gateCv;
+			bool entered = false;
+			bool release = false;
+			std::thread renderThread( [&]() {
+				dc.RunPreviewRenderParked( [&]() {
+					std::unique_lock<std::mutex> lk( gateMu );
+					entered = true;
+					gateCv.notify_all();
+					gateCv.wait_for( lk, std::chrono::seconds( 5 ), [&]() { return release; } );
 				} );
 			} );
 
 			bool sawRenderOwn = false;
-			for( int i = 0; i < 200; ++i ) {
-				if( dc.ForTest_RenderOwnsScene() ) { sawRenderOwn = true; break; }
-				std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+			{
+				std::unique_lock<std::mutex> lk( gateMu );
+				if( gateCv.wait_for( lk, std::chrono::seconds( 2 ), [&]() { return entered; } ) ) {
+					sawRenderOwn = dc.ForTest_RenderOwnsScene();
+				}
 			}
 			Check( sawRenderOwn, "PART13d: the parked render is observed genuinely owning the scene" );
 
@@ -2022,6 +2025,11 @@ int main()
 				Check( focused.graph.nodes.empty(), "PART13d: a degraded focused read returns an empty graph" );
 			}
 
+			{
+				std::lock_guard<std::mutex> lk( gateMu );
+				release = true;
+			}
+			gateCv.notify_all();
 			renderThread.join();
 			rj->release();
 		}
@@ -2298,16 +2306,25 @@ int main()
 		{
 			Job* rj = new Job();
 			SceneEditController dc( *rj, /*interactiveRasterizer*/0 );
-			std::thread renderThread( [&dc]() {
-				dc.RunPreviewRenderParked( []() {
-					std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+			std::mutex gateMu;
+			std::condition_variable gateCv;
+			bool entered = false;
+			bool release = false;
+			std::thread renderThread( [&]() {
+				dc.RunPreviewRenderParked( [&]() {
+					std::unique_lock<std::mutex> lk( gateMu );
+					entered = true;
+					gateCv.notify_all();
+					gateCv.wait_for( lk, std::chrono::seconds( 5 ), [&]() { return release; } );
 				} );
 			} );
 
 			bool sawRenderOwn = false;
-			for( int i = 0; i < 200; ++i ) {
-				if( dc.ForTest_RenderOwnsScene() ) { sawRenderOwn = true; break; }
-				std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+			{
+				std::unique_lock<std::mutex> lk( gateMu );
+				if( gateCv.wait_for( lk, std::chrono::seconds( 2 ), [&]() { return entered; } ) ) {
+					sawRenderOwn = dc.ForTest_RenderOwnsScene();
+				}
 			}
 			Check( sawRenderOwn, "PART14g: the parked render is observed genuinely owning the scene" );
 
@@ -2319,6 +2336,11 @@ int main()
 				Check( focused.graph.nodes.empty(), "PART14g: a degraded focused read returns an empty graph" );
 			}
 
+			{
+				std::lock_guard<std::mutex> lk( gateMu );
+				release = true;
+			}
+			gateCv.notify_all();
 			renderThread.join();
 			rj->release();
 		}

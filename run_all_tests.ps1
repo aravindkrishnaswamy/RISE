@@ -12,9 +12,10 @@
 #   .\run_all_tests.ps1 -Tier fast               # Fast tier (RISE_TEST_EXTENDED=0)
 #   .\run_all_tests.ps1 -Tier extended           # Extended tier only (RISE_TEST_EXTENDED=1)
 #   .\run_all_tests.ps1 -TimeoutSeconds 60       # Kill any test exceeding 60s
+#   .\run_all_tests.ps1 -Jobs 1                  # Run tests one at a time (default: one per core)
 #   .\run_all_tests.ps1 -NoBuild                 # Run pre-built tests only
 #   .\run_all_tests.ps1 -BuildOnly               # Build only, don't run
-#   .\run_all_tests.ps1 -Filter Math3D*,*Noise3D # Run subset matching wildcards
+#   .\run_all_tests.ps1 -Filter Polynomial*,*BVH* # Run subset matching wildcards
 #
 # Exit code: 0 if every built test passed, 1 if any build or run failed.
 # -----------------------------------------------------------------------------
@@ -27,6 +28,12 @@ param(
     [ValidateSet('all', 'fast', 'extended')]
     [string]$Tier = $(if ($env:RISE_TEST_TIER) { $env:RISE_TEST_TIER } else { 'all' }),
     [int]$TimeoutSeconds = 0,
+    # How many run slots the tests share.  A test takes one, or N when
+    # tests\test_schedule.tsv marks it `wide:N`; tests marked `exclusive` always
+    # run alone.  1 = one at a time, alphabetical (single tests still get one
+    # render thread).
+    # 0 = RISE_TEST_RUN_JOBS, else one per logical processor (checked below).
+    [int]$Jobs = 0,
     [string]$LogDir,
     [switch]$ValidateLogDirOnly,
     [switch]$NoBuild,
@@ -39,6 +46,8 @@ $ErrorActionPreference = 'Stop'
 $origRiseTestExtended = $env:RISE_TEST_EXTENDED
 $origTmpDir = $env:TMPDIR
 $origRiseMediaPath = $env:RISE_MEDIA_PATH
+$origRiseOptionsFile = $env:RISE_OPTIONS_FILE
+$ownsLock = $false
 try {
 # Clear any caller-inherited RISE_MEDIA_PATH (mirroring run_all_tests.sh) so
 # tests running from repo root resolve relative `scenes/...` and `models/...`
@@ -82,15 +91,13 @@ switch ($Tier) {
 
 # Heavy multi-minute statistical/integration sweep suites assigned exclusively
 # to the extended tier when -Tier fast or -Tier extended is requested.
+# Rule: a test that takes more than about 200 s on its own does not belong in
+# the fast tier.  Put it here, or give it a cheap fast mode
+# ($DualModeExtendedTests below).  Keep both lists identical to
+# run_all_tests.sh's is_extended_test / has_extended_mode.
 $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
-        'BDPTStrategyBalanceTest', 'VCMStrategyBalanceTest', 'SMSExtendedReferenceTest',
-        'SMSExtendedPartitionTest', 'SMSUniformDispersionTest', 'SMSSupersededRowsTest',
-        'SMSFourVertexVarianceTest', 'PTGuidingMISPartitionTest', 'BDPTGuidedContinuationTest',
-        'CompositeEnergyConservationTest', 'LayeredWhiteFurnaceTest',
-        'VolumeAbsorptionAttenuationTest', 'MediumInsideOutsideInvariantTest',
-        'ExteriorIndexInvarianceTest', 'SSSExteriorIndexInvarianceTest',
-        'CstDeriveGoldenTest', 'AgentViewModeRenderTest', 'AgentProposeRenderTest'
+        'MediumEnclosureConnectibilityTest', 'MediumInsideOutsideInvariantTest'
     ),
     [System.StringComparer]::Ordinal
 )
@@ -100,9 +107,7 @@ $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
 # (RISE_TEST_EXTENDED=1).
 $DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
-        'AgentSkillsTest', 'InteriorCandidateWalkCostTest', 'LightExitanceTest',
-        'LuminarySamplerAreaTest', 'PavilionColonnadeShowcaseTest', 'PolishedBRDFConsistencyTest',
-        'SPFPdfConsistencyTest', 'ShelfBunnyShowcaseTest', 'TidalStonesShowcaseTest',
+        'AgentSkillsTest', 'LightExitanceTest', 'SPFPdfConsistencyTest',
         'TimeIndexedMotionBlurTest'
     ),
     [System.StringComparer]::Ordinal
@@ -142,9 +147,6 @@ $FireGasPlanckManifest = Join-Path $RepoRoot 'docs\data\gas_opacity\hitemp_sourc
 $FireGasPlanckEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireGasOpacityRecordData.inc'
 $FireGasPlanckRecord = Join-Path $RepoRoot 'docs\data\gas_opacity\fire_gas_opacity_hitemp_planck_mean_v1.cbor'
 $FireGasPlanckTest = Join-Path $RepoRoot 'tests\test_fire_gas_opacity_planck_record.py'
-$FireProductionCalibrationDir = Join-Path $RepoRoot 'rendered\fire_production_calibration\r112_dyadic_smooth_open'
-$FireProductionProtocolSHA = '42185c882c52e8c94db4b58f40674c53341eabe1b75b6922fdd1c7f56415a4ed'
-$FireProductionTargetsSHA = 'd4947cb8eedbc57732190bf1833e68c3f83a356346c1662db321d7831bce958b'
 
 $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source
 if (-not $python) {
@@ -211,8 +213,40 @@ if (-not $LogDir) {
     if ($env:RISE_TEST_LOG_DIR) {
         $LogDir = $env:RISE_TEST_LOG_DIR
     } else {
-        $LogDir = Join-Path $env:TEMP 'rise-tests-logs-managed'
+        # Per checkout (a hash of its path), so runs in two worktrees at once
+        # do not delete each other's logs and run state.
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        $repoHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($RepoRoot))) -replace '-', '').Substring(0, 10)
+        $LogDir = Join-Path $env:TEMP "rise-tests-logs-managed-$repoHash"
     }
+}
+# Absolute (against the caller's directory, before the Push-Location below):
+# tests get TMPDIRs under it and some change directory first.
+$LogDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LogDir)
+if ($env:RISE_OPTIONS_FILE) {
+    $env:RISE_OPTIONS_FILE = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:RISE_OPTIONS_FILE)
+}
+# Tests open scenes\... and read global.options relative to the working
+# directory, so run them from the repo root; the finally block restores the
+# caller's location.
+Push-Location -LiteralPath $RepoRoot -StackName RiseRunAllTests
+
+# -Jobs: the parameter, else RISE_TEST_RUN_JOBS, else one per processor.
+if ($Jobs -eq 0) {
+    if ($env:RISE_TEST_RUN_JOBS) {
+        $parsedJobs = 0
+        if (-not [int]::TryParse($env:RISE_TEST_RUN_JOBS, [ref]$parsedJobs) -or $parsedJobs -lt 1) {
+            Write-Host "ERROR: RISE_TEST_RUN_JOBS='$($env:RISE_TEST_RUN_JOBS)' is not a positive integer" -ForegroundColor Red
+            exit 64
+        }
+        $Jobs = $parsedJobs
+    } else {
+        $Jobs = [Environment]::ProcessorCount
+    }
+}
+if ($Jobs -lt 1) {
+    Write-Host "ERROR: -Jobs $Jobs is not a positive integer" -ForegroundColor Red
+    exit 64
 }
 
 function Get-NormalizedPath([string]$Path) {
@@ -355,6 +389,21 @@ if ($total -eq 0) {
 # Setup output dirs
 # -----------------------------------------------------------------------------
 
+# One run per checkout at a time: a second run would rebuild and relink the
+# test binaries the first is running, write the same scene output, and (with
+# the default log dir) delete the first one's logs and per-test TEMP dirs.
+# The lock is an exclusively opened file held for the whole run; Windows
+# releases it when the process ends, so a crashed run leaves no stale lock.
+$lockDir = Join-Path $RepoRoot 'bin'
+$null = New-Item -ItemType Directory -Force -Path $lockDir
+$lockPath = Join-Path $lockDir '.run_all_tests.lock'
+try {
+    $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+} catch [System.IO.IOException] {
+    Write-Host "ERROR: another run_all_tests.ps1 is running in this checkout (it holds $lockPath). Wait for it to finish." -ForegroundColor Red
+    exit 1
+}
+$ownsLock = $true
 if (Test-Path -LiteralPath $LogDir) { Remove-Item -Recurse -Force -LiteralPath $LogDir }
 $null = New-Item -ItemType Directory -Force -Path $LogDir
 $null = New-Item -ItemType File -Force -Path (Join-Path $LogDir '.rise-test-log-directory')
@@ -550,7 +599,24 @@ if ($BuildOnly) {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 2: Run each built test with captured output and optional timeout
+# Phase 2: Run the built tests, up to $Jobs at a time, with captured output
+# and an optional timeout.
+#
+# Tests share $Jobs run slots.  tests\test_schedule.tsv (shared with
+# run_all_tests.sh) names the tests that must run ALONE (`exclusive`:
+# wall-clock gates), the tests that take N slots (`wide:N`: multi-core
+# renders), the tests that take one slot with their render threads forced to
+# one (`single`), and a run time for the long ones.  Exclusive tests run first,
+# one at a time on an otherwise idle machine.  The wide tests then start in
+# order, widest first, while the pool and single tests fill the slots the next
+# wide test cannot use, longest first by the recorded times
+# (bin\.test_timings.tsv, else the schedule's times).  Unlisted tests are
+# `pool` (one slot).  -Jobs 1 runs one test at a time in alphabetical order
+# (single tests still get one render thread).
+#
+# Every test gets its own TMPDIR/TEMP/TMP ($LogDir\.tmp\<name>), so two
+# different tests that pick the same scratch-file name cannot collide.  Like
+# the log, it is removed when the test passes and kept when it fails.
 # -----------------------------------------------------------------------------
 
 $found = 0
@@ -558,105 +624,298 @@ $passed = 0
 $failed = 0
 $skipped = 0
 $runFailures = @()
+$timings = @()
+$cpuRows = @()
 
-$i = 0
-foreach ($src in $testSources) {
-    $i++
-    $name = $src.BaseName
-    $exe = Join-Path $BinDir "$name.exe"
-    $prefix = '[ {0,3}/{1,3} ] {2,-46}' -f $i, $total, $name
-
-    if (-not $NoBuild -and $failedTargets.ContainsKey($name)) {
-        Write-Host "$prefix SKIP (build failed)"
-        $skipped++
-        continue
-    }
-    if (-not (Test-Path -LiteralPath $exe)) {
-        Write-Host "$prefix SKIP (build failed or missing)"
-        $skipped++
-        continue
-    }
-    if ($failedBuildTargets.ContainsKey($name)) {
-        Write-Host "$prefix SKIP (current build failed; stale exe ignored)"
-        $skipped++
-        continue
-    }
-    # Stale check: source newer than exe means a recent build attempt failed.
-    if (-not $NoBuild -and `
-        (Get-Item -LiteralPath $exe).LastWriteTime -lt $src.LastWriteTime) {
-        Write-Host "$prefix SKIP (build failed, exe is stale)"
-        $skipped++
-        continue
-    }
-
-    $found++
-    $log = Join-Path $LogDir "$name.log"
-    Write-Host -NoNewline "$prefix ... "
-    $start = Get-Date
-
-    if ($TimeoutSeconds -gt 0) {
-        # Start-Process with WaitForExit(ms) gives us a kill-on-timeout path.
-        # Redirect to per-stream files because Start-Process can't merge
-        # stdout+stderr into a single file natively; we concatenate after.
-        $stdoutTmp = "$log.stdout"
-        $stderrTmp = "$log.stderr"
-        $proc = Start-Process -FilePath $exe -PassThru -NoNewWindow `
-            -RedirectStandardOutput $stdoutTmp -RedirectStandardError $stderrTmp
-        if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
-            $rc = $proc.ExitCode
-        } else {
-            $proc.Kill()
-            $proc.WaitForExit()
-            $rc = 124   # mimic GNU `timeout` exit code
+$schedule = @{}
+$scheduleFile = Join-Path $SrcDir 'test_schedule.tsv'
+if (Test-Path -LiteralPath $scheduleFile) {
+    foreach ($line in Get-Content -LiteralPath $scheduleFile) {
+        if ($line -match '^\s*(#|$)') { continue }
+        $cols = $line -split "`t"
+        if ($cols.Count -lt 2) { continue }
+        $cls = $cols[1]
+        if ($cls -cne 'pool' -and $cls -cne 'exclusive' -and $cls -cne 'single' -and $cls -cnotmatch '^wide:[1-9][0-9]*$') {
+            Write-Host ('warning: tests\test_schedule.tsv: unknown class "{0}" for {1}; running it exclusive' -f $cls, $cols[0])
+            $cls = 'exclusive'
         }
-        $stdout = if (Test-Path -LiteralPath $stdoutTmp) { Get-Content -Raw -LiteralPath $stdoutTmp } else { '' }
-        $stderr = if (Test-Path -LiteralPath $stderrTmp) { Get-Content -Raw -LiteralPath $stderrTmp } else { '' }
-        Set-Content -LiteralPath $log -Value ($stdout + $stderr) -Encoding utf8
-        Remove-Item -Force -LiteralPath $stdoutTmp, $stderrTmp -ErrorAction SilentlyContinue
-    } else {
-        & $exe *>&1 | Out-File -FilePath $log -Encoding utf8
-        $rc = $LASTEXITCODE
+        $sec = 0.0
+        if ($cols.Count -ge 3) { [void][double]::TryParse($cols[2], [ref]$sec) }
+        $schedule[$cols[0]] = [pscustomobject]@{ Class = $cls; Seconds = $sec }
     }
-    $dur = [int]((Get-Date) - $start).TotalSeconds
+}
 
+# Each test's time in the last run that recorded it (name<TAB>seconds; see
+# the end of this script for which runs do), kept outside the log dir, which
+# every run deletes; it orders the next run.
+$timingsHistory = Join-Path $RepoRoot 'bin\.test_timings.tsv'
+$lastSeconds = @{}
+if (Test-Path -LiteralPath $timingsHistory) {
+    foreach ($line in Get-Content -LiteralPath $timingsHistory) {
+        $cols = $line.TrimEnd("`r") -split "`t"
+        $sec = 0
+        if ($cols.Count -ge 2 -and $cols[0] -and [int]::TryParse($cols[1], [ref]$sec)) { $lastSeconds[$cols[0]] = $sec }
+    }
+}
+
+# The run slots a test takes: exclusive all of them, wide:N N (at most $Jobs),
+# pool and single 1.
+function Get-RiseTestSlots([string]$class) {
+    if ($class -ceq 'exclusive') { return $Jobs }
+    if ($class -cmatch '^wide:([1-9][0-9]*)$') {
+        $n = 0
+        if (-not [int]::TryParse($Matches[1], [ref]$n)) { return $Jobs }
+        return [Math]::Min($n, $Jobs)
+    }
+    return 1
+}
+
+$plan = foreach ($src in $testSources) {
+    $entry = $schedule[$src.BaseName]
+    $cls = if ($entry) { $entry.Class } else { 'pool' }
+    [pscustomobject]@{
+        Name    = $src.BaseName
+        Src     = $src
+        Class   = $cls
+        Slots   = Get-RiseTestSlots $cls
+        Group   = if ($Jobs -le 1) { 2 } elseif ($cls -ceq 'exclusive') { 0 } elseif ($cls -cmatch '^wide:') { 1 } else { 2 }
+        Seconds = if ($lastSeconds.ContainsKey($src.BaseName)) { [double]$lastSeconds[$src.BaseName] } elseif ($entry) { $entry.Seconds } else { 0.0 }
+    }
+}
+if ($Jobs -gt 1) {
+    # Exclusive tests longest first, then the wide tests widest first, then
+    # the pool and single tests longest first.
+    $plan = $plan | Sort-Object -Property @{ Expression = 'Group' }, @{ Expression = 'Slots'; Descending = $true }, @{ Expression = 'Seconds'; Descending = $true }, @{ Expression = 'Name' }
+}
+$plan = @($plan)
+
+$tmpRoot = Join-Path $LogDir '.tmp'
+$null = New-Item -ItemType Directory -Force -Path $tmpRoot
+
+# `single` tests read this options file: the repo's options (or the caller's
+# RISE_OPTIONS_FILE) plus force_number_of_threads 1.
+$singleOptions = Join-Path $LogDir '.single-thread.options'
+$optionsSource = if ($env:RISE_OPTIONS_FILE -and (Test-Path -LiteralPath $env:RISE_OPTIONS_FILE)) { $env:RISE_OPTIONS_FILE } else { Join-Path $RepoRoot 'global.options' }
+$optionsText = if (Test-Path -LiteralPath $optionsSource) { Get-Content -Raw -LiteralPath $optionsSource } else { '' }
+# The force line goes FIRST: Options keeps the first occurrence of a key.
+Set-Content -LiteralPath $singleOptions -Value ("force_number_of_threads 1`n" + $optionsText) -Encoding ascii
+
+# Kill a test and every process it started (agent tests spawn rise.exe).
+function Stop-RiseTestTree($proc) {
+    if (-not $proc -or $proc.HasExited) { return }
+    try { & taskkill.exe /T /F /PID $proc.Id *> $null } catch { }
+    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+}
+
+function Start-RiseTest($item) {
+    $exe = Join-Path $BinDir "$($item.Name).exe"
+    $log = Join-Path $LogDir "$($item.Name).log"
+    $tmp = Join-Path $tmpRoot $item.Name
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -Recurse -Force -LiteralPath $tmp }
+    $null = New-Item -ItemType Directory -Force -Path $tmp
+    $saved = @($env:TMPDIR, $env:TEMP, $env:TMP, $env:RISE_OPTIONS_FILE)
+    $env:TMPDIR = $tmp
+    $env:TEMP = $tmp
+    $env:TMP = $tmp
+    if ($item.Class -ceq 'single') { $env:RISE_OPTIONS_FILE = $singleOptions }
+    $proc = $null
+    $launchError = $null
+    try {
+        $proc = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+            -RedirectStandardOutput "$log.stdout" -RedirectStandardError "$log.stderr"
+        # Touch Handle now: without it PowerShell may never report ExitCode.
+        $null = $proc.Handle
+    } catch {
+        # A launch that fails (antivirus holding a fresh exe, ...) is that
+        # test's FAIL, not the end of the run.
+        $launchError = $_.Exception.Message
+    } finally {
+        $env:TMPDIR = $saved[0]
+        $env:TEMP = $saved[1]
+        $env:TMP = $saved[2]
+        $env:RISE_OPTIONS_FILE = $saved[3]
+    }
+    return [pscustomobject]@{
+        Item = $item; Proc = $proc; Start = Get-Date; Log = $log; Tmp = $tmp
+        Cpu = 0.0; TimedOut = $false; LaunchError = $launchError
+    }
+}
+
+function Complete-RiseTest($run) {
+    $name = $run.Item.Name
+    if ($run.LaunchError) {
+        Set-Content -LiteralPath $run.Log -Value "launch failed: $($run.LaunchError)" -Encoding utf8
+        $script:doneCount++
+        Write-Host ('[ {0,3}/{1,3} ] {2,-46} FAIL (launch failed: {3})' -f $script:doneCount, $total, $name, $run.LaunchError)
+        $script:runFailures += [pscustomobject]@{ Name = $name; Code = -1; Log = $run.Log; Reason = 'launch' }
+        $script:failed++
+        return
+    }
+    $run.Proc.WaitForExit()
+    $wall = ((Get-Date) - $run.Start).TotalSeconds
+    $dur = [int]$wall
+    try { $run.Cpu = $run.Proc.TotalProcessorTime.TotalSeconds } catch { }
+    $rc = if ($run.TimedOut) { 124 } else { $run.Proc.ExitCode }
+    $stdout = if (Test-Path -LiteralPath "$($run.Log).stdout") { Get-Content -Raw -LiteralPath "$($run.Log).stdout" } else { '' }
+    $stderr = if (Test-Path -LiteralPath "$($run.Log).stderr") { Get-Content -Raw -LiteralPath "$($run.Log).stderr" } else { '' }
+    Set-Content -LiteralPath $run.Log -Value ($stdout + $stderr) -Encoding utf8
+    Remove-Item -Force -LiteralPath "$($run.Log).stdout", "$($run.Log).stderr" -ErrorAction SilentlyContinue
+
+    $cores = if ($wall -gt 0) { $run.Cpu / $wall } else { 0.0 }
+    $script:timings += [pscustomobject]@{ Name = $name; Seconds = $dur }
+    $script:cpuRows += [pscustomobject]@{ Name = $name; Seconds = $dur; Cores = $cores; Class = $run.Item.Class }
+    $script:doneCount++
+    $prefix = '[ {0,3}/{1,3} ] {2,-46}' -f $script:doneCount, $total, $name
     if ($rc -eq 0) {
-        Write-Host ("PASS ({0}s)" -f $dur)
-        Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
-        $passed++
+        Write-Host ('{0} PASS ({1}s, {2:N1} cores)' -f $prefix, $dur, $cores)
+        Remove-Item -LiteralPath $run.Log -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force -LiteralPath $run.Tmp -ErrorAction SilentlyContinue
+        $script:passed++
     } elseif ($rc -eq 124) {
-        Write-Host ("TIMEOUT (>{0}s)" -f $TimeoutSeconds)
-        $runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $log; Reason = 'timeout' }
-        $failed++
+        Write-Host ('{0} TIMEOUT (>{1}s)' -f $prefix, $TimeoutSeconds)
+        $script:runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $run.Log; Reason = 'timeout' }
+        $script:failed++
     } else {
-        Write-Host ("FAIL (exit={0}, {1}s)" -f $rc, $dur)
-        $runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $log; Reason = 'fail' }
-        $failed++
+        Write-Host ('{0} FAIL (exit={1}, {2}s)' -f $prefix, $rc, $dur)
+        $script:runFailures += [pscustomobject]@{ Name = $name; Code = $rc; Log = $run.Log; Reason = 'fail' }
+        $script:failed++
     }
 }
 
-if (-not $Filter) {
-    $roundoffName = 'FireProductionCalibrationOracle.r136'
-    $roundoffExe = Join-Path $BinDir 'FireSequenceTest.exe'
-    $roundoffLog = Join-Path $LogDir "$roundoffName.log"
-    Write-Host -NoNewline ('[ evidence ] {0,-46} ... ' -f $roundoffName)
-    if (-not (Test-Path -LiteralPath $roundoffExe)) {
-        $roundoffRC = 127
-    } else {
-        & $roundoffExe --fire-production-calibration-diagnose-roundoff `
-            $FireProductionCalibrationDir $FireProductionProtocolSHA `
-            $FireProductionTargetsSHA *>&1 | Out-File -FilePath $roundoffLog -Encoding utf8
-        $roundoffRC = $LASTEXITCODE
+Write-Host ('Running {0} test(s) in {1} run slots (exclusive tests alone)' -f $plan.Count, $Jobs)
+$runStart = Get-Date
+$doneCount = 0
+$running = New-Object System.Collections.ArrayList
+$slotsUsed = 0
+# The plan's three runs: exclusive, wide, then pool and single (all in the
+# last run with -Jobs 1).
+# (Element by element: @( @(a), @(b) ) would flatten into one array.)
+$queues = New-Object 'object[]' 3
+foreach ($g in 0..2) { $queues[$g] = @($plan | Where-Object { $_.Group -eq $g }) }
+$nextIn = @(0, 0, 0)
+
+# Start the next test of queue $q if it fits in the free slots (or skip it).
+# Returns $true when that test is used up (started or skipped), $false when
+# it must wait for slots.  On an idle machine every test fits: slots never
+# exceed $Jobs.
+function Start-NextRiseTest([int]$q) {
+    $item = $script:queues[$q][$script:nextIn[$q]]
+    $name = $item.Name
+    $exe = Join-Path $BinDir "$name.exe"
+    $doneSkip = $null
+    if (-not $NoBuild -and $failedTargets.ContainsKey($name)) {
+        $doneSkip = 'SKIP (build failed)'
+    } elseif (-not (Test-Path -LiteralPath $exe)) {
+        $doneSkip = 'SKIP (build failed or missing)'
+    } elseif ($failedBuildTargets.ContainsKey($name)) {
+        $doneSkip = 'SKIP (current build failed; stale exe ignored)'
+    } elseif (-not $NoBuild -and (Get-Item -LiteralPath $exe).LastWriteTime -lt $item.Src.LastWriteTime) {
+        # Source newer than exe means a recent build attempt failed.
+        $doneSkip = 'SKIP (build failed, exe is stale)'
     }
-    if ($roundoffRC -eq 237) {
-		Write-Host 'PASS (exact exit=237)'
-        Remove-Item -LiteralPath $roundoffLog -ErrorAction SilentlyContinue
-    } else {
-        Write-Host ("FAIL (exit={0}; expected 237)" -f $roundoffRC)
-        $runFailures += [pscustomobject]@{ Name = $roundoffName; Code = $roundoffRC;
-            Log = $roundoffLog; Reason = 'fail' }
-        $failed++
+    if ($doneSkip) {
+        $script:doneCount++
+        Write-Host ('[ {0,3}/{1,3} ] {2,-46} {3}' -f $script:doneCount, $total, $name, $doneSkip)
+        $script:skipped++
+        $script:nextIn[$q]++
+        return $true
+    }
+    if ($script:running.Count -gt 0 -and ($script:slotsUsed + $item.Slots) -gt $Jobs) { return $false }
+    $script:found++
+    [void]$script:running.Add((Start-RiseTest $item))
+    $script:slotsUsed += $item.Slots
+    $script:nextIn[$q]++
+    return $true
+}
+
+try {
+    while ($true) {
+        # Reap finished tests; kill any past the timeout.
+        $still = New-Object System.Collections.ArrayList
+        foreach ($run in @($running)) {
+            if (-not $run.LaunchError -and -not $run.Proc.HasExited) {
+                try { $run.Cpu = $run.Proc.TotalProcessorTime.TotalSeconds } catch { }
+                if ($TimeoutSeconds -gt 0 -and ((Get-Date) - $run.Start).TotalSeconds -gt $TimeoutSeconds) {
+                    $run.TimedOut = $true
+                    Stop-RiseTestTree $run.Proc
+                }
+                [void]$still.Add($run)
+                continue
+            }
+            $slotsUsed -= $run.Item.Slots
+            try {
+                Complete-RiseTest $run
+            } catch {
+                # Bookkeeping failed (e.g. a log could not be read): count the
+                # test as failed rather than abort the whole run.
+                Write-Host ('[ {0,3}/{1,3} ] {2,-46} FAIL (runner error: {3})' -f (++$script:doneCount), $total, $run.Item.Name, $_.Exception.Message)
+                $script:runFailures += [pscustomobject]@{ Name = $run.Item.Name; Code = -1; Log = $run.Log; Reason = 'runner' }
+                $script:failed++
+            }
+        }
+        $running = $still
+
+        # Start what the slots allow.  Exclusive tests come first, one at a
+        # time on an idle machine; nothing else starts until they are done.
+        # Then the wide tests in plan order (widest first), while the pool and
+        # single tests fill whatever slots the next wide test cannot use.
+        while ($nextIn[0] -lt $queues[0].Count -and $running.Count -eq 0) {
+            if (-not (Start-NextRiseTest 0)) { break }
+        }
+        if ($nextIn[0] -ge $queues[0].Count) {
+            while ($nextIn[1] -lt $queues[1].Count -and $slotsUsed -lt $Jobs) {
+                if (-not (Start-NextRiseTest 1)) { break }
+            }
+            while ($nextIn[2] -lt $queues[2].Count -and $slotsUsed -lt $Jobs) {
+                if (-not (Start-NextRiseTest 2)) { break }
+            }
+        }
+
+        if ($running.Count -eq 0 -and $nextIn[0] -ge $queues[0].Count -and $nextIn[1] -ge $queues[1].Count -and $nextIn[2] -ge $queues[2].Count) { break }
+        Start-Sleep -Milliseconds 200
+    }
+} finally {
+    # Ctrl-C or an error: do not leave test processes behind.
+    foreach ($run in @($running)) {
+        if (-not $run.LaunchError) { Stop-RiseTestTree $run.Proc }
     }
 }
+$runWall = [int]((Get-Date) - $runStart).TotalSeconds
+
+# Remember each test's time for the next run's order: this run's times replace
+# the old ones, tests this run did not reach keep theirs, and tests whose
+# source is gone are dropped.  Only passing tests of an unfiltered full-tier
+# run (RISE_TEST_EXTENDED=1) on several slots count: a failure can stop early,
+# the fast tier runs cheaper modes, and with -Jobs 1 or a filter a test has few
+# or no neighbours.  An interrupted run writes nothing.  LF line endings, so
+# run_all_tests.sh in the same checkout reads it as well.
+if ($timings.Count -gt 0 -and $Tier -eq 'all' -and $env:RISE_TEST_EXTENDED -eq '1' -and
+    -not $Filter -and $Jobs -gt 1) {
+    $failedNames = @{}
+    foreach ($f in $runFailures) { $failedNames[$f.Name] = $true }
+    foreach ($t in $timings) {
+        if (-not $failedNames.ContainsKey($t.Name)) { $lastSeconds[$t.Name] = [int]$t.Seconds }
+    }
+    $existing = @{}
+    foreach ($src in (Get-ChildItem -LiteralPath $SrcDir -Filter '*.cpp' -File)) { $existing[$src.BaseName] = $true }
+    $historyLines = foreach ($k in ($lastSeconds.Keys | Sort-Object)) {
+        if ($existing.ContainsKey($k)) { "$k`t$($lastSeconds[$k])" }
+    }
+    $historyTmp = "$timingsHistory.tmp.$PID"
+    try {
+        $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $timingsHistory)
+        [IO.File]::WriteAllText($historyTmp, ((@($historyLines) -join "`n") + "`n"))
+        Move-Item -Force -LiteralPath $historyTmp -Destination $timingsHistory
+    } catch {
+        Remove-Item -Force -LiteralPath $historyTmp -ErrorAction SilentlyContinue
+        Write-Host "warning: could not update $timingsHistory"
+    }
+}
+
+# The r136-r175 historical evidence replays that ran here were retired on
+# 2026-11-14 (run_all_tests.sh already dropped them): each bound milestone
+# evidence to source and grid sizes that later commits intentionally changed
+# (see docs/FIRE_SMOKE_STATUS.md, "Retired test gates").
 
 # -----------------------------------------------------------------------------
 # Summary
@@ -666,6 +925,30 @@ Write-Host '============================================================'
 Write-Host ('Build: {0} built, {1} failed (of {2})' -f $built, $buildFailed, $total)
 Write-Host ('Run:   {0} passed, {1} failed, {2} skipped (of {3} run)' `
     -f $passed, $failed, $skipped, $found)
+if ($found -gt 0) {
+    $runSum = ($timings | Measure-Object -Property Seconds -Sum).Sum
+    Write-Host ('Time:  {0}s wall for {1}s of test time (-Jobs {2})' -f $runWall, $runSum, $Jobs)
+}
+
+if ($found -gt 1) {
+    Write-Host ''
+    Write-Host 'Slowest tests (s):'
+    foreach ($t in ($timings | Sort-Object -Property Seconds -Descending | Select-Object -First 10)) {
+        Write-Host ('  {0,4}s  {1}' -f $t.Seconds, $t.Name)
+    }
+}
+
+# A test that keeps more cores busy than the slots it holds competes with its
+# neighbours, so flag it for a wider `wide:N` (or `exclusive`) entry.  Only
+# meaningful when tests ran side by side.
+if ($Jobs -gt 1) {
+    $busy = @($cpuRows | Where-Object { $_.Class -cne 'exclusive' -and $_.Seconds -ge 20 -and $_.Cores -ge ((Get-RiseTestSlots $_.Class) + 0.6) })
+    if ($busy.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Tests that kept more cores busy than their run slots (give them wide:N in tests\test_schedule.tsv):'
+        foreach ($b in $busy) { Write-Host ('  {0,-46} {1,-7} {2,5:N1} cores over {3}s' -f $b.Name, $b.Class, $b.Cores, $b.Seconds) }
+    }
+}
 
 if ($buildFailed -gt 0 -and $buildFailures.Count -gt 0) {
     Write-Host ''
@@ -685,13 +968,25 @@ if ($runFailures.Count -gt 0) {
     foreach ($f in $runFailures) { Write-Host "  - $($f.Name)" }
 }
 
+# A failed build fails the run even when every exe (possibly stale against a
+# changed header or library) ran green -- as run_all_tests.sh does; so does a
+# skipped or missing test.
 if ($failed -ne 0 -or $buildFailed -ne 0 -or $buildRc -ne 0 -or $skipped -ne 0 -or $found -ne $total) {
+    if ($buildRc -ne 0 -and $failed -eq 0 -and $buildFailed -eq 0) {
+        Write-Host "Build step failed (exit=$buildRc); see the build log"
+    }
     exit 1
 }
 Write-Host "All $found tests passed"
 exit 0
 
 } finally {
+    if ($ownsLock) {
+        $lockStream.Dispose()
+        Remove-Item -Force -LiteralPath $lockPath -ErrorAction SilentlyContinue
+    }
+    Pop-Location -StackName RiseRunAllTests -ErrorAction SilentlyContinue
+    $env:RISE_OPTIONS_FILE = $origRiseOptionsFile
     $env:RISE_TEST_EXTENDED = $origRiseTestExtended
     $env:TMPDIR = $origTmpDir
     $env:RISE_MEDIA_PATH = $origRiseMediaPath

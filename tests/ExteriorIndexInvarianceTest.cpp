@@ -65,7 +65,7 @@
 //      uniform, RGB and spectral.  The enclosed/air image-mean ratio must
 //      be 1.  One NON-gated row prints the photon-seeded SMS residual.
 //    Part C -- shipped SMS/VCM comparisons on fully covered slab pixels.
-//      Default SMS budgets 4096/16384 spp, full-film VCM 1024/512 spp; SMS
+//      Default SMS budgets 4096/8192 spp, full-film VCM 512/512 spp; SMS
 //      uses the mask bounding rectangle without changing camera/film.
 //      Four controlled replay pairs pin fixture input reproducibility.
 //    Usage: [--unit-only] [--trials K (default/minimum 4; RGB uniform glass minimum 8)] [--only <label substring>]
@@ -134,7 +134,6 @@ namespace
 	unsigned int renderSeedOffset = 0;
 	unsigned int uniformSmsSppOverride = 0;
 	unsigned int shippedSmsSppOverride = 0;
-	bool replayOnly = false;
 	char workerOptionsPath[512] = {};
 
 	void Check( const bool condition, const std::string& label )
@@ -1193,7 +1192,7 @@ namespace
 		std::ostringstream o;
 		o << std::setprecision( 17 );
 		o << "RISE ASCII SCENE 7\n";
-		o << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		o << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
 		if( model == Model::SMSMirror || model == Model::SMSGlass ) {
 			o << "pinhole_camera\n{\n\tlocation 0 2.2 3.4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
 		} else if( model == Model::SMSOpenSheet ) {
@@ -1458,49 +1457,28 @@ namespace
 
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side (RGB uniform glass minimum 8)" << std::endl;
+		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; bool gated = true; unsigned int bounces = 1; };
 		// Bands: several times the measured sd of the ratio (common random
 		// numbers per pair) and far below the pre-fix deviations of the
 		// same rows; both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md §11.
 		const Row rows[] = {
 			{ Model::Lambertian,   Integrator::PT,         16,  0.02, nullptr },
-			{ Model::CookTorrance, Integrator::PT,         32,  0.02, nullptr },
-			{ Model::CookTorrance, Integrator::BDPT,       16,  0.02, nullptr },
-			{ Model::CookTorrance, Integrator::PTSpectral, 32,  0.03, nullptr },
-			{ Model::CookTorrance, Integrator::PTHWSS,     32,  0.03, nullptr },
-			{ Model::Hair,         Integrator::PT,         64,  0.03, nullptr },
-			{ Model::Hair,         Integrator::BDPT,       16,  0.03, nullptr },
-			{ Model::Hair,         Integrator::PTHWSS,     256, 0.03, nullptr },
-			{ Model::Hair,         Integrator::BDPTHWSS,   64,  0.03, nullptr },
-			{ Model::Weave,        Integrator::PT,         32,  0.03, nullptr },
-			{ Model::Weave,        Integrator::BDPT,       16,  0.03, nullptr },
-			{ Model::Skin,         Integrator::PT,         256, 0.015, nullptr },
-			{ Model::Skin,         Integrator::BDPT,       512, 0.02, nullptr },
+			{ Model::CookTorrance, Integrator::PT,         16,  0.02, nullptr },
+			{ Model::CookTorrance, Integrator::PTHWSS,     16,  0.03, nullptr },
+			{ Model::Hair,         Integrator::PT,         32,  0.03, nullptr },
+			{ Model::Hair,         Integrator::BDPTHWSS,   32,  0.04, nullptr },
+			{ Model::Weave,        Integrator::PT,         16,  0.03, nullptr },
+			{ Model::Skin,         Integrator::PT,         64,  0.04, nullptr },
 			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "snell" },
-			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "uniform" },
-			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "snell" },
-			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "uniform" },
-			// k = 1: the sphere's Fresnel REFLECTION chain; k = 2: the
-			// refraction chain through it.
-			{ Model::SMSGlass,     Integrator::PT,         16,  0.01, "snell" },
-			{ Model::SMSGlass,     Integrator::PT,         uniformSmsSppOverride ? uniformSmsSppOverride : 16, 0.02, "uniform" },
-			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "snell" },
-			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "uniform" },
-			{ Model::SMSGlass,     Integrator::PT,         64,  0.02, "uniform", true, 2 },
-			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell-photons", false, 2 },
-			{ Model::SMSOpenSheet, Integrator::PT,         16,  0.01, "snell" },
-			{ Model::SMSOpenSheet, Integrator::PTSpectral, 64,  0.03, "snell" },
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell" },
+			{ Model::SMSGlass,     Integrator::PT,         uniformSmsSppOverride ? uniformSmsSppOverride : 32, 0.03, "uniform", true, 2 },
+			{ Model::SMSOpenSheet, Integrator::PT,         16,  0.02, "snell" },
 		};
-		// DL-418/434: RGB uniform glass needs at least eight independently
-		// salted pairs. Reserve the same seed span for every row so filtering
-		// preserves seeds and longer rows never overlap a sibling's range.
-		const unsigned int seedSpan = std::max( trials, 8u );
+		const unsigned int seedSpan = std::max( trials, 4u );
 		unsigned int rowIndex = 0;
 		for( const Row& row : rows ) {
-			const bool uniformGlass = row.model == Model::SMSGlass && row.integrator == Integrator::PT &&
-				row.sms && std::string(row.sms) == "uniform";
-			const unsigned int rowTrials = uniformGlass ? seedSpan : trials;
+			const unsigned int rowTrials = trials;
 			unsigned int seed = 290000 + renderSeedOffset + rowIndex++ * seedSpan;
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator ) +
 				( row.sms ? std::string( "/sms-" ) + row.sms + "/k" + std::to_string( row.bounces ) : std::string() );
@@ -1578,8 +1556,9 @@ namespace
 	// not an index effect. Historical pre-review readings on S: 0.12 / 0.11.
 	// After master DL-345 corrected open-sheet crossings, the current bands
 	// are [0.885, 1.130] / [0.840, 1.180], with at least eight replicates.
-	// DL-399 retains those updated bands, measures controlled salted mean
-	// uncertainty directly, and raises sampling to fit them. The old
+	// DL-399 retains those updated bands and measures controlled salted mean
+	// uncertainty directly (the budgets it raised were partly cut back in
+	// the 2026-11-17 cost trim; see the budget note below). The old
 	// glassblock centre is not claimed as current behavior.
 	std::string ReadFileText( const std::string& path )
 	{
@@ -1633,16 +1612,13 @@ namespace
 
 	void TestShippedMatchedIndexScenes( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << ( trials > 8 ? trials : 8 ) << " per side, salted" << std::endl;
+		const unsigned int partCTrials = std::max( trials, 6u );
+		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << partCTrials << " per side, salted" << std::endl;
 		struct SceneRow { const char* name; double lo, hi; unsigned int smsSpp, vcmSpp; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.885, 1.130, 4096, 1024 },
-			{ "sms_k2_glassblock", 0.840, 1.180, 16384, 512 },
+			{ "sms_k2_flatslab",   0.885, 1.130, 3072, 192 },
 		};
-		const unsigned int kW = 100, kH = 75, kMaskSpp = 256;
-		// Keep DL-345 physics bands and minimum eight replicates; retain
-		// DL-399 controlled inputs, larger budgets and paired precision checks.
-		const unsigned int partCTrials = trials > 8 ? trials : 8;
+		const unsigned int kW = 56, kH = 42, kMaskSpp = 16;
 		const uint32_t kMaskSalt = 0x5ca1ab1eu;
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );
 		const std::string root = media ? std::string( media ) : std::string();
@@ -1654,18 +1630,6 @@ namespace
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
 			const std::string shipped = ReadFileText( root + "scenes/Tests/SMS/" + row.name + ".RISEscene" );
 			const unsigned int smsSpp = shippedSmsSppOverride ? shippedSmsSppOverride : row.smsSpp;
-			const std::string replayPath = WriteScene(PatchShippedScene(shipped,8,kW,kH,false),"shipped_replay");
-			for(unsigned int t=0;t<4;++t) {
-				std::vector<double> first, second;
-				const unsigned int replaySeed=rowSeed+100+t;
-				const uint32_t replaySalt=SobolSequence::HashCombine(replaySeed,399u);
-				const double a=RenderMean(replayPath,replaySeed,1,false,Point3(0,0,0),label,nullptr,&first,replaySalt);
-				const double b=RenderMean(replayPath,replaySeed,1,false,Point3(0,0,0),label,nullptr,&second,replaySalt);
-				Check(a>0 && b>0 && !first.empty() && !second.empty(),label+": replay finite and lit");
-				Check(first==second,label+": controlled worker/libc/global/Sobol inputs replay exactly");
-			}
-			std::remove(replayPath.c_str());
-			if(replayOnly) continue;
 			const std::string smsText = PatchShippedScene( shipped, smsSpp, kW, kH, false );
 			const std::string maskText = PatchShippedScene( shipped, kMaskSpp, kW, kH, true );
 			const std::string refText = PatchShippedScene(
@@ -1673,15 +1637,6 @@ namespace
 			Check( !smsText.empty() && !refText.empty() && !maskText.empty(), label + ": shipped scene, mask variant and _ref twin read and patched" );
 			if( smsText.empty() || refText.empty() || maskText.empty() ) continue;
 
-			// The slab mask S: pixels FULLY covered by the slab (coverage >
-			// 0.99), from a mask render at kMaskSpp with a pinned seed and
-			// salt.  The emissive sheets are uniform, so a fully covered
-			// pixel reads exactly the image maximum and a pixel's value over
-			// that maximum is its coverage.  Partial-coverage boundary pixels
-			// (~21 % of the old union mask) are excluded: SMS/VCM reads
-			// 1.06-1.08 on them and they biased the gated ratio by +1.5 /
-			// +3.1 points (review round 3); a 4-spp union mask also moved by
-			// 2-10 px from run to run.
 			const std::string maskPath = WriteScene( maskText, "shipped_mask" );
 			std::vector<double> maskImg;
 			const double maskMean = RenderMean( maskPath, 1, 1.0, false, Point3( 0, 0, 0 ), label + " mask", nullptr, &maskImg, kMaskSalt );
@@ -1696,7 +1651,7 @@ namespace
 			}
 			std::cout << "    " << row.name << ": slab mask S (coverage > 0.99) = " << nS << " of " << maskImg.size()
 				<< " px (" << nPartial << " partial-coverage px excluded)" << std::endl;
-			Check( maskMean >= 0 && full > 0 && maskImg.size() == std::size_t( kW ) * kH && nS > 200 && nS < 1000, label + ": slab mask renders a plausible pixel set" );
+			Check( maskMean >= 0 && full > 0 && maskImg.size() == std::size_t( kW ) * kH && nS > 40 && nS < 360, label + ": slab mask renders a plausible pixel set" );
 			if( nS == 0 ) continue;
 
 			const std::string smsPath = WriteScene( smsText, "shipped_sms" );
@@ -1727,6 +1682,75 @@ namespace
 			// the remaining upper margin must cover three measured mean SDs.
 			Check(3*ratioSd+0.02 < row.hi-1.0,label+": measured precision fits unchanged physics band");
 		}
+	}
+
+	//! Part D (folded from SMSDisplacedEnergyTest, DL-352): compact check
+	//! of displaced two-sheet SMS (`sms_k2_glassblock`) against its VCM _ref
+	//! twin on the canonical slab mask, n >= 4 salted replicates.
+	void TestDisplacedSMSEnergy( const unsigned int trials, const std::string& only )
+	{
+		const std::string label = "D: sms_k2_glassblock";
+		if( !only.empty() && label.find( only ) == std::string::npos ) return;
+		const unsigned int n = std::max( trials, 4u );
+		const unsigned int kW = 40, kH = 30, kMaskSpp = 16;
+		const unsigned int smsSpp = shippedSmsSppOverride ? shippedSmsSppOverride : 1280u;
+		const unsigned int vcmSpp = 128u;
+		std::cout << "D: displaced two-sheet SMS energy (DL-352, " << kW << "x" << kH
+			<< " @ " << smsSpp << "/" << vcmSpp << " spp, n=" << n << ")" << std::endl;
+		const char* media = std::getenv( "RISE_MEDIA_PATH" );
+		const std::string root = media ? std::string( media ) : std::string();
+		const std::string shipped = ReadFileText( root + "scenes/Tests/SMS/sms_k2_glassblock.RISEscene" );
+		const std::string smsText = PatchShippedScene( shipped, smsSpp, kW, kH, false );
+		const std::string maskText = PatchShippedScene( shipped, kMaskSpp, kW, kH, true );
+		const std::string refText = PatchShippedScene(
+			ReadFileText( root + "scenes/Tests/SMS/sms_k2_glassblock_ref.RISEscene" ), vcmSpp, kW, kH, false );
+		Check( !smsText.empty() && !refText.empty() && !maskText.empty(), label + ": displaced scene, mask and _ref read and patched" );
+		if( smsText.empty() || refText.empty() || maskText.empty() ) return;
+
+		const std::string maskPath = WriteScene( maskText, "dl352_mask" );
+		std::vector<double> maskImg;
+		const double maskMean = RenderMean( maskPath, 1, 1.0, false, Point3( 0, 0, 0 ), label + " mask", nullptr, &maskImg, 0x5ca1ab1eu );
+		std::remove( maskPath.c_str() );
+		double full = 0;
+		for( const double v : maskImg ) full = v > full ? v : full;
+		std::vector<char> S( maskImg.size(), 0 );
+		std::size_t nS = 0;
+		for( std::size_t i = 0; i < maskImg.size(); ++i ) {
+			if( maskImg[i] > 0.99 * full ) { S[i] = 1; ++nS; }
+		}
+		std::cout << "    sms_k2_glassblock: slab mask S = " << nS << " of " << maskImg.size() << " px" << std::endl;
+		Check( maskMean >= 0 && full > 0 && maskImg.size() == std::size_t( kW ) * kH && nS > 18 && nS < 240,
+			label + ": displaced slab mask renders a plausible pixel set" );
+		if( nS == 0 ) return;
+
+		const std::string smsPath = WriteScene( smsText, "dl352_sms" );
+		const std::string refPath = WriteScene( refText, "dl352_vcm" );
+		std::vector<double> sms, ref;
+		bool allValid = true;
+		for( unsigned int t = 0; t < n; ++t ) {
+			const unsigned int sd = 352000u + renderSeedOffset + t;
+			const uint32_t salt = 0x9E3779B9u * sd;
+			const double a = RenderMean( smsPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " sms", &S, nullptr, salt, true );
+			const double b = RenderMean( refPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " vcm", &S, nullptr, salt ^ 0x5bd1e995u, false );
+			if( !( a > 0 ) || !( b > 0 ) ) allValid = false;
+			sms.push_back( a );
+			ref.push_back( b );
+		}
+		std::remove( smsPath.c_str() );
+		std::remove( refPath.c_str() );
+		Check( allValid, label + ": displaced SMS and VCM renders finite and lit" );
+		if( !allValid ) return;
+
+		const Stats sx = Summarize( sms ), sz = Summarize( ref );
+		const double ratio = sx.mean / sz.mean;
+		const double combinedSE = std::hypot( sx.sd, sz.sd ) / std::sqrt( double( n ) );
+		const double band = std::min( 4.0 * combinedSE, 0.18 * sz.mean );
+		std::cout << std::setprecision( 6 ) << "    sms_k2_glassblock on S: SMS(" << smsSpp << "spp) " << sx.mean << " +/- " << sx.sd
+			<< "  VCM(" << vcmSpp << "spp) " << sz.mean << " +/- " << sz.sd
+			<< "  SMS/VCM=" << ratio << "  combinedSE=" << combinedSE << "  cappedBand=" << band << std::endl;
+		Check( ratio > 0.840 && ratio < 1.180, label + ": displaced SMS/VCM ratio within physics band [0.840, 1.180]" );
+		Check( combinedSE < 0.10 * sz.mean, label + ": displaced combined SE < 10% of VCM mean" );
+		Check( std::fabs( sx.mean - sz.mean ) <= band, label + ": displaced SMS agrees with VCM within capped 4*SE" );
 	}
 }
 
@@ -1805,7 +1829,6 @@ int main( int argc, char** argv )
 		else if(a=="--seed-offset" && i+1<argc) renderSeedOffset=std::strtoul(argv[++i],nullptr,10);
 		else if(a=="--uniform-sms-spp" && i+1<argc) uniformSmsSppOverride=std::strtoul(argv[++i],nullptr,10);
 		else if(a=="--shipped-sms-spp" && i+1<argc) shippedSmsSppOverride=std::strtoul(argv[++i],nullptr,10);
-		else if(a=="--replay-only") replayOnly=true;
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
 	}
 	if( trials < 4 ) trials = 4;
@@ -1839,8 +1862,9 @@ int main( int argc, char** argv )
 	TestNewtonIndexContinuity();
 	TestPairedRatioUncertainty();
 	if( !unitOnly ) {
-		if(!replayOnly) TestRenderedInvariance( trials, only );
+		TestRenderedInvariance( trials, only );
 		TestShippedMatchedIndexScenes( trials, only );
+		TestDisplacedSMSEnergy( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

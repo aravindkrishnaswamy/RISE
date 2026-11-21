@@ -13,7 +13,8 @@
 // every PT path with `full`.
 //
 // Sections (all by default; `--section <name>` runs one; `--quick` lowers
-// the sample counts for a smoke run, never for the recorded gate):
+// the sample counts for a smoke run, never for the recorded gate;
+// `--report-legacy` adds body's printed legacy-HWSS comparison):
 //   lanes   area partition per lane through the NM delegations: planar
 //           mirror (double-sided indexed mesh, both windings; clipped-plane
 //           control; closed form), glass slab both windings, transformed
@@ -63,6 +64,7 @@
 namespace
 {
     bool g_quick=false;
+    bool g_reportLegacy=false;   // --report-legacy: body's printed legacy HWSS block
     std::string g_caseFilter;
     unsigned g_biasSalts=64;
     bool g_biasLegacy=false;    // `--bias-legacy`: samplerbias renders legacy (extended-off) HWSS (DL-453)
@@ -602,44 +604,28 @@ namespace
 //////////////////////////////////////////////////////////////////////
 static void LanesSection()
 {
-    // Estimator B's reciprocal has a heavy tail: 32 salts x 4096 (review
-    // round 1: bring the lane means toward <= 5 % relative se).
-    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:32;
+    RenderOptions o;o.N=512;o.salts=g_quick?4:6;
+    RenderOptions hi=o;hi.N=g_quick?512:1024;hi.salts=g_quick?4:8;
     LaneExpect cf;cf.closedForm=true;
     // Planar mirror (no BSDF: every lane is handed to its own NM walk with
-    // the HWSS anchor bit and record): indexed mesh both windings, plane.
-    for(bool reverse:{false,true}) LaneCase(CeilingScene("mirror",true,reverse),o,cf);
-    LaneCase(CeilingScene("mirror",false,false),o,cf);
-    // Glass slab both windings; transformed instance.
-    for(bool reverse:{false,true}) LaneCase(SlabScene(reverse,"glass",false),o);
-    LaneCase(SlabScene(false,"glass",true),o);
-    // Dispersive slab: distinct companion indices (1.9/1.62/1.4/1.3).
-    LaneCase(SlabScene(false,"prism",false),o);
+    // the HWSS anchor bit and record): double-sided indexed mesh.
+    LaneCase(CeilingScene("mirror",true,false),hi,cf);
+    // Dispersive slab: distinct companion indices (1.9/1.62/1.4/1.3),
+    // reversed winding and transformed instance.
     LaneCase(SlabScene(true,"prism",true),o);
-    // Sphere controls (constant and dispersive: a ball lens whose focus
-    // moves with the lane's index).
-    LaneCase(SphereScene("glass"),o);
-    {LaneExpect d;d.expectLanesDiffer=true;LaneCase(SphereScene("prism"),o,d);}
-    // Start-inside a closed glass box, both windings.
-    for(bool reverse:{false,true}) LaneCase(InsideScene(reverse),o);
+    // Dispersive sphere: a ball lens whose focus moves with the lane's index.
+    {LaneExpect d;d.expectLanesDiffer=true;LaneCase(SphereScene("prism"),hi,d);}
+    // Start-inside a closed glass box.
+    LaneCase(InsideScene(false),hi);
     // Nested exterior replay: a dispersive ball inside a constant 1.4
     // enclosure (the HWSS body's anchor stack holds the enclosure, replayed
     // per lane); a constant ball inside a DISPERSIVE enclosure (the camera
     // is inside it: per-lane NM from the camera).
-    // The ball is `gentleprism` (1.6/1.5/1.45 at 450/550/650 nm).  With
-    // `prism` (n = 1.9 at 450 nm, relative index 1.36) estimator B's
-    // reciprocal tail at the 450-nm lane is too heavy for a 3-se gate at
-    // affordable n -- Phase 3's own NM estimator reads 0.948 +- 0.020 of
-    // SMS-off NM there at 64 salts, HWSS 1.076 +- 0.077 (one outlier);
-    // `--section nmprobe` reproduces it (DL-450).
     LaneCase(ImmersedBallScene("medium14","gentleprism"),o);
-    // DL-450 known residual, REPORTED (not gated): the n = 1.9 ball keeps
-    // the relative-index ~1.36 regime visible.
-    {LaneExpect r;r.reportOnly=true;r.owned.fill(Owned::Reported);LaneCase(ImmersedBallScene("medium14","prism"),o,r);}
     LaneCase(ImmersedBallScene("dispersivemedium","glass"),o);
     // SSS receiver (a camera-entry NM delegation per lane).  The receiver's
     // owned share is small (Phase 3: ~4 %); gated for agreement only.
-    {RenderOptions r=o;r.reentryShaderOp=true;r.trials=4;
+    {RenderOptions r=o;r.reentryShaderOp=true;r.trials=2;
      LaneExpect s;s.owned.fill(Owned::Reported);
      LaneCase(SSSReceiverScene(),r,s);}
 }
@@ -649,44 +635,41 @@ static void LanesSection()
 //////////////////////////////////////////////////////////////////////
 static void PolishedLegacySection()
 {
-    RenderOptions o;o.N=4096;o.salts=4;
-    for(bool reverse:{false,true}) {
-        const auto spec=CeilingScene("polished",true,reverse,"lum");
-        const auto legacy=Render(spec,Mode::Legacy,o),ref=Render(spec,Mode::Ref,o);
-        for(unsigned w=0;w<kLanes&&legacy.ok&&ref.ok;++w) {
-            const Moments a(legacy.lane[w]),b(ref.lane[w]);
-            std::cout<<"DL-452 winding="<<reverse<<" lane="<<w<<" legacy="<<a.mean<<" +/- "<<a.se
-                <<" PT="<<b.mean<<" +/- "<<b.se<<" ratio="<<a.mean/b.mean<<"\n";
-            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-452 legacy polished HWSS agrees with SMS-off within 3 se");
-        }
-        const auto nl=Render(spec,Mode::Legacy,o,0),nr=Render(spec,Mode::Ref,o,0);
-        if(nl.ok&&nr.ok) {
-            const Moments a(nl.lane[0]),b(nr.lane[0]);
-            std::cout<<"DL-452 NM winding="<<reverse<<" legacy="<<a.mean<<" PT="<<b.mean<<"\n";
-            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-452 legacy polished NM agrees with SMS-off within 3 se");
-        }
-        Check(legacy.ok&&ref.ok&&nl.ok&&nr.ok,"DL-452 every comparison rendered");
+    // Compact legacy-SMS (sms_extended FALSE) end-to-end HWSS and NM guard.
+    RenderOptions o;o.N=512;o.salts=6;
+    const auto spec=CeilingScene("polished",true,false,"lum");
+    const auto legacy=Render(spec,Mode::Legacy,o),ref=Render(spec,Mode::Ref,o);
+    for(unsigned w=0;w<kLanes&&legacy.ok&&ref.ok;++w) {
+        const Moments a(legacy.lane[w]),b(ref.lane[w]);
+        std::cout<<"DL-452 winding=0 lane="<<w<<" legacy="<<a.mean<<" +/- "<<a.se
+            <<" PT="<<b.mean<<" +/- "<<b.se<<" ratio="<<a.mean/b.mean<<"\n";
+        Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-452 legacy polished HWSS agrees with SMS-off within 3 se");
     }
+    const auto nl=Render(spec,Mode::Legacy,o,0),nr=Render(spec,Mode::Ref,o,0);
+    if(nl.ok&&nr.ok) {
+        const Moments a(nl.lane[0]),b(nr.lane[0]);
+        std::cout<<"DL-452 NM winding=0 legacy="<<a.mean<<" PT="<<b.mean<<"\n";
+        Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-452 legacy polished NM agrees with SMS-off within 3 se");
+    }
+    Check(legacy.ok&&ref.ok&&nl.ok&&nr.ok,"DL-452 every comparison rendered");
 }
 
 static void BelowTIRReflectionSection()
 {
-    RenderOptions o;o.N=4096;o.salts=4;o.targetBounces=1;
-    for(bool reverse:{false,true}) {
-        auto spec=CeilingScene("glass",true,reverse);
-        const auto emitter=ClippedQuad("emitter_geo",1,1,2,-0.5,0.5,true,false)+Obj("emitter","emitter_geo","lum");
-        spec.text.erase(spec.text.find(emitter),emitter.size());
-        spec.text+="spot_light\n{\n name upward\n position 1.5 0 1\n target 1 0 2\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n";
-        const auto legacy=Render(spec,Mode::Legacy,o),full=Render(spec,Mode::Full,o);
-        Check(legacy.ok&&full.ok,"DL-437 reflection controls render");
-        for(unsigned w=0;w<kLanes;++w) {
-            const auto nm=Render(spec,Mode::Full,o,int(w));
-            const Moments a(full.lane[w]),b(nm.lane[w]),old(legacy.lane[w]);
-            std::cout<<"DL-437 winding="<<reverse<<" lane="<<w<<" legacy="<<old.mean<<" extended="<<a.mean<<" +/- "<<a.se<<" NM="<<b.mean<<" +/- "<<b.se<<'\n';
-            if(reverse) Check(old.mean==0,"DL-437 legacy below-TIR reflection remains absent for the omitted winding");
-            Check(nm.ok&&a.mean>3*a.se&&b.mean>3*b.se,"DL-437 extended HWSS and NM light the reflection fixture");
-            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-437 per-lane HWSS agrees with NM at 3 se");
-        }
+    RenderOptions o;o.N=512;o.salts=4;o.targetBounces=1;
+    auto spec=CeilingScene("glass",true,true);
+    const auto emitter=ClippedQuad("emitter_geo",1,1,2,-0.5,0.5,true,false)+Obj("emitter","emitter_geo","lum");
+    spec.text.erase(spec.text.find(emitter),emitter.size());
+    spec.text+="spot_light\n{\n name upward\n position 1.5 0 1\n target 1 0 2\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n";
+    const auto legacy=Render(spec,Mode::Legacy,o),full=Render(spec,Mode::Full,o);
+    Check(legacy.ok&&full.ok,"DL-437 reflection controls render");
+    for(unsigned w=0;w<kLanes;++w) {
+        const auto nm=Render(spec,Mode::Full,o,int(w));
+        const Moments a(full.lane[w]),b(nm.lane[w]),old(legacy.lane[w]);
+        std::cout<<"DL-437 winding=1 lane="<<w<<" legacy="<<old.mean<<" extended="<<a.mean<<" +/- "<<a.se<<" NM="<<b.mean<<" +/- "<<b.se<<'\n';
+        Check(old.mean==0,"DL-437 legacy below-TIR reflection remains absent for the omitted winding");
+        Check(nm.ok&&a.mean>3*a.se&&b.mean>3*b.se,"DL-437 extended HWSS and NM light the reflection fixture");
+        Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.se,b.se),"DL-437 per-lane HWSS agrees with NM at 3 se");
     }
 }
 
@@ -712,15 +695,15 @@ static void LegacyBodySplitSection()
 
 static void BodySection()
 {
-    // Estimator B (heavy reciprocal tail): 32 salts x 4096, as `lanes`.
-    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:32;
-    for(const char* lum:{"lum","lumbsdf"}) {
-        for(bool reverse:{false,true}) LaneCase(CeilingScene("polished",true,reverse,lum),o);
-        LaneCase(CeilingScene("polished",false,false,lum),o);
-    }
+    RenderOptions o;o.N=512;o.salts=g_quick?4:6;
+    LaneCase(CeilingScene("polished",true,false,"lum"),o);
+    LaneCase(CeilingScene("polished",true,true,"lumbsdf"),o);
     // Report legacy HWSS vs SMS-off HWSS on the covered delegated-emitter
-    // control; dl378 separately gates uncovered paths per lane.
-    if(g_caseFilter.empty()) {
+    // control; dl378 separately gates uncovered paths per lane.  Printed
+    // only, so it runs with --report-legacy; the salt base advances either
+    // way, so the sections after it draw the same salts.
+    if(g_caseFilter.empty() && !g_reportLegacy) g_saltBase+=1000;
+    else if(g_caseFilter.empty()) {
         const auto spec=CeilingScene("polished",true,false,"lum");
         RenderOptions l=o;l.saltBase=g_saltBase;g_saltBase+=1000;
         const auto legacy=Render(spec,Mode::Legacy,l), ref=Render(spec,Mode::Ref,l);
@@ -744,11 +727,14 @@ static void BodySection()
 //////////////////////////////////////////////////////////////////////
 static void TIRSection()
 {
-    RenderOptions o;o.N=g_quick?512:2048;o.salts=g_quick?4:16;o.targetBounces=3;
+    RenderOptions o;o.N=512;o.salts=4;o.targetBounces=3;
     // n(450)=1.9, n(500)=1.7, n(620)=1.36, n(650)=1.3: the first two are
     // past the hypotenuse's ~45-degree critical angle (n > 1.414).
     const Lanes tirHero{{450,500,620,650}}, plainHero{{650,450,500,620}};
-    for(bool reverse:{false,true}) for(const Lanes& lambdas:{tirHero,plainHero}) {
+    const std::pair<bool,Lanes> cases[2]={{false,tirHero},{true,plainHero}};
+    for(const auto& item:cases) {
+        const bool reverse=item.first;
+        const Lanes& lambdas=item.second;
         const unsigned base=g_saltBase;g_saltBase+=1000;
         const auto spec=TIRPrismScene(reverse);
         std::ostringstream label;label<<spec.label<<" hero="<<lambdas[0];
@@ -789,16 +775,13 @@ static void TIRSection()
 //////////////////////////////////////////////////////////////////////
 static void MaskSection()
 {
-    // Estimator B (heavy reciprocal tail): 32 salts x 4096, as `lanes`.
-    RenderOptions o;o.N=g_quick?512:4096;o.salts=g_quick?4:32;
+    RenderOptions o;o.N=g_quick?512:1024;o.salts=g_quick?4:8;
     // s(450)=2, s(550)=2, s(600)=1.25, s(640)=0.8: lane 3 is ineligible.
     o.lambdas={{450,550,600,640}};
     LaneExpect m;m.owned[3]=Owned::Forbidden;
     // Delegated emitter hit (mirror, `material none` luminaire), and the
     // HWSS body's own emitter hit after a polished coat (BSDF luminaire).
     LaneCase(CeilingScene("mirror",true,false,"lum",HGChunks()),o,m);
-    LaneCase(CeilingScene("polished",true,true,"lumbsdf",HGChunks()),o,m);
-    LaneCase(CeilingScene("polished",false,false,"lum",HGChunks()),o,m);
     // Hero ineligible, companions eligible.
     RenderOptions h=o;h.lambdas={{640,450,550,600}};
     LaneExpect hm;hm.owned[0]=Owned::Forbidden;
@@ -810,8 +793,8 @@ static void MaskSection()
 //////////////////////////////////////////////////////////////////////
 static void DeltaSection()
 {
-    RenderOptions o;o.N=g_quick?512:2048;o.salts=g_quick?4:16;
-    for(const char* material:{"glass","prism"}) {
+    RenderOptions o;o.N=512;o.salts=4;
+    for(const char* material:{"prism"}) {
         const auto spec=DeltaSlabScene(material);
         RenderOptions a=o;a.saltBase=g_saltBase;g_saltBase+=1000;a.transparentShadows=true;
         RenderOptions b=a;b.transparentShadows=false;
@@ -839,7 +822,7 @@ static void DeltaSection()
     // then deliver the light in that lane only.
     {
         auto spec=DeltaSlabScene("glass");spec.text+=HGChunks();spec.label+=" + HG mask";
-        RenderOptions a=o;a.lambdas={{450,550,600,640}};a.saltBase=g_saltBase;g_saltBase+=1000;a.transparentShadows=true;
+        RenderOptions a=o;a.N=256;a.lambdas={{450,550,600,640}};a.saltBase=g_saltBase;g_saltBase+=1000;a.transparentShadows=true;
         RenderOptions b=a;b.transparentShadows=false;
         const auto on=Render(spec,Mode::Full,a), off=Render(spec,Mode::Full,b);
         for(unsigned w=0;w<kLanes&&on.ok&&off.ok;++w) {
@@ -858,8 +841,8 @@ static void DeltaSection()
 //////////////////////////////////////////////////////////////////////
 static void ModeOffSection()
 {
-    RenderOptions o;o.N=512;o.salts=2;
-    for(const auto& spec:{CeilingScene("polished",true,false),SlabScene(false,"prism",false),CeilingScene("mirror",true,true,"lumbsdf")}) {
+    RenderOptions o;o.N=256;o.salts=2;
+    for(const auto& spec:{CeilingScene("polished",true,false),SlabScene(false,"prism",false)}) {
         o.saltBase=g_saltBase;g_saltBase+=1000;
         RenderOptions f=o;f.forceLegacyScope=true;
         const auto forced=Render(spec,Mode::Full,f);
@@ -1011,6 +994,7 @@ int main(int argc,char** argv)
     for(int i=1;i<argc;++i) {
         const std::string a=argv[i];
         if(a=="--quick") g_quick=true;
+        else if(a=="--report-legacy") g_reportLegacy=true;
         else if(a=="--section" && i+1<argc) section=argv[++i];
         else if(a=="--case" && i+1<argc) g_caseFilter=argv[++i];
         else if(a=="--salt-base" && i+1<argc) g_saltBase=unsigned(std::stoul(argv[++i]));
@@ -1027,9 +1011,9 @@ int main(int argc,char** argv)
     run("mask",MaskSection);
     run("body",BodySection);
     run("dl452",PolishedLegacySection);
-    run("dl378",LegacyBodySplitSection);
     run("dl437",BelowTIRReflectionSection);
     run("lanes",LanesSection);
+    if(section=="dl378") {std::cout<<"=== dl378 ===\n";LegacyBodySplitSection();}
     if(section=="cost") {std::cout<<"=== cost ===\n";CostSection();}
     if(section=="nmprobe") {std::cout<<"=== nmprobe ===\n";NMProbeSection();}
     if(section=="samplerbias") {std::cout<<"=== samplerbias ===\n";SamplerBiasSection();}

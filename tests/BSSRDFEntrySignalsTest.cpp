@@ -183,12 +183,14 @@ int main()
 	safe_release( sdfGeo );
 	pObject->FinalizeTransformations();
 
-	// An empty object manager serves as the pScene pointer in the cross-object
-	// triple.  It must be a real IObjectManager: since DL-370 SampleExit calls
-	// pScene->RandomWalkObjectContaining at every exit event (a cast int here
-	// crashed section 5).  Empty, it reports no random-walk neighbour.
-	ObjectManager* pFakeSceneManager = new ObjectManager( false, false, 4, 8 );
-	const IObjectManager* pFakeScene = pFakeSceneManager;
+	// A real, EMPTY object manager serves as the pScene pointer in the
+	// cross-object triple.  It must be a real one: since DL-370
+	// RandomWalkSSS::SampleExit calls pScene->RandomWalkObjectContaining()
+	// at every exit, and a reinterpret_cast dummy (this test's old stand-in)
+	// sent that virtual call through garbage and crashed Section 5.  Being
+	// empty, it reports no neighbour, so the walk under test is unchanged.
+	ObjectManager* pSceneManager = new ObjectManager( false, false, 4, 8 );
+	const IObjectManager* pFakeScene = pSceneManager;
 
 	// Setup exit hit on the sphere surface at (0, 0, 2.0)
 	Ray exitRay( Point3( 0, 0, 5 ), Vector3( 0, 0, -1 ) );
@@ -440,7 +442,7 @@ int main()
 	safe_release( pAbs );
 	safe_release( pSigPainter );
 	safe_release( pObject );
-	safe_release( pFakeSceneManager );
+	safe_release( pSceneManager );
 
 	std::cout << "\nResult: " << g_pass << " passed, " << g_fail << " failed.\n";
 	return g_fail ? 1 : 0;

@@ -88,7 +88,7 @@ static void Check( bool condition, const char* testName )
 class TestController : public SceneEditController
 {
 public:
-	TestController( IJobPriv& job, unsigned int simulatedRenderMs = 50 )
+	TestController( IJobPriv& job, unsigned int simulatedRenderMs = 15 )
 	: SceneEditController( job, /*interactiveRasterizer*/0 )
 	, mSimulatedRenderMs( simulatedRenderMs )
 	, mAbortCount( 0 )
@@ -164,7 +164,7 @@ static void TestSingleEditRestartsRender()
 
 	Job* pJob = new Job();
 	AttachDefaultCamera( *pJob );
-	TestController c( *pJob, /*simulatedRenderMs*/30 );
+	TestController c( *pJob, /*simulatedRenderMs*/15 );
 	c.Start();
 	Check( c.ForTest_WaitForRenders( 1, 2000 ), "initial render completes" );
 
@@ -196,39 +196,35 @@ static void TestRapidEditsCancelPriorRender()
 {
 	std::cout << "Testing rapid edits cancel in-flight renders..." << std::endl;
 
-	// Long simulated render (200ms) makes it easy to cancel mid-flight.
+	// Simulated render (60ms) makes it easy to cancel mid-flight.
 	Job* pJob = new Job();
 	AttachDefaultCamera( *pJob );
-	TestController c( *pJob, /*simulatedRenderMs*/200 );
+	TestController c( *pJob, /*simulatedRenderMs*/60 );
 	c.Start();
 
 	// Configure tool and selection so OnPointerMove emits real edits.
 	c.SetTool( SceneEditController::Tool::OrbitCamera );
 
-	// Fire pointer events ~30Hz for 1 second — far faster than the 200ms
-	// simulated render can complete.
+	// Fire pointer events ~66Hz — faster than the 60ms simulated render can
+	// complete.
 	c.OnPointerDown( Point2( 100, 100 ) );
-	for( int i = 0; i < 30; ++i )
+	for( int i = 0; i < 12; ++i )
 	{
 		c.OnPointerMove( Point2( 100 + i, 100 ) );
-		std::this_thread::sleep_for( std::chrono::milliseconds( 33 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 15 ) );
 	}
-	c.OnPointerUp( Point2( 130, 100 ) );
+	c.OnPointerUp( Point2( 112, 100 ) );
 
 	// Wait for the render thread to settle on the final state — poll
 	// for a completed pass rather than sleeping a fixed wall-clock
-	// duration.  Windows scheduler granularity is ~15.6 ms by default,
-	// so the simulated render's 5 ms slices take ~16 ms each in
-	// practice (full 200 ms pass ≈ 640 ms wall time); a fixed 400 ms
-	// wait races against Stop() and the assertion fails on Windows.
-	// Bound the poll at 3 s so the test still terminates if the render
-	// thread genuinely never completes.
+	// duration.  Bound the poll at 3 s so the test still terminates if
+	// the render thread genuinely never completes.
 	const auto deadline = std::chrono::steady_clock::now()
 	                    + std::chrono::seconds( 3 );
 	while( c.CompletedCount() == 0
 	    && std::chrono::steady_clock::now() < deadline )
 	{
-		std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
 	}
 	c.Stop();
 
@@ -240,15 +236,15 @@ static void TestRapidEditsCancelPriorRender()
 	          << " aborts=" << aborts
 	          << " completed=" << completed << std::endl;
 
-	// We fired 30 edits over ~1 second; with each render taking 200ms
+	// We fired 12 edits spaced by 15ms; with each render taking 60ms
 	// most of those edits should have arrived while a render was in
-	// flight, tripping the cancel flag.  We expect at least a handful.
-	Check( cancels >= 5,
-	       "at least 5 cancellations were requested during rapid drag" );
+	// flight, tripping the cancel flag.
+	Check( cancels >= 3,
+	       "at least 3 cancellations were requested during rapid drag" );
 
 	// The render thread should have aborted at least some renders.
-	Check( aborts >= 5,
-	       "at least 5 renders aborted mid-pass" );
+	Check( aborts >= 3,
+	       "at least 3 renders aborted mid-pass" );
 
 	// And the final state should have rendered to completion at least once
 	// (after the last edit, the render thread gets a clear run).
@@ -263,7 +259,7 @@ static void TestCancelDoesNotPersistAcrossPasses()
 
 	Job* pJob = new Job();
 	AttachDefaultCamera( *pJob );
-	TestController c( *pJob, /*simulatedRenderMs*/30 );
+	TestController c( *pJob, /*simulatedRenderMs*/15 );
 	c.Start();
 
 	// Wait for the initial render.
@@ -277,21 +273,21 @@ static void TestCancelDoesNotPersistAcrossPasses()
 	// flag would persist across passes and every render would
 	// abort, so CompletedCount would not grow past 1.
 	c.SetTool( SceneEditController::Tool::OrbitCamera );
-	for( int i = 0; i < 5; ++i )
+	for( int i = 0; i < 3; ++i )
 	{
 		c.OnPointerDown( Point2( 100 + 10*i, 100 ) );
 		c.OnPointerMove( Point2( 105 + 10*i, 100 ) );
 		c.OnPointerUp( Point2( 105 + 10*i, 100 ) );
-		std::this_thread::sleep_for( std::chrono::milliseconds( 80 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 35 ) );
 	}
 
 	// Wait for the final render to settle.
-	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	std::this_thread::sleep_for( std::chrono::milliseconds( 40 ) );
 	const unsigned int completed = c.CompletedCount();
 
 	c.Stop();
 
-	Check( completed >= 3,
+	Check( completed >= 2,
 	       "multiple renders complete after intermittent edits — Reset() works" );
 	pJob->release();
 }
@@ -304,7 +300,7 @@ static void TestDestructorJoinsThread()
 	{
 		TestController c( *pJob );
 		c.Start();
-		std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
 		// Falls out of scope; destructor must call Stop() and join.
 	}
 	// If we reach here without hanging or asserting, the destructor

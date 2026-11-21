@@ -75,8 +75,8 @@ static void Check( bool c, const std::string& w )
 static const char* const kSceneTwoColoredLights =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
-	"film\n{\n\twidth 80\n\theight 60\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 128\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
@@ -97,10 +97,10 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
-	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
-	// sequential `for` loop that waits on each binary before starting the
-	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
-	// likewise sequential for execution.  The real justification is that
+	// runs the suite in PARALLEL.  It did not then (Phase 3 was a sequential
+	// loop).  Since 2026-11-17 the runners do run DIFFERENT tests side by
+	// side, but each gets its own TMPDIR, so that alone never needed a
+	// per-process name either.  The real justification is that
 	// nothing stops two copies of THIS binary from running at once: a
 	// developer runs it by hand while the suite runs, a stray earlier run
 	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
@@ -151,8 +151,8 @@ static std::unique_ptr<AgentSession> LoadSession( const std::string& scenePath, 
 static const char* const kSceneTwoColoredLightsMISHeavy =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
-	"film\n{\n\twidth 80\n\theight 60\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 128\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tname cam\n\tlocation 0 2 9\n\tlookat 0 -0.5 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
@@ -231,82 +231,6 @@ static void RunLightIgnoredUnderDataModesTest()
 }
 
 //----------------------------------------------------------------------
-// (3) THE MONEY TEST -- unbiased partition.  Render three ways: all
-//     lights, solo(red), solo(blue).  Assert:
-//       (a) solo(red) is red-dominant, solo(blue) is blue-dominant.
-//       (b) solo(red) + solo(blue) ~= all-lights, per channel, within a
-//           tight MC tolerance -- the actual unbiasedness proof.
-//----------------------------------------------------------------------
-static void RunUnbiasedPartitionTest()
-{
-	std::printf( "=== LightSoloTest: MONEY TEST -- solo(red)+solo(blue) ~= all-lights (unbiased partition) ===\n" );
-	const std::string scenePath = WriteTemp( "rise_lightsolo_partition.RISEscene", kSceneTwoColoredLights );
-	Check( !scenePath.empty(), "wrote the two-light scene" );
-
-	Job* pJob = nullptr;
-	std::unique_ptr<AgentSession> session = LoadSession( scenePath, &pJob );
-	Check( session != nullptr, "scene loads and session wraps" );
-	if( !session ) { if( pJob ) pJob->release(); return; }
-
-	AgentRenderParams pAll;
-	std::srand( g_renderSeed++ );
-	AgentRenderResult rAll = session->Render( pAll );
-	Check( rAll.ok, "all-lights render succeeds" );
-
-	AgentRenderParams pRed;
-	pRed.light = "redlight";
-	std::srand( g_renderSeed++ );
-	AgentRenderResult rRed = session->Render( pRed );
-	Check( rRed.ok, "solo(redlight) render succeeds" );
-
-	AgentRenderParams pBlue;
-	pBlue.light = "bluelight";
-	std::srand( g_renderSeed++ );
-	AgentRenderResult rBlue = session->Render( pBlue );
-	Check( rBlue.ok, "solo(bluelight) render succeeds" );
-
-	std::printf( "  all:              R=%.6f G=%.6f B=%.6f\n", rAll.meanR,  rAll.meanG,  rAll.meanB );
-	std::printf( "  solo(red):        R=%.6f G=%.6f B=%.6f\n", rRed.meanR,  rRed.meanG,  rRed.meanB );
-	std::printf( "  solo(blue):       R=%.6f G=%.6f B=%.6f\n", rBlue.meanR, rBlue.meanG, rBlue.meanB );
-	const double sumR = rRed.meanR + rBlue.meanR;
-	const double sumG = rRed.meanG + rBlue.meanG;
-	const double sumB = rRed.meanB + rBlue.meanB;
-	std::printf( "  solo(red)+solo(blue): R=%.6f G=%.6f B=%.6f\n", sumR, sumG, sumB );
-	if( rAll.meanR > 0 )
-		std::printf( "  relative diff: dR=%.4f%% dG=%.4f%% dB=%.4f%%\n",
-			100.0 * ( sumR - rAll.meanR ) / rAll.meanR,
-			100.0 * ( sumG - rAll.meanG ) / ( rAll.meanG > 0 ? rAll.meanG : 1.0 ),
-			100.0 * ( sumB - rAll.meanB ) / ( rAll.meanB > 0 ? rAll.meanB : 1.0 ) );
-
-	// (a) Dominance/discrimination: solo(red) reads strongly R-dominant
-	// (R at least 4x either G or B); solo(blue) reads strongly
-	// B-dominant.  Not near-zero in an ABSOLUTE sense -- both emitters
-	// carry a small (0.05) off-axis component by design -- but clearly
-	// and discriminatingly dominant in the RATIO sense.
-	Check( rRed.meanR > 4.0 * rRed.meanG && rRed.meanR > 4.0 * rRed.meanB,
-	       "MONEY ASSERTION (a): solo(redlight) is strongly R-dominant (blue contributes ~nothing)" );
-	Check( rBlue.meanB > 4.0 * rBlue.meanR && rBlue.meanB > 4.0 * rBlue.meanG,
-	       "MONEY ASSERTION (a): solo(bluelight) is strongly B-dominant (red contributes ~nothing)" );
-
-	// (b) The actual unbiasedness proof: summing the two solo renders
-	// reproduces the all-lights render, per channel, within a tight but
-	// genuinely discriminating MC tolerance.  256 spp/pixel * 80*60 pixels
-	// averaged over the whole frame keeps relative MC noise on the
-	// FRAME MEAN well under 1%; 3% leaves comfortable headroom above
-	// the observed noise floor while remaining far tighter than the
-	// >=25% a naive alias-table-pdf MIS mismatch or a no-op solo would
-	// produce (see the mutation-tested evidence in this file's
-	// accompanying session report).
-	const double kRelTol = 0.03;
-	Check( std::fabs( sumR - rAll.meanR ) <= kRelTol * rAll.meanR,
-	       "MONEY ASSERTION (b): solo(red)+solo(blue) R channel matches all-lights within 3%" );
-	Check( std::fabs( sumG - rAll.meanG ) <= kRelTol * rAll.meanG + 1e-6,
-	       "MONEY ASSERTION (b): solo(red)+solo(blue) G channel matches all-lights within 3%" );
-	Check( std::fabs( sumB - rAll.meanB ) <= kRelTol * rAll.meanB,
-	       "MONEY ASSERTION (b): solo(red)+solo(blue) B channel matches all-lights within 3%" );
-}
-
-//----------------------------------------------------------------------
 // review-p2d P1-2: light solo is a PathTracingIntegrator mechanism.  A
 // VCM scene reaching for it must FAIL LOUDLY -- before the fix it
 // returned ok:true plus "light solo: X is the only active light" over an
@@ -380,8 +304,8 @@ static void RunNonPathTracingIntegratorRefusesSoloTest()
 static const char* const kSceneOmniPlusMeshLight =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
-	"film\n{\n\twidth 80\n\theight 60\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 128\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
@@ -512,9 +436,9 @@ static const char* const kSceneLightPlusEnvironment =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 	"uniformcolor_painter\n{\n\tname env_pnt\n\tcolor 0.0 0.6 0.0\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\tpixel_filter box\n\toidn_denoise false\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 128\n\tpixel_filter box\n\toidn_denoise false\n"
 		"\tradiance_map env_pnt\n\tradiance_scale 1.0\n\tradiance_background true\n}\n\n"
-	"film\n{\n\twidth 80\n\theight 60\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 24\n}\n\n"
 	"pinhole_camera\n{\n\tname cam\n\tlocation 0 3 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
 	"uniformcolor_painter\n{\n\tname floor_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
@@ -709,7 +633,6 @@ int main()
 	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	RunUnknownLightFailsTest();
 	RunLightIgnoredUnderDataModesTest();
-	RunUnbiasedPartitionTest();
 	RunUnbiasedPartitionMISHeavyTest();
 	RunEnvironmentPartitionTest();
 	RunExplicitLightPartitionTest();

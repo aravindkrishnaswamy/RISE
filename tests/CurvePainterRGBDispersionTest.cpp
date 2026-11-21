@@ -111,7 +111,7 @@ namespace RISE
 static const unsigned int kDefaultSeedBase = 2000u;
 static unsigned int g_seedBase = kDefaultSeedBase;
 static unsigned int g_renderIndex = 0;
-static const char* g_samples = "1024";
+static const char* g_samples = "256";
 
 static int passCount = 0;
 static int failCount = 0;
@@ -246,7 +246,7 @@ static std::string TransmitScene(
 	const char* samples )
 {
 	return std::string( "RISE ASCII SCENE 7\n" ) +
-		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"film\n{\n\twidth 12\n\theight 12\n}\n\n"
 		"pinhole_camera\n{\n"
 		"\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"

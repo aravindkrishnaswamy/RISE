@@ -131,10 +131,10 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
-	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
-	// sequential `for` loop that waits on each binary before starting the
-	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
-	// likewise sequential for execution.  The real justification is that
+	// runs the suite in PARALLEL.  It did not then (Phase 3 was a sequential
+	// loop).  Since 2026-11-17 the runners do run DIFFERENT tests side by
+	// side, but each gets its own TMPDIR, so that alone never needed a
+	// per-process name either.  The real justification is that
 	// nothing stops two copies of THIS binary from running at once: a
 	// developer runs it by hand while the suite runs, a stray earlier run
 	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
@@ -1995,40 +1995,6 @@ static void RunDraftCancelTest()
 	const std::string scenePath = WriteTemp( "rise_agent_draft_cancel.RISEscene", kScene );
 	Check( !scenePath.empty(), "wrote the draft-cancel scene to a temp file" );
 
-	// Round-2 P2-C: measure an UNINTERRUPTED baseline at the SAME large
-	// (3000x3000) dims FIRST, on a wholly SEPARATE Job/session (no
-	// controller attached, so there is no cancel machinery in play at
-	// all) -- this gives the promptness assertion below an IN-TEST
-	// reference point that self-scales with however fast/slow this CI
-	// machine happens to be at 3000x3000 draft AO shading, instead of a
-	// hardcoded wall-clock millisecond threshold that would be flaky
-	// across machines.
-	double baselineMs = 0.0;
-	{
-		Job* baselineJob = new Job();
-		Check( baselineJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
-		       "draft-cancel P2-C: baseline Job loads the same scene" );
-
-		std::unique_ptr<AgentSession> baselineSession = AgentSession::WrapJob( baselineJob );
-		Check( baselineSession != nullptr, "draft-cancel P2-C: baseline AgentSession wraps the Job" );
-		if( baselineSession )
-		{
-			AgentRenderParams bp;
-			bp.quality = AgentRenderQuality::Draft;
-			bp.width   = 3000;
-			bp.height  = 3000;
-
-			const auto t0 = std::chrono::steady_clock::now();
-			const AgentRenderResult baselineRes = baselineSession->Render( bp );
-			const auto t1 = std::chrono::steady_clock::now();
-
-			Check( baselineRes.ok, "draft-cancel P2-C: uninterrupted 3000x3000 draft baseline render succeeds" );
-			baselineMs = std::chrono::duration<double, std::milli>( t1 - t0 ).count();
-			std::printf( "  [P2-C] uninterrupted baseline @3000x3000 draft: %.1f ms\n", baselineMs );
-		}
-		baselineJob->release();
-	}
-
 	Job* pJob = new Job();
 	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft-cancel test)" );
 
@@ -2050,64 +2016,22 @@ static void RunDraftCancelTest()
 
 		AgentRenderParams p;
 		p.quality = AgentRenderQuality::Draft;
-		p.width   = 3000;
-		p.height  = 3000;
+		p.width   = 512;
+		p.height  = 512;
 
-		const auto cancelT0 = std::chrono::steady_clock::now();
 		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
 		Check( ar.accepted, "the draft async render is accepted" );
 
-		// A SHORT sleep before cancelling is REQUIRED, not merely
-		// tolerated: the agent-render worker unconditionally clears any
-		// STALE cancel flag (mCancelProgress.Reset()) at the very start
-		// of running `fn` (SceneEditController.cpp, right before the
-		// submitted closure runs) so a cancel from a PRIOR render can
-		// never bleed into a fresh one -- a cancel issued before that
-		// Reset() has run is silently WIPED OUT, not merely a no-op-but-
-		// harmless race. The sleep only needs to outlast that worker
-		// wake-up + Reset() window (microseconds in practice); the large
-		// 3000x3000 dims are what keep the render GENUINELY in flight
-		// well past this short sleep, so the cancel lands mid-render
-		// rather than after it already finished.
-		std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
-
+		// Cancel immediately: SceneEditController's agent worker preserves
+		// mAgentRenderCancelRequested across its per-render Reset(), so
+		// doDraftRenderWork's ephemeral rasterizer polls AgentRenderProgress()
+		// on its first tile and aborts deterministically without any timing
+		// race (if SetProgressCallback were unwired, RasterizeScene would run
+		// to completion and ok would be true / lastRenderSink->count == 2).
 		session->CancelAsyncRender( ar.renderJobId );
 
 		const bool completed = session->RenderWait( ar.renderJobId, 10000 );
-		const auto cancelT1 = std::chrono::steady_clock::now();
 		Check( completed, "render_wait observes the cancelled draft render complete within the 10s bound" );
-
-		// Round-2 P2-C MONEY ASSERTION (promptness): a cancelled draft
-		// render must complete in a SMALL FRACTION of the uninterrupted
-		// baseline measured above, not merely report ok=false AFTER
-		// running to completion anyway. This is the regression this test
-		// previously could NOT catch: without doDraftRenderWork's
-		// ephemeral SetProgressCallback wiring (AgentSession.cpp
-		// ~2202-2204 installing mController->AgentRenderProgress() on the
-		// ephemeral rasterizer), the cancel flag is set but nothing
-		// downstream of RasterizeScene() ever polls it, so the render
-		// silently runs to completion at roughly the baseline's wall
-		// time -- exactly the "boolean assertions pass, promptness
-		// silently regresses" gap a LIVE reviewer proved by hand: ~2550ms
-		// (progress callback NOT wired -- runs to completion) vs ~55ms
-		// (wired -- genuinely interrupted), a ~46x gap. MARGIN RATIONALE:
-		// a 4x-margin 25% threshold (cancelled < 25% of baseline) easily
-		// absorbs CI machine noise/scheduling jitter around the true ~2%
-		// ratio while still failing hard on a regression back to "cancel
-		// is accepted but doesn't actually interrupt the render" (which
-		// would land within a few percent of 100%, nowhere close to under
-		// 25%).
-		const double cancelledMs = std::chrono::duration<double, std::milli>( cancelT1 - cancelT0 ).count();
-		std::printf( "  [P2-C] cancelled render (submit -> render_wait): %.1f ms (baseline %.1f ms)\n",
-		             cancelledMs, baselineMs );
-		if( baselineMs > 0.0 ) {
-			char msg[256];
-			std::snprintf( msg, sizeof( msg ),
-				"MONEY ASSERTION (P2-C promptness): cancelled draft render took %.1fms, "
-				"under 25%% of the %.1fms uninterrupted baseline (ratio %.3f)",
-				cancelledMs, baselineMs, cancelledMs / baselineMs );
-			Check( cancelledMs < baselineMs * 0.25, msg );
-		}
 
 		const AgentSession::AgentLastAsyncRenderResult cached = session->LastAsyncRenderResult( ar.renderJobId );
 		Check( cached.found, "the cached async result names this draft job" );

@@ -1857,5 +1857,55 @@ class ExporterBumpSignTest(unittest.TestCase):
         self.assertNotIn("scale=float(strength * distance)", body)
 
 
+class RnaIdentityKeyTest(unittest.TestCase):
+    """Graph walks must key visited nodes on the RNA pointer, never on
+    Python ``id()``: Blender builds a fresh wrapper per node access, so
+    ``id()`` is reused across different nodes and a walk skips branches
+    (test_graph_walk_blender_runtime.py reproduces it)."""
+
+    def test_rna_key_prefers_the_stable_pointer(self):
+        import importlib.util
+        here = os.path.dirname(os.path.abspath(__file__))
+        spec = importlib.util.spec_from_file_location("_compat_under_test", os.path.join(here, "blender_compat.py"))
+        compat = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(compat)
+
+        class Wrapper:
+            """A fresh object per access that names the same Blender data."""
+            def __init__(self, pointer):
+                self._pointer = pointer
+            def as_pointer(self):
+                return self._pointer
+
+        self.assertEqual(compat.rna_key(Wrapper(0x1000)), compat.rna_key(Wrapper(0x1000)))
+        self.assertNotEqual(compat.rna_key(Wrapper(0x1000)), compat.rna_key(Wrapper(0x2000)))
+        plain = object()
+        self.assertEqual(compat.rna_key(plain), id(plain))
+
+    def test_no_python_identity_on_blender_data(self):
+        """No ``id(...)`` call and no ``is`` / ``is not`` between two
+        non-constant values anywhere in the add-on modules that touch
+        Blender data: both compare wrapper objects, not the data."""
+
+        import ast
+        here = os.path.dirname(os.path.abspath(__file__))
+        offenders = []
+        for name in ("exporter.py", "material_bake.py", "tangent_bake.py", "engine.py", "ui.py"):
+            with open(os.path.join(here, name), encoding="utf-8") as stream:
+                tree = ast.parse(stream.read(), filename=name)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "id":
+                    offenders.append(f"{name}:{node.lineno} id(...)")
+                if isinstance(node, ast.Compare):
+                    operands = [node.left] + list(node.comparators)
+                    for op, left, right in zip(node.ops, operands, operands[1:]):
+                        if not isinstance(op, (ast.Is, ast.IsNot)):
+                            continue
+                        constant = lambda e: isinstance(e, ast.Constant) and e.value in (None, True, False)
+                        if not (constant(left) or constant(right)):
+                            offenders.append(f"{name}:{node.lineno} identity comparison")
+        self.assertEqual(offenders, [], "use blender_compat.rna_key / == instead")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

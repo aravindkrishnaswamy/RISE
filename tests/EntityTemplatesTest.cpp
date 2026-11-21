@@ -40,6 +40,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iterator>
+#include <memory>
 #include <new>
 
 #ifndef _WIN32
@@ -364,13 +365,13 @@ namespace
 		// caller must immediately be able to consume the complete PNG, even
 		// when several callers originally observed the same partial entry.
 		bool concurrentCacheIntact = true;
-		for( unsigned int round = 0; round < 8 && concurrentCacheIntact; ++round ) {
+		for( unsigned int round = 0; round < 2 && concurrentCacheIntact; ++round ) {
 			{ std::ofstream partial( target, std::ios::binary | std::ios::trunc ); partial.put( '\0' ); }
 			int startPipe[2];
 			if( pipe( startPipe ) != 0 ) { concurrentCacheIntact = false; break; }
 			std::vector<pid_t> children;
 			std::fflush( nullptr );
-			for( unsigned int index = 0; index < 8; ++index ) {
+			for( unsigned int index = 0; index < 4; ++index ) {
 				const pid_t child = fork();
 				if( child == 0 ) {
 					close( startPipe[1] );
@@ -379,7 +380,7 @@ namespace
 					do { received = read( startPipe[0], &token, 1 ); } while( received < 0 && errno == EINTR );
 					close( startPipe[0] );
 					if( received != 1 ) _exit( 2 );
-					for( unsigned int call = 0; call < 32; ++call ) {
+					for( unsigned int call = 0; call < 8; ++call ) {
 						if( EntityTemplates::EnsureDefaultTextureFile() != target.string() || readBytes() != complete ) _exit( 1 );
 					}
 					_exit( 0 );
@@ -389,7 +390,7 @@ namespace
 			}
 			// Keep our read end open until release so a failed fork cannot
 			// make this fixture deliver SIGPIPE to the test process.
-			const char tokens[] = "rrrrrrrr";
+			const char tokens[] = "rrrr";
 			ssize_t released;
 			do { released = write( startPipe[1], tokens, sizeof(tokens) - 1 ); } while( released < 0 && errno == EINTR );
 			if( released != static_cast<ssize_t>(sizeof(tokens) - 1) ) concurrentCacheIntact = false;
@@ -533,7 +534,18 @@ namespace
 		Check( pJob != nullptr, "T1 fixture loads" );
 		if( !pJob ) return;
 
-		SceneEditController ctrl( *pJob, /*interactiveRasterizer*/nullptr );
+		std::unique_ptr<SceneEditController> ctrl( new SceneEditController( *pJob, /*interactiveRasterizer*/nullptr ) );
+		unsigned int sinceReset = 0;
+		auto resetIfNeeded = [&]() -> bool {
+			if( sinceReset < 5 ) return true;
+			ctrl.reset();
+			pJob->release();
+			pJob = LoadScene( kBaseScene, tmp );
+			if( !pJob ) return false;
+			ctrl.reset( new SceneEditController( *pJob, /*interactiveRasterizer*/nullptr ) );
+			sinceReset = 0;
+			return true;
+		};
 
 		const Category cats[] = {
 			Category::Light, Category::Object, Category::Material,
@@ -541,24 +553,27 @@ namespace
 		};
 		for( Category cat : cats )
 		{
-			const unsigned int n = ctrl.EntityTemplateCount( cat );
+			const unsigned int n = ctrl->EntityTemplateCount( cat );
 			Check( n > 0, "category " + std::to_string( static_cast<int>( cat ) ) + " has at least one template" );
 			for( unsigned int i = 0; i < n; ++i )
 			{
-				const std::string label = ctrl.EntityTemplateLabel( cat, i ).c_str();
+				if( !resetIfNeeded() ) { Check( false, "T1 fixture reload failed" ); break; }
+				const std::string label = ctrl->EntityTemplateLabel( cat, i ).c_str();
 				String outName;
 				const SceneEditController::AgentCommitResult r =
-					ctrl.InstantiateEntityTemplate( cat, i, &outName );
+					ctrl->InstantiateEntityTemplate( cat, i, &outName );
 				Check( r.applied, "template `" + label + "` applied (" + std::string( r.message.c_str() ) + ")" );
 				if( !r.applied ) continue;
+				++sinceReset;
 				const std::string nm = outName.c_str();
 				Check( !nm.empty(), "template `" + label + "` reported a non-empty instance name" );
-				Check( NameInCategory( ctrl, cat, nm ),
+				Check( NameInCategory( *ctrl, cat, nm ),
 					"template `" + label + "` result `" + nm + "` appears in CategoryEntityName" );
 			}
 		}
 
-		pJob->release();
+		ctrl.reset();
+		if( pJob ) pJob->release();
 		std::remove( tmp.c_str() );
 	}
 
@@ -1519,7 +1534,18 @@ namespace
 		Job* pJob = LoadScene( kBaseScene, tmp );
 		Check( pJob != nullptr, "S18f fixture loads" );
 		if( !pJob ) return;
-		SceneEditController ctrl( *pJob, nullptr );
+		std::unique_ptr<SceneEditController> ctrl( new SceneEditController( *pJob, nullptr ) );
+		unsigned int sinceReset = 0;
+		auto resetIfNeeded = [&]() -> bool {
+			if( sinceReset < 5 ) return true;
+			ctrl.reset();
+			pJob->release();
+			pJob = LoadScene( kBaseScene, tmp );
+			if( !pJob ) return false;
+			ctrl.reset( new SceneEditController( *pJob, nullptr ) );
+			sinceReset = 0;
+			return true;
+		};
 
 		// Keywords whose minimal body needs a FILE ON DISK -- the one
 		// class no static default can supply (a scene-relative path would
@@ -1545,7 +1571,7 @@ namespace
 		};
 		for( const FileNeeded& f : kFileNeeded )
 		{
-			const auto reqs = ctrl.ChunkNodeRequirements( String( f.keyword ) );
+			const auto reqs = ctrl->ChunkNodeRequirements( String( f.keyword ) );
 			bool found = false;
 			for( const auto& r : reqs )
 				if( std::string( r.param.c_str() ) == f.param && !r.isReference ) found = true;
@@ -1565,6 +1591,8 @@ namespace
 			if( d.keyword.empty() || d.keyword != e.keyword ) continue;   // skip legacy aliases
 			if( d.category != ChunkCategory::Painter && d.category != ChunkCategory::Material ) continue;
 
+			if( !resetIfNeeded() ) { Check( false, "S18f fixture reload failed" ); break; }
+
 			// Satisfy every advertised requirement from the fixture scene,
 			// picking the stand-in PER REFERENCED CATEGORY
 			// (`req.referenceCategories`) rather than assuming every
@@ -1583,7 +1611,7 @@ namespace
 			// the enumeration note below.
 			std::vector<NodeArg> args;
 			bool satisfiable = true;
-			for( const auto& req : ctrl.ChunkNodeRequirements( String( d.keyword.c_str() ) ) )
+			for( const auto& req : ctrl->ChunkNodeRequirements( String( d.keyword.c_str() ) ) )
 			{
 				if( !req.isReference ) { satisfiable = false; break; }   // no static default exists
 
@@ -1635,7 +1663,7 @@ namespace
 
 			const std::string before = DocText( pJob );
 			String out;
-			const auto r = ctrl.CreateChunkNode( String( d.keyword.c_str() ), String( d.keyword.c_str() ), args, &out );
+			const auto r = ctrl->CreateChunkNode( String( d.keyword.c_str() ), String( d.keyword.c_str() ), args, &out );
 
 			if( isException( d.keyword ) || !satisfiable )
 			{
@@ -1653,6 +1681,7 @@ namespace
 					Check( GraphHasNode( *pJob->GetCstDocument(), d.keyword.c_str(), std::string( out.c_str() ) ),
 						std::string( "...and appears in the graph snapshot (" ) + d.keyword + ")" );
 					++created;
+					++sinceReset;
 				}
 			}
 		}
@@ -1660,7 +1689,8 @@ namespace
 		Check( refusedExpected == (int)( sizeof( kFileNeeded ) / sizeof( kFileNeeded[0] ) ),
 			std::string( "exactly the file-needing keywords refused (" ) + std::to_string( refusedExpected ) + ")" );
 
-		pJob->release();
+		ctrl.reset();
+		if( pJob ) pJob->release();
 		std::remove( tmp.c_str() );
 	}
 }   // anonymous namespace

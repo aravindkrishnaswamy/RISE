@@ -233,10 +233,10 @@ static std::string WriteTemp( const char* name, const std::string& text )
 {
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
-	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
-	// sequential `for` loop that waits on each binary before starting the
-	// next (only the BUILD phases pass -j), and run_all_tests.ps1 is
-	// likewise sequential for execution.  The real justification is that
+	// runs the suite in PARALLEL.  It did not then (Phase 3 was a sequential
+	// loop).  Since 2026-11-17 the runners do run DIFFERENT tests side by
+	// side, but each gets its own TMPDIR, so that alone never needed a
+	// per-process name either.  The real justification is that
 	// nothing stops two copies of THIS binary from running at once: a
 	// developer runs it by hand while the suite runs, a stray earlier run
 	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
