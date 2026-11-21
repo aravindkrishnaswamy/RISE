@@ -561,6 +561,10 @@ copy_static_license() {
 	[ -f "${source}" ] || die "in-tree third-party notice is missing: ${source}"
 	destination="${APP}/Contents/Resources/Third-Party Licenses/${package}"
 	mkdir -p "${destination}"
+	if [ -e "${destination}/$(basename "${source}")" ] && \
+		! cmp -s "${source}" "${destination}/$(basename "${source}")"; then
+		die "two different ${package} notices are both named $(basename "${source}")"
+	fi
 	cp -pfL "${source}" "${destination}/$(basename "${source}")"
 	chmod 0644 "${destination}/$(basename "${source}")"
 }
@@ -573,19 +577,29 @@ NOTICE_MANIFEST="${SOURCE_ROOT}/licenses/third_party_notices.tsv"
 [ -f "${NOTICE_MANIFEST}" ] || die "third-party notice manifest is missing: ${NOTICE_MANIFEST}"
 macos_notices=0
 while IFS= read -r notice_line || [ -n "${notice_line}" ]; do
+	# Same rules as tools/third_party_notices.py read_manifest().
 	notice_line="${notice_line%$'\r'}"
-	case "${notice_line}" in ''|'#'*|[[:space:]]'#'*) continue ;; esac
-	[ -n "${notice_line//[[:space:]]/}" ] || continue
-	IFS=$'\t' read -r notice_package notice_path notice_dists notice_extra <<< "${notice_line}"
-	notice_package="${notice_package//[[:space:]]/}"
+	notice_trimmed="${notice_line#"${notice_line%%[![:space:]]*}"}"
+	case "${notice_trimmed}" in ''|'#'*) continue ;; esac
+	notice_tabs="${notice_line//[!$'\t']/}"
+	[ "${#notice_tabs}" -eq 2 ] || die "malformed line in ${NOTICE_MANIFEST} (want 3 tab-separated fields): ${notice_line}"
+	notice_package="${notice_line%%$'\t'*}"
+	notice_rest="${notice_line#*$'\t'}"
+	notice_path="${notice_rest%%$'\t'*}"
+	notice_dists="${notice_rest#*$'\t'}"
+	notice_package="${notice_package#"${notice_package%%[![:space:]]*}"}"
+	notice_package="${notice_package%"${notice_package##*[![:space:]]}"}"
 	notice_path="${notice_path#"${notice_path%%[![:space:]]*}"}"
 	notice_path="${notice_path%"${notice_path##*[![:space:]]}"}"
-	notice_dists="${notice_dists//[[:space:]]/}"
-	[ -n "${notice_package}" ] && [ -n "${notice_path}" ] && [ -n "${notice_dists}" ] && [ -z "${notice_extra}" ] || \
-		die "malformed line in ${NOTICE_MANIFEST}: ${notice_line}"
+	[[ "${notice_package}" =~ ^[A-Za-z0-9][A-Za-z0-9._+@-]*$ ]] || \
+		die "bad package name in ${NOTICE_MANIFEST}: ${notice_line}"
+	case "${notice_path}" in ''|/*|..|../*|*/..|*/../*) die "path must be repo-relative in ${NOTICE_MANIFEST}: ${notice_line}" ;; esac
 	notice_for_macos=0
-	IFS=',' read -r -a notice_tokens <<< "${notice_dists}"
-	for notice_token in "${notice_tokens[@]}"; do
+	notice_dists="${notice_dists},"
+	while [ -n "${notice_dists}" ]; do
+		notice_token="${notice_dists%%,*}"
+		notice_dists="${notice_dists#*,}"
+		notice_token="${notice_token//[[:space:]]/}"
 		case "${notice_token}" in
 			all|macos) notice_for_macos=1 ;;
 			android|windows|blender) ;;

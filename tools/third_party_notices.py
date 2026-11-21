@@ -41,7 +41,7 @@ _LICENSE_NAME = re.compile(
     r"third-party-programs.*\.txt)$",
     re.IGNORECASE,
 )
-_PACKAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_PACKAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@-]*$")
 
 
 class NoticeError(Exception):
@@ -234,8 +234,17 @@ class _FolderLock(object):
                         raise NoticeError("timed out waiting for %s" % self.path)
                     time.sleep(0.1)
         import fcntl
-        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
-        return self
+        while True:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+            # The holder before us deletes the file as it unlocks; if the
+            # file we locked is no longer the one at the path, lock again.
+            try:
+                if os.stat(self.path).st_ino == os.fstat(self.handle.fileno()).st_ino:
+                    return self
+            except FileNotFoundError:
+                pass
+            self.handle.close()
+            self.handle = open(self.path, "a+b")
 
     def __exit__(self, *exc):
         if os.name == "nt":
@@ -244,6 +253,11 @@ class _FolderLock(object):
             msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
+            # Delete while still holding the lock (see __enter__).
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
             fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
         self.handle.close()
         return False
@@ -262,13 +276,35 @@ def _sweep_staging(dest):
 
 
 def _publish(staging, dest):
-    """Replace `dest` with the finished `staging` folder (lock held)."""
-    if os.path.isdir(dest):
-        shutil.rmtree(dest)
-    os.rename(staging, dest)
+    """Replace `dest` with the finished `staging` folder (lock held).
+
+    The old folder is renamed aside first and deleted afterwards, so a
+    file Windows keeps open in it (an indexer, antivirus) cannot leave
+    `dest` half deleted; what fails to delete is swept on the next run.
+    """
+    if _same_tree(staging, dest):
+        return
+    if os.path.lexists(dest):
+        trash = tempfile.mkdtemp(prefix=_staging_prefix(dest) + "old-",
+                                 dir=os.path.dirname(dest))
+        old = os.path.join(trash, "old")
+        for attempt in range(20):
+            try:
+                os.rename(dest, old)
+                break
+            except OSError:
+                if attempt == 19:
+                    shutil.rmtree(trash, ignore_errors=True)
+                    raise NoticeError("could not move the old %s aside (a file in it is "
+                                      "in use?)" % dest)
+                time.sleep(0.25)
+        os.rename(staging, dest)
+        shutil.rmtree(trash, ignore_errors=True)
+    else:
+        os.rename(staging, dest)
 
 
-def stage(repo_root, distribution, dest, extra=()):
+def stage(repo_root, distribution, dest, extra=(), lock=True):
     """Copy the notices for `distribution`, plus `extra`, into `dest`.
 
     `extra` holds (package, source path) or (package, source path, relative
@@ -297,11 +333,20 @@ def stage(repo_root, distribution, dest, extra=()):
     dest = os.path.abspath(dest)
     parent = os.path.dirname(dest)
     os.makedirs(parent, exist_ok=True)
-    with _FolderLock(dest):
+    # `lock` False is for a destination private to the caller.
+    with (_FolderLock(dest) if lock else _NoLock()):
         _check_destination(dest)
         _sweep_staging(dest)
         staging = tempfile.mkdtemp(prefix=_staging_prefix(dest), dir=parent)
         return _stage_into(sources, distribution, staging, dest)
+
+
+class _NoLock(object):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 def _stage_into(sources, distribution, staging, dest):

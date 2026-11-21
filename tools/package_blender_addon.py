@@ -61,6 +61,12 @@ def addon_version(addon_dir):
 
 
 _MAX_NOTICES_PER_LIBRARY = 12
+# The C / C++ runtime every Linux program loads from the system; anything
+# else in /usr/lib (a distribution's libpng, OpenEXR, tbb) is third-party
+# code whose notice the zip must carry.
+_LINUX_RUNTIME = re.compile(
+    r"^(libc|libm|libdl|librt|libpthread|libutil|libresolv|libstdc\+\+|libgcc_s|"
+    r"ld-linux[^/]*|linux-vdso)\.so")
 _HOMEBREW_CELLAR = re.compile(r"^(?P<prefix>.*)/Cellar/(?P<formula>[^/]+)/[^/]+/")
 
 
@@ -110,7 +116,7 @@ def _linux_dependencies(bridge):
         path = line.split("=>", 1)[1].split("(")[0].strip()
         if not path or path == "not found":
             raise third_party_notices.NoticeError("bridge dependency unresolved: %s" % line.strip())
-        if not path.startswith(("/lib", "/usr/lib")):
+        if not _LINUX_RUNTIME.match(os.path.basename(path)):
             found.append(os.path.realpath(path))
     return found
 
@@ -137,25 +143,35 @@ def library_name(path):
     return re.sub(r"[.-][0-9][0-9._-]*$", "", name) or name
 
 
-def dependency_notices(bridge, overrides):
+def _known_roots(repo_root):
+    """Install prefixes whose licence location is known, as {root: package}."""
+    return {os.path.realpath(os.path.join(repo_root, "extlib", "oidn", "install")):
+            "OpenImageDenoise"}
+
+
+def dependency_notices(bridge, overrides, repo_root=None):
     """[(package, licence path, relative name)] for the bridge's dependencies.
 
-    A Homebrew library maps to its formula (the macOS release script's
-    rule); anything else to the prefix above its lib/ directory.  Libraries
-    sharing a package or prefix share one set of notices.  `overrides`
-    maps a package name to a directory to search instead.
+    A Homebrew library maps to its formula, as in the macOS release
+    script; libraries in extlib/oidn/install to OIDN.  Any other library
+    needs --license-root NAME=DIR (`overrides`): a shared prefix such as
+    /usr or /usr/local holds many packages' licences, and nothing tells
+    which are this library's.
     """
+    repo_root = repo_root or third_party_notices.default_repo_root()
+    known = _known_roots(repo_root)
     groups = {}
     for path in external_dependencies(bridge):
         match = _HOMEBREW_CELLAR.match(path)
+        prefix = os.path.dirname(os.path.dirname(path))
+        root = None
         if match:
             package = match.group("formula")
             root = os.path.join(match.group("prefix"), "opt", package)
-        elif os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(path)), "Cellar")):
+        elif os.path.isdir(os.path.join(prefix, "Cellar")):
             # A file directly in a Homebrew prefix's lib/ that is not a
             # symlink into the Cellar (openpgl): find the formula that owns
             # it, else the documentation folder named after it.
-            prefix = os.path.dirname(os.path.dirname(path))
             owners = sorted(glob.glob(os.path.join(prefix, "Cellar", "*", "*", "lib",
                                                    os.path.basename(path))))
             if owners:
@@ -164,15 +180,18 @@ def dependency_notices(bridge, overrides):
             else:
                 package = library_name(path)
                 root = os.path.join(prefix, "share", "doc", package)
+        elif os.path.realpath(prefix) in known:
+            package = known[os.path.realpath(prefix)]
+            root = prefix
         else:
-            libdir = os.path.dirname(path)
-            root = os.path.dirname(libdir) if os.path.basename(libdir).startswith("lib") else libdir
-            package = None
-            for other, (_, other_root) in groups.items():
-                if other_root == root:
-                    package = other
-            package = package or library_name(path)
-        groups.setdefault(package, (path, overrides.get(package, root)))
+            package = library_name(path)
+        if package in overrides:
+            root = overrides[package]
+        if root is None:
+            raise third_party_notices.NoticeError(
+                "do not know where the licence of %s (%s) is; pass --license-root %s=DIR"
+                % (package, path, package))
+        groups.setdefault(package, (path, root))
     notices = []
     for package, (path, root) in sorted(groups.items()):
         try:
@@ -182,8 +201,6 @@ def dependency_notices(bridge, overrides):
                 "no licence file found for %s (%s) under %s; pass --license-root %s=DIR"
                 % (package, path, root, package))
         if len(files) > _MAX_NOTICES_PER_LIBRARY:
-            # A prefix this broad (a shared /usr/local, a whole Homebrew
-            # tree) holds other software's licences too.
             raise third_party_notices.NoticeError(
                 "%d licence files under %s for %s is too many to be one library's; "
                 "pass --license-root %s=DIR" % (len(files), root, package, package))
@@ -235,9 +252,11 @@ def package(repo_root, bridge, output, dependency_licenses=None):
         os.chmod(os.path.join(native_dst, bridge_filename()), 0o755)
         # None: work them out from the bridge.  Tests pass a list.
         if dependency_licenses is None:
-            dependency_licenses = dependency_notices(bridge, {})
+            dependency_licenses = dependency_notices(bridge, {}, repo_root)
+        # The staging folder is private to this run: no lock needed.
         staged = third_party_notices.stage(
-            repo_root, "blender", os.path.join(addon_dst, NOTICES_DIR), dependency_licenses)
+            repo_root, "blender", os.path.join(addon_dst, NOTICES_DIR), dependency_licenses,
+            lock=False)
 
         os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
         partial = output + ".partial"
@@ -283,7 +302,7 @@ def main(argv=None):
         if not os.path.isfile(bridge):
             raise third_party_notices.NoticeError(
                 "bridge library is missing: %s (build it with make -C src/Blender/native)" % bridge)
-        deps = dependency_notices(bridge, overrides)
+        deps = dependency_notices(bridge, overrides, repo_root)
         staged = package(repo_root, bridge, os.path.abspath(output), deps)
     except (third_party_notices.NoticeError, OSError) as exc:
         sys.stderr.write("package_blender_addon: error: %s\n" % exc)

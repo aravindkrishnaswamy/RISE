@@ -350,8 +350,9 @@
        copyright file, and the OIDN and OpenPGL install licences into
        $(OutDir)Third-Party Licenses\, and fails the build if one is missing.
        RISE-CLI and RISE-GUI both run it; the script tolerates the two
-       running at once.  RiseOpenPglRoot matches the OpenPGL include and
-       library paths above. -->
+       running at once.  RiseOpenPglRoot is where the OpenPGL notices
+       are read; keep it the install the hard-coded OpenPGL include and
+       library paths above point at. -->
   <PropertyGroup>
     <RiseOpenPglRoot Condition="'$(RiseOpenPglRoot)'==''">C:\Dev\openpgl-install</RiseOpenPglRoot>
   </PropertyGroup>

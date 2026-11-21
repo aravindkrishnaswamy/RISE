@@ -32,9 +32,10 @@ REPO = tpn.default_repo_root()
 CORE_PACKAGES = {"stb", "cgltf", "mt19937", "Sobol-Joe-Kuo", "Cycles"}
 CYCLES_FILES = {"Cycles-NOTICE.txt", "Apache-2.0.txt", "BSD-3-Clause.txt"}
 
-# Which build file decides what a distribution compiles.  The macOS
-# release and the Blender bridge both compile the library's Filelist
-# sources (the Xcode project mirrors that list).
+# Which build file decides what a distribution compiles.  The Blender
+# bridge links the make Filelist's library; the macOS release builds the
+# Xcode project, whose group-relative paths this check cannot read, so it
+# is checked against the Filelist that project mirrors.
 BUILD_FILES = {
     "android": ["build/cmake/rise-android/rise_sources.cmake",
                 "build/cmake/rise-android/extlib_png.cmake"],
@@ -112,12 +113,14 @@ class ManifestTest(unittest.TestCase):
         marker = re.compile(r"Copyright\s*(\(c\)|\(C\)|©|[0-9]{4})|Licensed under|"
                             r"SPDX-License-Identifier|copyright/permission notice")
         owner = re.compile(r"Copyright.*Aravind Krishnaswamy")
-        roots = ["src/Library", "src/Blender/native", "android/app/src/main/cpp"]
+        roots = ["src/Library", "src/RISE", "src/Blender/native", "android/app/src/main/cpp",
+                 "build/VS2022/RISE-GUI", "build/XCode/rise/RISE-GUI"]
         found = set()
         for root in roots:
             for directory, _, files in os.walk(os.path.join(REPO, root)):
                 for name in files:
-                    if not name.endswith((".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".mm")):
+                    if not name.endswith((".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".mm",
+                                          ".m", ".swift")):
                         continue
                     path = os.path.join(directory, name)
                     with open(path, "r", encoding="utf-8", errors="replace") as handle:
@@ -209,6 +212,14 @@ class StageTest(unittest.TestCase):
         write(os.path.join(self.dest, "stale", "LICENSE"), "old")
         tpn.stage(REPO, "windows", self.dest)
         self.assertFalse(os.path.exists(os.path.join(self.dest, "stale")))
+        # The old folder was moved aside and deleted, not left behind.
+        self.assertEqual(os.listdir(os.path.dirname(self.dest)), ["Third-Party Licenses"])
+
+    def test_versioned_homebrew_name_is_a_valid_package(self):
+        lic = os.path.join(self.tmp, "LICENSE")
+        write(lic, "x")
+        tpn.stage(REPO, "windows", self.dest, extra=[("openssl@3", lic)])
+        self.assertTrue(os.path.isfile(os.path.join(self.dest, "openssl@3", "LICENSE")))
 
     def test_conflicting_names_in_one_package_fail(self):
         a, b = os.path.join(self.tmp, "a", "LICENSE"), os.path.join(self.tmp, "b", "LICENSE")
@@ -362,6 +373,35 @@ class MacOSReleaseLoopTest(unittest.TestCase):
         finally:
             shutil.rmtree(root)
 
+    def test_loop_accepts_exactly_what_python_accepts(self):
+        lines = [
+            "A\tx/LICENSE\tall", "A\tx/LICENSE\tall\r", "A\tx/LICENSE\tandroid, macos",
+            " A \t x/LICENSE \t macos ", "A\tx/LICENSE\twindows",
+            "A\t\tx/LICENSE\tall", "A\tx/LICENSE", "A\tx/LICENSE\tall\textra",
+            "pkg name\tx/LICENSE\tall", "A\tx/LICENSE\tmacos,", "A\tx/LICENSE\tmacOS",
+            "A\t../x/LICENSE\tall", "A\t/x/LICENSE\tall", "A\tx/LICENSE\t",
+            "openssl@3\tx/LICENSE\tmacos", "   # indented comment", "\t# tab comment",
+        ]
+        root = tempfile.mkdtemp()
+        try:
+            write(os.path.join(root, "x", "LICENSE"), "x")
+            for line in lines:
+                # A second, valid macos line keeps the "lists no notices"
+                # guard out of the comparison.
+                write(os.path.join(root, tpn.MANIFEST_RELPATH),
+                      "Z\tx/LICENSE\tmacos\n" + line + "\n")
+                try:
+                    tpn.read_manifest(root)
+                    python_ok = True
+                except tpn.NoticeError:
+                    python_ok = False
+                result, app = self.run_loop(root)
+                shutil.rmtree(app)
+                self.assertEqual(result.returncode == 0, python_ok,
+                                 "%r: python %s, bash %s" % (line, python_ok, result.stderr))
+        finally:
+            shutil.rmtree(root)
+
     def test_loop_rejects_unknown_distribution(self):
         root = tempfile.mkdtemp()
         try:
@@ -459,7 +499,8 @@ class BlenderDependencyNoticeTest(unittest.TestCase):
         write(os.path.join(brew, "opt", "openexr", "LICENSE.md"), "BSD")
         write(os.path.join(brew, "lib", "libopenpgl.0.7.1.dylib"), "")
         write(os.path.join(brew, "share", "doc", "openpgl", "LICENSE.txt"), "Apache")
-        oidn = os.path.join(self.tmp, "oidn", "install")
+        self.repo = os.path.join(self.tmp, "repo")
+        oidn = os.path.join(self.repo, "extlib", "oidn", "install")
         write(os.path.join(oidn, "lib", "libOpenImageDenoise.2.dylib"), "")
         write(os.path.join(oidn, "doc", "LICENSE.txt"), "Apache")
         vdb = os.path.join(self.tmp, "blender", "openvdb")
@@ -479,18 +520,19 @@ class BlenderDependencyNoticeTest(unittest.TestCase):
 
     def test_library_without_licence_fails_until_overridden(self):
         with self.assertRaises(tpn.NoticeError) as ctx:
-            package_blender_addon.dependency_notices("bridge", {})
+            package_blender_addon.dependency_notices("bridge", {}, self.repo)
         self.assertIn("openvdb", str(ctx.exception))
         override = os.path.join(self.tmp, "vdb-licence")
         write(os.path.join(override, "LICENSE"), "MPL-2.0")
-        notices = package_blender_addon.dependency_notices("bridge", {"openvdb": override})
+        notices = package_blender_addon.dependency_notices("bridge", {"openvdb": override},
+                                                          self.repo)
         self.assertEqual(sorted({n[0] for n in notices}),
                          ["OpenImageDenoise", "openexr", "openpgl", "openvdb"])
 
     def test_unused_override_fails(self):
         self.deps = self.deps[:4]
         with self.assertRaises(tpn.NoticeError):
-            package_blender_addon.dependency_notices("bridge", {"zlib": self.tmp})
+            package_blender_addon.dependency_notices("bridge", {"zlib": self.tmp}, self.repo)
 
     def test_broad_prefix_fails(self):
         # A prefix holding many packages' licences is not one library's.
@@ -499,9 +541,25 @@ class BlenderDependencyNoticeTest(unittest.TestCase):
             write(os.path.join(wide, "share", "doc", "pkg%d" % index, "LICENSE"), "x")
         write(os.path.join(wide, "lib", "libthing.so.1"), "")
         self.deps = [os.path.join(wide, "lib", "libthing.so.1")]
+        # A library outside Homebrew and the known installs needs an
+        # explicit licence location ...
         with self.assertRaises(tpn.NoticeError) as ctx:
-            package_blender_addon.dependency_notices("bridge", {})
+            package_blender_addon.dependency_notices("bridge", {}, self.repo)
+        self.assertIn("--license-root thing=DIR", str(ctx.exception))
+        # ... and pointing it at a whole shared prefix is refused.
+        with self.assertRaises(tpn.NoticeError) as ctx:
+            package_blender_addon.dependency_notices("bridge", {"thing": wide}, self.repo)
         self.assertIn("too many", str(ctx.exception))
+
+    def test_linux_runtime_filter(self):
+        runtime = package_blender_addon._LINUX_RUNTIME
+        for name in ("libc.so.6", "libm.so.6", "libstdc++.so.6", "libgcc_s.so.1",
+                     "ld-linux-x86-64.so.2", "libpthread.so.0"):
+            self.assertTrue(runtime.match(name), name)
+        # A distribution's third-party libraries in /usr/lib are not runtime.
+        for name in ("libpng16.so.16", "libOpenEXR-3_1.so.30", "libtbb.so.12",
+                     "libcrypto.so.3", "libcurl.so.4"):
+            self.assertFalse(runtime.match(name), name)
 
     def test_library_name(self):
         self.assertEqual(package_blender_addon.library_name("libOpenImageDenoise.2.4.1.dylib"),
