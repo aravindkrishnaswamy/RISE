@@ -345,6 +345,16 @@
   <PropertyGroup>
     <RiseStarterSceneSource>$(ProjectDir)..\..\..\scenes\Templates\empty_starter.RISEscene</RiseStarterSceneSource>
   </PropertyGroup>
+  <!-- Third-party notices: tools/third_party_notices.py copies the notices
+       listed in licenses/third_party_notices.tsv, every vcpkg port's
+       copyright file, and the OIDN and OpenPGL install licences into
+       $(OutDir)Third-Party Licenses\, and fails the build if one is missing.
+       RISE-CLI and RISE-GUI both run it; the script tolerates the two
+       running at once.  RiseOpenPglRoot matches the OpenPGL include and
+       library paths above. -->
+  <PropertyGroup>
+    <RiseOpenPglRoot Condition="'$(RiseOpenPglRoot)'==''">C:\Dev\openpgl-install</RiseOpenPglRoot>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PostBuildEvent>
       <Command>
@@ -367,8 +377,9 @@ copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Svgd.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)debug\bin\libcrypto-3-x64.dll" "$(OutDir)"
 copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
+python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot)"
       </Command>
-      <Message>Copying Qt debug DLLs to output...</Message>
+      <Message>Copying Qt debug DLLs and third-party notices to output...</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -393,8 +404,9 @@ copy /Y "$(QtVcpkgInstalled)bin\Qt6Svg.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libssl-3-x64.dll" "$(OutDir)"
 copy /Y "$(QtVcpkgInstalled)bin\libcrypto-3-x64.dll" "$(OutDir)"
 copy /Y "$(RiseStarterSceneSource)" "$(OutDir)Templates\"
+python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot)"
       </Command>
-      <Message>Copying Qt release DLLs to output...</Message>
+      <Message>Copying Qt release DLLs and third-party notices to output...</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

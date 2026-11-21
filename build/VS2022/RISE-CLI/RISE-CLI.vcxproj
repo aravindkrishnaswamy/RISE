@@ -47,6 +47,16 @@
     <OutDir>$(SolutionDir)..\..\bin\</OutDir>
     <IntDir>$(Platform)\$(Configuration)\RISE-CLI\</IntDir>
   </PropertyGroup>
+  <!-- Third-party notices: tools/third_party_notices.py copies the notices
+       listed in licenses/third_party_notices.tsv, every vcpkg port's
+       copyright file, and the OIDN and OpenPGL install licences into
+       $(OutDir)Third-Party Licenses\, and fails the build if one is missing.
+       RISE-CLI and RISE-GUI both run it; the script tolerates the two
+       running at once.  RiseOpenPglRoot matches the OpenPGL include and
+       library paths above. -->
+  <PropertyGroup>
+    <RiseOpenPglRoot Condition="'$(RiseOpenPglRoot)'==''">C:\Dev\openpgl-install</RiseOpenPglRoot>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -65,6 +75,10 @@
       <AdditionalDependencies>RISE.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;user32.lib;gdi32.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
+    <PostBuildEvent>
+      <Command>python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot)"</Command>
+      <Message>Copying third-party notices to output...</Message>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -84,6 +98,10 @@
       <AdditionalDependencies>RISE.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;user32.lib;gdi32.lib;ws2_32.lib;bcrypt.lib;winhttp.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
+    <PostBuildEvent>
+      <Command>python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot)"</Command>
+      <Message>Copying third-party notices to output...</Message>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\src\RISE\commandconsole.cpp" />

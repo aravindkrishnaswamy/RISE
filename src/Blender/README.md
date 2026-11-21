@@ -82,9 +82,10 @@ vendored headers only; the bridge's own code compiles with the inherited
 1. For active development, create a user add-on symlink that points directly at `src/Blender/addons/rise_renderer`. On macOS that user path is `~/Library/Application Support/Blender/<version>/scripts/addons/rise_renderer` (e.g. `5.3`); each Blender version has its own scripts directory.
 2. Build the bridge in `src/Blender/native/`. When the add-on is loaded from the source tree, it auto-discovers `src/Blender/native/rise_blender_bridge.dylib` through its relative-path fallback.
 3. For a packaged Blender app bundle, copying `src/Blender/addons/rise_renderer` into Blender's bundled `scripts/addons_core/rise_renderer` directory also works, but it is less convenient while iterating.
-4. Enable `RISE Render Engine` in Blender Preferences.
-5. Open the add-on preferences and set `Bridge Library` only if auto-discovery does not find the bridge.
-6. Choose `RISE` as the active render engine.
+4. To install on another machine, package a zip with `python3 tools/package_blender_addon.py` (after building the bridge) and use Blender's Install from Disk. The zip carries the bridge in `rise_renderer/native/` and the third-party licence notices in `rise_renderer/third_party_licenses/` (see `licenses/README.md`); the bridge's dynamically linked libraries are not bundled, and the script lists them.
+5. Enable `RISE Render Engine` in Blender Preferences.
+6. Open the add-on preferences and set `Bridge Library` only if auto-discovery does not find the bridge.
+7. Choose `RISE` as the active render engine.
 
 ## Manual Validation Matrix
 

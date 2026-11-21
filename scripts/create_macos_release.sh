@@ -567,14 +567,23 @@ copy_static_license() {
 
 cp -pfL "${SOURCE_ROOT}/LICENSE.TXT" "${APP}/Contents/Resources/RISE-LICENSE.txt"
 chmod 0644 "${APP}/Contents/Resources/RISE-LICENSE.txt"
-copy_static_license "${SOURCE_ROOT}/extlib/cgltf/LICENSE.txt" cgltf
-copy_static_license "${SOURCE_ROOT}/extlib/mt19937/LICENSE.txt" mt19937
-copy_static_license "${SOURCE_ROOT}/extlib/stb/LICENSE.txt" stb
-# Ported code compiled into the library (see licenses/README.md).
-copy_static_license "${SOURCE_ROOT}/licenses/Cycles-NOTICE.txt" Cycles
-copy_static_license "${SOURCE_ROOT}/licenses/Apache-2.0.txt" Cycles
-copy_static_license "${SOURCE_ROOT}/licenses/BSD-3-Clause.txt" Cycles
-copy_static_license "${SOURCE_ROOT}/licenses/Sobol-Joe-Kuo-LICENSE.txt" Sobol-Joe-Kuo
+# In-repository notices: licenses/third_party_notices.tsv is the one list,
+# shared with the Android, Windows and Blender add-on packagers.
+NOTICE_MANIFEST="${SOURCE_ROOT}/licenses/third_party_notices.tsv"
+[ -f "${NOTICE_MANIFEST}" ] || die "third-party notice manifest is missing: ${NOTICE_MANIFEST}"
+macos_notices=0
+while IFS=$'\t' read -r notice_package notice_path notice_dists notice_extra || [ -n "${notice_package}" ]; do
+	case "${notice_package}" in ''|'#'*) continue ;; esac
+	[ -n "${notice_dists}" ] && [ -z "${notice_extra}" ] || \
+		die "malformed line in ${NOTICE_MANIFEST}: ${notice_package} ${notice_path} ${notice_dists} ${notice_extra}"
+	case ",${notice_dists}," in
+		*,all,*|*,macos,*) ;;
+		*) continue ;;
+	esac
+	copy_static_license "${SOURCE_ROOT}/${notice_path}" "${notice_package}"
+	macos_notices=$((macos_notices + 1))
+done < "${NOTICE_MANIFEST}"
+[ "${macos_notices}" -gt 0 ] || die "${NOTICE_MANIFEST} lists no notices for macos"
 
 expected_arches="${XCODE_ARCHS}"
 verify_architectures() {
