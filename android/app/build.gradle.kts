@@ -149,18 +149,28 @@ val riseManifestNotices: List<Pair<String, String>> = run {
     if (!riseNoticeManifest.isFile) {
         throw GradleException("Third-party notice manifest is missing: $riseNoticeManifest")
     }
-    val known = setOf("macos", "android", "windows", "blender", "all")
+    // Same rules as tools/third_party_notices.py read_manifest().
+    val known = setOf("macos", "android", "windows", "blender")
+    val packageName = Regex("^[A-Za-z0-9][A-Za-z0-9._+@-]*$")
+    val seen = mutableSetOf<Pair<String, String>>()
     riseNoticeManifest.readLines().mapIndexedNotNull { index, line ->
         if (line.isBlank() || line.trimStart().startsWith("#")) return@mapIndexedNotNull null
+        val where = "$riseNoticeManifest:${index + 1}"
         val fields = line.split("\t")
-        if (fields.size != 3) {
-            throw GradleException("$riseNoticeManifest:${index + 1}: expected 3 tab-separated fields")
+        if (fields.size != 3) throw GradleException("$where: expected 3 tab-separated fields")
+        val pkg = fields[0].trim()
+        val rel = fields[1].trim()
+        if (!packageName.matches(pkg)) throw GradleException("$where: bad package name '$pkg'")
+        if (rel.isEmpty() || rel.startsWith("/") || rel.replace("\\", "/").split("/").contains("..")) {
+            throw GradleException("$where: path must be repo-relative: '$rel'")
         }
-        val dists = fields[2].split(",").map { it.trim() }
-        if (dists.any { it !in known }) {
-            throw GradleException("$riseNoticeManifest:${index + 1}: unknown distribution in ${fields[2]}")
+        if (!seen.add(pkg to rel)) throw GradleException("$where: $pkg $rel is listed twice")
+        val distField = fields[2].trim()
+        val dists = if (distField == "all") known else distField.split(",").map { it.trim() }.toSet()
+        if (dists.isEmpty() || dists.any { it !in known }) {
+            throw GradleException("$where: unknown distribution in '$distField'")
         }
-        if ("android" in dists || "all" in dists) fields[0].trim() to fields[1].trim() else null
+        if ("android" in dists) pkg to rel else null
     }.also {
         if (it.isEmpty()) throw GradleException("$riseNoticeManifest lists no notices for android")
     }

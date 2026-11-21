@@ -576,6 +576,7 @@ chmod 0644 "${APP}/Contents/Resources/RISE-LICENSE.txt"
 NOTICE_MANIFEST="${SOURCE_ROOT}/licenses/third_party_notices.tsv"
 [ -f "${NOTICE_MANIFEST}" ] || die "third-party notice manifest is missing: ${NOTICE_MANIFEST}"
 macos_notices=0
+notice_seen=$'\n'
 while IFS= read -r notice_line || [ -n "${notice_line}" ]; do
 	# Same rules as tools/third_party_notices.py read_manifest().
 	notice_line="${notice_line%$'\r'}"
@@ -594,14 +595,27 @@ while IFS= read -r notice_line || [ -n "${notice_line}" ]; do
 	[[ "${notice_package}" =~ ^[A-Za-z0-9][A-Za-z0-9._+@-]*$ ]] || \
 		die "bad package name in ${NOTICE_MANIFEST}: ${notice_line}"
 	case "${notice_path}" in ''|/*|..|../*|*/..|*/../*) die "path must be repo-relative in ${NOTICE_MANIFEST}: ${notice_line}" ;; esac
+	case "${notice_seen}" in
+		*$'\n'"${notice_package}"$'\t'"${notice_path}"$'\n'*)
+			die "${notice_package} ${notice_path} is listed twice in ${NOTICE_MANIFEST}" ;;
+	esac
+	notice_seen="${notice_seen}${notice_package}"$'\t'"${notice_path}"$'\n'
 	notice_for_macos=0
-	notice_dists="${notice_dists},"
+	notice_dists="${notice_dists#"${notice_dists%%[![:space:]]*}"}"
+	notice_dists="${notice_dists%"${notice_dists##*[![:space:]]}"}"
+	if [ "${notice_dists}" = "all" ]; then
+		notice_for_macos=1
+		notice_dists=""
+	else
+		notice_dists="${notice_dists},"
+	fi
 	while [ -n "${notice_dists}" ]; do
 		notice_token="${notice_dists%%,*}"
 		notice_dists="${notice_dists#*,}"
-		notice_token="${notice_token//[[:space:]]/}"
+		notice_token="${notice_token#"${notice_token%%[![:space:]]*}"}"
+		notice_token="${notice_token%"${notice_token##*[![:space:]]}"}"
 		case "${notice_token}" in
-			all|macos) notice_for_macos=1 ;;
+			macos) notice_for_macos=1 ;;
 			android|windows|blender) ;;
 			*) die "unknown distribution '${notice_token}' in ${NOTICE_MANIFEST}: ${notice_line}" ;;
 		esac

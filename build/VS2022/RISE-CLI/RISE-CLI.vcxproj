@@ -77,7 +77,7 @@
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))"</Command>
+      <Command>python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))" --check-dlls "$(OutDir)."</Command>
       <Message>Copying third-party notices to output...</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -100,7 +100,7 @@
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))"</Command>
+      <Command>python "$(SolutionDir)..\..\tools\third_party_notices.py" --distribution windows --dest "$(OutDir)Third-Party Licenses" --vcpkg-installed "$(SolutionDir)vcpkg_installed\$(VcpkgTriplet)" --vcpkg-triplet $(VcpkgTriplet) --license-root "open-image-denoise=$(SolutionDir)..\..\extlib\oidn\install" --license-root "openpgl=$(RiseOpenPglRoot.TrimEnd('\'))" --check-dlls "$(OutDir)."</Command>
       <Message>Copying third-party notices to output...</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>

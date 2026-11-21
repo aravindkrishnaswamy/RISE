@@ -300,6 +300,50 @@ class ExternalSourcesTest(unittest.TestCase):
         with self.assertRaises(tpn.NoticeError):
             tpn.license_files_under(empty)
 
+    def test_dll_audit(self):
+        root = self.make_vcpkg([("qtbase", True)])
+        write(os.path.join(root, "vcpkg", "info", "qtbase_1.0_x64-windows.list"),
+              "x64-windows/bin/Qt6Core.dll\nx64-windows/share/qtbase/copyright\n")
+        known = tpn.vcpkg_dll_names(root, "x64-windows")
+        self.assertEqual(known, {"qt6core.dll"})
+        bindir = os.path.join(self.tmp, "bin")
+        write(os.path.join(bindir, "Qt6Core.dll"), "")
+        write(os.path.join(bindir, "RISE-GUI.exe"), "")
+        self.assertEqual(tpn.audit_dlls(bindir, known), [])
+        # oneTBB copied in from TBB_ROOT by extlib/oidn/build.ps1.
+        tbb = os.path.join(self.tmp, "tbb")
+        write(os.path.join(tbb, "redist", "intel64", "vc14", "tbb12.dll"), "")
+        write(os.path.join(tbb, "LICENSE.txt"), "Apache")
+        write(os.path.join(bindir, "tbb12.dll"), "")
+        extra = tpn.audit_dlls(bindir, known, tbb)
+        self.assertEqual([(e[0], e[2]) for e in extra], [("oneTBB", "LICENSE.txt")])
+        with self.assertRaises(tpn.NoticeError):
+            tpn.audit_dlls(bindir, known)  # TBB_ROOT unset: unknown
+        # A DLL from nowhere fails.
+        write(os.path.join(bindir, "mystery.dll"), "")
+        with self.assertRaises(tpn.NoticeError) as ctx:
+            tpn.audit_dlls(bindir, known, tbb)
+        self.assertIn("mystery.dll", str(ctx.exception))
+
+    def test_command_line_dll_audit_uses_license_roots(self):
+        script = os.path.join(TOOLS, "third_party_notices.py")
+        pgl = os.path.join(self.tmp, "openpgl-install")
+        write(os.path.join(pgl, "bin", "openpgl.dll"), "")
+        write(os.path.join(pgl, "share", "doc", "openpgl", "LICENSE.txt"), "Apache")
+        bindir = os.path.join(self.tmp, "bin")
+        write(os.path.join(bindir, "openpgl.dll"), "")
+        args = [sys.executable, script, "--distribution", "windows",
+                "--dest", os.path.join(bindir, "Third-Party Licenses"),
+                "--license-root", "openpgl=" + pgl, "--check-dlls", bindir + os.sep + "."]
+        env = dict(os.environ)
+        env.pop("TBB_ROOT", None)
+        ok = subprocess.run(args, capture_output=True, text=True, env=env)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        write(os.path.join(bindir, "stray.dll"), "")
+        bad = subprocess.run(args, capture_output=True, text=True, env=env)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("stray.dll", bad.stderr)
+
     def test_command_line_fails_closed(self):
         script = os.path.join(TOOLS, "third_party_notices.py")
         dest = os.path.join(self.tmp, "cli")
@@ -381,6 +425,8 @@ class MacOSReleaseLoopTest(unittest.TestCase):
             "pkg name\tx/LICENSE\tall", "A\tx/LICENSE\tmacos,", "A\tx/LICENSE\tmacOS",
             "A\t../x/LICENSE\tall", "A\t/x/LICENSE\tall", "A\tx/LICENSE\t",
             "openssl@3\tx/LICENSE\tmacos", "   # indented comment", "\t# tab comment",
+            "A\tx/LICENSE\tmac os", "A\tx/LICENSE\tall,macos", "Z\tx/LICENSE\tandroid",
+            "A\tx/LICENSE\t all ",
         ]
         root = tempfile.mkdtemp()
         try:
@@ -436,6 +482,7 @@ class WindowsProjectTest(unittest.TestCase):
                                         '" --distribution windows'), 2, project)
             self.assertEqual(text.count("--vcpkg-installed"), 2, project)
             self.assertEqual(text.count("open-image-denoise="), 2, project)
+            self.assertEqual(text.count('--check-dlls "$(OutDir)."'), 2, project)
             self.assertEqual(text.count("openpgl=$(RiseOpenPglRoot.TrimEnd('\\'))"), 2, project)
             # The stager must be the LAST command of each post-build event:
             # a batch's exit code is its last command's, so a command after

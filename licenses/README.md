@@ -38,7 +38,7 @@ packager itself, and a missing licence there fails too.
 |---|---|---|---|
 | macOS app (`scripts/create_macos_release.sh`) | `RISE-GUI.app/Contents/Resources/Third-Party Licenses/<package>/`; RISE's licence as `Resources/RISE-LICENSE.txt` and `LICENSE.txt` in the DMG | stb, cgltf, mt19937, Sobol', Cycles, Unicode, IBM Plex | every bundled dylib (Homebrew formulae, OIDN and its oneTBB, OpenPGL), via `copy_dependency_license` |
 | Android app (`android/app/build.gradle.kts`, task `stageThirdPartyNotices`) | APK asset folder `licenses/<package>/` plus `licenses/THIRD-PARTY-NOTICES.txt`, which the app shows under **Licences** in the scene bar | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode, libpng, zlib, Apache-2.0 | the NDK's LLVM toolchain `NOTICE` (libc++ in `libc++_shared.so` and the C++ runtime linked into `librise_jni.so`) |
-| Windows (`build/VS2022`, RISE-CLI and RISE-GUI post-build, `tools/third_party_notices.py`) | `Third-Party Licenses\<package>\` next to the executables in `bin\` (`dbin\` for Debug), with an index `README.txt` | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode, IBM Plex, Lucide | every vcpkg port's `copyright` (Qt and its dependencies, OpenEXR / Imath, libpng, zlib, FFmpeg, x265, OpenSSL, ...); OIDN from `extlib\oidn\install`, whose `doc\` also carries oneTBB's Apache licence and third-party list (the `tbb12.dll` in `bin\` comes from `TBB_ROOT`); OpenPGL from `$(RiseOpenPglRoot)` (default `C:\Dev\openpgl-install`) |
+| Windows (`build/VS2022`, RISE-CLI and RISE-GUI post-build, `tools/third_party_notices.py`) | `Third-Party Licenses\<package>\` next to the executables in `bin\` (`dbin\` for Debug), with an index `README.txt` | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode, IBM Plex, Lucide | every vcpkg port's `copyright` (Qt and its dependencies, OpenEXR / Imath, libpng, zlib, FFmpeg, x265, OpenSSL, ...); OIDN from `extlib\oidn\install` (its Apache licence and third-party lists, including oneTBB's); OpenPGL from `$(RiseOpenPglRoot)` (default `C:\Dev\openpgl-install`); oneTBB's own licence from `%TBB_ROOT%` when its DLLs are in `bin\`. The step then checks every DLL in the output folder against these sources and fails on any it cannot account for |
 | Blender add-on (`tools/package_blender_addon.py`) | `rise_renderer/third_party_licenses/<package>/` inside the zip, beside `rise_renderer/native/<bridge>` | RISE, stb, cgltf, mt19937, Sobol', Cycles, Unicode | the licence of every library the bridge links (libpng, libtiff, OpenEXR / Imath, OIDN, OpenPGL, OpenVDB, oneTBB), found from its install prefix; pass `--license-root NAME=DIR` where none is found (OpenVDB from a Blender library tree has none) |
 
 Android needs no OIDN, OpenPGL, OpenEXR or TIFF notices: it builds with
@@ -48,10 +48,15 @@ The Windows build has no installer; its distribution is the `bin\`
 folder. vcpkg's MSBuild integration copies the vcpkg DLLs there
 (app-local deployment, on by default), and `extlib\oidn\build.ps1`
 copies the OIDN DLLs and the oneTBB `tbb12.dll` / `tbbbind*.dll` there.
-The post-build step runs when an executable relinks: after changing only
-the manifest, rebuild RISE-CLI or RISE-GUI to refresh the folder. It
-needs `python` on `PATH`, as the Library project's build-identity step
-already does.
+A DLL copied into `bin\` by hand (an `openpgl.dll` from the OpenPGL
+install, say) passes the check only if it comes from one of those
+installs; anything else stops the build until its licence source is
+passed with `--license-root`. Visual Studio's up-to-date check skips the
+post-build step when nothing relinks, so after changing only the
+manifest, rebuild RISE-CLI or RISE-GUI (command-line msbuild runs it on
+every build). It needs `python` on `PATH`, as the Library project's
+build-identity step already does. `RiseOpenPglRoot` must name the same
+install as the hard-coded OpenPGL include and library paths.
 
 The Blender packager runs on macOS and Linux (it reads the bridge's
 dependencies with `otool` / `ldd`; the bridge Makefile builds nowhere
@@ -104,7 +109,8 @@ licences. It does not settle these:
   recipients where to get its source.
 - **Not yet audited** (none carries a licence statement):
   - code described as taken from ggLibrary (`ThinLensCamera.cpp`,
-    `RayCylinderIntersection.cpp`, `Material.h`);
+    `RayCylinderIntersection.cpp`, `Material.h`, `RuntimeContext.h`, and
+    part of the RLE decoding in `HDRReader.cpp`);
   - photon-map code based on the sample code in Jensen's book
     (`PhotonMapping/`);
   - the SMS code adapted from Zeltner et al.'s reference implementation

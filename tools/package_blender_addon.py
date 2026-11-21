@@ -65,7 +65,8 @@ _MAX_NOTICES_PER_LIBRARY = 12
 # else in /usr/lib (a distribution's libpng, OpenEXR, tbb) is third-party
 # code whose notice the zip must carry.
 _LINUX_RUNTIME = re.compile(
-    r"^(libc|libm|libdl|librt|libpthread|libutil|libresolv|libstdc\+\+|libgcc_s|"
+    r"^(libc|libm|libmvec|libdl|librt|libpthread|libutil|libresolv|libstdc\+\+|libgcc_s|"
+    r"libgomp|libatomic|"
     r"ld-linux[^/]*|linux-vdso)\.so")
 _HOMEBREW_CELLAR = re.compile(r"^(?P<prefix>.*)/Cellar/(?P<formula>[^/]+)/[^/]+/")
 
@@ -244,8 +245,14 @@ def package(repo_root, bridge, output, dependency_licenses=None):
         os.makedirs(addon_dst)
         for name in sorted(os.listdir(addon_src)):
             path = os.path.join(addon_src, name)
-            if name.endswith(".py") and not name.startswith("test_") and os.path.isfile(path):
-                shutil.copyfile(path, os.path.join(addon_dst, name))
+            if name == "__pycache__" or name.startswith("test_") or name.startswith("."):
+                continue
+            if not (name.endswith(".py") and os.path.isfile(path)):
+                # A subpackage or data file would need copying too; refuse
+                # rather than ship an add-on without it.
+                raise third_party_notices.NoticeError(
+                    "the packager copies only top-level .py files; extend it for %s" % path)
+            shutil.copyfile(path, os.path.join(addon_dst, name))
         native_dst = os.path.join(addon_dst, "native")
         os.makedirs(native_dst)
         shutil.copyfile(bridge, os.path.join(native_dst, bridge_filename()))
@@ -302,6 +309,7 @@ def main(argv=None):
         if not os.path.isfile(bridge):
             raise third_party_notices.NoticeError(
                 "bridge library is missing: %s (build it with make -C src/Blender/native)" % bridge)
+        dep_paths = external_dependencies(bridge)
         deps = dependency_notices(bridge, overrides, repo_root)
         staged = package(repo_root, bridge, os.path.abspath(output), deps)
     except (third_party_notices.NoticeError, OSError) as exc:
@@ -310,7 +318,7 @@ def main(argv=None):
     print("package_blender_addon: wrote %s (%d notice packages)" % (output, len(staged)))
     print("package_blender_addon: the bridge loads its libraries from these paths, which the "
           "target machine must have; their notices are in the zip:")
-    for path in external_dependencies(bridge):
+    for path in dep_paths:
         print("    " + path)
     return 0
 
