@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <new>
 
 namespace RISE
@@ -161,7 +162,44 @@ namespace RISE
 			for(const double value:values)HashEOSDouble(hash,value);
 		}
 
-		std::uint64_t SourcePacketContentIdentity(
+		//! Exact memo for a pure content hash. A hit requires every input byte (and
+		//! every input length) to equal the retained copy of the last computed input,
+		//! so it returns precisely the value the hash would recompute; any change
+		//! in content recomputes. Seal checks re-hash the same immutable packet
+		//! several times per step; this keeps each check without the repeated FNV.
+		class ExactContentHashMemo
+		{
+		public:
+			struct Span { const void* data;std::size_t bytes; };
+			template<std::size_t N,typename Hash>
+			std::uint64_t Evaluate(const std::array<Span,N>& spans,const Hash& hash)
+			{
+				std::lock_guard<std::mutex> lock(mutex_);
+				bool hit=valid_&&copies_.size()==N;
+				for(std::size_t index=0u;hit&&index<N;++index)hit=copies_[index].size()==spans[index].bytes&&
+					(spans[index].bytes==0u||std::memcmp(copies_[index].data(),spans[index].data,
+						spans[index].bytes)==0);
+				if(hit)return value_;
+				valid_=false;value_=hash();copies_.resize(N);
+				for(std::size_t index=0u;index<N;++index){
+					const unsigned char* first=static_cast<const unsigned char*>(spans[index].data);
+					copies_[index].assign(first,first+spans[index].bytes);}
+				valid_=true;return value_;
+			}
+		private:
+			std::mutex mutex_;bool valid_=false;std::uint64_t value_=0u;
+			std::vector<std::vector<unsigned char> > copies_;
+		};
+		template<typename Value> ExactContentHashMemo::Span MemoSpan( const std::vector<Value>& values )
+		{
+			return ExactContentHashMemo::Span{values.data(),values.size()*sizeof(Value)};
+		}
+		template<typename Value> ExactContentHashMemo::Span MemoScalar( const Value& value )
+		{
+			return ExactContentHashMemo::Span{&value,sizeof(Value)};
+		}
+
+		std::uint64_t SourcePacketContentIdentityUncached(
 			const FireProductionFrozenSourcePacketSeal& seal )
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
@@ -190,7 +228,22 @@ namespace RISE
 			return hash;
 		}
 
-		std::uint64_t SourceGlobalRadiationIdentity(
+		std::uint64_t SourcePacketContentIdentity(
+			const FireProductionFrozenSourcePacketSeal& seal )
+		{
+			static ExactContentHashMemo memo;
+			const std::array<ExactContentHashMemo::Span,14> spans={{MemoSpan(seal.SourceDelta()),
+				MemoSpan(seal.DivergenceTargetPerS()),MemoSpan(seal.ReactedFuelKGPerM3()),
+				MemoSpan(seal.OxidizedCarbonKGPerM3()),MemoSpan(seal.GrossCarbonFormedKGPerM3()),
+				MemoSpan(seal.GasHeatReleaseWPerM3()),MemoSpan(seal.SootHeatReleaseWPerM3()),
+				MemoSpan(seal.PilotEnergyDeltaJPerM3()),MemoSpan(seal.PilotExpansionIntegral()),
+				MemoSpan(seal.RadiativeCoolingWPerM3()),MemoSpan(seal.FloorHeatingWPerM3()),
+				MemoSpan(seal.FloorIrradianceWPerM2()),MemoSpan(seal.FloorWallTemperatureK()),
+				MemoSpan(seal.FloorConvectiveFluxWPerM2())}};
+			return memo.Evaluate(spans,[&](){return SourcePacketContentIdentityUncached(seal);});
+		}
+
+		std::uint64_t SourceGlobalRadiationIdentityUncached(
 			const FireProductionFrozenSourcePacketSeal& seal )
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
@@ -204,6 +257,20 @@ namespace RISE
 			HashSourceDoubleValues(hash,seal.SootHeatReleaseWPerM3());
 			HashSourceDoubleValues(hash,seal.RadiativeCoolingWPerM3());
 			return hash;
+		}
+
+		std::uint64_t SourceGlobalRadiationIdentity(
+			const FireProductionFrozenSourcePacketSeal& seal )
+		{
+			static ExactContentHashMemo memo;
+			const std::uint64_t sourceInput=seal.SourceInputIdentity();
+			const double beta=seal.RadiationBeta(),gamma=seal.RadiationGamma(),
+				escape=seal.RadiationEscapeFactor();
+			const std::array<ExactContentHashMemo::Span,7> spans={{MemoScalar(sourceInput),
+				MemoScalar(beta),MemoScalar(gamma),MemoScalar(escape),
+				MemoSpan(seal.GasHeatReleaseWPerM3()),MemoSpan(seal.SootHeatReleaseWPerM3()),
+				MemoSpan(seal.RadiativeCoolingWPerM3())}};
+			return memo.Evaluate(spans,[&](){return SourceGlobalRadiationIdentityUncached(seal);});
 		}
 
 		std::uint64_t SourcePacketIdentity(

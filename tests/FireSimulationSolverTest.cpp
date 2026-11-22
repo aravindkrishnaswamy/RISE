@@ -5934,6 +5934,51 @@ int main()
 				!BuildFrozenMethaneSourcePackets(sootCells,sootSteps,sootVolumes,300.0,600.0,chi,false,fuel,
 					thermochemistry,opacity,unitRejected,unitRejectedFactor,0,1u,true,0.45,0,0,1,2u,1u,1u),
 				"r273 self-absorption fails closed without the cap, on a malformed setting, without grid dimensions or with non-uniform cells");
+			// r273 §10 deposit (setting 2): absorbed soot emission heats the absorbing cells.
+			std::vector<double> slabDeposit,gridDeposit,gridEscape,ignoredDeposit;
+			const std::vector<double> gridKappa={0.0,3.0,1.0,0.0,2.0,0.5,4.0,0.0,1.5,0.2,0.0,2.5};
+			const std::vector<double> gridThin={5.0,0.0,2.0,7.0,1.0,0.0,3.0,4.0,0.0,6.0,2.0,1.0};
+			std::vector<double> gridLeaving(12u,0.0);
+			for(std::size_t cell=0;cell<12u;++cell){const double depth=gridKappa[cell]*0.1;
+				gridLeaving[cell]=gridThin[cell]*(depth>0.0?-std::expm1(-depth)/depth:1.0);}
+			const bool depositBuilt=ComputeMethaneSootColumnDeposit(1u,1u,3u,0.5,{0.0,slab/0.5,0.0},
+				{6.0,0.0,0.0},slabDeposit,&error)&&
+				ComputeMethaneSootColumnDeposit(3u,2u,2u,0.1,gridKappa,gridLeaving,gridDeposit,&error)&&
+				ComputeMethaneSootColumnEscape(3u,2u,2u,0.1,gridKappa,gridEscape,&error);
+			double depositSum=0.0,absorbedSum=0.0;
+			for(std::size_t cell=0;depositBuilt&&cell<12u;++cell){depositSum+=gridDeposit[cell];
+				absorbedSum+=gridLeaving[cell]-gridEscape[cell]*gridThin[cell];}
+			Check(depositBuilt&&slabDeposit[0]==0.0&&slabDeposit[2]==0.0&&
+				Near(slabDeposit[1],-std::expm1(-slab),1.0e-15)&&depositSum>0.0&&
+				Near(depositSum,absorbedSum,1.0e-13)&&
+				ParseMethaneSootSelfAbsorption("2")==2&&ParseMethaneSootSelfAbsorption("3")==-1&&
+				!ComputeMethaneSootColumnDeposit(1u,1u,2u,0.5,{0.0,1.0},{1.0,-1.0},ignoredDeposit)&&
+				!ComputeMethaneSootColumnDeposit(1u,1u,2u,0.5,{0.0,1.0},{1.0},ignoredDeposit),
+				"r273 six-flux soot deposit absorbs the slab's share behind a slab and returns exactly what the column escape withholds");
+			std::vector<MethaneSourcePacket> unitDeposit;RadiationEscapeFactor unitDepositFactor;
+			double unitDepositApplied=0.0,unitDepositCooling=0.0;
+			const bool unitDepositBuilt=unitBuilt&&BuildFrozenMethaneSourcePackets(sootCells,sootSteps,
+				unitVolumes,300.0,600.0,chi,false,fuel,thermochemistry,opacity,unitDeposit,
+				unitDepositFactor,&error,1u,true,1.0,0,&unitDepositApplied,2,2u,1u,1u);
+			if(!unitDepositBuilt)std::printf("r273 deposit diagnostic: %s\n",error.c_str());
+			bool unitDepositChemistry=unitDepositBuilt;
+			for(std::size_t cell=0;unitDepositBuilt&&cell<2u;++cell){
+				unitDepositCooling+=unitDeposit[cell].radiativeCoolingWPerM3;
+				unitDepositChemistry=unitDepositChemistry&&
+					unitDeposit[cell].constituentDelta==unitOff[cell].constituentDelta;
+			}
+			const bool unitDepositOK=unitDepositChemistry&&unitDepositApplied==unitSelfApplied&&
+				unitDepositFactor.accepted==unitSelfFactor.accepted&&
+				unitDeposit[0].radiativeCoolingWPerM3>unitSelf[0].radiativeCoolingWPerM3&&
+				unitDeposit[1].radiativeCoolingWPerM3<unitSelf[1].radiativeCoolingWPerM3&&
+				unitDepositCooling>0.0&&std::fabs(unitDepositCooling-unitSelfCooling)<=0.05*unitSelfCooling&&
+				ledgerResidual(unitDeposit)<1.0e-12;
+			if(!unitDepositOK&&unitDepositBuilt)std::printf("r273 deposit: cooling self %.9g %.9g deposit %.9g %.9g applied %.9g %.9g ledger %.3g\n",
+				unitSelf[0].radiativeCoolingWPerM3,unitSelf[1].radiativeCoolingWPerM3,
+				unitDeposit[0].radiativeCoolingWPerM3,unitDeposit[1].radiativeCoolingWPerM3,
+				unitSelfApplied,unitDepositApplied,ledgerResidual(unitDeposit));
+			Check(unitDepositOK,
+				"r273 deposit: the hot cell loses more, the cooler soot cell gains, the domain loss stays near the escaping emission and the ledger closes");
 	}
 	RadiationEscapeFactor previewUnderOpaque,overflowBetaEscape;
 	Check(ComputeRadiationEscapeFactor(2.0,100.0,1.0,{0.5},{1.0},false,

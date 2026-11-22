@@ -207,6 +207,28 @@ namespace RISE
 				for(std::size_t slice=first;slice<last;++slice)function(slice);
 			});
 		}
+		//! Number of contiguous, increasing cell chunks ParallelFireChunks schedules.
+		inline std::size_t FireChunkCount(const std::size_t count,const unsigned int workers)
+		{
+			return workers<=1u?std::min<std::size_t>(count,1u):
+				std::min<std::size_t>(count,static_cast<std::size_t>(workers)*32u);
+		}
+		//! Dynamically balanced schedule for independent per-cell work: each of the
+		//! `chunks` chunk indices is claimed exactly once, by whichever worker is free.
+		//! The work done per chunk (and so every result) does not depend on which
+		//! worker runs it; only the load balance does.
+		template<typename ChunkFunction>
+		inline void ParallelFireChunks(
+			const std::size_t chunks,
+			const unsigned int workers,
+			const ChunkFunction& function )
+		{
+			std::atomic<std::size_t> next(0u);
+			ParallelFireSlices(workers,workers,[&](const std::size_t) {
+				for(;;){const std::size_t chunk=next.fetch_add(1u,std::memory_order_relaxed);
+					if(chunk>=chunks)return;function(chunk);}
+			});
+		}
 		enum MethaneSpeciesIndex
 		{
 			MethaneCH4 = 0,
@@ -1128,10 +1150,14 @@ namespace RISE
 		// soot leaves the gas budget and radiates its own emission, attenuated by
 		// the soot column around the cell and never scaled up. The gas keeps the
 		// case radiative fraction with its escape factor bounded by 1; the cap only
-		// scales soot down. Returns 0 when unset or "0", 1 for "1", -1 when malformed.
+		// scales soot down. "2" (§10) also deposits the absorbed emission in the soot
+		// cells that absorb it: each cell then loses its emission that leaves the
+		// cell and gains what the six-flux sweep absorbs there. Returns 0 when unset
+		// or "0", 1 for "1", 2 for "2", -1 when malformed.
 		inline int ParseMethaneSootSelfAbsorption(const char* text)
 		{
-			return ParseMethaneSootSheetOxidation(text);
+			if(!text)return 0;
+			return text[0]!='\0'&&text[1]=='\0'&&text[0]>='0'&&text[0]<='2'?text[0]-'0':-1;
 		}
 		inline int MethaneSootSelfAbsorptionSetting()
 		{
@@ -1190,6 +1216,55 @@ namespace RISE
 				if(!std::isfinite(escape[cell])||escape[cell]<0.0||escape[cell]>1.0)
 					return Fail(error,"fire solver soot column escape is outside 0..1");
 			}
+			return true;
+		}
+
+		// Six-flux deposit of the same sweep: leavingWPerM3 is each cell's soot
+		// emission that leaves the cell (already times the slab mean); a sixth goes
+		// each way along the axes and every cell it crosses absorbs 1-exp(-k dx) of
+		// what arrives. Uniform cells; what reaches a domain edge is lost. The sum
+		// of the deposit equals the sum of (1-escape/own)*leaving.
+		inline bool ComputeMethaneSootColumnDeposit(const std::size_t nx,const std::size_t ny,
+			const std::size_t nz,const double cellWidthM,const std::vector<double>& absorptionPerM,
+			const std::vector<double>& leavingWPerM3,std::vector<double>& depositWPerM3,
+			std::string* error=0)
+		{
+			const std::size_t count=nx*ny*nz;
+			if(nx==0u||ny==0u||nz==0u||absorptionPerM.size()!=count||leavingWPerM3.size()!=count||
+				!std::isfinite(cellWidthM)||!(cellWidthM>0.0))
+				return Fail(error,"fire solver soot column deposit input is malformed");
+			std::vector<double> absorbed(count);
+			for(std::size_t cell=0;cell<count;++cell){
+				if(!std::isfinite(absorptionPerM[cell])||absorptionPerM[cell]<0.0||
+					!std::isfinite(leavingWPerM3[cell])||leavingWPerM3[cell]<0.0)
+					return Fail(error,"fire solver soot column deposit input is invalid");
+				absorbed[cell]=-std::expm1(-absorptionPerM[cell]*cellWidthM);
+			}
+			depositWPerM3.assign(count,0.0);
+			const std::size_t stride[3]={1u,nx,nx*ny},length[3]={nx,ny,nz};
+			for(std::size_t axis=0;axis<3u;++axis){
+				const std::size_t lines=count/length[axis];
+				for(std::size_t line=0;line<lines;++line){
+					std::size_t start=0;
+					if(axis==0u)start=line*nx;
+					else if(axis==1u)start=(line/nx)*nx*ny+line%nx;
+					else start=line;
+					double flux=0.0;
+					for(std::size_t i=0;i<length[axis];++i){
+						const std::size_t cell=start+i*stride[axis];
+						depositWPerM3[cell]+=flux*absorbed[cell];
+						flux=flux*(1.0-absorbed[cell])+leavingWPerM3[cell]/6.0;
+					}
+					flux=0.0;
+					for(std::size_t i=length[axis];i-->0u;){
+						const std::size_t cell=start+i*stride[axis];
+						depositWPerM3[cell]+=flux*absorbed[cell];
+						flux=flux*(1.0-absorbed[cell])+leavingWPerM3[cell]/6.0;
+					}
+				}
+			}
+			for(const double value:depositWPerM3)if(!std::isfinite(value)||value<0.0)
+				return Fail(error,"fire solver soot column deposit overflowed");
 			return true;
 		}
 
@@ -2494,12 +2569,13 @@ namespace RISE
 				"RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP must be a number in (0,1]");
 			if(sootSheetOxidation!=0&&sootSheetOxidation!=1)return Fail(error,
 				"RISE_FIRE_SOOT_SHEET_OXIDATION must be 0 or 1");
-			if(sootSelfAbsorption!=0&&sootSelfAbsorption!=1)return Fail(error,
-				"RISE_FIRE_SOOT_SELF_ABSORPTION must be 0 or 1");
-			if(sootSelfAbsorption==1&&!(sootRadiativeFractionCap>0.0))return Fail(error,
+			if(sootSelfAbsorption<0||sootSelfAbsorption>2)return Fail(error,
+				"RISE_FIRE_SOOT_SELF_ABSORPTION must be 0, 1 or 2");
+			if(sootSelfAbsorption>=1&&!(sootRadiativeFractionCap>0.0))return Fail(error,
 				"RISE_FIRE_SOOT_SELF_ABSORPTION requires RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP");
 			const bool sootRadiation=gasRadiation&&sootRadiativeFractionCap>0.0;
-			const bool sootSelfAbsorbed=sootRadiation&&sootSelfAbsorption==1;
+			const bool sootSelfAbsorbed=sootRadiation&&sootSelfAbsorption>=1;
+			const bool sootDeposited=sootRadiation&&sootSelfAbsorption==2;
 			if(sootSelfAbsorbed){
 				if(gridNx*gridNy*gridNz!=count)return Fail(error,
 					"RISE_FIRE_SOOT_SELF_ABSORPTION requires the grid dimensions");
@@ -2518,10 +2594,13 @@ namespace RISE
 			const unsigned int workers=std::max(1u,std::min(workerCount,
 				std::min(static_cast<unsigned int>(count),FireWorkerCapacity())));
 			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
-			std::vector<std::size_t> failureCell(workers,noFailure);
-			std::vector<std::string> failureMessage(workers);
-			ParallelFireSlices(workers,workers,[&](const std::size_t worker) {
-				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+			// Contiguous cell chunks, each stopping at its first failure; the lowest
+			// failing cell over all chunks is the serial loop's first failure.
+			const std::size_t chunks=FireChunkCount(count,workers);
+			std::vector<std::size_t> failureCell(chunks,noFailure);
+			std::vector<std::string> failureMessage(chunks);
+			ParallelFireChunks(chunks,workers,[&](const std::size_t worker) {
+				const std::size_t first=count*worker/chunks,last=count*(worker+1u)/chunks;
 				for(std::size_t cell=first;cell<last;++cell) {
 				std::string cellError;
 				// r273 sheet gate: only a cell that can burn fuel, holds soot and is
@@ -2572,8 +2651,8 @@ namespace RISE
 				}
 				}
 			});
-			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
-			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+			std::size_t firstFailure=noFailure;std::size_t failedWorker=0u;
+			for(std::size_t worker=0;worker<chunks;++worker)if(failureCell[worker]<firstFailure){
 				firstFailure=failureCell[worker];failedWorker=worker;
 			}
 			if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
@@ -2633,6 +2712,15 @@ namespace RISE
 				scale=std::max(scale,candidateFactor.gamma);
 				sootFactor.resize(count);
 				for( std::size_t cell=0; cell<count; ++cell )sootFactor[cell]=scale*escape[cell];
+				// Deposit: the cell loses what leaves it (slab mean); the sweep below
+				// returns the part other soot absorbs, so the domain still loses scale*escape.
+				if( sootDeposited ) {
+					const double width=std::cbrt(cellVolumeM3[0]);
+					for( std::size_t cell=0; cell<count; ++cell ) {
+						const double depth=sootAbsorption[cell]*width;
+						sootFactor[cell]=scale*(depth>0.0?-std::expm1(-depth)/depth:1.0);
+					}
+				}
 				budgetRadiativeFraction=totalHeatReleaseW>0.0?(gasW+
 					scale*escapingSootW)/totalHeatReleaseW:sootRadiativeFractionLimit;
 				sootEmissionApplied=true;
@@ -2641,8 +2729,31 @@ namespace RISE
 			std::vector<MethaneSourcePacket> candidateResult(count);
 			std::fill(failureCell.begin(),failureCell.end(),noFailure);
 			std::fill(failureMessage.begin(),failureMessage.end(),std::string());
-			ParallelFireSlices(workers,workers,[&](const std::size_t worker) {
-				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+			// Deposit mode keeps each cell's post-radiation state and its realised
+			// soot emission leaving the cell until the sweep has run.
+			std::vector<MethaneCellState> radiated(sootDeposited?count:0u);
+			std::vector<double> radiatedCooling(sootDeposited?count:0u,0.0);
+			std::vector<double> sootLeaving(sootDeposited?count:0u,0.0);
+			auto finish=[&](const std::size_t cell,const MethaneCellState& finalScratch,
+				const double signedCoolingWPerM3,std::string& cellError) {
+				candidateResult[cell] = reaction[cell];
+				for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
+					candidateResult[cell].constituentDelta[species] = finalScratch.constituent[species]-
+						beginning[cell].constituent[species];
+				}
+				candidateResult[cell].sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
+					beginning[cell].sensibleEnergyJPerM3;
+				candidateResult[cell].radiativeCoolingWPerM3 = signedCoolingWPerM3;
+				if(beginning[cell].producerPrecision==FireStateProducerPrecision::Binary32)
+					RepresentMethaneSourcePacketBinary32(candidateResult[cell]);
+				return ValidateFrozenMethaneSourcePacketLedger(beginning[cell],reactionStep[cell],fuel,
+					candidateResult[cell],&cellError)&&
+					FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning[cell]),
+					beginning[cell].temperatureK,candidateResult[cell],reactionStep[cell].deltaTimeS,
+					thermochemistry,beginning[cell].producerPrecision,0,&cellError);
+			};
+			ParallelFireChunks(chunks,workers,[&](const std::size_t worker) {
+				const std::size_t first=count*worker/chunks,last=count*(worker+1u)/chunks;
 				for(std::size_t cell=first;cell<last;++cell) {
 				MethaneCellState finalScratch;
 				double signedCoolingWPerM3 = 0.0;
@@ -2655,32 +2766,50 @@ namespace RISE
 					sootSelfAbsorbed?sootFactor[cell]:-1.0) ) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
-				candidateResult[cell] = reaction[cell];
-				for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
-					candidateResult[cell].constituentDelta[species] = finalScratch.constituent[species]-
-						beginning[cell].constituent[species];
+				if( sootDeposited ) {
+					// A deferred or zero exchange (state returned unchanged) emits nothing.
+					if(finalScratch.sensibleEnergyJPerM3!=postReaction[cell].sensibleEnergyJPerM3)
+						sootLeaving[cell]=sootFactor[cell]*std::max(0.0,MethaneSootExchangeWPerM3(
+							MethaneSootExchangeCoefficientWPerM3K5(postReaction[cell]),
+							finalScratch.temperatureK,ambientTemperatureK));
+					radiated[cell]=finalScratch;radiatedCooling[cell]=signedCoolingWPerM3;
+					continue;
 				}
-				candidateResult[cell].sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
-					beginning[cell].sensibleEnergyJPerM3;
-				candidateResult[cell].radiativeCoolingWPerM3 = signedCoolingWPerM3;
-				if(beginning[cell].producerPrecision==FireStateProducerPrecision::Binary32)
-					RepresentMethaneSourcePacketBinary32(candidateResult[cell]);
-				if(!ValidateFrozenMethaneSourcePacketLedger(beginning[cell],reactionStep[cell],fuel,
-					candidateResult[cell],&cellError)) {
-					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
-				}
-				if(!FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning[cell]),
-					beginning[cell].temperatureK,candidateResult[cell],reactionStep[cell].deltaTimeS,
-					thermochemistry,beginning[cell].producerPrecision,0,&cellError)) {
+				if(!finish(cell,finalScratch,signedCoolingWPerM3,cellError)) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				}
 			});
 			firstFailure=noFailure;failedWorker=0u;
-			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+			for(std::size_t worker=0;worker<chunks;++worker)if(failureCell[worker]<firstFailure){
 				firstFailure=failureCell[worker];failedWorker=worker;
 			}
 			if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
+			if( sootDeposited ) {
+				// The absorbed emission is a frozen energy dose added after the implicit
+				// loss, so what the absorbers gain is exactly what the emitters lost.
+				std::vector<double> deposit;
+				if(!ComputeMethaneSootColumnDeposit(gridNx,gridNy,gridNz,std::cbrt(cellVolumeM3[0]),
+					sootAbsorption,sootLeaving,deposit,error))return false;
+				std::fill(failureCell.begin(),failureCell.end(),noFailure);
+				std::fill(failureMessage.begin(),failureMessage.end(),std::string());
+				ParallelFireChunks(chunks,workers,[&](const std::size_t worker) {
+					const std::size_t first=count*worker/chunks,last=count*(worker+1u)/chunks;
+					for(std::size_t cell=first;cell<last;++cell) {
+					std::string cellError;
+					if(deposit[cell]>0.0)radiated[cell].sensibleEnergyJPerM3+=
+						reactionStep[cell].deltaTimeS*deposit[cell];
+					if(!finish(cell,radiated[cell],radiatedCooling[cell]-deposit[cell],cellError)) {
+						failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+					}
+					}
+				});
+				firstFailure=noFailure;failedWorker=0u;
+				for(std::size_t worker=0;worker<chunks;++worker)if(failureCell[worker]<firstFailure){
+					firstFailure=failureCell[worker];failedWorker=worker;
+				}
+				if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
+			}
 			result.swap(candidateResult);
 			factor = candidateFactor;
 			return true;

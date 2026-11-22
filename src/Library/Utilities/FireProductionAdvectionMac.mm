@@ -2365,6 +2365,7 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
 			id<MTLComputePipelineState> identifyPhysical;
 			id<MTLComputePipelineState> identifyEOSCandidate;
 			id<MTLComputePipelineState> buildEOSEndpoints;
+			id<MTLComputePipelineState> buildEOSDeepPrefix;
 			id<MTLComputePipelineState> evaluateEOSCandidate;
 			id<MTLComputePipelineState> finalizeEOSCandidate;
 			id<MTLComputePipelineState> identifyEOS;
@@ -3146,6 +3147,7 @@ inline bool eos_within_positive_envelope(EOSDD residual,EOSDD scale,float feasib
 kernel void build_eos_endpoint_table(device const float* thermo [[buffer(0)]],
  constant EOSParams& p [[buffer(1)]],device EOSDD* endpoints [[buffer(2)]],
  device atomic_uint* obligations [[buffer(3)]],device atomic_uint* failure [[buffer(4)]],
+ constant uint& prefixLimit [[buffer(5)]],
  uint gid [[thread_position_in_grid]]){if(gid>=14u+1023u)return;bool valid=true;
  if(gid>=14u){
   // Heap node n has path bits in n+1 below its leading one. Reconstruct the
@@ -3161,7 +3163,10 @@ kernel void build_eos_endpoint_table(device const float* thermo [[buffer(0)]],
    if(eos_select_dd_segment(thermo,species,T,offset,nullptr,selected))
     mask|=1u<<(7u+min((offset-96u*species-4u)/30u,2u));
    endpoints[base+species]=eos_enthalpy_dd(thermo,species,T,nullptr,valid);}
-  endpoints[base+7u]={valid&&upper-lower>1u?1.0f:0.0f,as_type<float>(mask),T.hi,0.0f};
+  // Node 0's otherwise unused status word carries the table's node count
+  // (1023, or more when build_eos_deep_prefix_table extended it); exact in binary32.
+  endpoints[base+7u]={valid&&upper-lower>1u?1.0f:0.0f,as_type<float>(mask),T.hi,
+   node==0u?float(prefixLimit):0.0f};
   // Unvisited prefix nodes have no authority to add obligations or refuse.
   return;}
  endpoints[gid]=eos_enthalpy_dd(thermo,gid/2u,eos_dd((gid&1u)?p.Tmax:p.Tmin),obligations,valid);
@@ -3169,10 +3174,43 @@ kernel void build_eos_endpoint_table(device const float* thermo [[buffer(0)]],
  // Qualification-only mutation: the direct-arithmetic comparator below must
  // refuse an altered table. Production never authors this metadata bit.
  if((p.pad1&2u)!=0u&&gid==0u)endpoints[gid].bound=nextafter(endpoints[gid].bound,INFINITY);}
+// Deeper levels of the same bisection-prefix table (heap nodes 1023..limit-1).
+// Each node holds the seven species enthalpies at its midpoint, computed with the
+// exact shared-primitive arithmetic of eos_energy_dd, so a consumer's prefix
+// energy is word-identical to the inline evaluation it replaces. Like the
+// unvisited nodes above, these entries add no obligation and refuse nothing.
+kernel void build_eos_deep_prefix_table(device const float* thermo [[buffer(0)]],
+ constant EOSParams& p [[buffer(1)]],device EOSDD* endpoints [[buffer(2)]],
+ constant uint& prefixLimit [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ uint node=1023u+gid;if(node>=prefixLimit)return;
+ uint path=node+1u,bit=1u;while(bit<=path/2u)bit*=2u;
+ uint lower=as_type<uint>(p.Tmin),upper=as_type<uint>(p.Tmax);
+ for(bit/=2u;bit!=0u;bit/=2u){uint middle=lower+(upper-lower)/2u;
+  if(path&bit)lower=middle;else upper=middle;}
+ uint middle=lower+(upper-lower)/2u,mask=0u,base=14u+8u*node;bool valid=true;
+ EOSDD temperature=eos_dd(as_type<float>(middle));
+ EOSDD inverse=eos_div(eos_dd(1.0f),temperature),logT=eos_log_dd(temperature);
+ EOSDD t2=eos_mul(temperature,temperature),t3=eos_mul(t2,temperature),t4=eos_mul(t3,temperature),
+  t5=eos_mul(t4,temperature);
+ EOSDD thirdT3=eos_div(t3,eos_dd(3.0f)),fifthT5=eos_div(t5,eos_dd(5.0f));
+ for(uint species=0u;species<7u;++species){uint offset=0u;EOSDD enthalpy=eos_dd(0.0f);
+  if(!eos_select_dd_segment(thermo,species,temperature,offset,nullptr,valid))valid=false;
+  else{mask|=1u<<(7u+min((offset-96u*species-4u)/30u,2u));
+   EOSDD primitive=eos_neg(eos_mul(eos_load_dd(thermo,offset+6u),inverse));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+9u),logT));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+12u),temperature));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+15u),eos_mul(t2,eos_dd(0.5f))));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+18u),thirdT3));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+21u),eos_mul(t4,eos_dd(0.25f))));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+24u),fifthT5));
+   EOSDD gasConstant=eos_load_dd(thermo,7u*96u),weight=eos_load_dd(thermo,96u*species);
+   enthalpy=eos_add(eos_mul(eos_div(gasConstant,weight),primitive),eos_load_dd(thermo,offset+27u));}
+  endpoints[base+species]=enthalpy;}
+ endpoints[base+7u]={valid&&upper-lower>1u?1.0f:0.0f,as_type<float>(mask),temperature.hi,0.0f};}
 inline EOSDD eos_prefix_energy(device const float* state,device const float* thermo,
  constant EOSParams& p,uint cell,uint node,uint midpointBits,device atomic_uint* obligations,
  thread bool& valid,device const EOSDD* endpoints){
- if(!endpoints||node>=1023u)return eos_energy_dd(state,thermo,p,cell,
+ if(!endpoints||node>=uint(endpoints[14u+7u].bound))return eos_energy_dd(state,thermo,p,cell,
   eos_dd(as_type<float>(midpointBits)),obligations,valid);
  uint base=14u+8u*node;EOSDD status=endpoints[base+7u],energy=eos_dd(0.0f);
  valid=valid&&status.hi==1.0f&&as_type<uint>(status.tail)==midpointBits;
@@ -3287,7 +3325,7 @@ inline bool eos_temperature(device const float* state,device const float* thermo
    float T=as_type<float>(midpointBits);
    if(!eos_certify_temperature_bin(state,thermo,p,cell,T,obligations))return false;
    temperature=T;return true;}
-  if(prefixNode<1023u)prefixNode=2u*prefixNode+(order<0?2u:1u);
+  if(prefixNode<0x40000000u)prefixNode=2u*prefixNode+(order<0?2u:1u);
   if(order<0)lowerBits=midpointBits;else upperBits=midpointBits;}
  float lower=as_type<float>(lowerBits),upper=as_type<float>(upperBits);
  EOSDD midpoint=eos_add(eos_dd(lower),eos_dd((upper-lower)*0.5f));
@@ -4075,7 +4113,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),queue(nil),evaluate(nil),identify(nil),
 				physicalFlux(nil),advectivePair(nil),finalizeAdvective(nil),composePair(nil),validatePhysical(nil),
 				identifyPhysical(nil),identifyEOSCandidate(nil),
-				buildEOSEndpoints(nil),evaluateEOSCandidate(nil),finalizeEOSCandidate(nil),identifyEOS(nil),
+				buildEOSEndpoints(nil),buildEOSDeepPrefix(nil),evaluateEOSCandidate(nil),finalizeEOSCandidate(nil),identifyEOS(nil),
 				produceFrozenSource(nil),identifyFrozenSource(nil),
 				evaluateTargetTerms(nil),finalizeTarget(nil),identifyTarget(nil),
 				identifyProjectionConsumer(nil),consumeTarget(nil),
@@ -4125,6 +4163,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					identifyPhysical=pipeline("identify_resident_physical_flux");
 					identifyEOSCandidate=pipeline("identify_resident_eos_candidate");
 					buildEOSEndpoints=pipeline("build_eos_endpoint_table");
+					buildEOSDeepPrefix=pipeline("build_eos_deep_prefix_table");
 					evaluateEOSCandidate=pipeline("evaluate_resident_eos_candidate");
 					finalizeEOSCandidate=pipeline("finalize_resident_eos_candidate");
 					identifyEOS=pipeline("identify_resident_eos");
@@ -4160,7 +4199,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					ownerIssuePublication=pipeline("owner_issue_publication");
 					if(!evaluate||!identify||!physicalFlux||!advectivePair||!finalizeAdvective||!composePair||
 						!validatePhysical||!identifyPhysical||
-						!identifyEOSCandidate||!buildEOSEndpoints||!evaluateEOSCandidate||!finalizeEOSCandidate||!identifyEOS||
+						!identifyEOSCandidate||!buildEOSEndpoints||!buildEOSDeepPrefix||!evaluateEOSCandidate||!finalizeEOSCandidate||!identifyEOS||
 						!produceFrozenSource||!identifyFrozenSource||
 						!evaluateTargetTerms||!finalizeTarget||!identifyTarget||
 						!identifyProjectionConsumer||!consumeTarget||
@@ -4209,7 +4248,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 
 			bool Valid() const {return device&&queue&&evaluate&&identify&&physicalFlux&&
 				advectivePair&&finalizeAdvective&&composePair&&validatePhysical&&identifyPhysical&&
-				identifyEOSCandidate&&buildEOSEndpoints&&evaluateEOSCandidate&&
+				identifyEOSCandidate&&buildEOSEndpoints&&buildEOSDeepPrefix&&evaluateEOSCandidate&&
 				finalizeEOSCandidate&&identifyEOS&&produceFrozenSource&&identifyFrozenSource&&
 				evaluateTargetTerms&&finalizeTarget&&
 				identifyTarget&&identifyProjectionConsumer&&consumeTarget&&diagnoseEOSLog&&
@@ -7536,6 +7575,27 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const ResidentEOSCandidateMetalAuthority&)=delete;
 		};
 
+		// Heap-ordered nodes of the shared EOS bisection-prefix table: the first 24
+		// bisection levels (the full Tmin..Tmax binary32 inversion takes 24-25). Every
+		// node is a pure function of the EOS thermochemistry words and Tmin/Tmax, so a
+		// lookup is word-identical to the inline evaluation it replaces. The table is
+		// built once per process for each distinct (device, thermochemistry, Tmin, Tmax).
+		constexpr std::uint32_t EOSPrefixTableNodes=(UINT32_C(1)<<24u)-1u;
+		constexpr std::size_t EOSPrefixTableBytes(const std::uint32_t nodes)
+		{
+			return (14u+static_cast<std::size_t>(nodes)*8u)*4u*sizeof(float);
+		}
+		struct EOSPrefixTableCache
+		{
+			std::mutex mutex;id<MTLDevice> device=nil;id<MTLBuffer> table=nil;
+			std::array<float,MetalEOSThermochemistryValues> thermochemistry{};
+			std::uint32_t minimumTemperatureBits=0u,maximumTemperatureBits=0u;
+		};
+		EOSPrefixTableCache& SharedEOSPrefixTableCache()
+		{
+			static EOSPrefixTableCache cache;return cache;
+		}
+
 		bool EncodeResidentEOSAuthority(
 			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
 			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
@@ -7570,6 +7630,11 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			// Optional private memoization input, never an externally authored surface.
 			const ResidentEOSMetalAuthority* reuseParent=nullptr;
 			const ResidentEOSCandidateMetalAuthority* reuseCandidate=nullptr;
+			// Optional prebuilt shared bisection-prefix table (see EOSPrefixTableNodes).
+			// Its nodes depend only on the EOS thermochemistry and Tmin/Tmax; only the
+			// 14 endpoint entries (and their refusal side effect) are re-derived here.
+			id<MTLBuffer> sharedPrefixTable=nil;
+			std::uint32_t sharedPrefixNodes=0u;
 			id<MTLBuffer> temperature;
 			id<MTLBuffer> endpointEnthalpies;
 			id<MTLBuffer> representedPressureRatio;
@@ -7945,6 +8010,60 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			float injectedGasDensity_=0.0f;
 			std::unique_ptr<ResidentProjectionTargetMetalAuthority> bootstrapTarget_;
 			const Stage* eosReuseParent_=nullptr;
+			// Shared prebuilt EOS bisection-prefix table (see EOSPrefixTableNodes) and
+			// the host thermochemistry words it was keyed on.
+			id<MTLBuffer> eosPrefixTable_=nil;
+			std::array<float,MetalEOSThermochemistryValues> eosThermoHost_{};
+			bool AcquireEOSPrefixTable(const unsigned int stage,std::string* error)
+			{
+				EOSPrefixTableCache& cache=SharedEOSPrefixTableCache();
+				std::lock_guard<std::mutex> lock(cache.mutex);
+				std::uint32_t minimumBits=0u,maximumBits=0u;
+				std::memcpy(&minimumBits,&eosMetadata_.temperatureMinK,sizeof(minimumBits));
+				std::memcpy(&maximumBits,&eosMetadata_.temperatureMaxK,sizeof(maximumBits));
+				if(cache.table&&cache.device==context_.device&&cache.minimumTemperatureBits==minimumBits&&
+					cache.maximumTemperatureBits==maximumBits&&std::memcmp(cache.thermochemistry.data(),
+						eosThermoHost_.data(),sizeof(float)*eosThermoHost_.size())==0){
+					eosPrefixTable_=cache.table;return true;}
+				const std::uint32_t nodes=EOSPrefixTableNodes;
+				id<MTLBuffer> table=[context_.device newBufferWithLength:EOSPrefixTableBytes(nodes)
+					options:MTLResourceStorageModePrivate];
+				id<MTLBuffer> scratch=[context_.device newBufferWithLength:2u*sizeof(std::uint32_t)
+					options:MTLResourceStorageModePrivate];
+				id<MTLCommandBuffer> command=[context_.queue commandBuffer];
+				id<MTLBlitCommandEncoder> clear=command?[command blitCommandEncoder]:nil;
+				if(!table||!scratch||!clear){
+					if(error)*error="projected-Heun EOS prefix table allocation failed";return false;}
+				[clear fillBuffer:scratch range:NSMakeRange(0,2u*sizeof(std::uint32_t)) value:0u];
+				[clear endEncoding];
+				// The ordinary endpoint/prefix builder (nodes < 1023), then the deeper levels.
+				// Its refusal word is scratch: each consumer re-derives the 14 endpoints.
+				id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+				if(!encoder){if(error)*error="projected-Heun EOS prefix table encoder failed";return false;}
+				[encoder setComputePipelineState:context_.buildEOSEndpoints];
+				[encoder setBuffer:eosThermo_ offset:0 atIndex:0];
+				[encoder setBuffer:eosParameters_[stage] offset:0 atIndex:1];
+				[encoder setBuffer:table offset:0 atIndex:2];
+				[encoder setBuffer:scratch offset:0 atIndex:3];
+				[encoder setBuffer:scratch offset:sizeof(std::uint32_t) atIndex:4];
+				[encoder setBytes:&nodes length:sizeof(nodes) atIndex:5];
+				Dispatch(encoder,context_.buildEOSEndpoints,14u+1023u);[encoder endEncoding];
+				encoder=[command computeCommandEncoder];
+				if(!encoder){if(error)*error="projected-Heun EOS prefix table encoder failed";return false;}
+				[encoder setComputePipelineState:context_.buildEOSDeepPrefix];
+				[encoder setBuffer:eosThermo_ offset:0 atIndex:0];
+				[encoder setBuffer:eosParameters_[stage] offset:0 atIndex:1];
+				[encoder setBuffer:table offset:0 atIndex:2];
+				[encoder setBytes:&nodes length:sizeof(nodes) atIndex:3];
+				Dispatch(encoder,context_.buildEOSDeepPrefix,nodes-1023u);[encoder endEncoding];
+				[command commit];[command waitUntilCompleted];
+				if([command status]!=MTLCommandBufferStatusCompleted){
+					if(error)*error=MetalError("projected-Heun EOS prefix table build failed",[command error]);
+					return false;}
+				cache.device=context_.device;cache.table=table;cache.thermochemistry=eosThermoHost_;
+				cache.minimumTemperatureBits=minimumBits;cache.maximumTemperatureBits=maximumBits;
+				eosPrefixTable_=table;return true;
+			}
 			std::vector<std::shared_ptr<unsigned char> > issuedTargetCapabilities_;
 			std::array<std::vector<FireProductionProjectedHeunIterationTrace>,3>
 				qualificationTrace_;
@@ -8923,6 +9042,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				if(stage==2u&&eosReuseParent_){
 					output.eos->reuseParent=eosReuseParent_->eos.get();
 					output.eos->reuseCandidate=eosReuseParent_->candidate.get();}
+				if(!eosPrefixTable_&&!AcquireEOSPrefixTable(stage,error))return false;
+				output.eos->sharedPrefixTable=eosPrefixTable_;
+				output.eos->sharedPrefixNodes=EOSPrefixTableNodes;
 				if(!EncodeResidentEOSAuthority(context_,command,thermo_,eosThermo_,eosParameters_[stage],
 					failure_,eosObligations_,*output.transport,candidatePhysical,*output.candidate,
 					eosMetadata_,*output.eos,error))return false;
@@ -9402,6 +9524,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				!PackMetalEOSDoubleDoubleThermochemistry(packedEOSThermo)||
 				!PackMetalSingleStageFCTCertificate(fctBasis,fctProjector,enthalpy,affine,
 					feasibility,reserve,error))return false;
+			eosThermoHost_=packedEOSThermo;
 			const auto& flux=request_.lineage.eos.physicalFlux;
 			if(!flux.bottomFuelMassFluxKGPerM2S.empty()){
 				// The capstone burner injects gas, never a prescribed solid phase.
@@ -10784,7 +10907,14 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			authority.absoluteDeviation=make(fieldBytes);authority.publicationIdentity=make(sizeof(std::uint64_t));
 			authority.firstFailureCell=make(sizeof(std::uint32_t));
 			authority.failureTerm=make(fieldBytes);
-			authority.endpointEnthalpies=make((14u+1023u*8u)*4u*sizeof(float));
+			const std::uint32_t prefixNodes=authority.sharedPrefixTable?authority.sharedPrefixNodes:1023u;
+			if(authority.sharedPrefixTable&&(prefixNodes<1023u||
+				[authority.sharedPrefixTable length]<EOSPrefixTableBytes(prefixNodes)||
+				[authority.sharedPrefixTable device]!=context.device||
+				[authority.sharedPrefixTable storageMode]!=MTLStorageModePrivate)){
+				if(error)*error="production resident EOS prefix table is invalid";return false;}
+			authority.endpointEnthalpies=authority.sharedPrefixTable?authority.sharedPrefixTable:
+				make(EOSPrefixTableBytes(1023u));
 			authority.parentCommand=command;
 			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
 			authority.parentPhysicalPublicationIdentity=physicalAuthority.publicationIdentity;
@@ -10797,8 +10927,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				if(error)*error="production resident EOS authority allocation failed";
 				return false;
 			}
+			// A shared prefix table is process-owned and accounted in the owner certificate.
 			authority.allocationBytes=0u;for(id<MTLBuffer> buffer:outputs)
-				authority.allocationBytes+=[buffer allocatedSize];
+				if(buffer!=authority.sharedPrefixTable)authority.allocationBytes+=[buffer allocatedSize];
 			id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
 			if(!clear){if(error)*error="production resident EOS witness clear encoder failed";return false;}
 			[clear fillBuffer:authority.firstFailureCell range:NSMakeRange(0,sizeof(std::uint32_t)) value:0xffu];
@@ -10815,7 +10946,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			[encoder setBuffer:authority.endpointEnthalpies offset:0 atIndex:2];
 			[encoder setBuffer:obligations offset:0 atIndex:3];
 			[encoder setBuffer:failure offset:0 atIndex:4];
-			Dispatch(encoder,context.buildEOSEndpoints,14u+1023u);[encoder endEncoding];
+			[encoder setBytes:&prefixNodes length:sizeof(prefixNodes) atIndex:5];
+			Dispatch(encoder,context.buildEOSEndpoints,authority.sharedPrefixTable?14u:14u+1023u);
+			[encoder endEncoding];
 			encoder=ProducerProfileEncoder(command);
 			if(!encoder){if(error)*error="production resident EOS endpoint consumer encoder failed";return false;}
 			[encoder setComputePipelineState:context.evaluateEOSCandidate];
@@ -11645,6 +11778,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				FireProductionProjectionFaceCount(shape,1u)+
 				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float))||
 			!add(3u*sizeof(std::uint64_t)))return false;
+		// The shared EOS bisection-prefix table every candidate reads.
+		if(!add(EOSPrefixTableBytes(EOSPrefixTableNodes)))return false;
 		// r204 input binding: 20 cell fields, one face field, both boundary
 		// classifications, plus <1 MiB of fixed tables/parameters/descriptor.
 		// Each 4-KiB leaf produces 32 bytes; all interior levels add <1/15 of

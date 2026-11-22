@@ -1963,6 +1963,165 @@ namespace
 		safe_release( temperature );
 	}
 
+
+	// Smooth plume with empty regions, a temperature field that crosses the
+	// hot-fraction ramp, and a condensed field, for flat-vs-accessor checks.
+	class PlumeFieldPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+	public:
+		enum Field { Carbon, Temperature, Condensed };
+		Field field;
+		explicit PlumeFieldPainter( const Field field_ ) : field( field_ ) {}
+
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			const Scalar x = ri.ptIntersection.x, y = ri.ptIntersection.y, z = ri.ptIntersection.z;
+			switch( field ) {
+			case Carbon:
+				return ScalarTriple( std::fmax( 0.0,
+					2.0*std::sin( 6.3*x )*std::sin( 5.1*y + 0.3 ) - 0.5 )*( 0.5 + z ) );
+			case Temperature:
+				return ScalarTriple( 800.0 + 450.0*std::sin( 7.0*x + 2.0*z )*std::cos( 3.0*y ) );
+			default:
+				return ScalarTriple( 0.5*std::fmax( 0.0, std::cos( 5.0*z + x ) - 0.3 ) );
+			}
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~PlumeFieldPainter() override = default;
+	};
+
+	Scalar LcgUnit( unsigned long long& state )
+	{
+		state = state*6364136223846793005ull + 1442695040888963407ull;
+		return Scalar( state >> 11 )/Scalar( 1ull << 53 );
+	}
+
+	void TestFlatGridsMatchAccessorReference()
+	{
+		std::cout << "TestFlatGridsMatchAccessorReference" << std::endl;
+		IPhaseFunction* isotropic = nullptr;
+		RISE_API_CreateIsotropicPhaseFunction( &isotropic );
+		PlumeFieldPainter* carbon = new PlumeFieldPainter( PlumeFieldPainter::Carbon );
+		PlumeFieldPainter* temperature = new PlumeFieldPainter( PlumeFieldPainter::Temperature );
+		PlumeFieldPainter* condensed = new PlumeFieldPainter( PlumeFieldPainter::Condensed );
+		const unsigned int resolutions[2] = { 9u, 16u };	// odd and even lattices
+		for( unsigned int r = 0; r < 2u; ++r ) {
+			MultichannelHeterogeneousMedium* medium = new MultichannelHeterogeneousMedium(
+				*carbon, *temperature, condensed,
+				resolutions[r], resolutions[r], resolutions[r],
+				Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 0.7,
+				0.26, 1800.0, 0.10, 0.5, 8.7, 1.2, 0.6, 0.6, 6.0, 1.0, 0.8, 0.2, *isotropic );
+			Check( medium->IsValid(), "plume fixture constructs" );
+			const Scalar wavelengths[4] = { 450.0, 550.0, 633.0, 720.0 };
+			unsigned long long state = 12345ull + r;
+
+			struct Sample
+			{
+				Ray ray;
+				Scalar target;
+				Scalar nm;
+				Point3 point;
+			};
+			std::vector<Sample> samples;
+			for( unsigned int i = 0; i < 400u; ++i ) {
+				const Point3 origin( 1.4*LcgUnit(state) - 0.2, 1.4*LcgUnit(state) - 0.2,
+					1.4*LcgUnit(state) - 0.2 );
+				Vector3 direction( LcgUnit(state) - 0.5, LcgUnit(state) - 0.5, LcgUnit(state) - 0.5 );
+				if( i % 7u == 0u ) direction.y = 0.0;	// axis-parallel walks
+				const Scalar length = Vector3Ops::Magnitude( direction );
+				if( length < 1e-3 ) continue;
+				direction = direction*( 1.0/length );
+				Sample sample = { Ray( origin, direction ), 2.0*LcgUnit(state),
+					wavelengths[i % 4u],
+					Point3( LcgUnit(state), LcgUnit(state), LcgUnit(state) ) };
+				samples.push_back( sample );
+			}
+
+			// Reference values from the accessor path.
+			medium->ForTest_SetFlatGridsEnabled( false );
+			std::vector<Scalar> refTau, refSigma, refEmission, refCarbon;
+			for( const Sample& s : samples ) {
+				refTau.push_back( -medium->EvalLogDistancePdfNM( s.ray, s.target, false, s.target, s.nm ) );
+				refSigma.push_back( medium->GetCoefficientsNM( s.point, s.nm ).sigma_t );
+				refEmission.push_back( medium->GetThermalEmissionNM( s.point, s.nm ) );
+				refCarbon.push_back( medium->LookupCarbon( s.point ) );
+			}
+			medium->ForTest_SetFlatGridsEnabled( true );
+			unsigned int tauMismatch = 0, denseMismatch = 0, sigmaMismatch = 0, emissionMismatch = 0, carbonMismatch = 0;
+			Scalar tauMax = 0.0;
+			for( size_t i = 0; i < samples.size(); ++i ) {
+				const Sample& s = samples[i];
+				// ask twice, and at a shorter then longer distance, so the per-ray cache
+				// serves hits, extensions and walked-region queries
+				const Scalar shortTau = -medium->EvalLogDistancePdfNM(
+					s.ray, 0.5*s.target, false, 0.5*s.target, s.nm );
+				const Scalar tau = -medium->EvalLogDistancePdfNM(
+					s.ray, s.target, false, s.target, s.nm );
+				const Scalar again = -medium->EvalLogDistancePdfNM(
+					s.ray, 0.5*s.target, false, 0.5*s.target, s.nm );
+				// The accessor quadrature samples the field with a bounding-box test at each
+				// panel probe, so its panel roots are slightly off in cells cut by the box
+				// (about 1e-5); compare it loosely, and the new walk against a dense
+				// midpoint integral of sigma_t tightly.
+				if( !NearRelative( tau, refTau[i], 1e-4 ) && !Near( tau, refTau[i], 1e-9 ) ) ++tauMismatch;
+				{
+					// clip the ray to the unit box (field is zero outside, and jumps at its faces)
+					Scalar t0 = 0.0, t1 = s.target;
+					const Scalar o[3] = { s.ray.origin.x, s.ray.origin.y, s.ray.origin.z };
+					const Scalar d[3] = { s.ray.Dir().x, s.ray.Dir().y, s.ray.Dir().z };
+					bool hit = true;
+					for( unsigned int axis = 0; axis < 3u; ++axis ) {
+						if( std::fabs( d[axis] ) < 1e-14 ) {
+							if( o[axis] < 0.0 || o[axis] > 1.0 ) hit = false;
+							continue;
+						}
+						Scalar a0 = (0.0 - o[axis])/d[axis], a1 = (1.0 - o[axis])/d[axis];
+						if( a0 > a1 ) std::swap( a0, a1 );
+						t0 = std::fmax( t0, a0 );
+						t1 = std::fmin( t1, a1 );
+					}
+					Scalar dense = 0.0;
+					if( hit && t1 > t0 ) {
+						const unsigned int steps = 20000;
+						const Scalar h = (t1 - t0)/Scalar(steps);
+						for( unsigned int k = 0; k < steps; ++k ) {
+							const Scalar t = t0 + (Scalar(k)+0.5)*h;
+							dense += medium->GetCoefficientsNM( s.ray.PointAtLength( t ), s.nm ).sigma_t*h;
+						}
+					}
+					if( !NearRelative( tau, dense, 2e-7 ) && !Near( tau, dense, 1e-9 ) ) ++denseMismatch;
+				}
+				if( !NearRelative( again, shortTau, 1e-12 ) && !Near( again, shortTau, 1e-14 ) ) ++tauMismatch;
+				if( shortTau > tau + 1e-12 ) ++tauMismatch;
+				tauMax = std::fmax( tauMax, tau );
+				if( !NearRelative( medium->GetCoefficientsNM( s.point, s.nm ).sigma_t,
+					refSigma[i], 1e-12 ) && !Near( medium->GetCoefficientsNM( s.point, s.nm ).sigma_t,
+					refSigma[i], 1e-14 ) ) ++sigmaMismatch;
+				const Scalar emission = medium->GetThermalEmissionNM( s.point, s.nm );
+				if( !NearRelative( emission, refEmission[i], 1e-12 ) && !Near( emission, refEmission[i], 1e-14 ) )
+					++emissionMismatch;
+				if( !NearRelative( medium->LookupCarbon( s.point ), refCarbon[i], 1e-12 ) &&
+					!Near( medium->LookupCarbon( s.point ), refCarbon[i], 1e-14 ) ) ++carbonMismatch;
+			}
+			Check( tauMax > 0.1, "fixture has nontrivial optical depth" );
+			Check( tauMismatch == 0, "flat optical depth and per-ray cache match the accessor quadrature" );
+			Check( denseMismatch == 0, "flat optical depth matches a dense midpoint integral of sigma_t" );
+			Check( sigmaMismatch == 0, "flat sigma_t matches the accessor path" );
+			Check( emissionMismatch == 0, "flat thermal emission matches the accessor path" );
+			Check( carbonMismatch == 0, "flat trilinear fetch matches the accessor path" );
+			safe_release( medium );
+		}
+		safe_release( condensed );
+		safe_release( temperature );
+		safe_release( carbon );
+		safe_release( isotropic );
+	}
+
 	void TestContinuationPhaseClosurePreflightTable()
 	{
 		std::cout << "TestContinuationPhaseClosurePreflightTable" << std::endl;
@@ -4511,6 +4670,7 @@ int main()
 	TestWavelengthBoundConstituentPhaseClosure();
 	TestContinuationPhaseClosurePreflightTable();
 	TestPhysicalUnitsAndSceneScale();
+	TestFlatGridsMatchAccessorReference();
 	TestPhiSupMajorant();
 	TestPhiAwareQuadratureAndDistancePdf();
 	TestChemSPDNormalizationClippingAndSceneScale();

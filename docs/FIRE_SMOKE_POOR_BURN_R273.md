@@ -482,8 +482,9 @@ To judge it (as §4): peak temperature 1500 K or more with a persistent volume a
   cool the reaction cells. Whether a real yield-0.3 flame's cell-mean reaction zone at 3 cm should sit near 1450 K or
   1700 K was not checked against data. Klassen and Gore's 30 cm toluene and heptane pool-fire measurements (NIST
   reports, found on the web 2026-11-19; values not retrieved) are the dataset to check against.
-- The six-flux escape uses only the soot column (not the gas bands), drops the absorbed energy instead of depositing it
-  in the absorbing cells (so cool soot in the plume is not heated by flame radiation), and treats the domain edges as
+- The six-flux escape uses only the soot column (not the gas bands), keeps the absorbed energy in the emitting cell
+  instead of depositing it in the absorbing cells (so cool soot in the plume is not heated by flame radiation; §10
+  adds the deposit as setting 2), and treats the domain edges as
   black and cold. The Planck mean is used for absorption of radiation emitted at a different temperature.
 - The gas escape factor bound (β ≤ 1) changes the gas calibration once a sooty flame has cooled; with the opt-in the
   gas fraction can drop below 0.20.
@@ -561,6 +562,37 @@ Mean of 23.97–24.90 s (16 frames), same frames as the control and run A.
 - Movies, same scene and renderer build: `r272_soot/movie_y300/r272_sooty_y300_256x384.mov` (old closure) and
   `r273_poor_burn/movie_y300_sa/r273_sooty_y300_selfabs_256x384.mov`.
 - Data: `docs/data/fire_r273/tier8_y300_sa_{budget,centreline}_last10s.txt`.
+
+## 10. Absorbed soot radiation deposited in the absorbing cells (2026-11-21)
+
+`RISE_FIRE_SOOT_SELF_ABSORPTION=2`. Setting 1 is unchanged, so §8 and §9 stay reproducible.
+
+- **Setting 1 never moved the absorbed energy.** A cell lost `escape × thin emission`; the absorbed part stayed in
+  the emitting cell. Energy was conserved but the heat sat in the flame instead of the soot around it.
+- **Setting 2.** Each cell loses the emission that leaves it (thin emission × its slab mean, same cap scale).
+  `ComputeMethaneSootColumnDeposit` sends a sixth along ±x, ±y, ±z; every cell crossed absorbs `1 − exp(−κ dx)` of
+  what arrives. The deposit is added as a frozen energy dose after the implicit loss, from the emission realised at
+  the end-of-step temperature, so absorbers gain exactly what emitters lost. The packet's radiative cooling is the
+  net (it can be negative); the floor irradiance and the run's radiative fraction therefore see only what escapes.
+- Same limits as §6.6 otherwise: soot column only, six directions, black cold domain edges, Planck mean.
+- Tests: the sweep returns exactly what the column escape withholds; on two cells the hot one loses more, the
+  cooler one gains, the ledger closes. All ten fire test programs pass.
+- **Tier 8** (`t8_y300_rad045_dep`, `run_tier8_a.sh t8_y300_rad045_dep 0.45 0 2`, driver `build_r273d`; same start
+  as §8; 1,520 steps, all accepted). Frames 216–231 against §8's `t8_y300_rad045_sa`:
+
+| | setting 1 | setting 2 (deposit) |
+|---|---:|---:|
+| Peak temperature, K (range) | 1514 (1485–1539) | 1492 (1463–1515) |
+| Volume above 1300 K, L | 1.67 | 1.50 |
+| Heat release, kW | 26.2 | 26.2 |
+| Centreline T at 0.1 / 0.3 / 0.6 m, K | 1274 / 1111 / 793 | 1255 / 1060 / 759 |
+| Upward soot flux at 1.0 / 1.24 m, mg/s | 136 / 138 | 142 / 139 |
+
+- **The flame holds.** It is about 20 K cooler with 10% less hot volume and 1–4% more smoke: the reaction cells
+  lose more than before and the heated soot sits mostly below 1300 K, so the extra heat does not buy oxidation.
+  Single realisation; differences of this size are near the frame-to-frame spread.
+- Realised radiative fraction was not measured for this arm (no snapshots taken).
+- Data: `docs/data/fire_r273/t8_y300_rad045_dep_{budget,centreline}_23.96_24.90s.txt`.
 
 ## Files
 

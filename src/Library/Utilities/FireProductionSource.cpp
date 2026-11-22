@@ -27,6 +27,32 @@ namespace RISE
 				if(error)try{*error=message;}catch(...){}
 				return false;
 			}
+			//! Run an independent per-cell check over contiguous, dynamically scheduled
+			//! cell chunks. On failure, report the message of the lowest failing cell: the
+			//! same cell, and the same message, the serial cell-order loop stopped at.
+			template<typename CellFunction>
+			bool ParallelSourceCells(const std::size_t cells,const unsigned int workerCount,
+				const CellFunction& function,std::string* error)
+			{
+				const unsigned int workers=std::max(1u,std::min(workerCount,
+					std::min(static_cast<unsigned int>(std::min<std::size_t>(cells,
+						std::numeric_limits<unsigned int>::max())),FireWorkerCapacity())));
+				const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
+				const std::size_t chunks=FireChunkCount(cells,workers);
+				std::vector<std::size_t> failureCell(chunks,noFailure);
+				std::vector<std::string> failureMessage(chunks);
+				ParallelFireChunks(chunks,workers,[&](const std::size_t chunk){
+					const std::size_t first=cells*chunk/chunks,last=cells*(chunk+1u)/chunks;
+					std::string cellError;
+					for(std::size_t cell=first;cell<last;++cell)if(!function(cell,&cellError)){
+						failureCell[chunk]=cell;failureMessage[chunk]=cellError;return;}
+				});
+				// Chunks are contiguous and increasing: the first failing chunk holds the
+				// lowest failing cell.
+				for(std::size_t chunk=0u;chunk<chunks;++chunk)if(failureCell[chunk]!=noFailure){
+					if(error)*error=failureMessage[chunk];return false;}
+				return true;
+			}
 		}
 		//! The only authority allowed to mint a production frozen-source seal.  It
 		//! wraps the already qualified canonical grid producer; callers cannot seal
@@ -199,16 +225,18 @@ namespace RISE
 								static_cast<double>(request.beginningConservativeValues[n]));}
 					}
 				}
-				for(std::size_t cell=0u;cell<cells;++cell){
+				// Per-cell canonical inversion and admissibility are independent; they run on the
+				// source worker pool. The lowest failing cell reports, exactly as the serial loop did.
+				auto canonicalCell=[&](const std::size_t cell,std::string* cellError)->bool{
 					ConservativeVector tuple,eligibilityTuple;
 					for(std::size_t component=0u;component<9u;++component){
 						const float value=request.beginningConservativeValues[component*cells+cell];
 						const float eligibilityValue=eligibilityValues[component*cells+cell];
-						if(!std::isfinite(value)||(value==0.0f&&std::signbit(value)))return Fail(error,
+						if(!std::isfinite(value)||(value==0.0f&&std::signbit(value)))return Fail(cellError,
 							"production canonical source beginning state is noncanonical"+(std::getenv("RISE_FIRE_NONCANONICAL_DETAIL")?
 							" (component "+std::to_string(component)+" cell "+std::to_string(cell)+" value "+std::to_string(value)+")":std::string()));
 						if(!std::isfinite(eligibilityValue)||(eligibilityValue==0.0f&&
-							std::signbit(eligibilityValue)))return Fail(error,
+							std::signbit(eligibilityValue)))return Fail(cellError,
 							"production canonical source eligibility state is noncanonical");
 						tuple[component]=static_cast<double>(value);
 						eligibilityTuple[component]=static_cast<double>(eligibilityValue);
@@ -219,7 +247,7 @@ namespace RISE
 						tuple.value.size(),fireCase.derived.pilotAmbientTemperatureK,
 						fireCase.derived.maximumAcceptedTemperatureK,
 						FireStateProducerPrecision::Binary32,invertedTemperatureK,
-						pressureRatio,error))return false;
+						pressureRatio,cellError))return false;
 					canonicalTemperatureK[cell]=static_cast<float>(invertedTemperatureK);
 					if(!std::isfinite(canonicalTemperatureK[cell])||
 						canonicalTemperatureK[cell]>=fireCase.derived.maximumAcceptedTemperatureK){
@@ -227,7 +255,7 @@ namespace RISE
 							"production canonical source temperature reaches the strict case ceiling: cell="
 							<<cell<<" inverted="<<invertedTemperatureK<<" published="<<
 							canonicalTemperatureK[cell]<<" energy="<<tuple[8u];
-						return Fail(error,message.str());
+						return Fail(cellError,message.str());
 					}
 					beginning[cell].temperatureK=static_cast<double>(canonicalTemperatureK[cell]);
 					sourceBeginning[cell]=beginning[cell];
@@ -236,12 +264,12 @@ namespace RISE
 							request.sourceEvaluationTemperatureK[cell];
 						if(!std::isfinite(evaluationTemperatureK)||
 							evaluationTemperatureK<fuel.TemperatureMinK()||
-							evaluationTemperatureK>fuel.TemperatureMaxK())return Fail(error,
+							evaluationTemperatureK>fuel.TemperatureMaxK())return Fail(cellError,
 							"production canonical source evaluation temperature is invalid");
 						sourceBeginning[cell].temperatureK=evaluationTemperatureK;
 						double representedEnergy=0.0;
 						if(!SignedMixtureSensibleEnergy(sourceBeginning[cell],evaluationTemperatureK,
-							fuel,representedEnergy,error)||static_cast<float>(representedEnergy)!=
+							fuel,representedEnergy,cellError)||static_cast<float>(representedEnergy)!=
 								request.beginningConservativeValues[8u*cells+cell]){
 							std::ostringstream message;message.precision(17);
 							message<<"production canonical source evaluation temperature fails forward EOS closure"
@@ -251,7 +279,7 @@ namespace RISE
 								<<" rounded_forward_energy_J_m3="<<static_cast<float>(representedEnergy)
 								<<" stored_energy_J_m3="<<tuple[8u]<<" tuple=";
 							for(std::size_t component=0u;component<9u;++component)message<<tuple[component]<<',';
-							return Fail(error,message.str());
+							return Fail(cellError,message.str());
 						}
 					}
 					eligibilityBeginning[cell]=FromConservativeVector(eligibilityTuple,
@@ -262,22 +290,24 @@ namespace RISE
 						fireCase.derived.pilotAmbientTemperatureK,
 						fireCase.derived.maximumAcceptedTemperatureK,
 						FireStateProducerPrecision::Binary32,eligibilityTemperatureK,
-						eligibilityPressureRatio,error))return false;
+						eligibilityPressureRatio,cellError))return false;
 					eligibilityBeginning[cell].temperatureK=eligibilityTemperatureK;
-					if(!ValidateCellState(beginning[cell],error)||
+					if(!ValidateCellState(beginning[cell],cellError)||
 						!AcceptedMethaneCellStateAdmissible(beginning[cell],fuel,
-							FireStateProducerPrecision::Binary32,error)||
-						!ValidateCellState(sourceBeginning[cell],error)||
-						!ValidateCellState(eligibilityBeginning[cell],error)||
+							FireStateProducerPrecision::Binary32,cellError)||
+						!ValidateCellState(sourceBeginning[cell],cellError)||
+						!ValidateCellState(eligibilityBeginning[cell],cellError)||
 						!AcceptedMethaneCellStateAdmissible(eligibilityBeginning[cell],fuel,
-							FireStateProducerPrecision::Binary32,error))return false;
+							FireStateProducerPrecision::Binary32,cellError))return false;
 					if((request.pilotCommandMask[cell]!=0u&&request.pilotCommandMask[cell]!=1u)||
 						(!request.sourceBoundaryContactMask.empty()&&
 						 request.sourceBoundaryContactMask[cell]!=0u&&
 						 request.sourceBoundaryContactMask[cell]!=1u)||
 						!std::isfinite(request.mixingTimeS[cell])||request.mixingTimeS[cell]<=0.0)
-						return Fail(error,"production canonical source control is invalid");
-				}
+						return Fail(cellError,"production canonical source control is invalid");
+					return true;
+				};
+				if(!ParallelSourceCells(cells,request.workerCount,canonicalCell,error))return false;
 				IgnitionGrid ignition;ignition.nx=request.shape.nx;ignition.ny=request.shape.ny;
 				ignition.nz=request.shape.nz;ignition.cells=eligibilityBeginning;
 				ignition.pilotMask.resize(cells,false);
@@ -451,7 +481,8 @@ namespace RISE
 				candidate.pilotExpansionIntegral_.resize(cells);
 				candidate.radiativeCoolingWPerM3_.resize(cells);
 				candidate.maximumScaledExpansion_=-std::numeric_limits<double>::infinity();
-				for(std::size_t cell=0u;cell<cells;++cell){
+				std::vector<double> scaledExpansion(cells,0.0);
+				auto packetCell=[&](const std::size_t cell,std::string* cellError)->bool{
 					for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
 						candidate.sourceDelta_[(1u+species)*cells+cell]=
 							static_cast<float>(packets[cell].constituentDelta[species]);
@@ -468,17 +499,22 @@ namespace RISE
 					double scaled=0.0;
 					if(!FrozenSourcePacketExpansionAdmissible(ToConservativeVector(sourceBeginning[cell]),
 						sourceBeginning[cell].temperatureK,packets[cell],request.timeStepS,fuel,
-						FireStateProducerPrecision::Binary32,&scaled,error))return false;
-					candidate.maximumScaledExpansion_=std::max(
-						candidate.maximumScaledExpansion_,scaled);
+						FireStateProducerPrecision::Binary32,&scaled,cellError))return false;
+					scaledExpansion[cell]=scaled;
 					const float divergenceTargetPerS=static_cast<float>(scaled/
 						static_cast<double>(request.timeStepS));
 					if(!std::isfinite(divergenceTargetPerS)||
 						(divergenceTargetPerS==0.0f&&std::signbit(divergenceTargetPerS)))
-						return Fail(error,
+						return Fail(cellError,
 							"production canonical source divergence target is noncanonical");
 					candidate.divergenceTargetPerS_[cell]=divergenceTargetPerS;
-				}
+					return true;
+				};
+				if(!ParallelSourceCells(cells,request.workerCount,packetCell,error))return false;
+				// The maximum is reduced serially in cell order, as before.
+				for(std::size_t cell=0u;cell<cells;++cell)
+					candidate.maximumScaledExpansion_=std::max(
+						candidate.maximumScaledExpansion_,scaledExpansion[cell]);
 				candidate.floorHeatingWPerM3_=std::move(floorHeating);
 				candidate.floorIrradianceWPerM2_=std::move(floorIrradiance);
 				candidate.floorWallTemperatureK_=std::move(floorWall);
