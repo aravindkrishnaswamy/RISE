@@ -23,6 +23,18 @@
 namespace RISE
 {
 
+	//! True when every corner of @a tri indexes a vertex in a list of @a n.
+	//! The vertex-normal builders run on caller-supplied triangles BEFORE
+	//! TriangleMeshGeometryIndexed::DoneIndexedTriangles validates them
+	//! (ComputeVertexNormals is called first by the PLY / glTF / Job
+	//! loaders), so they skip a face that indexes past the vertex list instead
+	//! of reading -- and accumulating into -- memory past its end.  Done then
+	//! refuses that face.
+	static inline bool FaceVerticesInRange( const IndexedTriangle& tri, const std::size_t n )
+	{
+		return tri.iVertices[0] < n && tri.iVertices[1] < n && tri.iVertices[2] < n;
+	}
+
 	bool CalculateVertexNormals( 
 		IndexTriangleListType& vFaces, 
 		NormalsListType& vNormals, 
@@ -51,6 +63,9 @@ namespace RISE
 			// We have to calculate the face normals for each then..
 			// Grab two vectors for the current face...
 			const IndexedTriangle&	tri = *m;
+			if( !FaceVerticesInRange( tri, vVertices.size() ) ) {
+				continue;
+			}
 			const Vector3 vEdgeA = Vector3Ops::mkVector3( vVertices[tri.iVertices[1]], vVertices[tri.iVertices[0]] );
 			const Vector3 vEdgeB = Vector3Ops::mkVector3( vVertices[tri.iVertices[2]], vVertices[tri.iVertices[0]] );
 		
@@ -117,6 +132,9 @@ namespace RISE
 		for( m=vFaces.begin(), n=vFaces.end(); m!=n; m++ )
 		{
 			const IndexedTriangle& tri = *m;
+			if( !FaceVerticesInRange( tri, vVertices.size() ) ) {
+				continue;
+			}
 			const Vector3 vEdgeA = Vector3Ops::mkVector3( vVertices[tri.iVertices[1]], vVertices[tri.iVertices[0]] );
 			const Vector3 vEdgeB = Vector3Ops::mkVector3( vVertices[tri.iVertices[2]], vVertices[tri.iVertices[0]] );
 

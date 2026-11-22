@@ -629,6 +629,16 @@ bool RISE::Implementation::SMSQueryDomain::Valid() const
         : kind == Wavelength && std::isfinite(nm) && nm > 0;
 }
 
+RISE::Implementation::SMSDomainReplay::CasterKind
+RISE::Implementation::SMSDomainReplay::PotentialCasterKind(const IMaterial& material)
+{
+    if(SMSSameType<DielectricMaterial>(material)) return Dielectric;
+    if(SMSSameType<PerfectRefractorMaterial>(material)) return Refractor;
+    if(SMSSameType<PolishedMaterial>(material)) return Polished;
+    if(SMSSameType<PerfectReflectorMaterial>(material)) return Reflector;
+    return NotCaster;
+}
+
 bool RISE::Implementation::SMSDomainReplay::PotentialCaster(const IMaterial& material)
 {
     if(!SMSSameType<DielectricMaterial>(material) && !SMSSameType<PerfectRefractorMaterial>(material)

@@ -2782,15 +2782,19 @@ namespace
 				// direction it LEAVES toward the camera; the arrival
 				// "direction" from the hit where the light went in is the
 				// jump, not a ray, so it must not be the Sw argument.
+				// DL-14 / DL-402: shade with the footprint of the pixel this
+				// splat lands in (PathVertexEval::StampPixelFootprint).
+				BDPTVertex footprinted;
+				const BDPTVertex& shadeV = RISE::PathVertexEval::WithPixelFootprint( camera, apertureSample, v, footprinted );
 				typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
+					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( shadeV, wiAtLight, dirToCam, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
 				// DL-481: only the lobe types the per-type caps allow.
 				if( splatPlan.splitLight ) {
 					typename Traits::value_type fl[5];
-					if( !RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( v, wiAtLight, dirToCam, tag, fl ) ) {
+					if( !RISE::PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( shadeV, wiAtLight, dirToCam, tag, fl ) ) {
 						continue;
 					}
 					fLight = BDPTUtilities::AllowedTypeProduct<typename Traits::value_type>( splatPlan, typeCaps, fl, fl );

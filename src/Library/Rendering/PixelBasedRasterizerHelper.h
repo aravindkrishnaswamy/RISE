@@ -519,8 +519,20 @@ namespace RISE
 			///    rect, clamped to the image, are valid in the returned
 			///    image (film contributions are additionally limited to the
 			///    active output / splat region, exactly as a full-frame
-			///    composition would produce them).  Pixels outside it may
-			///    hold anything, including another caller's composition.
+			///    composition would produce them).  Pixels outside it are not
+			///    composed by this call.  In THIS helper's filtered scratch
+			///    (pFilteredScratch) they hold the film as it was before the
+			///    render (RasterizeScene copies in the prepared image,
+			///    RasterizeSceneAnimation the image as acquired, both before
+			///    any worker starts), or an earlier composition;
+			///    AgentFrameStoreIsolationTest checks that every outside pixel
+			///    of a regional pixel-based render's previews equals the film
+			///    as it was before the render.  BidirectionalRasterizerBase's
+			///    override composes into its own scratch, which starts
+			///    transparent black, so there they are black or an earlier
+			///    composition.  (With no film or no scratch the getter returns
+			///    the primary image itself.)  Callers must still read only
+			///    the region.
 			///    An empty or wholly off-image region composes nothing.
 			///  * @a region null: the whole image is valid.
 			///  * The returned reference is valid until the caller's

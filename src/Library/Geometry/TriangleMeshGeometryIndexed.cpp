@@ -545,7 +545,8 @@ bool TriangleMeshGeometryIndexed::TessellateToMeshEx(
 				t.iCoords[k]   = idx;
 			}
 		} else {
-			// Face-normal source: per-corner flattening.  We can't emit a constant
+			// Face-normal source, or a mesh with no texture coordinates (the shared
+			// path above needs both lists): per-corner flattening.  We can't emit a constant
 			// placeholder like +Z -- downstream code (DisplacedGeometry) displaces
 			// vertices ALONG the stored normal BEFORE any later normal recompute, so
 			// a constant placeholder would push every corner along +Z regardless of
@@ -567,7 +568,7 @@ bool TriangleMeshGeometryIndexed::TessellateToMeshEx(
 				const unsigned int localIdx = static_cast<unsigned int>( vertices.size() );
 				vertices.push_back( *src.pVertices[k] );
 				normals.push_back( src.pNormals[k] ? *src.pNormals[k] : faceNormal );
-				coords.push_back( *src.pCoords[k] );
+				coords.push_back( src.pCoords[k] ? *src.pCoords[k] : Point2( 0, 0 ) );
 				if( pUVPeriodic ) {
 					const size_t pi = pPointBase ? static_cast<size_t>( src.pVertices[k] - pPointBase ) : 0;
 					pUVPeriodic->push_back( pi < m_uvPeriodic.size() ? m_uvPeriodic[pi] : 0 );
@@ -1736,6 +1737,43 @@ void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graph
     m_bProvablyOpenSheet = m_bShapeOpenSheet && !smsUncertainNormalOrientation;
 }
 
+// Resolves one indexed triangle into the pointer form every query reads.
+// The indices come from API callers and from .risemesh files, so they are
+// validated in EVERY build (the old check was _DEBUG-only and release builds
+// dereferenced an out-of-range index into the vector).  A vertex index, and a
+// normal / texture-coordinate index into a NON-empty list, must be in range or
+// the triangle is refused.  Face normals (whatever the normal list holds; its
+// indices are then not checked) or an empty normal list yield a null normal pointer, the "absent" value every
+// normal consumer tests for.  An empty coordinate list yields a null coord
+// pointer (it used to be &v[i] on an empty vector, a null-based pointer
+// that crashed the first hit).  Every coordinate consumer tests for it: the
+// hit path and TessellateToMesh read an absent coordinate as UV (0, 0) -- the
+// constant a dummy coordinate always gave -- and the derivative code falls
+// back to the edge frame with no UV chart.
+bool TriangleMeshGeometryIndexed::MakePointerTriangle(
+	const unsigned int iVerts[3],
+	const unsigned int iNorms[3],
+	const unsigned int iTex[3],
+	PointerTriangle& out
+	)
+{
+	const bool haveNormals = !bUseFaceNormals && !pNormals.empty();
+	const bool haveCoords = !pCoords.empty();
+	for( int k=0; k<3; k++ ) {
+		if( iVerts[k] >= pPoints.size() ||
+			( haveNormals && iNorms[k] >= pNormals.size() ) ||
+			( haveCoords && iTex[k] >= pCoords.size() ) ) {
+			return false;
+		}
+	}
+	for( int k=0; k<3; k++ ) {
+		out.pVertices[k] = &pPoints[iVerts[k]];
+		out.pNormals[k] = haveNormals ? &pNormals[iNorms[k]] : nullptr;
+		out.pCoords[k] = haveCoords ? &pCoords[iTex[k]] : nullptr;
+	}
+	return true;
+}
+
 void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 {
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed:: Constructing acceleration structures for %u triangles", indexedtris.size() );
@@ -1754,37 +1792,27 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	InvalidateTopologyProofCaches();
 	{
 		IndexTriangleListType::const_iterator	i, e;
-		
+		std::size_t rejected = 0;
+
 		for( i=indexedtris.begin(), e=indexedtris.end(); i!=e; i++ )
 		{
-			const IndexedTriangle& tri = *i;
-
 			PointerTriangle		myTri;
-
-			for( int i=0; i<3; i++ )
-			{
-#ifdef _DEBUG
-				// Check integrity
-				if( tri.iVertices[i] >= pPoints.size() ||
-					tri.iNormals[i] >= pNormals.size() || 
-					tri.iCoords[i] >= pCoords.size()
-					)
-				{
-					GlobalLog()->PrintEasyError( "Bad index on IndexedTriangle, bad things will happen" );
-					__debugbreak();
-				}
-#endif
-
-				myTri.pVertices[i] = &pPoints[tri.iVertices[i]];
-				if( !bUseFaceNormals ) {
-					myTri.pNormals[i] = &pNormals[tri.iNormals[i]];
-				} else {
-					myTri.pNormals[i] = 0;
-				}
-				myTri.pCoords[i] = &pCoords[tri.iCoords[i]];
+			if( MakePointerTriangle( i->iVertices, i->iNormals, i->iCoords, myTri ) ) {
+				ptr_polygons.push_back( myTri );
+			} else {
+				++rejected;
 			}
+		}
 
-			ptr_polygons.push_back( myTri );
+		if( rejected ) {
+			// A builder's MeshGrid (lathe / sweep / skin) addresses triangles by
+			// their emission order, which a refused triangle shifts.
+			m_grid.reset();
+			GlobalLog()->PrintEx( eLog_Error,
+				"TriangleMeshGeometryIndexed::DoneIndexedTriangles:: dropped %u of %u triangle(s) with an out-of-range "
+				"vertex / normal / texture-coordinate index (%u points, %u normals, %u coords)",
+				(unsigned)rejected, (unsigned)indexedtris.size(),
+				(unsigned)pPoints.size(), (unsigned)pNormals.size(), (unsigned)pCoords.size() );
 		}
 
 		// Blow away the index triangle
@@ -2870,7 +2898,7 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 	//
 	// Symmetric-gating: only emit the cache flag when we actually have
 	// polygon data.  Deserialize gates the read on the same condition
-	// (`ptr_polygons.size() > 0`), so an empty-mesh round-trip stays
+	// (the STORED triangle count > 0), so an empty-mesh round-trip stays
 	// byte-symmetric across Serialize/Deserialize.  Empty meshes occur
 	// in test fixtures (mesh-not-yet-fed-via-Begin/Done) and would
 	// otherwise leave a trailing flag byte unconsumed in composite
@@ -3013,29 +3041,36 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	}
 
 	// Get the list of indexed triangles, convert them to "pointer polygons"
+	unsigned int numptrpolys = 0;
+	std::size_t rejectedPolys = 0;
 	{
-		unsigned int numptrpolys = buffer.getUInt();
+		numptrpolys = buffer.getUInt();
 		if( numptrpolys > 0 ) {
 			// Load the pointer polygons
 			ptr_polygons.reserve( numptrpolys );
 
+			std::size_t& rejected = rejectedPolys;
 			for( unsigned int j=0; j<numptrpolys; j++ ) {
-				PointerTriangle		ptrtri;
-
+				unsigned int iv[3], in[3], ic[3];
 				for( unsigned int i=0; i<3; i++ ) {
-					ptrtri.pVertices[i] = &pPoints[buffer.getUInt()];
-
-					unsigned int normal_id = buffer.getUInt();
-					if( bUseFaceNormals || pNormals.size()==0 ) {
-						ptrtri.pNormals[i] = 0;
-					} else {
-						ptrtri.pNormals[i] = &pNormals[normal_id];
-					}
-
-					ptrtri.pCoords[i] = &pCoords[buffer.getUInt()];
+					iv[i] = buffer.getUInt();
+					in[i] = buffer.getUInt();
+					ic[i] = buffer.getUInt();
 				}
 
-				ptr_polygons.push_back( ptrtri );
+				PointerTriangle		ptrtri;
+				if( MakePointerTriangle( iv, in, ic, ptrtri ) ) {
+					ptr_polygons.push_back( ptrtri );
+				} else {
+					++rejected;
+				}
+			}
+
+			if( rejected ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"TriangleMeshGeometryIndexed::Deserialize:: dropped %u of %u triangle(s) with an out-of-range "
+					"index (corrupt or truncated .risemesh?)",
+					(unsigned)rejected, numptrpolys );
 			}
 		}
 
@@ -3091,9 +3126,17 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	bool bvhCacheLoaded = false;
 	safe_release( pPtrBVH );
 
-	if( version >= 3 && ptr_polygons.size() > 0 ) {
+	// Serialize writes the cache flag iff it had polygons, so the flag read is
+	// gated on the STORED count.  A stream with a refused triangle is corrupt:
+	// its cache's primitive indices refer to the unfiltered list, so the cache
+	// is not read at all (its trailing bytes stay unconsumed -- a corrupt
+	// stream is not resumable) and the BVH is rebuilt below.
+	if( version >= 3 && numptrpolys > 0 ) {
 		const char haveBVHCache = buffer.getChar();
-		if( haveBVHCache ) {
+		if( haveBVHCache && rejectedPolys > 0 ) {
+			GlobalLog()->PrintEasyWarning(
+				"TriangleMeshGeometryIndexed::Deserialize:: ignoring the BVH cache of a stream with refused triangles; rebuilding" );
+		} else if( haveBVHCache ) {
 			AccelerationConfig cfg;
 			cfg.maxLeafSize            = 4;
 			cfg.binCount               = 32;

@@ -239,6 +239,11 @@ namespace RISE
 			mutable std::vector<std::shared_ptr<const GeometryAreaData>> m_geomRetired;
 			mutable std::vector<std::shared_ptr<const MetricAreaData>> m_metricRetired;
 			mutable std::atomic<bool> m_warnedAreaFallback;
+			//! Sticky: set (under m_worldAreaMutex) when this object first owns
+			//! a world-area entry.  PruneWorldAreaSampling reads it without the
+			//! mutex, so the objects that were never sampled as area lights --
+			//! almost all of a large scene -- skip the lock on every prepare.
+			mutable std::atomic<bool> m_worldAreaEverOwned;
 			mutable std::atomic<unsigned long long> m_rejectionCapHits;
 		public:
 			//! Retire every cached world-area entry that does not describe the

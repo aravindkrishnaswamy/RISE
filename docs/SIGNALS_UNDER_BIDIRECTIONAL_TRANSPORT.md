@@ -100,16 +100,20 @@ Findings that changed the plan:
   all obtain their eye subpath's starting ray through that same interface
   call and hand it, unmodified, into `GenerateEyeSubpathImpl` as
   `currentRay`. `Object::IntersectRay` computes `txFootprint` whenever
-  `ray.hasDifferentials` is true, so the depth-0 eye vertex — the ONLY vertex
-  any integrator, PT included, ever attaches a real footprint to, since no
-  ray carries differentials after a scattering bounce anywhere in this
-  renderer — gets the identical non-zero footprint PT's own primary hit
-  gets. `fw`/`fwo` do NOT read 0 there, live or rebuilt (S1's own
+  `ray.hasDifferentials` is true, so the depth-0 eye vertex — no ray carries
+  differentials after a scattering bounce anywhere in this renderer — gets
+  the identical non-zero footprint PT's own primary hit gets.  (Since
+  2026-11-17 one more record carries a footprint: the copy of a surface light
+  endpoint a light-traced (t == 1) connection shades, stamped with the
+  footprint of the pixel it lands in; DL-14 doc §10.) `fw`/`fwo` do NOT read 0 there, live or rebuilt (S1's own
   `v.txFootprint = ri.geometric.txFootprint;` copy makes this observable and
   was never inert). §6's control variant being built to cancel this was
   therefore unnecessary insurance, not a workaround for a real gap — see the
   DL-14 doc for the direct render measurement (PT vs BDPT agree to ~1e-4
-  relative on a `fbm`-fade fixture; VCM agrees within ordinary MC noise).
+  relative on a `fbm`-fade fixture at 64 spp).  Superseded in part
+  2026-11-17 (DL-14 doc §10): after DL-402 moved MIS weight onto light
+  tracing, the unfiltered t == 1 share was a converged bias (BDPT +0.32%,
+  VCM +0.23% at 1024 spp), now removed by the pixel-footprint stamp.
 
 ## 3. The fix for rows 1–2: widen `BDPTVertex`
 
@@ -121,10 +125,11 @@ the fields `BuildContext` reads and the vertex does not carry:
    surface-state block. Size: +168 B (derivatives) +136 B (signals) +104 B
    (footprint) ≈ +408 B per vertex; subpaths are short per-thread vectors,
    so this is noise. The VCM `LightVertex` store is NOT widened (row 4).
-   `txFootprint` is carried although it is all-zero under today's
-   bidirectional rasterizers: the contract is "every field a painter
-   consumer reads", and a future BDPT ray-differential landing must not
-   silently reopen the gap. The sentinel test pins all three.
+   `txFootprint` is carried for the same contract ("every field a painter
+   consumer reads").  (Corrected: it is NOT all-zero -- the depth-0 eye
+   vertex carries the camera ray's footprint, DL-14; and since 2026-11-17 a
+   t == 1 connection shades its light endpoint with the landing pixel's
+   footprint, DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md §10.) The sentinel test pins all three.
 2. **Population** at both subpath generators (rows 2): straight copies from
    `ri.geometric`, after `ri.pModifier->Modify( ri.geometric )` exactly as
    the existing fields are. Medium, camera, light and env vertices keep the
@@ -565,9 +570,12 @@ Ledger (filled per slice):
   them the same way regardless of integrator. `fw`/`fwo` are not 0 there;
   §6.2's control variant being built to cancel a difference that does not
   exist was unneeded insurance, not evidence the gap was real. Direct render
-  measurement on a `fbm`-fade fixture: PT vs BDPT agree to ~1e-4 relative
-  (whole-image mean AND high-frequency energy); VCM agrees within its own,
-  separately documented, higher MC noise for non-caustic scenes. See the
+  measurement on a `fbm`-fade fixture at 64 spp: PT vs BDPT agreed to ~1e-4
+  relative (whole-image mean AND high-frequency energy); VCM's higher HF
+  energy was read as MC noise.  Superseded 2026-11-17 (DL-14 doc §10): part
+  of VCM's excess, and after DL-402 a BDPT excess too, was the light-traced
+  (t == 1) share shaded without a footprint -- a converged bias, now removed
+  by stamping that connection with its landing pixel's footprint. See the
   DL-14 doc for the full account, including the red-proof (reintroducing
   the literal defect this bullet described — forcing the eye ray's
   `hasDifferentials` to false — reproduces exactly the symptom this bullet

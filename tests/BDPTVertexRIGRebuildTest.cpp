@@ -169,11 +169,11 @@ static BDPTVertex MakeSentinelSurfaceVertex()
 	v.signals.ptWorld            = Point3( 2.09, 2.10, 2.11 );
 	v.signals.time               = 2.12;
 
-	// ---- txFootprint: the expression VM's fw / fwo.  All-zero under
-	// today's bidirectional rasterizers (they emit no ray
-	// differentials), carried so a future landing cannot silently
-	// reopen the gap -- which is exactly why the sentinels here are
-	// non-zero.
+	// ---- txFootprint: the expression VM's fw / fwo.  Real at the depth-0
+	// eye vertex (the camera ray's differentials, DL-14) and on the copy a
+	// light-traced connection shades (stamped with its landing pixel's
+	// footprint, DL-14 doc §10); zero elsewhere.  The sentinels are
+	// non-zero so a rebuild that drops the field is caught.
 	v.txFootprint.dudx        = 3.01;
 	v.txFootprint.dudy        = 3.02;
 	v.txFootprint.dvdx        = 3.03;
@@ -384,10 +384,10 @@ void TestPopulateRIG_AllFields()
 		"signals.time should mirror vertex.signals.time" );
 
 	// ------------------------------------------------------------------
-	// txFootprint — the expression VM's `fw` / `fwo` octave fade.  Zero
-	// in practice under today's bidirectional rasterizers; carried, and
-	// pinned here, so a future ray-differential landing on BDPT / VCM
-	// cannot reopen the gap by omission.
+	// txFootprint — the expression VM's `fw` / `fwo` octave fade.  Real at
+	// the depth-0 eye vertex (DL-14) and on the copy a light-traced
+	// connection shades (DL-14 doc §10), zero elsewhere; pinned here so a
+	// rebuild that drops the field is caught.
 	// ------------------------------------------------------------------
 	Check( IsClose( ri.txFootprint.dudx, 3.01 ),
 		"txFootprint.dudx should mirror vertex.txFootprint.dudx" );

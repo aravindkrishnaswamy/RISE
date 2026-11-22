@@ -18,6 +18,7 @@
 
 #include <iostream>
 #include <vector>
+#include <string>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -449,6 +450,57 @@ static void TestTriangleMeshIndexed_Flat()
 	m->release();
 }
 
+// A mesh fed no texture coordinates at all.  MakePointerTriangle leaves its
+// coordinate pointers null; the hit path and TessellateToMesh used to
+// dereference them (a crash on the first hit).  Both answer UV (0, 0), with
+// vertex normals and with face normals.
+static void TestTriangleMeshIndexed_NoTexCoords()
+{
+	std::cout << "Testing TriangleMeshGeometryIndexed with no texture coordinates..." << std::endl;
+	for( int faceNormals = 0; faceNormals < 2; faceNormals++ ) {
+		TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed(
+			/*bDoubleSided=*/false, /*bUseFaceNormals=*/faceNormals != 0 );
+		m->BeginIndexedTriangles();
+		m->AddVertex( Point3( 0, 0, 0 ) );
+		m->AddVertex( Point3( 1, 0, 0 ) );
+		m->AddVertex( Point3( 1, 1, 0 ) );
+		m->AddVertex( Point3( 0, 1, 0 ) );
+		for( int i = 0; i < 4; i++ ) m->AddNormal( Vector3( 0, 0, 1 ) );
+		IndexedTriangle t1;
+		t1.iVertices[0] = 0; t1.iVertices[1] = 1; t1.iVertices[2] = 2;
+		t1.iNormals[0]  = 0; t1.iNormals[1]  = 1; t1.iNormals[2]  = 2;
+		t1.iCoords[0]   = 0; t1.iCoords[1]   = 1; t1.iCoords[2]   = 2;
+		m->AddIndexedTriangle( t1 );
+		IndexedTriangle t2;
+		t2.iVertices[0] = 0; t2.iVertices[1] = 2; t2.iVertices[2] = 3;
+		t2.iNormals[0]  = 0; t2.iNormals[1]  = 2; t2.iNormals[2]  = 3;
+		t2.iCoords[0]   = 0; t2.iCoords[1]   = 2; t2.iCoords[2]   = 3;
+		m->AddIndexedTriangle( t2 );
+		m->DoneIndexedTriangles();
+
+		const char* tag = faceNormals ? "face normals" : "vertex normals";
+		RayIntersectionGeometric ri( Ray( Point3( 0.7, 0.2, 1 ), Vector3( 0, 0, -1 ) ), nullRasterizerState );
+		m->IntersectRay( ri, true, true, false );
+		REQUIRE( ri.bHit, std::string( "no-UV mesh is hit (" ) + tag + ")" );
+		REQUIRE( ri.ptCoord.x == 0 && ri.ptCoord.y == 0,
+			std::string( "no-UV mesh hit reads UV (0, 0) (" ) + tag + ")" );
+
+		IndexTriangleListType tris;
+		VerticesListType verts;
+		NormalsListType norms;
+		TexCoordsListType coords;
+		const bool ok = m->TessellateToMesh( tris, verts, norms, coords, 0 );
+		REQUIRE( ok && tris.size() == 2 && coords.size() == verts.size(),
+			std::string( "no-UV mesh tessellates with one coordinate per vertex (" ) + tag + ")" );
+		bool allZero = true;
+		for( size_t i = 0; i < coords.size(); i++ ) {
+			if( coords[i].x != 0 || coords[i].y != 0 ) allZero = false;
+		}
+		REQUIRE( allZero, std::string( "no-UV mesh tessellates to UV (0, 0) (" ) + tag + ")" );
+		m->release();
+	}
+}
+
 static void TestTriangleMeshIndexed_Curved()
 {
 	std::cout << "Testing TriangleMeshGeometryIndexed on smooth-shaded curved quad..." << std::endl;
@@ -739,6 +791,7 @@ int main()
 	TestInfinitePlane();
 	TestTriangleMeshIndexed_Flat();
 	TestTriangleMeshIndexed_Curved();
+	TestTriangleMeshIndexed_NoTexCoords();
 	TestBilinearPatch();
 	TestBezierPatch();
 	TestDisplacedGeometry();

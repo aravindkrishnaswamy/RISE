@@ -287,6 +287,16 @@ namespace RISE
 				const bool bRadiusIsConstant,
 				Scalar& outValue ) const;
 
+			//! Resolve one triangle's indices into pointers into pPoints /
+			//! pNormals / pCoords, validating every index (all builds).
+			//! Returns false, leaving `out` unspecified, when an index is out
+			//! of range; see the definition for the empty-list convention.
+			bool MakePointerTriangle(
+				const unsigned int iVerts[3],
+				const unsigned int iNorms[3],
+				const unsigned int iTex[3],
+				PointerTriangle& out );
+
 		public:
             bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
             bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}

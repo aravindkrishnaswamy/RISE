@@ -69,7 +69,8 @@ namespace RISE
 	public:
 		// Indices start at zero: a caller that leaves a set unassigned (e.g. no
 		// normals) must not hand garbage to the mesh, which turns indices into
-		// pointers (TriangleMeshGeometryIndexed::DoneIndexedTriangles).
+		// pointers (TriangleMeshGeometryIndexed::MakePointerTriangle validates
+		// them in every build).
 		IndexedPolygon_Template( ) : iVertices(), iNormals(), iCoords()
 		{
 		};
@@ -100,14 +101,12 @@ namespace RISE
 	public:
 		PointerPolygon_Template( )
 		{
-	#ifdef _DEBUG
 			for( int i=0; i<N; i++ )
 			{
 				pVertices[i] = 0;
 				pNormals[i] = 0;
 				pCoords[i] = 0;
 			}
-	#endif
 		};
 
 		virtual ~PointerPolygon_Template( )

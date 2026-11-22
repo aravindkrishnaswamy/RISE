@@ -376,6 +376,29 @@ namespace RISE
 			Point2& rasterPoint						///< [out] Resulting raster coordinates
 			);
 
+		/// The one-pixel steps on the surface plane through `worldPoint`
+		/// (normal `normal`) as imaged THROUGH `ap`: `dpdx` / `dpdy` are
+		/// the surface displacements that move the point's raster image by
+		/// +1 pixel in x / y.  This is the footprint Igehy's ray
+		/// differentials give an eye ray's hit (ComputeFootprintVectors,
+		/// TextureFootprintCompute.h) -- the plane point the neighbouring
+		/// pixel's ray reaches -- derived instead by central differences
+		/// of `RasterizeThrough` along two tangents and inverting that 2x2
+		/// Jacobian, so it needs no camera ray and draws no random numbers.
+		/// A light-traced (t == 1) connection shades its surface point
+		/// with it so the texture filtering matches the eye strategies the
+		/// same pixel is MIS-combined with (DL-14 / DL-402).
+		/// \return FALSE (outputs unspecified) when a probe point does not
+		/// rasterize or the projection is singular (a grazing plane).
+		bool PixelFootprintThrough(
+			const ICamera& cam,					///< [in] Camera
+			const ApertureSample& ap,				///< [in] Aperture point the point is imaged through
+			const Point3& worldPoint,				///< [in] Surface point
+			const Vector3& normal,					///< [in] Surface (shading) normal there
+			Vector3& dpdx,							///< [out] Surface step for +1 raster x
+			Vector3& dpdy							///< [out] Surface step for +1 raster y
+			);
+
 		/// True if the camera samples an entrance aperture of non-zero
 		/// AREA on a single lens plane (e.g. a thin-lens camera with a
 		/// real aperture), as opposed to a pinhole (`t == 1` lens-area
