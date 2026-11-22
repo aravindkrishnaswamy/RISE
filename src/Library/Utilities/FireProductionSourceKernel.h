@@ -207,6 +207,28 @@ namespace RISE
 				for(std::size_t slice=first;slice<last;++slice)function(slice);
 			});
 		}
+		//! Number of contiguous, increasing cell chunks ParallelFireChunks schedules.
+		inline std::size_t FireChunkCount(const std::size_t count,const unsigned int workers)
+		{
+			return workers<=1u?std::min<std::size_t>(count,1u):
+				std::min<std::size_t>(count,static_cast<std::size_t>(workers)*32u);
+		}
+		//! Dynamically balanced schedule for independent per-cell work: each of the
+		//! `chunks` chunk indices is claimed exactly once, by whichever worker is free.
+		//! The work done per chunk (and so every result) does not depend on which
+		//! worker runs it; only the load balance does.
+		template<typename ChunkFunction>
+		inline void ParallelFireChunks(
+			const std::size_t chunks,
+			const unsigned int workers,
+			const ChunkFunction& function )
+		{
+			std::atomic<std::size_t> next(0u);
+			ParallelFireSlices(workers,workers,[&](const std::size_t) {
+				for(;;){const std::size_t chunk=next.fetch_add(1u,std::memory_order_relaxed);
+					if(chunk>=chunks)return;function(chunk);}
+			});
+		}
 		enum MethaneSpeciesIndex
 		{
 			MethaneCH4 = 0,
@@ -2572,10 +2594,13 @@ namespace RISE
 			const unsigned int workers=std::max(1u,std::min(workerCount,
 				std::min(static_cast<unsigned int>(count),FireWorkerCapacity())));
 			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
-			std::vector<std::size_t> failureCell(workers,noFailure);
-			std::vector<std::string> failureMessage(workers);
-			ParallelFireSlices(workers,workers,[&](const std::size_t worker) {
-				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+			// Contiguous cell chunks, each stopping at its first failure; the lowest
+			// failing cell over all chunks is the serial loop's first failure.
+			const std::size_t chunks=FireChunkCount(count,workers);
+			std::vector<std::size_t> failureCell(chunks,noFailure);
+			std::vector<std::string> failureMessage(chunks);
+			ParallelFireChunks(chunks,workers,[&](const std::size_t worker) {
+				const std::size_t first=count*worker/chunks,last=count*(worker+1u)/chunks;
 				for(std::size_t cell=first;cell<last;++cell) {
 				std::string cellError;
 				// r273 sheet gate: only a cell that can burn fuel, holds soot and is
@@ -2626,8 +2651,8 @@ namespace RISE
 				}
 				}
 			});
-			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
-			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+			std::size_t firstFailure=noFailure;std::size_t failedWorker=0u;
+			for(std::size_t worker=0;worker<chunks;++worker)if(failureCell[worker]<firstFailure){
 				firstFailure=failureCell[worker];failedWorker=worker;
 			}
 			if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
@@ -2727,8 +2752,8 @@ namespace RISE
 					beginning[cell].temperatureK,candidateResult[cell],reactionStep[cell].deltaTimeS,
 					thermochemistry,beginning[cell].producerPrecision,0,&cellError);
 			};
-			ParallelFireSlices(workers,workers,[&](const std::size_t worker) {
-				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+			ParallelFireChunks(chunks,workers,[&](const std::size_t worker) {
+				const std::size_t first=count*worker/chunks,last=count*(worker+1u)/chunks;
 				for(std::size_t cell=first;cell<last;++cell) {
 				MethaneCellState finalScratch;
 				double signedCoolingWPerM3 = 0.0;
@@ -2756,7 +2781,7 @@ namespace RISE
 				}
 			});
 			firstFailure=noFailure;failedWorker=0u;
-			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+			for(std::size_t worker=0;worker<chunks;++worker)if(failureCell[worker]<firstFailure){
 				firstFailure=failureCell[worker];failedWorker=worker;
 			}
 			if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
@@ -2768,8 +2793,8 @@ namespace RISE
 					sootAbsorption,sootLeaving,deposit,error))return false;
 				std::fill(failureCell.begin(),failureCell.end(),noFailure);
 				std::fill(failureMessage.begin(),failureMessage.end(),std::string());
-				ParallelFireSlices(workers,workers,[&](const std::size_t worker) {
-					const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+				ParallelFireChunks(chunks,workers,[&](const std::size_t worker) {
+					const std::size_t first=count*worker/chunks,last=count*(worker+1u)/chunks;
 					for(std::size_t cell=first;cell<last;++cell) {
 					std::string cellError;
 					if(deposit[cell]>0.0)radiated[cell].sensibleEnergyJPerM3+=
@@ -2780,7 +2805,7 @@ namespace RISE
 					}
 				});
 				firstFailure=noFailure;failedWorker=0u;
-				for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+				for(std::size_t worker=0;worker<chunks;++worker)if(failureCell[worker]<firstFailure){
 					firstFailure=failureCell[worker];failedWorker=worker;
 				}
 				if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);

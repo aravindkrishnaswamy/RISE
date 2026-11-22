@@ -174,6 +174,30 @@ namespace RISE
 			const unsigned int dimension
 			) const;
 
+		/// Optional exact fast path for the spectral deterministic optical
+		/// depth (EvalDeterministicOpticalDepthNM).  Returns false when the
+		/// medium has none, in which case the generic quadrature runs.
+		virtual bool EvalDeterministicOpticalDepthNMFast(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar nm,
+			Scalar& tau
+			) const
+		{
+			return false;
+		}
+
+		/// Generic 7-point Gauss-Legendre quadrature of one knot-cell piece,
+		/// split at AppendOpticalDepthBreakpoints roots.
+		Scalar IntegrateOpticalDepthCellGL(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			const bool spectral,
+			const Scalar nm,
+			const int pelChannel
+			) const;
+
 		/// Add medium-specific, strictly interior quadrature breakpoints for
 		/// one interpolation cell.  Ordinary heterogeneous media have none.
 		virtual void AppendOpticalDepthBreakpoints(
@@ -444,6 +468,69 @@ namespace RISE
 		Scalar m_minPositiveThermalEmissionPdf;
 		unsigned long long m_fireMajorantGeneration;
 		unsigned long long m_fireEmissionGeneration;
+
+		/// Per-frame flat copy of the baked channels for the render hot path.
+		/// One padded voxel record holds every channel the extinction and
+		/// emission laws read, so a lookup does a single cell-index/weight
+		/// computation and one contiguous 8-corner fetch.  Values are copied
+		/// from the accessors at integer coordinates (double precision), so
+		/// the trilinear result is the accessor result.  The padding ring is
+		/// zero, matching the accessors' out-of-range value.
+		struct FlatVoxel
+		{
+			Scalar carbon;
+			Scalar temperature;
+			Scalar condensed;
+			Scalar pad;
+		};
+		struct FlatChemVoxel
+		{
+			Scalar band[3];
+			Scalar pad;
+		};
+		std::vector<FlatVoxel> m_flat;
+		std::vector<FlatChemVoxel> m_flatChem;
+		std::vector<unsigned char> m_flatCellOccupied;	///< carbon/condensed nonzero at any of a cell's 8 corners
+		std::vector<unsigned char> m_flatCellChemOccupied;
+		bool m_flatCurrent;
+		/// Unique id naming the current optics/ablation state, used to key
+		/// the per-thread wavelength-constant cache.
+		unsigned long long m_opticsEpoch;
+
+		struct NMOptics
+		{
+			Scalar hotAbsorptionMass;
+			Scalar oneMinusHotAlbedo;
+			Scalar coolExtinctionMass;
+			Scalar coolAlbedo;
+			Scalar condExtinctionMass;
+			Scalar condAlbedo;
+			bool supported;
+		};
+		NMOptics OpticsAtNM( const Scalar nm ) const;
+		void BuildFlatGrids();
+		bool FetchFlat(
+			const Point3& worldPt,
+			Scalar& carbon,
+			Scalar& temperature,
+			Scalar& condensed
+			) const;
+		void FetchCarbonTemperatureCondensed(
+			const Point3& worldPt,
+			Scalar& carbon,
+			Scalar& temperature,
+			Scalar& condensed
+			) const;
+		bool FetchFlatChem(
+			const Point3& worldPt,
+			Scalar (&bands)[3]
+			) const;
+		Scalar ThermalEmissionFromState(
+			const Scalar carbon,
+			const Scalar temperature,
+			const Scalar condensed,
+			const Scalar nm
+			) const;
 		bool m_fireDerivedStructuresCurrent;
 		bool m_forTestBlockFireDerivedRebuild;
 		bool m_valid;
@@ -521,6 +608,30 @@ namespace RISE
 			m_fireDerivedStructuresCurrent = false;
 		}
 		bool RebuildFireDerivedStructuresForRender();
+		bool FlatCellEmpty(
+			const int cx,
+			const int cy,
+			const int cz
+			) const;
+		/// Wavelength-independent integrals over [tBegin,tEnd] of one knot
+		/// cell: carbon*(1-phi), carbon*phi and condensed.  sigma_t(nm) is a
+		/// fixed linear combination of them, so they are cached per ray and
+		/// shared by every wavelength.
+		void CellMassIntegrals(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			const int cx,
+			const int cy,
+			const int cz,
+			Scalar (&integrals)[3]
+			) const;
+		bool EvalDeterministicOpticalDepthNMFast(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar nm,
+			Scalar& tau
+			) const override;
 		friend class Job;
 
 	public:
@@ -668,6 +779,9 @@ namespace RISE
 			m_forTestBlockFireDerivedRebuild = block;
 			if( block ) InvalidateFireDerivedStructures();
 		}
+		/// Test-only: switch the render-time flat grids and per-ray optical-depth
+		/// cache off (accessor path, the reference implementation) or back on.
+		void ForTest_SetFlatGridsEnabled( const bool enabled );
 		bool BuildBakedChannelRecord( std::vector<unsigned char>& record ) const;
 		// Test-only controlled ablation; set before Rasterize launches workers.
 		bool ForTest_SetEffectiveAbsorptionAblation(
