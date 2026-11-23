@@ -10435,7 +10435,14 @@ bool Job::AddFireMediumBound(
 	}
 	if( manifestHas("chem_CH") != boundChem || manifestHas("chem_C2") != boundChem ||
 		manifestHas("chem_CO2") != boundChem ) return false;
-	if( !manifest->PreflightAllFrames(error) ) {
+	// Default: hash and decode every listed frame before the first render. Follow mode (rendering a
+	// sequence while its solver is still writing it, one frame at a time) sets
+	// RISE_FIRE_SEQUENCE_PREFLIGHT=used to verify only the frames a render actually selects: each
+	// frame's whole-file SHA-256 is checked again on every LoadFrame, so a corrupt frame is still
+	// refused before it can be used; only the up-front sweep over frames never selected is skipped.
+	const char* const preflightMode = std::getenv( "RISE_FIRE_SEQUENCE_PREFLIGHT" );
+	const bool preflightUsedFramesOnly = preflightMode && std::strcmp( preflightMode, "used" ) == 0;
+	if( !preflightUsedFramesOnly && !manifest->PreflightAllFrames(error) ) {
 		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: sequence preflight: %s",error.c_str());
 		return false;
 	}

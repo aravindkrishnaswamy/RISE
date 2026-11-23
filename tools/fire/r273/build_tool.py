@@ -35,7 +35,8 @@ make=ROOT/'build/make/rise';cmds=subprocess.check_output(['make','-C',str(make),
 compile_=next(x for x in cmds if x.startswith('c++ ')and' -c 'in x and'tests/FireSequenceTest.cpp'in x)
 link=next(x for x in cmds if x.startswith('c++ ')and' -o ../../../bin/tests/FireSequenceTest 'in x)
 obj=OUT/(NAME+'.o');exe=OUT/NAME
-compile_=compile_.replace('../../../tests/FireSequenceTest.cpp',str(ROOT/'tools/fire/r273'/(NAME+'.cpp'))).replace('-o ../../../tests/FireSequenceTest.o','-o '+str(obj))
+SRC=next(d/(NAME+'.cpp') for d in (ROOT/'tools/fire/r273',ROOT/'tools/fire/r275') if (d/(NAME+'.cpp')).exists())  # r275 drivers live in tools/fire/r275
+compile_=compile_.replace('../../../tests/FireSequenceTest.cpp',str(SRC)).replace('-o ../../../tests/FireSequenceTest.o','-o '+str(obj))
 compile_=compile_.replace(' -c ',f' -I{ROOT}/tests -DR271_HARNESS_SOURCE=\\"{harness}\\" -c ')
 assert str(obj) in compile_
 link=link.replace(' -o ../../../bin/tests/FireSequenceTest ',' -o '+str(exe)+' ').replace(' ../../../tests/FireSequenceTest.o ',' '+str(obj)+' ')

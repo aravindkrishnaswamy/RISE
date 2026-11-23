@@ -1813,6 +1813,10 @@ namespace
 		double productionMomentumObservationReferenceTier=0.0;
 		std::filesystem::path temporalSnapshotDirectory;
 		double temporalSnapshotCadenceS=0.0;
+		// r275 follow mode: called once the frame VDB, its sidecar and its .time record are all
+		// published (frame index = number of the frame just written). Observation only: it must not
+		// touch the solver state. A false return is logged and ignored; the run continues.
+		std::function<bool(const SolverFrameValues&,std::uint64_t)> temporalFrameObserver;
 		double maximumProductionSourceStepS=0.0;
 		// r213 diagnostic composition only; never a production timestep policy
 		// or checkpoint migration authorization.
@@ -6071,7 +6075,12 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			timeRecord.close();
 			if(digest.empty()||!timeRecord){error="production temporal frame record failed";
 				return false;}
-			++temporalSnapshotIndex;++values.streamedFrameCount;return true;
+			const std::uint64_t publishedFrameIndex=temporalSnapshotIndex;
+			++temporalSnapshotIndex;++values.streamedFrameCount;
+			if(persistence.temporalFrameObserver&&!persistence.temporalFrameObserver(values,publishedFrameIndex))
+				std::fprintf(stderr,"temporal frame observer failed for frame %llu (ignored)\n",
+					static_cast<unsigned long long>(publishedFrameIndex));
+			return true;
 		};
 		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
 		const bool hostMemoryMonitored=persistence.UsesProjectedHeunOwner();
@@ -8476,6 +8485,66 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		RISECBOR64::Bytes bytes(static_cast<std::size_t>(end));
 		if( end > 0 ) input.read(reinterpret_cast<char*>(bytes.data()),end);
 		return RISECBOR64::SHA256Hex(bytes);
+	}
+
+	// r275 follow mode: an incremental manifest of the frames written so far, so a partial sequence is
+	// loadable (and renderable) while the run is still going. It is a separate file
+	// (sequence_manifest.partial.rise-fire.cbor, written through a temp name and renamed, so a reader
+	// never sees a half-written file) and the sealed final manifest is produced exactly as before.
+	// Frame paths are relative to the run directory and point at the checkpoints/ copies, which are
+	// the only place a frame exists before the run ends. The capstone removes the partial file just
+	// before the final seal, so a completed run directory is unchanged. RISE_FIRE_PARTIAL_MANIFEST=0
+	// disables it. Needs at least two frames (the manifest format's minimum).
+	constexpr const char* PartialTemporalManifestName="sequence_manifest.partial.rise-fire.cbor";
+	bool PartialTemporalManifestEnabled()
+	{
+		const char* value=std::getenv("RISE_FIRE_PARTIAL_MANIFEST");
+		return !value||std::strcmp(value,"0")!=0;
+	}
+	std::function<bool(const SolverFrameValues&,std::uint64_t)> MakePartialTemporalManifestObserver(
+		const std::filesystem::path& runDirectory,const std::filesystem::path& frameDirectory,
+		const double resolutionTier,const double frameCadenceS,const double targetTimeS,
+		const bool r244LateralDouble,const bool r246TopDouble)
+	{
+		if(!PartialTemporalManifestEnabled())return std::function<bool(const SolverFrameValues&,std::uint64_t)>();
+		return [=](const SolverFrameValues& values,const std::uint64_t frameIndex)->bool{
+			if(frameIndex<1u)return true;
+			std::vector<double> frameTimesS;
+			std::vector<std::pair<std::string,std::string> > manifestFrames;
+			for(std::uint64_t frame=0u;frame<=frameIndex;++frame){
+				std::ostringstream stem;stem<<"frame_"<<std::setw(5)<<std::setfill('0')<<frame;
+				std::ifstream timeRecord(frameDirectory/(stem.str()+".time"));
+				double timeS=0.0;std::string digest;
+				if(!(timeRecord>>timeS>>digest)||digest.size()!=64u||!std::isfinite(timeS))return false;
+				frameTimesS.push_back(timeS);
+				manifestFrames.push_back({(std::filesystem::path(frameDirectory.filename())/
+					(stem.str()+".vdb")).generic_string(),digest});
+			}
+			const std::array<std::uint64_t,3> dimensions={{values.dimensions[0],values.dimensions[1],
+				values.dimensions[2]}};
+			const RISECBOR64::Bytes manifest=ManifestBytes("","","hold",true,true,dimensions,
+				values.cellWidthM,frameTimesS.front(),frameCadenceS,1.0,0.0,true,CapstonePoolDiameterM,
+				CapstoneHeatReleaseRateKW,false,0.0,resolutionTier,true,manifestFrames,targetTimeS,
+				1.0/frameCadenceS,true,r244LateralDouble,r246TopDouble);
+			if(manifest.empty())return false;
+			FireSequenceManifest verified;std::string error;
+			if(!verified.LoadCanonicalEnvelope(manifest,runDirectory.string(),error)||
+				verified.CaseRecordId()!=values.caseRecordId){
+				std::fprintf(stderr,"partial manifest refused: %s\n",error.c_str());return false;
+			}
+			const std::filesystem::path temporary=runDirectory/(std::string(PartialTemporalManifestName)+".tmp");
+			const std::filesystem::path published=runDirectory/PartialTemporalManifestName;
+			{
+				std::ofstream output(temporary,std::ios::binary|std::ios::trunc);
+				output.write(reinterpret_cast<const char*>(manifest.data()),
+					static_cast<std::streamsize>(manifest.size()));
+				output.close();
+				if(!output)return false;
+			}
+			std::error_code renameError;
+			std::filesystem::rename(temporary,published,renameError);
+			return !renameError;
+		};
 	}
 
 	bool CurrentExecutableDigest(const RISECBOR64::Bytes& buildRecord,
@@ -11871,6 +11940,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.temporalSnapshotDirectory=outputDirectory/"checkpoints";
 		persistence.temporalSnapshotCadenceS=frameCadenceS;
+		persistence.temporalFrameObserver=MakePartialTemporalManifestObserver(outputDirectory,
+			persistence.temporalSnapshotDirectory,resolutionTier,frameCadenceS,targetTimeS,
+			r244LateralDouble,r246TopDouble);
 		// r175 certifies the nonzero Binary32 source producer and burning-tail
 		// continuation at this represented step.  A source-bearing campaign may
 		// select a smaller CFL step, but it must not extrapolate that certificate
@@ -12034,6 +12106,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			summary<<"frame_"<<std::setw(5)<<std::setfill('0')<<frame<<"_sha256="<<
 				frameDigests[frame]<<"\n";
 		summary.close();
+		// The incremental manifest is a working file; the sealed final manifest above replaces it.
+		std::filesystem::remove(outputDirectory/PartialTemporalManifestName,directoryError);
+		std::filesystem::remove(outputDirectory/(std::string(PartialTemporalManifestName)+".tmp"),directoryError);
 		if(!summary||!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error))return 98;
 		std::fprintf(stderr,"PRODUCTION_TEMPORAL_CAPSTONE tier=%.0f time=%.17g steps=%zu "
 			"frames=%zu wall_s=%.17g summary=%s\n",resolutionTier,result.simulatedTimeS,
