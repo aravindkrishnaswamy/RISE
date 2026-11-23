@@ -76,6 +76,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Simulation/Fire/FireRunFrames.cpp"
     "${RISE_LIB}/Simulation/Fire/FireRunDriver.cpp"
     "${RISE_LIB}/Simulation/Fire/FireRun.cpp"
+    "${RISE_LIB}/Simulation/Fire/FireSolver.cpp"
     "${RISE_LIB}/Simulation/SimulationGrid.cpp"
     "${RISE_LIB}/Simulation/SimulationCache.cpp"
     "${RISE_LIB}/Simulation/SimulationMesh.cpp"

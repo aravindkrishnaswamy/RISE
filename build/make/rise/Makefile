@@ -284,7 +284,7 @@ TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	OslNoise.o)
 # M2 track B: the fire run driver moved out of tests/FireSequenceTest.cpp.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
-	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o)
+	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o FireSolver.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -621,6 +621,10 @@ $(PATHLIBRARY)Simulation/Fire/FireRunDriver.o : $(PATHLIBRARY)Simulation/Fire/Fi
 	@echo "Compiling (strict fire driver): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 $(PATHLIBRARY)Simulation/Fire/FireRun.o : $(PATHLIBRARY)Simulation/Fire/FireRun.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+# M2 track C: the fire solver adapter shares the driver's frame-clock arithmetic.
+$(PATHLIBRARY)Simulation/Fire/FireSolver.o : $(PATHLIBRARY)Simulation/Fire/FireSolver.cpp
 	@echo "Compiling (strict fire driver): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 

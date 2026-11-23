@@ -13,7 +13,9 @@
 //
 // Sidecars in the cache dir, all replaced durably: rise-sim.job.cbor (solver,
 // version, effective parameters, key, epoch), rise-sim.checkpoint (opaque
-// solver state behind a small header) and rise-sim.status.cbor.
+// solver state behind a small header) and rise-sim.status.cbor. A solver that
+// declares SolverDescription::sideOutput also owns <cache dir>/<sideOutput>
+// (emptied when a bake starts a new epoch, kept by resume).
 #ifndef RISE_SIMULATION_WORKER_H
 #define RISE_SIMULATION_WORKER_H
 
@@ -36,6 +38,7 @@ struct WorkerStatus {
 	std::uint64_t framesWritten = 0, framesTotal = 0; // output indices committed / declared
 	double wallSeconds = 0;     // cumulative over bake and resumes
 	std::string lastError;
+	std::string detail;         // the solver's last progress detail while running (optional field)
 };
 bool ReadWorkerStatus(const std::filesystem::path& cache, WorkerStatus& status, std::string& error);
 

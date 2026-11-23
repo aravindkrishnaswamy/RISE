@@ -85,6 +85,29 @@ namespace RISE
 	//! publication failures, 97 graceful host-memory stop (window_stop.v1).
 	int RunProductionTemporalCapstone(const FireCapstoneOptions& options);
 
+	//! The capstone in its phases, shared with the generic solver adapter
+	//! (FireSolver, M2 track C).  RunProductionTemporalCapstone is: options and
+	//! environment checks, the run directory, Plan, Receipt, the driver run
+	//! with launch.persistence, Finish.
+	struct ProductionTemporalLaunch
+	{
+		ProductionTemporalWindowPlan window;
+		SolverFrameValues launchCase;           // the launch case (geometry and identity, no steps)
+		FireRunPersistenceOptions persistence;  // the capstone's driver options for options.outputDirectory
+		unsigned int workers=8u;
+	};
+	bool ProductionTemporalOptionsAccepted(const FireCapstoneOptions& options);
+	//! Options, environment, case and window plan; touches no file.  0, 91 or 93.
+	int PlanProductionTemporalLaunch(const FireCapstoneOptions& options,ProductionTemporalLaunch& launch);
+	//! window_launch.v1 and its seal in options.outputDirectory.  0 or 92.
+	int WriteProductionTemporalLaunchReceipt(const FireCapstoneOptions& options,
+		const ProductionTemporalLaunch& launch);
+	//! After the driver returned: frame copies, frame_times.csv, the sealed
+	//! manifest, diagnostics, summary and the run-directory seal (exit codes as
+	//! RunProductionTemporalCapstone).
+	int FinishProductionTemporalRun(const FireCapstoneOptions& options,
+		const ProductionTemporalLaunch& launch,const SolverFrameValues& result,const double wallS);
+
 	bool ProductionTemporalCapstoneTierSupported(const double resolutionTier);
 	bool BuildProductionTemporalWindowPlan(const SolverFrameValues& geometry,
 		const double frameCadenceS,const bool r246TopDouble,ProductionTemporalWindowPlan& plan);

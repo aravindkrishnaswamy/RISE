@@ -153,6 +153,10 @@ namespace RISE
 		bool burnerFixtureVelocityMutantDetected=false;
 	};
 
+	//! Selects CheckpointWriter's in-memory file: the bytes are exactly the file
+	//! the path writer would produce (header, payload, header rewrite).
+	struct InMemoryCheckpointFile {};
+
 	class CheckpointWriter
 	{
 	public:
@@ -161,16 +165,23 @@ namespace RISE
 		CheckpointWriter() : digestOnly_(true) {}
 		explicit CheckpointWriter(RISECBOR64::Bytes& bytes) : digestOnly_(true),memory_(&bytes)
 			{bytes.clear();}
-		bool Good() const { return digestOnly_||static_cast<bool>(output_); }
+		CheckpointWriter(InMemoryCheckpointFile,RISECBOR64::Bytes& file) : digestOnly_(false),file_(&file)
+			{file.clear();}
+		bool Good() const { return digestOnly_||file_||static_cast<bool>(output_); }
 		bool HeaderBytes(const void* data,const std::size_t size)
 		{
 			if(digestOnly_)return false;
+			if(file_)return Put(data,size);
 			output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
 			return static_cast<bool>(output_);
 		}
 		bool SeekHeader(const std::streamoff offset)
 		{
 			if(digestOnly_)return false;
+			if(file_){
+				if(offset<0||static_cast<std::uint64_t>(offset)>file_->size())return false;
+				position_=static_cast<std::size_t>(offset);return true;
+			}
 			output_.seekp(offset);return static_cast<bool>(output_);
 		}
 		template<typename T> bool Pod(const T& value)
@@ -180,13 +191,14 @@ namespace RISE
 		}
 		bool Bytes(const void* data,const std::size_t size)
 		{
-			if(!digestOnly_&&!output_)return false;
-			if(!digestOnly_)output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
+			if(!digestOnly_&&!file_&&!output_)return false;
+			if(file_){if(!Put(data,size))return false;}
+			else if(!digestOnly_)output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
 			const unsigned char* byte=static_cast<const unsigned char*>(data);
 			if(memory_)memory_->insert(memory_->end(),byte,byte+size);
 			for(std::size_t i=0;i<size;++i){checksum_^=byte[i];checksum_*=1099511628211ull;}
 			payloadBytes_+=static_cast<std::uint64_t>(size);
-			return digestOnly_||static_cast<bool>(output_);
+			return digestOnly_||file_||static_cast<bool>(output_);
 		}
 		bool String(const std::string& value)
 		{
@@ -195,15 +207,26 @@ namespace RISE
 		}
 		bool Finish()
 		{
-			if(digestOnly_)return true;
+			if(digestOnly_||file_)return true;
 			output_.flush();output_.close();return !output_.fail();
 		}
 		std::uint64_t Checksum() const { return checksum_; }
 		std::uint64_t PayloadBytes() const { return payloadBytes_; }
 	private:
+		// In-memory file: write at the cursor, growing the file like a stream.
+		bool Put(const void* data,const std::size_t size)
+		{
+			if(size>file_->max_size()-position_)return false;
+			const std::size_t end=position_+size;
+			if(end>file_->size())file_->resize(end);
+			if(size)std::memcpy(file_->data()+position_,data,size);
+			position_=end;return true;
+		}
 		std::ofstream output_;
 		bool digestOnly_;
 		RISECBOR64::Bytes* memory_=nullptr;
+		RISECBOR64::Bytes* file_=nullptr;
+		std::size_t position_=0u;
 		std::uint64_t checksum_=1469598103934665603ull,payloadBytes_=0u;
 	};
 
@@ -372,6 +395,9 @@ namespace RISE
 	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
 		const MethaneRunCheckpoint& checkpoint,std::string& error,
 		const std::uint64_t version=13u);
+	//! The bytes SaveMethaneRunCheckpoint would write, in memory (M2 track C).
+	bool SerializeMethaneRunCheckpoint(const MethaneRunCheckpoint& checkpoint,
+		RISECBOR64::Bytes& file,std::string& error,const std::uint64_t version=13u);
 	PayloadPublicationPolicy CheckpointPublicationPolicy(const std::filesystem::path& output,
 		const std::filesystem::path& current,const bool finalDue,const bool equivalenceDue);
 	bool SavePublishedCheckpoint(const std::filesystem::path& path,

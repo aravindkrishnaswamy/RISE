@@ -38,6 +38,7 @@ std::string DeriveEpoch(const std::string& key,const std::string& parentDigest)
 bool PrepareCacheDescription(SolverDescription& d,const ISceneInputs& inputs,const std::string& parent,
 	std::string& error)
 {
+	if (!d.sideOutput.empty() && !ValidSideOutputName(d.sideOutput)) return Fail(error,"invalid side output name");
 	std::set<std::string> ports;
 	for (const auto& p : d.ports) {
 		if (p.name.empty() || p.codec.empty() || p.quantity.empty() || p.units.empty() || !ports.insert(p.name).second)

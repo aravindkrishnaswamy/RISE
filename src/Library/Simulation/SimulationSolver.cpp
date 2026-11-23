@@ -61,6 +61,15 @@ std::string EffectiveFidelity(const Evidence& evidence)
 	return "predictive";
 }
 
+bool ValidSideOutputName(const std::string& name)
+{
+	if (name.empty() || name.size()>64 || name[0]=='.' || name.find_first_of("/\\:")!=std::string::npos)
+		return false;
+	// Cache-owned and worker-owned names (SimulationCache.cpp, SimulationWorker.cpp).
+	if (name=="manifest.cbor" || name=="writer.lock" || name.rfind("rise-sim.",0)==0) return false;
+	return name.size()<6 || name.compare(name.size()-6,6,".frame")!=0;
+}
+
 bool PortsCompatible(const PortDeclaration& offer,const PortDeclaration& accept,std::string& error)
 {
 	if (!offer.offers || accept.offers) return Fail(error,"port binding must connect an offered port to an accepted port");

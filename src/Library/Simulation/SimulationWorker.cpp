@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <thread>
@@ -160,7 +161,9 @@ bool ReadJob(const fs::path& root,std::size_t budget,Job& job,std::string& error
 
 // Header (canonical CBOR) then raw state bytes: "RISESIMC", u32 version 1,
 // u64 header length, header, state.
-bool WriteCheckpoint(const fs::path& root,const Job& job,const SolverPosition& p,const Bytes& state,
+// The state is consumed: the header is inserted in front of it in place, so a
+// large solver state is not held twice when its buffer has a little slack.
+bool WriteCheckpoint(const fs::path& root,const Job& job,const SolverPosition& p,Bytes&& state,
 	std::string& error)
 {
 	Bytes header;
@@ -168,12 +171,12 @@ bool WriteCheckpoint(const fs::path& root,const Job& job,const SolverPosition& p
 		{"version",V::String(job.version)},{"time",V::Float(p.time)},{"next",V::Signed(p.nextIndex)},
 		{"finished",V::Bool(p.finished)},{"size",V::Unsigned(state.size())},
 		{"digest",V::String(RISECBOR64::SHA256Hex(state))}}),header,&error)) return false;
-	Bytes file(checkpointMagic,checkpointMagic+8);
-	auto word=[&](std::uint64_t x,unsigned width){for (unsigned i=0;i<width;++i) file.push_back(static_cast<unsigned char>(x>>(8*i)));};
+	Bytes prefix(checkpointMagic,checkpointMagic+8);
+	auto word=[&](std::uint64_t x,unsigned width){for (unsigned i=0;i<width;++i) prefix.push_back(static_cast<unsigned char>(x>>(8*i)));};
 	word(1,4); word(header.size(),8);
-	file.reserve(file.size()+header.size()+state.size());
-	file.insert(file.end(),header.begin(),header.end());
-	file.insert(file.end(),state.begin(),state.end());
+	prefix.insert(prefix.end(),header.begin(),header.end());
+	Bytes file(std::move(state));
+	file.insert(file.begin(),prefix.begin(),prefix.end());
 	return ReplaceFileDurably(root,checkpointName,file,error);
 }
 
@@ -200,7 +203,9 @@ bool ReadCheckpoint(const fs::path& root,const Job& job,std::size_t budget,Solve
 		return Fail(error,"invalid checkpoint header fields");
 	if (key!=job.key || solver!=job.solver || version!=job.version) return Fail(error,"checkpoint belongs to another job");
 	if (size->GetIntegerArgument()!=file.size()-20-length) return Fail(error,"checkpoint state length mismatch");
-	Bytes candidate(file.begin()+20+static_cast<std::ptrdiff_t>(length),file.end());
+	// Drop the header in place rather than copying a possibly large state.
+	file.erase(file.begin(),file.begin()+20+static_cast<std::ptrdiff_t>(length));
+	Bytes& candidate=file;
 	if (RISECBOR64::SHA256Hex(candidate)!=digest) return Fail(error,"checkpoint state digest mismatch");
 	const auto n=static_cast<std::int64_t>(next->GetIntegerArgument());
 	p.time=time->GetFloat();
@@ -216,7 +221,7 @@ bool WriteStatus(const fs::path& root,const WorkerStatus& s,std::string& error)
 	return RISECBOR64::Encode(V::MapValue({{"format",V::String("rise.sim.status.v1")},{"state",V::String(s.state)},
 		{"solver",V::String(s.solver)},{"simulated",V::Float(s.simulatedTime)},{"end",V::Float(s.endTime)},
 		{"frames",V::Unsigned(s.framesWritten)},{"total",V::Unsigned(s.framesTotal)},
-		{"wall",V::Float(s.wallSeconds)},{"error",V::String(s.lastError)}}),bytes,&error) &&
+		{"wall",V::Float(s.wallSeconds)},{"error",V::String(s.lastError)},{"detail",V::String(s.detail)}}),bytes,&error) &&
 		ReplaceFileDurably(root,statusName,bytes,error);
 }
 
@@ -246,12 +251,23 @@ private:
 	bool verify_;
 };
 
+// Stop requests, and progress inside a long Advance: the status record is
+// refreshed at most once a second with the reported time and detail.
 class StopProgress final : public IProgress {
 public:
-	explicit StopProgress(const std::atomic<bool>& stop) : stop_(stop) {}
-	bool Report(double,double,const std::string&) override { return !stop_.load() && g_signal==0; }
+	StopProgress(const std::atomic<bool>& stop,std::function<void(double,const std::string&)> status) :
+		stop_(stop), status_(std::move(status)), last_(Clock::now()) {}
+	bool Report(double simulatedTime,double,const std::string& detail) override {
+		if (status_ && std::chrono::duration<double>(Clock::now()-last_).count()>=1.0) {
+			status_(simulatedTime,detail);
+			last_=Clock::now();
+		}
+		return !stop_.load() && g_signal==0;
+	}
 private:
 	const std::atomic<bool>& stop_;
+	std::function<void(double,const std::string&)> status_;
+	Clock::time_point last_;
 };
 
 std::uint64_t CommittedIndices(const CacheSnapshot& s)
@@ -273,6 +289,7 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 		const auto p=solver.Position();
 		status.state=state;
 		status.simulatedTime=p.time;
+		if (state!="running") status.detail.clear();
 		status.framesWritten=CommittedIndices(writer.Snapshot());
 		status.wallSeconds=priorWall+std::chrono::duration<double>(Clock::now()-began).count();
 		status.lastError=lastError;
@@ -281,7 +298,7 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	};
 	auto checkpoint=[&](std::string& error) {
 		Bytes state;
-		return solver.Checkpoint(state,error) && WriteCheckpoint(root,job,solver.Position(),state,error);
+		return solver.Checkpoint(state,error) && WriteCheckpoint(root,job,solver.Position(),std::move(state),error);
 	};
 	auto fail=[&](const std::string& error) {
 		update("failed",error);
@@ -300,7 +317,10 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	struct Join { std::atomic<bool>& done; std::thread& t; ~Join(){done=true; if (t.joinable()) t.join();} } join{done,watcher};
 
 	WriterSink sink(writer,d.capabilities.deterministic);
-	StopProgress progress(stop);
+	StopProgress progress(stop,[&](double,const std::string& detail) {
+		status.detail=detail;
+		update("running","");
+	});
 	const auto firstIndex=solver.Position().nextIndex;
 	bool stopped=false;
 	for (;;) {
@@ -346,6 +366,38 @@ bool Configure(ISimulationSolver& solver,const V& parameters,SolverDescription& 
 	return PrepareCacheDescription(d,inputs,parent,error);
 }
 
+void PrintNotes(const SolverDescription& d,std::ostream& out)
+{
+	for (const auto& note : d.notes) out<<"rise-sim: note: "<<note<<"\n";
+}
+
+// The solver-owned side-output directory beside the cache files. A new epoch
+// starts with an empty one; a resume keeps what the interrupted run wrote.
+bool PrepareSideOutput(ISimulationSolver& solver,const SolverDescription& d,const fs::path& root,bool fresh,
+	std::string& error)
+{
+	if (d.sideOutput.empty()) return true;
+	if (!ValidSideOutputName(d.sideOutput)) return Fail(error,"invalid side output name");
+	const auto dir=root/d.sideOutput;
+	std::error_code ec;
+	const auto status=fs::symlink_status(dir,ec);
+	if (ec && ec!=std::errc::no_such_file_or_directory) return Fail(error,"cannot inspect side output directory");
+	if (status.type()!=fs::file_type::not_found && status.type()!=fs::file_type::directory)
+		return Fail(error,"side output path is not a directory: "+dir.string());
+	if (fresh && status.type()==fs::file_type::directory) {
+		// Rename first, so an interrupted removal never leaves a half-deleted
+		// directory under the live name.
+		const auto old=root/(".rise-sim.stale."+d.sideOutput);
+		fs::remove_all(old,ec);
+		fs::rename(dir,old,ec);
+		if (ec) return Fail(error,"cannot retire the previous side output: "+ec.message());
+		fs::remove_all(old,ec);
+	}
+	fs::create_directories(dir,ec);
+	if (ec || !fs::is_directory(dir)) return Fail(error,"cannot create side output directory "+dir.string());
+	return solver.SetSideOutputDirectory(dir,error);
+}
+
 double PriorWall(const fs::path& root)
 {
 	WorkerStatus s;
@@ -363,6 +415,7 @@ int Bake(const std::string& id,const fs::path& parameterFile,const fs::path& roo
 	if (!solver) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	SolverDescription d;
 	if (!Configure(*solver,parameters,d,"",error)) { err<<"rise-sim: configure: "<<error<<"\n"; return WorkerFailed; }
+	PrintNotes(d,out);
 	std::string parent;
 	if (Exists(root/"manifest.cbor")) {
 		CacheSnapshot old;
@@ -386,7 +439,7 @@ int Bake(const std::string& id,const fs::path& parameterFile,const fs::path& roo
 	std::error_code ec;
 	fs::remove(root/checkpointName,ec);
 	if (!WriteJob(root,job,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
-	if (!solver->Start(error)) {
+	if (!PrepareSideOutput(*solver,d,root,true,error) || !solver->Start(error)) {
 		WorkerStatus s; s.state="failed"; s.solver=job.solver; s.lastError=error;
 		std::string ignored; WriteStatus(root,s,ignored);
 		err<<"rise-sim: start: "<<error<<"\n"; return WorkerFailed;
@@ -419,6 +472,8 @@ int Resume(const fs::path& root,const Options& options,std::ostream& out,std::os
 	if (current.Complete()) { out<<"rise-sim: cache already complete\n"; return WorkerFinished; }
 	CacheWriter writer;
 	if (!writer.Begin(root,d.cache,current.Digest(),true,options.budget,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
+	PrintNotes(d,out);
+	if (!PrepareSideOutput(*solver,d,root,false,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	if (Exists(root/checkpointName)) {
 		SolverPosition position;
 		Bytes state;
@@ -458,6 +513,7 @@ int Status(const fs::path& root,const Options& options,std::ostream& out,std::os
 		if (worker=="running" && state!=CacheState::Baking) worker="interrupted";
 		out<<"worker: "<<worker<<"\nsolver: "<<s.solver<<"\nsimulated: "<<s.simulatedTime<<" / "<<s.endTime
 			<<"\nframes: "<<s.framesWritten<<" / "<<s.framesTotal<<"\nwall: "<<s.wallSeconds<<" s\n";
+		if (!s.detail.empty()) out<<"detail: "<<s.detail<<"\n";
 		if (!s.lastError.empty()) out<<"error: "<<s.lastError<<"\n";
 	}
 	out<<"checkpoint: "<<(Exists(root/checkpointName)?"yes":"no")<<"\n";
@@ -507,6 +563,10 @@ bool ReadWorkerStatus(const fs::path& root,WorkerStatus& status,std::string& err
 		return Fail(error,"invalid worker status record");
 	s.simulatedTime=sim->GetFloat(); s.endTime=end->GetFloat(); s.wallSeconds=wall->GetFloat();
 	s.framesWritten=frames->GetIntegerArgument(); s.framesTotal=total->GetIntegerArgument();
+	if (const V* detail=v.Find("detail")) {
+		if (detail->GetType()!=V::Text) return Fail(error,"invalid worker status record");
+		s.detail=detail->GetText();
+	}
 	status=std::move(s);
 	return true;
 }

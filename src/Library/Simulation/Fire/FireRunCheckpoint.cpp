@@ -865,6 +865,28 @@ namespace RISE
 		return true;
 	}
 
+	// Same writes, in the same order, as SaveMethaneRunCheckpoint, into an
+	// in-memory file instead of a temporary path (no publication).
+	bool SerializeMethaneRunCheckpoint(const MethaneRunCheckpoint& checkpoint,
+		RISECBOR64::Bytes& file,std::string& error,const std::uint64_t version)
+	{
+		if(version<5u||version>13u){error="run checkpoint output version is invalid";return false;}
+		RISECBOR64::Bytes candidate;
+		CheckpointWriter writer(InMemoryCheckpointFile{},candidate);
+		const char magic[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
+		const std::uint64_t endian=0x0102030405060708ull,zero=0u;
+		if(!writer.HeaderBytes(magic,sizeof(magic))||!writer.HeaderBytes(&version,sizeof(version))||
+			!writer.HeaderBytes(&endian,sizeof(endian))||!writer.HeaderBytes(&zero,sizeof(zero))||
+			!writer.HeaderBytes(&zero,sizeof(zero))||!WriteCheckpointPayload(writer,checkpoint,version)){
+			error="cannot serialize complete run checkpoint";return false;}
+		const std::uint64_t payloadBytes=writer.PayloadBytes(),checksum=writer.Checksum();
+		if(!writer.SeekHeader(32)||!writer.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
+			!writer.HeaderBytes(&checksum,sizeof(checksum))||!writer.Finish()){
+			error="cannot finalize run checkpoint";return false;}
+		file.swap(candidate);
+		return true;
+	}
+
 	PayloadPublicationPolicy CheckpointPublicationPolicy(const std::filesystem::path& output,
 		const std::filesystem::path& current,const bool finalDue,const bool equivalenceDue)
 	{

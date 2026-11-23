@@ -119,25 +119,27 @@ namespace RISE
 		return exitCode;
 	}
 
-	int RunProductionTemporalCapstone(const FireCapstoneOptions& options)
+	bool ProductionTemporalOptionsAccepted(const FireCapstoneOptions& options)
 	{
 		const double resolutionTier=options.resolutionTier,frameCadenceS=options.frameCadenceS;
-		const std::filesystem::path& outputDirectory=options.outputDirectory;
 		const bool r244LateralDouble=options.r244LateralDouble,r245AcceptedBudget=options.r245AcceptedBudget,
 			r246TopDouble=options.r246TopDouble;
-		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||frameCadenceS!=0.0625||
+		return !(!ProductionTemporalCapstoneTierSupported(resolutionTier)||frameCadenceS!=0.0625||
 			(r245AcceptedBudget&&!r244LateralDouble&&resolutionTier!=8.0)||
 			(r246TopDouble&&(!r244LateralDouble||!r245AcceptedBudget))||
 			(r244LateralDouble&&resolutionTier!=6.0)||
 			!std::isfinite(frameCadenceS)||
-			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS)return 91;
-		if(!ProductionTemporalEnvironmentAccepted()||std::filesystem::exists(outputDirectory)||
-			std::filesystem::is_symlink(outputDirectory))return 91;
-		std::error_code directoryError;
-		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
-		std::filesystem::create_directories(outputDirectory/"frames",directoryError);
-		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
-		if(directoryError)return 92;
+			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS);
+	}
+
+	int PlanProductionTemporalLaunch(const FireCapstoneOptions& options,ProductionTemporalLaunch& launch)
+	{
+		launch=ProductionTemporalLaunch();
+		const double resolutionTier=options.resolutionTier,frameCadenceS=options.frameCadenceS;
+		const std::filesystem::path& outputDirectory=options.outputDirectory;
+		const bool r244LateralDouble=options.r244LateralDouble,r245AcceptedBudget=options.r245AcceptedBudget,
+			r246TopDouble=options.r246TopDouble;
+		if(!ProductionTemporalOptionsAccepted(options)||!ProductionTemporalEnvironmentAccepted())return 91;
 		FireRunPersistenceOptions geometryOptions;geometryOptions.r244LateralDouble=r244LateralDouble;
 		geometryOptions.r246TopDouble=r246TopDouble;
 		geometryOptions.productionMetal=r246TopDouble;
@@ -145,20 +147,19 @@ namespace RISE
 		const SolverFrameValues beginning=RunFireMethaneDriver(1u,0u,0.0,
 			r246TopDouble?25.156864278900095:1.0,r246TopDouble?16.0:1.0,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,geometryOptions);
-		ProductionTemporalWindowPlan window;
+		ProductionTemporalWindowPlan& window=launch.window;
 		if(!BuildProductionTemporalWindowPlan(beginning,frameCadenceS,r246TopDouble,window))return 93;
-		const double statisticsStartS=window.statisticsStartS;
-		const double statisticsDurationS=window.statisticsDurationS;
 		const double targetTimeS=window.targetTimeS;
 		// The geometry probe uses the original window identity for r246, and a
 		// one-second case for historical paths. The launch case binds publication.
-		FireRunPersistenceOptions persistence;
+		FireRunPersistenceOptions& persistence=launch.persistence;
 		persistence.productionMetal=true;
 		persistence.portedProductionTransport=true;
 		persistence.r244LateralDouble=r244LateralDouble;
 		persistence.r246TopDouble=r246TopDouble;
-		const SolverFrameValues launchCase=RunFireMethaneDriver(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
+		launch.launchCase=RunFireMethaneDriver(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,persistence);
+		const SolverFrameValues& launchCase=launch.launchCase;
 		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS||
 			(r246TopDouble&&(launchCase.caseRecordId!=beginning.caseRecordId||
 			launchCase.matchedScheduleFlowThroughTimeS!=window.scheduleFlowThroughTimeS)))return 93;
@@ -196,7 +197,24 @@ namespace RISE
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
 		// The capstone's CPU-side source/target reductions retain their sealed
 		// eight-worker owner; Metal still owns the resident full-grid work.
-		const unsigned int workers=FireRunWorkerCount(8u);
+		launch.workers=FireRunWorkerCount(8u);
+		return 0;
+	}
+
+	int WriteProductionTemporalLaunchReceipt(const FireCapstoneOptions& options,
+		const ProductionTemporalLaunch& launch)
+	{
+		const double resolutionTier=options.resolutionTier,frameCadenceS=options.frameCadenceS;
+		const std::filesystem::path& outputDirectory=options.outputDirectory;
+		const bool r244LateralDouble=options.r244LateralDouble,r245AcceptedBudget=options.r245AcceptedBudget,
+			r246TopDouble=options.r246TopDouble;
+		const FireRunPersistenceOptions& persistence=launch.persistence;
+		const SolverFrameValues& launchCase=launch.launchCase;
+		const ProductionTemporalWindowPlan& window=launch.window;
+		const double statisticsStartS=window.statisticsStartS;
+		const double statisticsDurationS=window.statisticsDurationS;
+		const double targetTimeS=window.targetTimeS;
+		const unsigned int workers=launch.workers;
 		RISECBOR64::Bytes buildRecord;
 		std::string buildId,executableDigest,publicationError;
 		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
@@ -234,12 +252,47 @@ namespace RISE
 			<<"exclusive_host_rule no_builds_no_qualification_no_oracle_no_render\n";
 		if(!ClosePublishedStream(receipt)||!PublishPayloadMerkleSidecar(
 			outputDirectory/"window_launch.v1",launchCase.caseRecordId,publicationError))return 92;
+		return 0;
+	}
+
+	int RunProductionTemporalCapstone(const FireCapstoneOptions& options)
+	{
+		const std::filesystem::path& outputDirectory=options.outputDirectory;
+		if(!ProductionTemporalOptionsAccepted(options))return 91;
+		if(!ProductionTemporalEnvironmentAccepted()||std::filesystem::exists(outputDirectory)||
+			std::filesystem::is_symlink(outputDirectory))return 91;
+		std::error_code directoryError;
+		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
+		std::filesystem::create_directories(outputDirectory/"frames",directoryError);
+		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
+		if(directoryError)return 92;
+		ProductionTemporalLaunch launch;
+		const int planned=PlanProductionTemporalLaunch(options,launch);
+		if(planned!=0)return planned;
+		const int receipted=WriteProductionTemporalLaunchReceipt(options,launch);
+		if(receipted!=0)return receipted;
+		const double targetTimeS=launch.window.targetTimeS;
 		const auto wallStart=std::chrono::steady_clock::now();
-		const SolverFrameValues result=RunFireMethaneDriver(workers,1u,targetTimeS,
-			targetTimeS,1.0/frameCadenceS,resolutionTier,CapstonePoolDiameterM,
-			CapstoneHeatReleaseRateKW,persistence);
+		const SolverFrameValues result=RunFireMethaneDriver(launch.workers,1u,targetTimeS,
+			targetTimeS,1.0/options.frameCadenceS,options.resolutionTier,CapstonePoolDiameterM,
+			CapstoneHeatReleaseRateKW,launch.persistence);
 		const double wallS=std::chrono::duration<double>(
 			std::chrono::steady_clock::now()-wallStart).count();
+		return FinishProductionTemporalRun(options,launch,result,wallS);
+	}
+
+	int FinishProductionTemporalRun(const FireCapstoneOptions& options,
+		const ProductionTemporalLaunch& launch,const SolverFrameValues& result,const double wallS)
+	{
+		const double resolutionTier=options.resolutionTier,frameCadenceS=options.frameCadenceS;
+		const std::filesystem::path& outputDirectory=options.outputDirectory;
+		const bool r244LateralDouble=options.r244LateralDouble,r246TopDouble=options.r246TopDouble;
+		const FireRunPersistenceOptions& persistence=launch.persistence;
+		const SolverFrameValues& launchCase=launch.launchCase;
+		const double statisticsStartS=launch.window.statisticsStartS;
+		const double statisticsDurationS=launch.window.statisticsDurationS;
+		const double targetTimeS=launch.window.targetTimeS;
+		std::error_code directoryError;
 		if(!result.succeeded){std::fprintf(stderr,"production temporal capstone failed: %s\n",
 			result.structuredError.c_str());
 			return SealProductionTemporalStop(outputDirectory,result,targetTimeS);}

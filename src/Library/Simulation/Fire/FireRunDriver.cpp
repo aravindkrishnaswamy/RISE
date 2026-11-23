@@ -1732,6 +1732,27 @@ namespace RISE
 		if(!oracleComposition&&persistence.maximumOracleCompositionStepS!=0.0){
 			values.structuredError="oracle_composition_step_without_scope";return values;
 		}
+		// M2 track C: the solver adapter's options (rendezvous, absolute window
+		// end, general resume) are admitted only on the plain production
+		// transport; every historical mode keeps its own scope.
+		if((persistence.generalResume||persistence.acceptedStepRendezvous||persistence.restoreValues||
+			!persistence.generalResumeCheckpointPath.empty()||persistence.windowEndTimeS!=0.0||
+			persistence.finalCheckpointAtWindowEnd)&&
+			(!persistence.productionMetal||!persistence.portedProductionTransport||persistence.resume||
+			persistence.isolatedEquivalenceProbe||persistence.stopAfterAdditionalAcceptedSteps!=0u||
+			persistence.r244LateralDouble||persistence.r245AcceptedBudget||persistence.r246TopDouble||
+			persistence.r246FullWindow||persistence.windowS!=0.0||!persistence.checkpointPath.empty()||
+			!persistence.resumeEquivalenceCertificatePath.empty()||!persistence.equivalenceSnapshotDirectory.empty()||
+			!persistence.oracleCompositionDirectory.empty()||persistence.testHooks||
+			!(persistence.windowEndTimeS>=0.0)||!std::isfinite(persistence.windowEndTimeS)||
+			(persistence.finalCheckpointAtWindowEnd&&persistence.windowEndTimeS==0.0)||
+			persistence.generalResume!=!persistence.generalResumeCheckpointPath.empty()||
+			persistence.generalResume!=static_cast<bool>(persistence.restoreValues))){
+			values.structuredError="general_resume_scope_conflict";return values;
+		}
+		if(persistence.generalResume&&!std::filesystem::is_regular_file(persistence.generalResumeCheckpointPath)){
+			values.structuredError="checkpoint_resume_failure:general resume checkpoint is missing";return values;
+		}
 		// A bounded isolated diagnostic may reproduce a retained production state;
 		// it grants no empirical continuation or checkpoint migration authority.
 		const bool retainedProductionProbe=persistence.portedProductionTransport&&persistence.resume&&
@@ -2106,10 +2127,14 @@ namespace RISE
 		values.checkpointCadenceWallS=persistence.checkpointCadenceWallS;
 		values.streamedFrameCount=persistence.streamedFrameCountAtStart;
 		values.workerCountHistory.push_back(workerCount);
-		if(persistence.resume&&!persistence.checkpointPath.empty()&&
-			std::filesystem::exists(persistence.checkpointPath)){
+		// The general resume (M2 track C) loads its own path; every other resume
+		// reads checkpointPath as before.
+		const std::filesystem::path& resumeCheckpointPath=persistence.generalResume?
+			persistence.generalResumeCheckpointPath:persistence.checkpointPath;
+		if((persistence.resume||persistence.generalResume)&&!resumeCheckpointPath.empty()&&
+			std::filesystem::exists(resumeCheckpointPath)){
 			MethaneRunCheckpoint checkpoint;
-			if(!LoadMethaneRunCheckpoint(persistence.checkpointPath,checkpoint,error)){
+			if(!LoadMethaneRunCheckpoint(resumeCheckpointPath,checkpoint,error)){
 				values.structuredError="checkpoint_resume_failure:"+error;return values;
 			}
 			const bool sameBuild=checkpoint.producerBuildId==currentBuildId;
@@ -2203,7 +2228,10 @@ namespace RISE
 			if(legacyActiveSetCheckpoint)values.priorActiveSetAlgorithmVersion=
 				LegacyActiveSetAlgorithmVersion();
 			values.activeSetAlgorithmVersion=CurrentActiveSetAlgorithmVersion();
-			values.workerCountHistory.push_back(workerCount);
+			// The general resume continues the run's lineage: a worker count is
+			// recorded again only when it changes.
+			if(!persistence.generalResume||values.workerCountHistory.empty()||
+				values.workerCountHistory.back()!=workerCount)values.workerCountHistory.push_back(workerCount);
 			centerlineTemperatureIntegral=std::move(checkpoint.centerlineTemperatureIntegral);
 			centerlineVelocityIntegral=std::move(checkpoint.centerlineVelocityIntegral);
 			planeHeatReleaseIntegral=std::move(checkpoint.planeHeatReleaseIntegral);
@@ -2219,7 +2247,7 @@ namespace RISE
 				}
 				effectiveMinimumStepCount=static_cast<unsigned int>(requested);
 			}
-			values.resumedFromCheckpoint=true;values.resumedFromStep=acceptedSteps;
+			if(!persistence.generalResume){values.resumedFromCheckpoint=true;values.resumedFromStep=acceptedSteps;}
 			if(certifiedMigration){
 				values.migrationCertificateId=migration.certificateId;
 				values.migrationOldBuildId=migration.oldBuildId;
@@ -2228,9 +2256,12 @@ namespace RISE
 				values.migrationResumedFromStep=migration.resumedFromStep;
 			}
 			values.checkpointCadenceWallS=persistence.checkpointCadenceWallS;
+			if(persistence.generalResume&&!persistence.restoreValues(values,error)){
+				values.structuredError="checkpoint_resume_failure:"+error;return values;
+			}
 			if(reportCapstoneProgress)std::fprintf(stderr,
 				"capstone resumed checkpoint step=%u time=%.17g path=%s\n",acceptedSteps,
-				simulationTimeS,persistence.checkpointPath.string().c_str());
+				simulationTimeS,resumeCheckpointPath.string().c_str());
 		}
 		auto lastCheckpointWall=std::chrono::steady_clock::now();
 		const std::array<double,3> productionOnsetVelocityThresholds={{15.0,30.0,60.0}};
@@ -2247,6 +2278,16 @@ namespace RISE
 				persistence.productionOnsetDiagnosticDirectory,onsetDirectoryError);
 			if(onsetDirectoryError){values.structuredError="production_onset_directory_failure";
 				return values;}
+			// A general resume appends to the logs of the run it continues, and an
+			// onset threshold whose evidence the run already published stays captured.
+			const bool continueOnsetLogs=persistence.generalResume&&std::filesystem::exists(
+				persistence.productionOnsetDiagnosticDirectory/"maximum_velocity_trajectory.csv");
+			if(persistence.generalResume)for(std::size_t threshold=0u;threshold<productionOnsetVelocityThresholds.size();
+				++threshold){std::ostringstream name;name<<"threshold_"<<static_cast<unsigned int>(
+					productionOnsetVelocityThresholds[threshold])<<".raw.csv";
+				productionOnsetThresholdCaptured[threshold]=std::filesystem::exists(
+					persistence.productionOnsetDiagnosticDirectory/name.str());}
+			if(!continueOnsetLogs){
 			std::ofstream trajectory(persistence.productionOnsetDiagnosticDirectory/
 				"maximum_velocity_trajectory.csv",std::ios::trunc);
 			trajectory<<FireProductionOnsetEvidence::TrajectoryHeader()<<'\n';
@@ -2259,12 +2300,18 @@ namespace RISE
 				"suggested_dt_s,disposition,error\n";
 			if(!ClosePublishedStream(retries)){values.structuredError="production_onset_retry_trajectory_failure";
 				return values;}
+			}
 		}
 		FireProductionAcceptedStageBudget::Ledger r245Ledger;
 		std::uint64_t temporalSnapshotIndex=values.streamedFrameCount;
 		double nextTemporalSnapshotS=persistence.hasTemporalFrameOrigin?
 			persistence.temporalFrameOriginS:values.statisticsStartS;
-		if(persistence.temporalSnapshotCadenceS>0.0&&simulationTimeS>=nextTemporalSnapshotS)
+		// The general resume continues the frame clock exactly as the loop
+		// advances it after each frame (origin + index * cadence).
+		if(persistence.generalResume&&persistence.temporalSnapshotCadenceS>0.0)
+			nextTemporalSnapshotS=nextTemporalSnapshotS+static_cast<double>(temporalSnapshotIndex)*
+				persistence.temporalSnapshotCadenceS;
+		else if(persistence.temporalSnapshotCadenceS>0.0&&simulationTimeS>=nextTemporalSnapshotS)
 			nextTemporalSnapshotS+=persistence.temporalSnapshotCadenceS*(1.0+
 				std::floor((simulationTimeS-nextTemporalSnapshotS)/
 					persistence.temporalSnapshotCadenceS));
@@ -2311,6 +2358,45 @@ namespace RISE
 					static_cast<unsigned long long>(publishedFrameIndex));
 			return true;
 		};
+		// M2 track C: the accepted state as the checkpoint block below assembles
+		// it, serialized in memory without recording a checkpoint step.  Called
+		// only while the driver thread is blocked in the rendezvous; the state
+		// is moved out and back exactly as that block does.
+		const std::function<bool(RISECBOR64::Bytes&,std::string&)> serializeAcceptedState=
+			[&](RISECBOR64::Bytes& bytes,std::string& serializeError)->bool{
+			MethaneRunCheckpoint checkpoint;
+			checkpoint.caseRecordId=caseRecord.caseRecordId;
+			checkpoint.producerBuildId=currentBuildId;
+			checkpoint.dimensions={{shape.nx,shape.ny,shape.nz}};
+			checkpoint.cellWidthM=shape.cellWidthM;checkpoint.states=std::move(states);
+			checkpoint.momentum=std::move(momentum);
+			checkpoint.velocity=std::move(advanced.velocityMPerS);
+			checkpoint.values=std::move(values);
+			checkpoint.centerlineTemperatureIntegral=std::move(centerlineTemperatureIntegral);
+			checkpoint.centerlineVelocityIntegral=std::move(centerlineVelocityIntegral);
+			checkpoint.planeHeatReleaseIntegral=std::move(planeHeatReleaseIntegral);
+			checkpoint.centerlineStatisticsDurationS=centerlineStatisticsDurationS;
+			checkpoint.simulationTimeS=simulationTimeS;
+			checkpoint.previousStepS=previousStepS;
+			checkpoint.lastAcceptedStepS=reaction.deltaTimeS;
+			checkpoint.acceptedSteps=acceptedSteps;
+			checkpoint.productionManifoldObservation=productionManifoldObservation;
+			bool serialized=false;
+			try{
+				FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
+				const bool authorized=HomogeneousStateProducerPrecision(checkpoint.states,precision)&&
+					(precision!=FireStateProducerPrecision::Binary64||IssueBinary64CheckpointAuthority(checkpoint));
+				if(!authorized)serializeError="checkpoint state is not authorized for publication";
+				serialized=authorized&&SerializeMethaneRunCheckpoint(checkpoint,bytes,serializeError);
+			}catch(const std::exception& exception){serializeError=exception.what();serialized=false;}
+			states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
+			advanced.velocityMPerS=std::move(checkpoint.velocity);
+			values=std::move(checkpoint.values);
+			centerlineTemperatureIntegral=std::move(checkpoint.centerlineTemperatureIntegral);
+			centerlineVelocityIntegral=std::move(checkpoint.centerlineVelocityIntegral);
+			planeHeatReleaseIntegral=std::move(checkpoint.planeHeatReleaseIntegral);
+			return serialized;
+		};
 		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
 		const bool hostMemoryMonitored=persistence.UsesProjectedHeunOwner();
 		FireRunHostMemory::Policy hostMemoryPolicy;
@@ -2325,7 +2411,13 @@ namespace RISE
 			const auto memory=FireRunHostMemory::Read();
 			if(hostMemoryPolicy.Stop(memory)){
 				values.structuredError="host_memory_preflight_refused";return values;}
-			if(!persistence.productionOnsetDiagnosticDirectory.empty()){
+			// A general resume continues the run's host-memory log and keeps its
+			// admission record (the continued run was admitted at its start).
+			if(!persistence.productionOnsetDiagnosticDirectory.empty()&&persistence.generalResume&&
+				std::filesystem::exists(persistence.productionOnsetDiagnosticDirectory/"host_memory_trajectory.csv")&&
+				std::filesystem::exists(persistence.productionOnsetDiagnosticDirectory.parent_path()/"host_memory_admission.v1"))
+				hostMemoryPath=persistence.productionOnsetDiagnosticDirectory/"host_memory_trajectory.csv";
+			else if(!persistence.productionOnsetDiagnosticDirectory.empty()){
 				hostMemoryPath=persistence.productionOnsetDiagnosticDirectory/"host_memory_trajectory.csv";
 				std::ofstream output(hostMemoryPath);
 				output<<"accepted_step,time_s,process_rss_bytes,physical_footprint_bytes,compressed_bytes,host_ceiling_bytes,next_step_reserve_bytes,stop\n";
@@ -2356,8 +2448,9 @@ namespace RISE
 		}
 		const char* solverPhase="initialization";
 		// M2: optional bounded window and cooperative stop (both off by default).
-		const double windowEndTimeS=persistence.windowS>0.0?simulationTimeS+persistence.windowS:
-			std::numeric_limits<double>::infinity();
+		const double windowEndTimeS=persistence.windowEndTimeS>0.0?persistence.windowEndTimeS:
+			(persistence.windowS>0.0?simulationTimeS+persistence.windowS:
+			std::numeric_limits<double>::infinity());
 		bool cooperativeStopObserved=false;
 		while(advancedOK&&!productionOnsetStopReached&&
 			(!persistence.projectedHeunCostDiagnostic||acceptedSteps<3u)&&
@@ -4166,7 +4259,8 @@ namespace RISE
 					!persistence.temporalSnapshotDirectory.empty()&&
 					persistence.temporalSnapshotCadenceS>0.0&&
 					simulationTimeS>=nextTemporalSnapshotS;
-				const bool finalCheckpointDue=(!moreWork||hostMemoryStop)&&!persistence.finalCheckpointPath.empty();
+				const bool finalCheckpointDue=(!moreWork||hostMemoryStop||(persistence.finalCheckpointAtWindowEnd&&
+					simulationTimeS>=windowEndTimeS))&&!persistence.finalCheckpointPath.empty();
 				if(temporalSnapshotDue){
 					solverPhase="temporal-frame publication";
 					if(!writeTemporalFrame()){advancedOK=false;break;}
@@ -4174,6 +4268,17 @@ namespace RISE
 						persistence.temporalFrameOriginS:values.statisticsStartS)+
 						static_cast<double>(temporalSnapshotIndex)*
 						persistence.temporalSnapshotCadenceS;
+				}
+				// M2 track C: the solver adapter's rendezvous (may block; see FireRunDriver.h).
+				if(persistence.acceptedStepRendezvous){
+					FireRunStepRendezvous rendezvous;
+					rendezvous.acceptedSteps=acceptedSteps;rendezvous.simulationTimeS=simulationTimeS;
+					rendezvous.framePublished=temporalSnapshotDue;
+					rendezvous.frameIndex=temporalSnapshotDue?temporalSnapshotIndex-1u:0u;
+					rendezvous.lastStep=!moreWork||simulationTimeS>=windowEndTimeS;
+					rendezvous.values=&values;rendezvous.checkpoint=&serializeAcceptedState;
+					if(!persistence.acceptedStepRendezvous(rendezvous)){
+						advancedOK=false;error="run abandoned by its host";break;}
 				}
 				const bool isolatedResourceCheckpoint=hostMemoryStop&&persistence.isolatedEquivalenceProbe&&
 					!persistence.productionOnsetDiagnosticDirectory.empty();

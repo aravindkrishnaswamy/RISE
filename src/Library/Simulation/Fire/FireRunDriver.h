@@ -60,6 +60,27 @@ namespace RISE
 		bool hostMemoryRetentionRED=false;
 	};
 
+	//! One accepted step seen by FireRunPersistenceOptions::acceptedStepRendezvous
+	//! (simulation M2 track C).  Valid only during the call; `values` and
+	//! `checkpoint` refer to the driver's live state.
+	struct FireRunStepRendezvous
+	{
+		std::uint64_t acceptedSteps=0u;
+		double simulationTimeS=0.0;
+		//! A temporal frame was published at this step (its VDB, sidecar and
+		//! .time record are on disk and the frame observer has run).
+		bool framePublished=false;
+		std::uint64_t frameIndex=0u;
+		//! The loop ends after this step (target or window end reached).
+		bool lastStep=false;
+		const SolverFrameValues* values=nullptr;
+		//! Serializes the current accepted state exactly as SaveMethaneRunCheckpoint
+		//! (version 13) would write it, without recording a checkpoint step.  It
+		//! may be called from another thread while the driver thread is blocked
+		//! inside the rendezvous, and only then.
+		const std::function<bool(RISECBOR64::Bytes&,std::string&)>* checkpoint=nullptr;
+	};
+
 	//! Integration policy, persistence and observers of one driver run.
 	//! Field meanings and defaults are those of the historical test-file
 	//! RunPersistenceOptions; the fields after "M2 additions" are new and
@@ -157,6 +178,36 @@ namespace RISE
 		//! current checkpoint (checkpointPath) is written at that step, as if
 		//! the wall-time cadence had elapsed.
 		std::atomic<bool>* checkpointRequested=nullptr;
+
+		// M2 additions (track C, the generic solver adapter FireSolver).  All
+		// neutral at their defaults; no historical command sets them.
+		//! Absolute end of a bounded run (0 = none).  Unlike windowS it does not
+		//! move with the beginning time, so a resumed run ends where the
+		//! uninterrupted one does.  Takes precedence over windowS when set.
+		double windowEndTimeS=0.0;
+		//! Write finalCheckpointPath also when the run ends at windowEndTimeS.
+		bool finalCheckpointAtWindowEnd=false;
+		//! Called after every accepted step, after the step's temporal frame
+		//! (if any) and before the step's own checkpoint publication.  The
+		//! caller may block in it (the adapter's frame rendezvous) and may
+		//! serialize the state through FireRunStepRendezvous::checkpoint.  A
+		//! false return abandons the run (solver_failure, no further output).
+		std::function<bool(const FireRunStepRendezvous&)> acceptedStepRendezvous;
+		//! General resume: continue a same-build checkpoint of this case (written
+		//! through FireRunStepRendezvous::checkpoint and loaded from
+		//! generalResumeCheckpointPath) to the end of the same run, exactly as
+		//! if it had not been interrupted: frame numbering and frame clock,
+		//! statistics accumulation, worker history (appended only when the
+		//! worker count changes) and the run-lineage fields continue unchanged,
+		//! and the onset/host-memory logs are appended, not restarted.  Only the
+		//! production transport without diagnostics, probes or study domains is
+		//! admitted; `resume` and the isolated probe keep all their refusals.
+		bool generalResume=false;
+		std::filesystem::path generalResumeCheckpointPath;
+		//! General resume only: restores run values the checkpoint format does
+		//! not carry (monitored histories, retry counts, ...), called once right
+		//! after the checkpoint was admitted.  False refuses the resume.
+		std::function<bool(SolverFrameValues&,std::string&)> restoreValues;
 		//! Test-only hooks; null in production.
 		const FireRunTestHooks* testHooks=nullptr;
 		const FireRunTestHooks& Test() const

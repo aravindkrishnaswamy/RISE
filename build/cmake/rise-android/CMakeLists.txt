@@ -152,6 +152,7 @@ set_source_files_properties(
     "${RISE_LIB}/Simulation/Fire/FireRunFrames.cpp"
     "${RISE_LIB}/Simulation/Fire/FireRunDriver.cpp"
     "${RISE_LIB}/Simulation/Fire/FireRun.cpp"
+    "${RISE_LIB}/Simulation/Fire/FireSolver.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
 

@@ -351,6 +351,7 @@ bool FireSequenceManifest::AttachCache(const std::string& directory,std::string&
 	auto snap=std::make_shared<Simulation::CacheSnapshot>();
 	if(!Simulation::CacheSnapshot::Open(directory,manifestBudget,*snap,error)) return false;
 	const auto& d=snap->Description();
+	if(d.producer==FireMethaneSolverId) return AttachSolverCache(snap,directory,error);
 	if(d.producer!=converter || d.producerVersion!=version)
 		return Fail(error,"native cache does not carry a supported fire source envelope");
 	const auto digest=RISECBOR64::SHA256Hex(d.physicalRecords);
@@ -370,6 +371,67 @@ bool FireSequenceManifest::AttachCache(const std::string& directory,std::string&
 	candidate.native_=std::move(snap);
 	// A standalone imported cache has no independently verified original preimage.
 	if(candidate.originalManifestPath_.empty()) candidate.sourceQualification_="preview_only";
+	*this=std::move(candidate);
+	return true;
+}
+
+// A cache baked by the fire solver (rise-sim, M2 track C): its physical records
+// are the sequence envelope without a frame list, its frames are the solver's
+// grid.v1 payloads, and each receipt names the legacy VDB frame the payload was
+// converted from. Such a cache has no original sealed manifest, so it is
+// preview-only, like a standalone import.
+bool FireSequenceManifest::AttachSolverCache(const std::shared_ptr<Simulation::CacheSnapshot>& snap,
+	const std::string& directory,std::string& error)
+{
+	const auto& d=snap->Description();
+	if(d.producerVersion!=FireMethaneSolverVersion) return Fail(error,"unsupported fire solver cache version");
+	const auto digest=RISECBOR64::SHA256Hex(d.physicalRecords);
+	if(!envelopeDigest_.empty() && digest!=envelopeDigest_)
+		return Fail(error,"native cache source changed; reopen the simulation");
+	FireSequenceManifest candidate;
+	if(!candidate.LoadFrameTemplate(d.physicalRecords,error))
+		return Fail(error,"fire solver cache physical record is invalid: "+error);
+	const auto& map=candidate.timeMap_;
+	bool matches=d.fidelity=="preview" && candidate.sourceQualification_=="preview_only" && d.count>0 &&
+		d.startTime==map.simulationTimeOrigin && d.interval==map.frameStepSeconds &&
+		d.firstIndex==map.firstFrameIndex && d.sceneOrigin==map.sceneTimeOrigin &&
+		d.timeScale==map.sceneToSimulationScale && d.hold==(candidate.endPolicy_=="hold") &&
+		d.outputs.size()==1 && d.outputs.front().name==volume && d.outputs.front().type=="grid.v1" &&
+		d.outputs.front().channels.size()==candidate.channels_.size() &&
+		d.count<=static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-std::max<std::int64_t>(0,d.firstIndex));
+	for(std::size_t i=0;matches && i<candidate.channels_.size();++i){
+		const auto& c=d.outputs.front().channels[i];
+		const auto& want=candidate.channels_[i];
+		matches=c.name==want.name && c.units==want.units && c.representation==want.valueType;
+	}
+	if(!matches) return Fail(error,"fire solver cache description differs from its physical record");
+	candidate.frames_.clear();
+	candidate.frames_.reserve(static_cast<std::size_t>(d.count));
+	for(std::uint64_t k=0;k<d.count;++k){
+		FireSequenceFrameDescriptor frame;
+		frame.index=d.firstIndex+static_cast<std::int64_t>(k);
+		candidate.frames_.push_back(frame);
+	}
+	for(const auto& e:snap->Entries()){
+		Value receipt;
+		const Value *format=nullptr,*legacy=nullptr;
+		const auto offset=static_cast<std::uint64_t>(e.index)-static_cast<std::uint64_t>(d.firstIndex);
+		if(e.output!=volume || offset>=d.count || !RISECBOR64::DecodeCanonical(e.receipt,receipt,&error) ||
+			receipt.GetType()!=Value::Map || !(format=receipt.Find("format")) || format->GetType()!=Value::Text ||
+			format->GetText()!=FireMethaneFrameReceiptFormat || !(legacy=receipt.Find("legacy_sha256")) ||
+			legacy->GetType()!=Value::Text || legacy->GetText().size()!=64 ||
+			legacy->GetText().find_first_not_of("0123456789abcdef")!=std::string::npos)
+			return Fail(error,"fire solver cache frame receipt is invalid");
+		candidate.frames_[static_cast<std::size_t>(offset)].sha256=legacy->GetText();
+	}
+	candidate.frameTemplate_=false;
+	candidate.valid_=true;
+	candidate.originalManifestPath_=originalManifestPath_;
+	candidate.needsImport_=false;
+	candidate.qualifiedGeneration_=qualifiedGeneration_;
+	candidate.nativeDirectory_=directory;
+	candidate.envelopeDigest_=digest;
+	candidate.native_=snap;
 	*this=std::move(candidate);
 	return true;
 }

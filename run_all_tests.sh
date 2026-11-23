@@ -153,7 +153,7 @@ is_extended_test() {
 # (RISE_TEST_EXTENDED=1).
 has_extended_mode() {
 	case "$1" in
-		AgentSkillsTest|LightExitanceTest|SPFPdfConsistencyTest|TimeIndexedMotionBlurTest)
+		AgentSkillsTest|FireSolverTest|LightExitanceTest|SPFPdfConsistencyTest|TimeIndexedMotionBlurTest)
 			return 0
 			;;
 		*)

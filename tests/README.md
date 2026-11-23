@@ -45,7 +45,7 @@ Environment overrides honored by `run_all_tests.sh`:
 
 #### Tiers
 
-`--tier fast` skips the tests listed in `is_extended_test` (`run_all_tests.sh`) / `$ExtendedTests` (`run_all_tests.ps1`), and runs the tests listed in `has_extended_mode` / `$DualModeExtendedTests` in their cheap mode (`RISE_TEST_EXTENDED=0`).  A test that takes more than about 200 s on its own belongs in one of those two lists: either the extended tier, or a dual-mode test whose fast mode is cheap.  Keep the lists identical in the two scripts.  Currently `is_extended_test` / `$ExtendedTests` lists 2 suites (`MediumEnclosureConnectibilityTest`, `MediumInsideOutsideInvariantTest`) and `has_extended_mode` / `$DualModeExtendedTests` lists 4 dual-mode suites (`AgentSkillsTest`, `LightExitanceTest`, `SPFPdfConsistencyTest`, `TimeIndexedMotionBlurTest`).
+`--tier fast` skips the tests listed in `is_extended_test` (`run_all_tests.sh`) / `$ExtendedTests` (`run_all_tests.ps1`), and runs the tests listed in `has_extended_mode` / `$DualModeExtendedTests` in their cheap mode (`RISE_TEST_EXTENDED=0`).  A test that takes more than about 200 s on its own belongs in one of those two lists: either the extended tier, or a dual-mode test whose fast mode is cheap.  Keep the lists identical in the two scripts.  Currently `is_extended_test` / `$ExtendedTests` lists 2 suites (`MediumEnclosureConnectibilityTest`, `MediumInsideOutsideInvariantTest`) and `has_extended_mode` / `$DualModeExtendedTests` lists 5 dual-mode suites (`AgentSkillsTest`, `FireSolverTest`, `LightExitanceTest`, `SPFPdfConsistencyTest`, `TimeIndexedMotionBlurTest`).
 
 #### Running tests side by side
 

@@ -93,7 +93,19 @@ struct SolverDescription {            // filled by Configure
 	std::vector<PortDeclaration> ports;
 	Capabilities capabilities;
 	Evidence evidence;
+	// Solver-owned side outputs (exports in a solver's own format beside the
+	// cache, e.g. a legacy file sequence): a plain directory leaf name, empty
+	// for none. A host that keeps the cache on disk creates <cache>/<sideOutput>
+	// and passes it to SetSideOutputDirectory before Start or Restore; a new
+	// epoch starts with an empty one. Not part of the cache key.
+	std::string sideOutput;
+	// Human-readable configuration notes (for example which parameter values
+	// came from legacy environment defaults). Not part of the cache key.
+	std::vector<std::string> notes;
 };
+// Side-output leaf rule: nonempty, no separators, not "." or "..", no leading
+// dot, and none of the cache's or the worker's own names.
+bool ValidSideOutputName(const std::string& name);
 
 // ---------------------------------------------------------------- host services
 
@@ -185,6 +197,13 @@ public:
 		IProgress* progress, AdvanceResult& result, std::string& error) = 0;
 	virtual bool Checkpoint(Bytes& state, std::string& error) = 0; // opaque, solver-versioned
 	virtual SolverPosition Position() const = 0;                  // after Start/Restore/Advance
+	// The directory for SolverDescription::sideOutput, given by a disk host
+	// after Configure and before Start or Restore. Solvers without side outputs
+	// keep the default; a solver that needs one refuses Start without it.
+	virtual bool SetSideOutputDirectory(const std::filesystem::path& directory, std::string& error)
+	{
+		(void)directory; (void)error; return true;
+	}
 	// Thread-safe. The Advance in progress returns Stopped at its next safe
 	// point. A request is cleared when an Advance begins, so hosts that stop
 	// between calls check their own flag (or return false from IProgress).

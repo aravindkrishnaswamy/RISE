@@ -563,6 +563,9 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRun.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireSolver.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp" />
@@ -1179,6 +1182,7 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunFrames.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunDriver.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRun.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireSolver.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunHostMemory.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedStageBudget.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedFuelBudget.h" />

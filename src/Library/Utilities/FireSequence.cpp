@@ -477,6 +477,19 @@ namespace RISE
 			const RISECBOR64::Bytes& envelope, const std::string& manifestDirectory,
 			std::string& error )
 		{
+			return LoadEnvelope(envelope,manifestDirectory,false,error);
+		}
+
+		bool FireSequenceManifest::LoadFrameTemplate(
+			const RISECBOR64::Bytes& envelope, std::string& error )
+		{
+			return LoadEnvelope(envelope,std::string(),true,error);
+		}
+
+		bool FireSequenceManifest::LoadEnvelope(
+			const RISECBOR64::Bytes& envelope, const std::string& manifestDirectory,
+			const bool frameTemplate, std::string& error )
+		{
 			*this = FireSequenceManifest();
 			Value root;
 			if( !Simulation::CanDecodeCanonicalRecord(envelope,256u*1024u*1024u) ||
@@ -493,7 +506,20 @@ namespace RISE
 				RISECBOR64::SHA256Hex(canonicalPayload_) != sequenceId->GetText() ) return Fail(error,
 				"fire sequence_id does not bind the canonical payload bytes");
 
-			if( !ExactKeys(*payload,{"aerosol_thermochemistry_record","aerosol_thermochemistry_record_id","case_record","case_record_id",
+			const bool payloadKeys = frameTemplate ?
+				ExactKeys(*payload,{"aerosol_thermochemistry_record","aerosol_thermochemistry_record_id","case_record","case_record_id",
+				"channels","chem_record","end_policy","fuel_record","fuel_record_id",
+				"chem_record_id",
+				"frame_encoding",
+				"gas_opacity_record","gas_opacity_record_id","gas_thermochemistry_record",
+				"gas_thermochemistry_record_id","gate_evidence_ids",
+				"optical_record","optical_record_id","outside_halo_policy","physical_mapping",
+				"producer_build_id","producer_build_v1","producer_reason_codes","qdot_ref_W",
+				"scene_translation_m","scene_unit_meters",
+				"schema_version","source_kind","source_qualification","temperature_domain_K",
+				"time_map","transport_closure_record","transport_closure_record_id",
+				"velocity_halo_width_m"},{"producer_numerical_policy","producer_numerical_policy_id"}) :
+				ExactKeys(*payload,{"aerosol_thermochemistry_record","aerosol_thermochemistry_record_id","case_record","case_record_id",
 				"channels","chem_record","end_policy","frames","fuel_record","fuel_record_id",
 				"chem_record_id",
 				"first_frame_index","frame_count",
@@ -506,7 +532,8 @@ namespace RISE
 				"scene_translation_m","scene_unit_meters",
 				"schema_version","source_kind","source_qualification","temperature_domain_K",
 				"time_map","transport_closure_record","transport_closure_record_id",
-				"velocity_halo_width_m"},{"producer_numerical_policy","producer_numerical_policy_id"}) ) return Fail(error,
+				"velocity_halo_width_m"},{"producer_numerical_policy","producer_numerical_policy_id"});
+			if( !payloadKeys ) return Fail(error,
 				"fire sequence payload is outside schema_version 1");
 			const Value* schema = payload->Find("schema_version");
 			if( !schema || schema->GetType() != Value::UnsignedInteger ||
@@ -859,6 +886,12 @@ namespace RISE
 				}
 			}
 
+			if( frameTemplate ) {
+				// The frame list comes from the cache that carries this template.
+				sequenceId_ = sequenceId->GetText();
+				frameTemplate_ = true;
+				return true;
+			}
 			const Value* frames = payload->Find("frames");
 			if( !frames || frames->GetType() != Value::Array || frames->GetArray().empty() ) {
 				return Fail(error,"fire sequence frame list is empty");
@@ -946,8 +979,23 @@ namespace RISE
 			const auto found = std::find_if(frames_.begin(),frames_.end(),
 				[frameIndex](const FireSequenceFrameDescriptor& item){ return item.index == frameIndex; });
 			if( found == frames_.end() ) return Fail(error,"fire sequence requested frame is absent");
+			return ReadVDBPath((std::filesystem::path(manifestDirectory_)/found->relativePath).string(),
+				found->sha256,frameIndex,dense,native,error);
+		}
+
+		bool FireSequenceManifest::LoadVDBFileGrid( const std::string& path, const std::string& sha256,
+			Simulation::GridFrame& grid, std::string& error ) const
+		{
+			if( !valid_ && !frameTemplate_ ) return Fail(error,"fire sequence manifest is invalid");
+			return ReadVDBPath(path,sha256,0,nullptr,&grid,error);
+		}
+
+		bool FireSequenceManifest::ReadVDBPath( const std::string& file, const std::string& sha256,
+			const std::int64_t frameIndex, FireSequencePreparedFrame* dense, Simulation::GridFrame* native,
+			std::string& error ) const
+		{
 #if !defined(RISE_ENABLE_OPENVDB)
-			(void)native; (void)dense;
+			(void)file; (void)sha256; (void)frameIndex; (void)native; (void)dense;
 			return Fail(error,"fire_sequence_openvdb_capability_unavailable");
 #else
 			if( dense ) {
@@ -960,7 +1008,7 @@ namespace RISE
 					remaining -= voxels*components;
 				}
 			}
-			const std::filesystem::path path = std::filesystem::path(manifestDirectory_)/found->relativePath;
+			const std::filesystem::path path(file);
 			try {
 				std::ifstream input(path,std::ios::binary|std::ios::ate);
 				const auto size=input.tellg();
@@ -970,7 +1018,7 @@ namespace RISE
 				input.seekg(0);
 				if( !input.read(&data[0],size) || input.peek()!=std::char_traits<char>::eof() || input.bad() ||
 					RISECBOR64::SHA256Hex(
-					reinterpret_cast<const unsigned char*>(data.data()),data.size())!=found->sha256 )
+					reinterpret_cast<const unsigned char*>(data.data()),data.size())!=sha256 )
 					return Fail(error,"fire sequence frame whole-file digest mismatch");
 				const auto grids=Simulation::DecodeVDBPreimage(data);
 				std::set<std::string> fileNames;
@@ -991,7 +1039,7 @@ namespace RISE
 				Simulation::GridFrame nativeCandidate;
 				std::size_t nativeBudget=std::size_t(1024)*1024*1024;
 				candidate.frameIndex = frameIndex;
-				candidate.wholeFileSha256 = found->sha256;
+				candidate.wholeFileSha256 = sha256;
 				for( const FireSequenceChannelDescriptor& descriptor : channels_ ) {
 					openvdb::GridBase::Ptr base = byName[descriptor.name];
 					if( !base || !ValidateTransform(*base,descriptor,error) ) {
