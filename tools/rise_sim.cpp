@@ -6,11 +6,13 @@
 // WorkerMain.
 #include "../src/Library/Simulation/SimulationWorker.h"
 #include "../src/Library/Simulation/Fire/FireSolver.h"
+#include "../src/Library/Simulation/Cloth/ClothSolver.h"
 #include <iostream>
 
 int main(int argc, char** argv)
 {
 	std::string error;
 	if (!RISE::Simulation::RegisterFireSolver(error)) std::cerr << "rise-sim: fire solver unavailable: " << error << "\n";
+	if (!RISE::Simulation::RegisterClothSolver(error)) std::cerr << "rise-sim: cloth solver unavailable: " << error << "\n";
 	return RISE::Simulation::WorkerMain(argc, argv);
 }

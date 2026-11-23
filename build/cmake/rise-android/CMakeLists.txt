@@ -155,6 +155,16 @@ set_source_files_properties(
     "${RISE_LIB}/Simulation/Fire/FireSolver.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
+# M3a: the cloth solver's checkpoints and evidence digests must not depend on
+# fast-math reassociation or FP contraction.
+set_source_files_properties(
+    "${RISE_LIB}/Simulation/Cloth/ClothMaterial.cpp"
+    "${RISE_LIB}/Simulation/Cloth/ClothLinearAlgebra.cpp"
+    "${RISE_LIB}/Simulation/Cloth/ClothModel.cpp"
+    "${RISE_LIB}/Simulation/Cloth/ClothValidation.cpp"
+    "${RISE_LIB}/Simulation/Cloth/ClothSolver.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
 
 # Link rise against vendored libpng + zlib so PNG reader/writer resolve.
 target_link_libraries(rise PUBLIC png_local z_local)

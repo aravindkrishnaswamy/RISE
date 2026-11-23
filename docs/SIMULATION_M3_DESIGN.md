@@ -24,6 +24,12 @@ bending-dominated states. The `predictive` label is therefore restricted to regu
 the solver generates itself from a rectangle or a simple pattern. Imported irregular meshes run as `preview`.
 The upgrade path is a subdivision-surface Kirchhoff–Love shell element with the same material parameters.
 
+**Changed in M3a (2026-11-23):** hinge bending was tested and does not converge on either structured
+triangulation (cantilever error 0.30 → 0.75 → 1.03 under refinement), so it is kept only as a `preview` option. The
+default is a line-bending discretisation: each vertex row and column bends as a discrete rod and diagonals carry
+twist. It converges at second order on all six analytic cases and has no Poisson coupling in bending (D12 = 0),
+stated in [SIMULATION_M3A_RESULTS.md](SIMULATION_M3A_RESULTS.md).
+
 **Not captured:** hysteresis, yarn-level effects, wrinkles below mesh resolution.
 
 ## 2. Material data

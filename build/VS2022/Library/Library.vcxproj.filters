@@ -7,6 +7,9 @@
     <Filter Include="Simulation\Fire">
       <UniqueIdentifier>{4F8B2C61-7E0D-4B5A-9C3E-2D1A6F0B8E47}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Simulation\Cloth">
+      <UniqueIdentifier>{6C2D9E14-3B7A-4F05-8E1C-5A9F2B0D7C31}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Utilities">
       <UniqueIdentifier>{c10fb33e-5a30-477a-969f-ee7dd721baa5}</UniqueIdentifier>
     </Filter>
@@ -344,6 +347,21 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationWorker.cpp">
       <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothMaterial.cpp">
+      <Filter>Simulation\Cloth</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothLinearAlgebra.cpp">
+      <Filter>Simulation\Cloth</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothModel.cpp">
+      <Filter>Simulation\Cloth</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.cpp">
+      <Filter>Simulation\Cloth</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothSolver.cpp">
+      <Filter>Simulation\Cloth</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp">
       <Filter>Utilities</Filter>
@@ -1682,6 +1700,21 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationWorker.h">
       <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothMaterial.h">
+      <Filter>Simulation\Cloth</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothLinearAlgebra.h">
+      <Filter>Simulation\Cloth</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothModel.h">
+      <Filter>Simulation\Cloth</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.h">
+      <Filter>Simulation\Cloth</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothSolver.h">
+      <Filter>Simulation\Cloth</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h">
       <Filter>Utilities</Filter>

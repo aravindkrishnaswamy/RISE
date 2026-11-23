@@ -861,6 +861,11 @@
 		45442A37E9DCB1FCE32C852A /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		F5EAF8098A45004B8CC2542C /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		0A09DCAF8E305338CDC23482 /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		A573C249A71F45E086A3C5EA /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		6829BFCEBD1748B090C2A074 /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		B3DF61DDE42948EFA439CA53 /* ClothModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BEED23719B8C435794DE9CE8 /* ClothModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		E5DC38BDDC2D486EAB929B7E /* ClothValidation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 080CFE5F1EB444F687850703 /* ClothValidation.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		4C768A85B1F54191BFF6FAB0 /* ClothSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		6348573A914F130527A8F234 /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
 		991873917EA5BC599177A762 /* SimulationSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9A16AB8B956F4DCDC5451F6B /* SimulationSolver.cpp */; };
 		A3F3972CE4BA9E2E7B5EA0DB /* SimulationHost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0124CC05BC6837146CA0D81D /* SimulationHost.cpp */; };
@@ -1587,6 +1592,11 @@
 		00C10732F96A8F6A100187BF /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		05F7F3997CB782000CF75A5F /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		8DC57724A9F43A06F0EFA95B /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		E4194BFEA3004934A4ACC263 /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		F39CE5124D6F4A5C83C80C9C /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		DCA2B4C155794BDE94C505C1 /* ClothModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BEED23719B8C435794DE9CE8 /* ClothModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		3AA13E45C4944989903A8DCC /* ClothValidation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 080CFE5F1EB444F687850703 /* ClothValidation.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		665BD52915384D5B9A9EEDB5 /* ClothSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
 		7C92CABD98002AFF85C30056 /* SimulationSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9A16AB8B956F4DCDC5451F6B /* SimulationSolver.cpp */; };
 		AAFE1D6A5FFCA0F24111AB04 /* SimulationHost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0124CC05BC6837146CA0D81D /* SimulationHost.cpp */; };
@@ -1605,6 +1615,11 @@
 		B80864811244EB7EA5E77382 /* FireRun.h in Headers */ = {isa = PBXBuildFile; fileRef = F171F7FE1DC0B53FBC16ACA4 /* FireRun.h */; };
 		0273E2AFA42EAB62FF0AC547 /* FireSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = BF7F2C96B42CF67630134748 /* FireSolver.h */; };
 		20869C80EB77B43D3229E786 /* FireRunHostMemory.h in Headers */ = {isa = PBXBuildFile; fileRef = 3B91B33F567812A35FDD65AA /* FireRunHostMemory.h */; };
+		3D51895E00B240CE88706D82 /* ClothMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 096BADAD2FEC436DB149BB53 /* ClothMaterial.h */; };
+		4CFE9FAD02554D55BB45C8EC /* ClothLinearAlgebra.h in Headers */ = {isa = PBXBuildFile; fileRef = 460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */; };
+		ED6B4121EFB141DCA8092C5A /* ClothModel.h in Headers */ = {isa = PBXBuildFile; fileRef = 28159AF91A34494D83CC06CC /* ClothModel.h */; };
+		7D95D4A516894A74A5F73EE7 /* ClothValidation.h in Headers */ = {isa = PBXBuildFile; fileRef = 599221FEED4644D0BE6A0498 /* ClothValidation.h */; };
+		2C2EF647EC484AE5AF0ECADC /* ClothSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = FAF05831547F4958BC62F859 /* ClothSolver.h */; };
 		5B9F1C8B21CFE464328ED16B /* FireProductionAcceptedStageBudget.h in Headers */ = {isa = PBXBuildFile; fileRef = 2BEDC33C00ADE5DE06EF93F4 /* FireProductionAcceptedStageBudget.h */; };
 		C654CF3797B4DBCEAE578EB6 /* FireProductionAcceptedFuelBudget.h in Headers */ = {isa = PBXBuildFile; fileRef = 1323DDF883A0E5FD327E50CB /* FireProductionAcceptedFuelBudget.h */; };
 		F206DE6B562759DB532CA0CA /* FireProductionOnsetEvidence.h in Headers */ = {isa = PBXBuildFile; fileRef = 9CC4422CDDBA59701F51BFEE /* FireProductionOnsetEvidence.h */; };
@@ -3035,6 +3050,16 @@
 		F171F7FE1DC0B53FBC16ACA4 /* FireRun.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRun.h; sourceTree = "<group>"; };
 		BF7F2C96B42CF67630134748 /* FireSolver.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSolver.h; sourceTree = "<group>"; };
 		3B91B33F567812A35FDD65AA /* FireRunHostMemory.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRunHostMemory.h; sourceTree = "<group>"; };
+		42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothMaterial.cpp; sourceTree = "<group>"; };
+		2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothLinearAlgebra.cpp; sourceTree = "<group>"; };
+		BEED23719B8C435794DE9CE8 /* ClothModel.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothModel.cpp; sourceTree = "<group>"; };
+		080CFE5F1EB444F687850703 /* ClothValidation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothValidation.cpp; sourceTree = "<group>"; };
+		A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothSolver.cpp; sourceTree = "<group>"; };
+		096BADAD2FEC436DB149BB53 /* ClothMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothMaterial.h; sourceTree = "<group>"; };
+		460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothLinearAlgebra.h; sourceTree = "<group>"; };
+		28159AF91A34494D83CC06CC /* ClothModel.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothModel.h; sourceTree = "<group>"; };
+		599221FEED4644D0BE6A0498 /* ClothValidation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothValidation.h; sourceTree = "<group>"; };
+		FAF05831547F4958BC62F859 /* ClothSolver.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothSolver.h; sourceTree = "<group>"; };
 		2BEDC33C00ADE5DE06EF93F4 /* FireProductionAcceptedStageBudget.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionAcceptedStageBudget.h; sourceTree = "<group>"; };
 		1323DDF883A0E5FD327E50CB /* FireProductionAcceptedFuelBudget.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionAcceptedFuelBudget.h; sourceTree = "<group>"; };
 		9CC4422CDDBA59701F51BFEE /* FireProductionOnsetEvidence.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionOnsetEvidence.h; sourceTree = "<group>"; };
@@ -4620,6 +4645,7 @@
 				0CD2934AA044EAA272761055 /* SimulationHost.h */,
 				8286AD6E16E9B797C6DCF594 /* SimulationWorker.h */,
 				ECE84DFC099F5B30B32509C1 /* Fire */,
+				46EBEDC9C40441B4BC931DF3 /* Cloth */,
 			);
 			path = Simulation;
 			sourceTree = "<group>";
@@ -4646,6 +4672,23 @@
 				8CB4D9245196DAAB4DA46939 /* fire_resident_resume_v2.h */,
 			);
 			path = Fire;
+			sourceTree = "<group>";
+		};
+		46EBEDC9C40441B4BC931DF3 /* Cloth */ = {
+			isa = PBXGroup;
+			children = (
+				42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */,
+				2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */,
+				BEED23719B8C435794DE9CE8 /* ClothModel.cpp */,
+				080CFE5F1EB444F687850703 /* ClothValidation.cpp */,
+				A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */,
+				096BADAD2FEC436DB149BB53 /* ClothMaterial.h */,
+				460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */,
+				28159AF91A34494D83CC06CC /* ClothModel.h */,
+				599221FEED4644D0BE6A0498 /* ClothValidation.h */,
+				FAF05831547F4958BC62F859 /* ClothSolver.h */,
+			);
+			path = Cloth;
 			sourceTree = "<group>";
 		};
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
@@ -5685,6 +5728,11 @@
 				B80864811244EB7EA5E77382 /* FireRun.h in Headers */,
 				0273E2AFA42EAB62FF0AC547 /* FireSolver.h in Headers */,
 				20869C80EB77B43D3229E786 /* FireRunHostMemory.h in Headers */,
+				3D51895E00B240CE88706D82 /* ClothMaterial.h in Headers */,
+				4CFE9FAD02554D55BB45C8EC /* ClothLinearAlgebra.h in Headers */,
+				ED6B4121EFB141DCA8092C5A /* ClothModel.h in Headers */,
+				7D95D4A516894A74A5F73EE7 /* ClothValidation.h in Headers */,
+				2C2EF647EC484AE5AF0ECADC /* ClothSolver.h in Headers */,
 				5B9F1C8B21CFE464328ED16B /* FireProductionAcceptedStageBudget.h in Headers */,
 				C654CF3797B4DBCEAE578EB6 /* FireProductionAcceptedFuelBudget.h in Headers */,
 				F206DE6B562759DB532CA0CA /* FireProductionOnsetEvidence.h in Headers */,
@@ -6340,6 +6388,11 @@
 				00C10732F96A8F6A100187BF /* FireRunDriver.cpp in Sources */,
 				05F7F3997CB782000CF75A5F /* FireRun.cpp in Sources */,
 				8DC57724A9F43A06F0EFA95B /* FireSolver.cpp in Sources */,
+				E4194BFEA3004934A4ACC263 /* ClothMaterial.cpp in Sources */,
+				F39CE5124D6F4A5C83C80C9C /* ClothLinearAlgebra.cpp in Sources */,
+				DCA2B4C155794BDE94C505C1 /* ClothModel.cpp in Sources */,
+				3AA13E45C4944989903A8DCC /* ClothValidation.cpp in Sources */,
+				665BD52915384D5B9A9EEDB5 /* ClothSolver.cpp in Sources */,
 				012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */,
 				7C92CABD98002AFF85C30056 /* SimulationSolver.cpp in Sources */,
 				AAFE1D6A5FFCA0F24111AB04 /* SimulationHost.cpp in Sources */,
@@ -7342,6 +7395,11 @@
 				45442A37E9DCB1FCE32C852A /* FireRunDriver.cpp in Sources */,
 				F5EAF8098A45004B8CC2542C /* FireRun.cpp in Sources */,
 				0A09DCAF8E305338CDC23482 /* FireSolver.cpp in Sources */,
+				A573C249A71F45E086A3C5EA /* ClothMaterial.cpp in Sources */,
+				6829BFCEBD1748B090C2A074 /* ClothLinearAlgebra.cpp in Sources */,
+				B3DF61DDE42948EFA439CA53 /* ClothModel.cpp in Sources */,
+				E5DC38BDDC2D486EAB929B7E /* ClothValidation.cpp in Sources */,
+				4C768A85B1F54191BFF6FAB0 /* ClothSolver.cpp in Sources */,
 				6348573A914F130527A8F234 /* SimulationMesh.cpp in Sources */,
 				991873917EA5BC599177A762 /* SimulationSolver.cpp in Sources */,
 				A3F3972CE4BA9E2E7B5EA0DB /* SimulationHost.cpp in Sources */,

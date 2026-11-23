@@ -572,6 +572,21 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationSolver.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationHost.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationWorker.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothMaterial.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothLinearAlgebra.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothModel.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothSolver.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
@@ -1198,6 +1213,11 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationSolver.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationHost.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationWorker.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothLinearAlgebra.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothModel.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothSolver.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />
