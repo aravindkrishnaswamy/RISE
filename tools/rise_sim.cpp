@@ -7,6 +7,7 @@
 #include "../src/Library/Simulation/SimulationWorker.h"
 #include "../src/Library/Simulation/Fire/FireSolver.h"
 #include "../src/Library/Simulation/Cloth/ClothSolver.h"
+#include "../src/Library/Simulation/BuiltinSolvers.h"
 #include <iostream>
 
 int main(int argc, char** argv)
@@ -14,5 +15,9 @@ int main(int argc, char** argv)
 	std::string error;
 	if (!RISE::Simulation::RegisterFireSolver(error)) std::cerr << "rise-sim: fire solver unavailable: " << error << "\n";
 	if (!RISE::Simulation::RegisterClothSolver(error)) std::cerr << "rise-sim: cloth solver unavailable: " << error << "\n";
+	// M4: the solvers' parameter schemas too (a scene bake keys and completes
+	// fire parameters through them); idempotent after the two calls above.
+	error.clear();
+	if (!RISE::Simulation::RegisterBuiltinSolvers(error)) std::cerr << "rise-sim: " << error << "\n";
 	return RISE::Simulation::WorkerMain(argc, argv);
 }

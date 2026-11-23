@@ -2,7 +2,11 @@
 #include "pch.h"
 #include "BuiltinSolvers.h"
 #include "Cloth/ClothSolver.h"
+#include "Cloth/ClothParameterSchema.h"
+#include "SimulationParameterSchema.h"
 #include "Fire/FireSolver.h"
+#include "Fire/FireParameterSchema.h"
+#include "../Utilities/FireSequence.h"
 
 namespace RISE { namespace Simulation {
 
@@ -14,8 +18,14 @@ bool RegisterBuiltinSolvers( std::string& error )
 	// Capabilities say it is not interactive, and a live attach refuses it.
 	std::string failures, e;
 	if( !RegisterClothSolver( e ) ) failures += "cloth.shell: " + e;
+	// M4: each solver's parameter schema beside its factory (not part of the contract).
+	e.clear();
+	if( !RegisterSolverSchema( ClothSolverId, &ClothParameterSchema, e ) ) failures += ( failures.empty() ? "" : "; " ) + e;
 	e.clear();
 	if( !RegisterFireSolver( e ) ) failures += ( failures.empty() ? "" : "; " ) + std::string( "fire.methane: " ) + e;
+	e.clear();
+	if( !RegisterSolverSchema( Implementation::FireMethaneSolverId, &FireParameterSchema, e ) )
+		failures += ( failures.empty() ? "" : "; " ) + e;
 	if( failures.empty() ) return true;
 	error = failures;
 	return false;

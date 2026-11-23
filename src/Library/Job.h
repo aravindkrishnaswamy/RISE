@@ -38,6 +38,7 @@
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
 #include "Interfaces/IMedium.h"
+#include "Simulation/SceneInputs.h"	// Simulation M4: scene simulations, bindings
 #include "SceneEditor/FileIdentity.h"
 #include "SceneEditor/TransformSnapshot.h"
 #include "Utilities/Reference.h"
@@ -422,6 +423,25 @@ namespace RISE
 		};
 		std::map<String, HairGuideStore>			hairGuidesMap;			// Named hair guide-strand sets
 
+		//! Simulation M4: declared simulations by name (std::map node
+		//! stability: the CST derive's production/resolution sinks key on the
+		//! entry's address) and their declaration order; how each
+		//! simulated_mesh_geometry is bound; the directory relative cache
+		//! paths resolve against; the graph's Configure memo, which survives
+		//! ClearAll (it is keyed by content, never by entity).
+		std::map<std::string, Simulation::SceneSimulationSpec>	simulationsMap;
+		std::vector<std::string>						simulationOrder;
+		struct SimulatedGeometryRecord
+		{
+			const IGeometry*					geometry;
+			Simulation::SimulatedGeometryBinding	binding;
+		};
+		std::map<std::string, SimulatedGeometryRecord>	simulatedGeometries;	// by geometry name
+		std::string									simulationSceneDirectory;
+		std::unique_ptr<Simulation::SceneSimulationGraph>	simulationGraph;
+		bool ResolveSimulationCache( const std::string& name, const std::string& authored,
+			std::filesystem::path& dir, std::string& error ) const;
+
 		// Materials registered via a composing factory
 		// (`AddPBRMetallicRoughnessMaterial`, `AddGGXEmissiveMaterial`)
 		// rather than a direct `Add*Material` call.  The interactive
@@ -558,6 +578,25 @@ namespace RISE
 			const Rect* region, Scalar nominalTime );
 		bool DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
 			bool availability );
+
+		// Simulation M4: simulations declared by the scene (see IJob::AddSimulation).
+		bool DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses,
+			std::string& error );
+		//! The declared simulations, resolved (declaration order).
+		std::vector<Simulation::SceneSimulationSpec> SimulationSpecs() const;
+		//! Every simulation configured against the scene, upstream first (the
+		//! worker bakes from these; the live viewport starts from one).
+		//! Caller holds the scene stable.
+		bool PlanSimulations( std::vector<Simulation::SceneSimulationPlan>& plans,
+			std::vector<Simulation::SceneSimulationSpec>& specs, std::string& error );
+		//! How a simulated mesh geometry is bound (false: not a simulated mesh).
+		bool SimulatedGeometryBindingOf( const IGeometry* geometry,
+			Simulation::SimulatedGeometryBinding& binding ) const;
+		//! The simulation a simulated_mesh_geometry is bound to by `source`
+		//! (empty when it is bound by a cache path or is not a simulated mesh).
+		bool SimulationOfGeometry( const char* geometry, std::string& simulation, std::string& output ) const;
+		const std::string& GetSimulationSceneDirectory() const { return simulationSceneDirectory; }
+		Simulation::SceneSimulationGraph& SimulationGraph() { return *simulationGraph; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -2276,6 +2315,24 @@ namespace RISE
 			const double time_offset, const double time_scale,
 			const char* end_policy, const char* missing_frame, const char* fidelity,
 			const bool motion_blur, const bool face_normals, const bool double_sided );
+
+		// Simulation M4 (see IJob.h).
+		bool AddSimulation( const SimulationDescriptor& desc );
+		bool RemoveSimulation( const char* name );
+		void EnumerateSimulationNames( IEnumCallback<const char*>& cb ) const;
+		bool AddSimulatedMeshGeometryFromSimulation(
+			const char* name, const char* simulation, const char* output,
+			const double time_offset, const double time_scale,
+			const char* end_policy, const char* missing_frame, const char* fidelity,
+			const bool motion_blur, const bool face_normals, const bool double_sided );
+		bool SetSimulationSceneDirectory( const char* directory );
+		bool AddFireMediumFromSimulation(
+			const char* name, const char* source,
+			const char* channel_carbon, const char* channel_temperature,
+			const char* channel_condensed, const char* channel_reaction,
+			const char* channel_chem_ch, const char* channel_chem_c2,
+			const char* channel_chem_co2, const char* channel_velocity,
+			bool chem_model_none );
 
 		//! Adds a unit-transmission medium boundary distinct from "none".
 		//! Appended beside IJob's corresponding ABI-tail extension.

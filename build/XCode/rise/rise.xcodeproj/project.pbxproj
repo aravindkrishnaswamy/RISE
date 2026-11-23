@@ -34,7 +34,9 @@
 		5F01DFA9B418370DBDAB64F1 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
 		638119AC57041C82DB44A5B1 /* PainterChannelScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 40CA74376A2E78A0779AFC0A /* PainterChannelScalarPainter.h */; };
 		6A10B007000000000000C0DE /* ProceduralDescriptors.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
+		7153AB7D778982604A50BA86 /* SimulationDescriptor.h in Sources */ = {isa = PBXBuildFile; fileRef = 557F2E3BBE8910D7B35A4563 /* SimulationDescriptor.h */; };
 		6A10B008000000000000C0DE /* ProceduralDescriptors.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
+		19FE707A770FAABAF5E0474A /* SimulationDescriptor.h in Headers */ = {isa = PBXBuildFile; fileRef = 557F2E3BBE8910D7B35A4563 /* SimulationDescriptor.h */; };
 		6A10B009000000000000C0DE /* Function2DColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E005000000000000C0DE /* Function2DColorPainter.h */; };
 		6A10B00A000000000000C0DE /* Function2DColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E005000000000000C0DE /* Function2DColorPainter.h */; };
 		6A11B001000000000000C0DE /* ExpressionEval.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A11E001000000000000C0DE /* ExpressionEval.h */; };
@@ -861,6 +863,7 @@
 		45442A37E9DCB1FCE32C852A /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		F5EAF8098A45004B8CC2542C /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		0A09DCAF8E305338CDC23482 /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		585A9A36311C2039C2A9B1A0 /* FireParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */; };
 		A573C249A71F45E086A3C5EA /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		6829BFCEBD1748B090C2A074 /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		B3DF61DDE42948EFA439CA53 /* ClothModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BEED23719B8C435794DE9CE8 /* ClothModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -868,11 +871,16 @@
 		1B763BD9CBB540BFAA2304A3 /* ClothContact.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D75B66128442493A9FC176CA /* ClothContact.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		E5DC38BDDC2D486EAB929B7E /* ClothValidation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 080CFE5F1EB444F687850703 /* ClothValidation.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		4C768A85B1F54191BFF6FAB0 /* ClothSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		7BE0274C865C13B99425C58D /* ClothParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */; };
 		6348573A914F130527A8F234 /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
 		0BE279A6842CCAC21A214D8B /* SimulationField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */; };
 		8401AA321BFFDAF10F7E3003 /* SimulatedMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */; };
 		3F5258A8BC864055713DB63C /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
 		6EB5300FF4EA9117E51CD4D8 /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
+		00B03088EC3CB38266F055D5 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
+		BB0F82F33D80479B0D795F5A /* SceneInputs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */; };
+		3AD0BC09F26C8CCD353CC4D3 /* SceneSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */; };
+		15D5D455EF54710A79425144 /* SimulationParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */; };
 		56FE5D1483D7A598AC5D960C /* SimulationTimeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F552CC5023D8319AEA1181F7 /* SimulationTimeline.cpp */; };
 		991873917EA5BC599177A762 /* SimulationSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9A16AB8B956F4DCDC5451F6B /* SimulationSolver.cpp */; };
 		A3F3972CE4BA9E2E7B5EA0DB /* SimulationHost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0124CC05BC6837146CA0D81D /* SimulationHost.cpp */; };
@@ -1599,6 +1607,7 @@
 		00C10732F96A8F6A100187BF /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		05F7F3997CB782000CF75A5F /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		8DC57724A9F43A06F0EFA95B /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		39F81B17D48A6E7643AB9352 /* FireParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */; };
 		E4194BFEA3004934A4ACC263 /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		F39CE5124D6F4A5C83C80C9C /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		DCA2B4C155794BDE94C505C1 /* ClothModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BEED23719B8C435794DE9CE8 /* ClothModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -1606,11 +1615,16 @@
 		F4D0CA9A5CA74730A2661013 /* ClothContact.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D75B66128442493A9FC176CA /* ClothContact.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		3AA13E45C4944989903A8DCC /* ClothValidation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 080CFE5F1EB444F687850703 /* ClothValidation.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		665BD52915384D5B9A9EEDB5 /* ClothSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		CD689C6F1C8A892B615EB9DB /* ClothParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */; };
 		012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
 		C3B5E68EDB9D3F1D831285E3 /* SimulationField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */; };
 		4C7BE87A2418C74E4802CDA5 /* SimulatedMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */; };
 		3AF3CEDF4C0FAC54C8D8EF07 /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
 		7CD1C32B3C4CB5ABF9F9E251 /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
+		50267BEF73FB6E9949EB5550 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
+		D03F407A544ABD4F14F0BE6F /* SceneInputs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */; };
+		2AE0D4CC583DFCD26DCC5C63 /* SceneSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */; };
+		CBB11B929476403B60D9E178 /* SimulationParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */; };
 		71F2731A0CE76F67CA8980AA /* SimulationTimeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F552CC5023D8319AEA1181F7 /* SimulationTimeline.cpp */; };
 		7C92CABD98002AFF85C30056 /* SimulationSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9A16AB8B956F4DCDC5451F6B /* SimulationSolver.cpp */; };
 		AAFE1D6A5FFCA0F24111AB04 /* SimulationHost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0124CC05BC6837146CA0D81D /* SimulationHost.cpp */; };
@@ -1628,6 +1642,7 @@
 		56980E261FB5C2E2BEA6AC3E /* FireRunDriver.h in Headers */ = {isa = PBXBuildFile; fileRef = 375F25CCAB6D2DD2C91C3EF1 /* FireRunDriver.h */; };
 		B80864811244EB7EA5E77382 /* FireRun.h in Headers */ = {isa = PBXBuildFile; fileRef = F171F7FE1DC0B53FBC16ACA4 /* FireRun.h */; };
 		0273E2AFA42EAB62FF0AC547 /* FireSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = BF7F2C96B42CF67630134748 /* FireSolver.h */; };
+		EC1545E36E7C227C9E74391F /* FireParameterSchema.h in Headers */ = {isa = PBXBuildFile; fileRef = 122135E9D28B11F3D3B70860 /* FireParameterSchema.h */; };
 		20869C80EB77B43D3229E786 /* FireRunHostMemory.h in Headers */ = {isa = PBXBuildFile; fileRef = 3B91B33F567812A35FDD65AA /* FireRunHostMemory.h */; };
 		3D51895E00B240CE88706D82 /* ClothMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 096BADAD2FEC436DB149BB53 /* ClothMaterial.h */; };
 		4CFE9FAD02554D55BB45C8EC /* ClothLinearAlgebra.h in Headers */ = {isa = PBXBuildFile; fileRef = 460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */; };
@@ -1636,6 +1651,7 @@
 		1F6F1F3B53C848D9AB4941D1 /* ClothContact.h in Headers */ = {isa = PBXBuildFile; fileRef = 7680C082E225403AAC3DF8E1 /* ClothContact.h */; };
 		7D95D4A516894A74A5F73EE7 /* ClothValidation.h in Headers */ = {isa = PBXBuildFile; fileRef = 599221FEED4644D0BE6A0498 /* ClothValidation.h */; };
 		2C2EF647EC484AE5AF0ECADC /* ClothSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = FAF05831547F4958BC62F859 /* ClothSolver.h */; };
+		EE1B4111D69FF3B165AA9FD4 /* ClothParameterSchema.h in Headers */ = {isa = PBXBuildFile; fileRef = 0969A9067480A40C489FB811 /* ClothParameterSchema.h */; };
 		5B9F1C8B21CFE464328ED16B /* FireProductionAcceptedStageBudget.h in Headers */ = {isa = PBXBuildFile; fileRef = 2BEDC33C00ADE5DE06EF93F4 /* FireProductionAcceptedStageBudget.h */; };
 		C654CF3797B4DBCEAE578EB6 /* FireProductionAcceptedFuelBudget.h in Headers */ = {isa = PBXBuildFile; fileRef = 1323DDF883A0E5FD327E50CB /* FireProductionAcceptedFuelBudget.h */; };
 		F206DE6B562759DB532CA0CA /* FireProductionOnsetEvidence.h in Headers */ = {isa = PBXBuildFile; fileRef = 9CC4422CDDBA59701F51BFEE /* FireProductionOnsetEvidence.h */; };
@@ -1647,6 +1663,10 @@
 		88E8C3B14EB7BCDA1A18BD3D /* SimulatedMeshGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = BE80260B4721CD568D0AC97E /* SimulatedMeshGeometry.h */; };
 		6E84FDA2E93DDBF446CC4793 /* SimulatedMeshSource.h in Headers */ = {isa = PBXBuildFile; fileRef = F821D440C19007500CF128AD /* SimulatedMeshSource.h */; };
 		13E99112CC31280D6899AF94 /* BuiltinSolvers.h in Headers */ = {isa = PBXBuildFile; fileRef = 8B97ACC97187C257354D2C36 /* BuiltinSolvers.h */; };
+		687420977F475B3D47096C70 /* SceneSimulationWorker.h in Headers */ = {isa = PBXBuildFile; fileRef = 64BC895F923FF647F39E1BD1 /* SceneSimulationWorker.h */; };
+		0B1FC4A66976185EFBFBBF02 /* SceneInputs.h in Headers */ = {isa = PBXBuildFile; fileRef = 409E31882E8B109106E21863 /* SceneInputs.h */; };
+		EB5293C13F56677A97936BA0 /* SceneSimulation.h in Headers */ = {isa = PBXBuildFile; fileRef = 4AE018B6C6971F68AFDB4B11 /* SceneSimulation.h */; };
+		62D3C0B46AAD41F1575CE48D /* SimulationParameterSchema.h in Headers */ = {isa = PBXBuildFile; fileRef = 902470B97C8CD64F3357582F /* SimulationParameterSchema.h */; };
 		B6AE4BC13D2A43A6ADA27069 /* SimulationTimeline.h in Headers */ = {isa = PBXBuildFile; fileRef = 6F3ADCBDC189941ACF780DE9 /* SimulationTimeline.h */; };
 		9B4BA6C45DA62BDFEEDDFC3E /* SimulationSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = EEA52BECFB2661CEA1E2F2FC /* SimulationSolver.h */; };
 		9A83CFE8552F7457D795811E /* SimulationHost.h in Headers */ = {isa = PBXBuildFile; fileRef = 0CD2934AA044EAA272761055 /* SimulationHost.h */; };
@@ -2279,6 +2299,7 @@
 		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
 		5DF0E022000000000000C0DE /* MeshSignalBake.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MeshSignalBake.h; sourceTree = "<group>"; };
 		6A10E004000000000000C0DE /* ProceduralDescriptors.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProceduralDescriptors.h; sourceTree = "<group>"; };
+		557F2E3BBE8910D7B35A4563 /* SimulationDescriptor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationDescriptor.h; sourceTree = "<group>"; };
 		6A10E005000000000000C0DE /* Function2DColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DColorPainter.h; sourceTree = "<group>"; };
 		6A11E001000000000000C0DE /* ExpressionEval.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionEval.h; sourceTree = "<group>"; };
 		6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionFunction2DPainter.h; sourceTree = "<group>"; };
@@ -3058,7 +3079,15 @@
 		C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulatedMeshSource.cpp; sourceTree = "<group>"; };
 		F821D440C19007500CF128AD /* SimulatedMeshSource.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulatedMeshSource.h; sourceTree = "<group>"; };
 		1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BuiltinSolvers.cpp; sourceTree = "<group>"; };
+		81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneSimulationWorker.cpp; sourceTree = "<group>"; };
+		7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneInputs.cpp; sourceTree = "<group>"; };
+		BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneSimulation.cpp; sourceTree = "<group>"; };
+		841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationParameterSchema.cpp; sourceTree = "<group>"; };
 		8B97ACC97187C257354D2C36 /* BuiltinSolvers.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BuiltinSolvers.h; sourceTree = "<group>"; };
+		64BC895F923FF647F39E1BD1 /* SceneSimulationWorker.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneSimulationWorker.h; sourceTree = "<group>"; };
+		409E31882E8B109106E21863 /* SceneInputs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneInputs.h; sourceTree = "<group>"; };
+		4AE018B6C6971F68AFDB4B11 /* SceneSimulation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneSimulation.h; sourceTree = "<group>"; };
+		902470B97C8CD64F3357582F /* SimulationParameterSchema.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationParameterSchema.h; sourceTree = "<group>"; };
 		F552CC5023D8319AEA1181F7 /* SimulationTimeline.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationTimeline.cpp; sourceTree = "<group>"; };
 		6F3ADCBDC189941ACF780DE9 /* SimulationTimeline.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationTimeline.h; sourceTree = "<group>"; };
 		9A16AB8B956F4DCDC5451F6B /* SimulationSolver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationSolver.cpp; sourceTree = "<group>"; };
@@ -3077,11 +3106,13 @@
 		5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireRunDriver.cpp; sourceTree = "<group>"; };
 		027EAD51B3C9501735854804 /* FireRun.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireRun.cpp; sourceTree = "<group>"; };
 		CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSolver.cpp; sourceTree = "<group>"; };
+		9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireParameterSchema.cpp; sourceTree = "<group>"; };
 		465AB2ABDE8F84C26D9032FC /* FireRunCheckpoint.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRunCheckpoint.h; sourceTree = "<group>"; };
 		903132B8D9393D3FFBB2A168 /* FireRunFrames.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRunFrames.h; sourceTree = "<group>"; };
 		375F25CCAB6D2DD2C91C3EF1 /* FireRunDriver.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRunDriver.h; sourceTree = "<group>"; };
 		F171F7FE1DC0B53FBC16ACA4 /* FireRun.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRun.h; sourceTree = "<group>"; };
 		BF7F2C96B42CF67630134748 /* FireSolver.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSolver.h; sourceTree = "<group>"; };
+		122135E9D28B11F3D3B70860 /* FireParameterSchema.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireParameterSchema.h; sourceTree = "<group>"; };
 		3B91B33F567812A35FDD65AA /* FireRunHostMemory.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRunHostMemory.h; sourceTree = "<group>"; };
 		42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothMaterial.cpp; sourceTree = "<group>"; };
 		2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothLinearAlgebra.cpp; sourceTree = "<group>"; };
@@ -3090,6 +3121,7 @@
 		D75B66128442493A9FC176CA /* ClothContact.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothContact.cpp; sourceTree = "<group>"; };
 		080CFE5F1EB444F687850703 /* ClothValidation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothValidation.cpp; sourceTree = "<group>"; };
 		A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothSolver.cpp; sourceTree = "<group>"; };
+		6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothParameterSchema.cpp; sourceTree = "<group>"; };
 		096BADAD2FEC436DB149BB53 /* ClothMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothMaterial.h; sourceTree = "<group>"; };
 		460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothLinearAlgebra.h; sourceTree = "<group>"; };
 		28159AF91A34494D83CC06CC /* ClothModel.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothModel.h; sourceTree = "<group>"; };
@@ -3097,6 +3129,7 @@
 		7680C082E225403AAC3DF8E1 /* ClothContact.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothContact.h; sourceTree = "<group>"; };
 		599221FEED4644D0BE6A0498 /* ClothValidation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothValidation.h; sourceTree = "<group>"; };
 		FAF05831547F4958BC62F859 /* ClothSolver.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothSolver.h; sourceTree = "<group>"; };
+		0969A9067480A40C489FB811 /* ClothParameterSchema.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothParameterSchema.h; sourceTree = "<group>"; };
 		2BEDC33C00ADE5DE06EF93F4 /* FireProductionAcceptedStageBudget.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionAcceptedStageBudget.h; sourceTree = "<group>"; };
 		1323DDF883A0E5FD327E50CB /* FireProductionAcceptedFuelBudget.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionAcceptedFuelBudget.h; sourceTree = "<group>"; };
 		9CC4422CDDBA59701F51BFEE /* FireProductionOnsetEvidence.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionOnsetEvidence.h; sourceTree = "<group>"; };
@@ -3874,6 +3907,7 @@
 			children = (
 				F27F0852069C428F0069C9E5 /* IAnimator.h */,
 				6A10E004000000000000C0DE /* ProceduralDescriptors.h */,
+				557F2E3BBE8910D7B35A4563 /* SimulationDescriptor.h */,
 				F27F0853069C428F0069C9E5 /* IBezierPatchGeometry.h */,
 				F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */,
 				F27F0856069C428F0069C9E5 /* IBuffer.h */,
@@ -4679,7 +4713,15 @@
 				C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */,
 				F821D440C19007500CF128AD /* SimulatedMeshSource.h */,
 				1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */,
+				81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */,
+				7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */,
+				BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */,
+				841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */,
 				8B97ACC97187C257354D2C36 /* BuiltinSolvers.h */,
+				64BC895F923FF647F39E1BD1 /* SceneSimulationWorker.h */,
+				409E31882E8B109106E21863 /* SceneInputs.h */,
+				4AE018B6C6971F68AFDB4B11 /* SceneSimulation.h */,
+				902470B97C8CD64F3357582F /* SimulationParameterSchema.h */,
 				F552CC5023D8319AEA1181F7 /* SimulationTimeline.cpp */,
 				6F3ADCBDC189941ACF780DE9 /* SimulationTimeline.h */,
 				9A16AB8B956F4DCDC5451F6B /* SimulationSolver.cpp */,
@@ -4708,11 +4750,13 @@
 				5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */,
 				027EAD51B3C9501735854804 /* FireRun.cpp */,
 				CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */,
+				9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */,
 				465AB2ABDE8F84C26D9032FC /* FireRunCheckpoint.h */,
 				903132B8D9393D3FFBB2A168 /* FireRunFrames.h */,
 				375F25CCAB6D2DD2C91C3EF1 /* FireRunDriver.h */,
 				F171F7FE1DC0B53FBC16ACA4 /* FireRun.h */,
 				BF7F2C96B42CF67630134748 /* FireSolver.h */,
+				122135E9D28B11F3D3B70860 /* FireParameterSchema.h */,
 				3B91B33F567812A35FDD65AA /* FireRunHostMemory.h */,
 				2BEDC33C00ADE5DE06EF93F4 /* FireProductionAcceptedStageBudget.h */,
 				1323DDF883A0E5FD327E50CB /* FireProductionAcceptedFuelBudget.h */,
@@ -4734,6 +4778,7 @@
 				D75B66128442493A9FC176CA /* ClothContact.cpp */,
 				080CFE5F1EB444F687850703 /* ClothValidation.cpp */,
 				A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */,
+				6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */,
 				096BADAD2FEC436DB149BB53 /* ClothMaterial.h */,
 				460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */,
 				28159AF91A34494D83CC06CC /* ClothModel.h */,
@@ -4741,6 +4786,7 @@
 				7680C082E225403AAC3DF8E1 /* ClothContact.h */,
 				599221FEED4644D0BE6A0498 /* ClothValidation.h */,
 				FAF05831547F4958BC62F859 /* ClothSolver.h */,
+				0969A9067480A40C489FB811 /* ClothParameterSchema.h */,
 			);
 			path = Cloth;
 			sourceTree = "<group>";
@@ -5288,6 +5334,7 @@
 				F27F0ABD069C42910069C9E5 /* TriangleMeshLoaderRAW2.h in Headers */,
 				F27F0ABE069C42910069C9E5 /* IAnimator.h in Headers */,
 				6A10B008000000000000C0DE /* ProceduralDescriptors.h in Headers */,
+				19FE707A770FAABAF5E0474A /* SimulationDescriptor.h in Headers */,
 				F27F0ABF069C42910069C9E5 /* IBezierPatchGeometry.h in Headers */,
 				F27F0AC0069C42910069C9E5 /* IBilinearPatchGeometry.h in Headers */,
 				F27F0AC2069C42910069C9E5 /* IBuffer.h in Headers */,
@@ -5784,6 +5831,7 @@
 				56980E261FB5C2E2BEA6AC3E /* FireRunDriver.h in Headers */,
 				B80864811244EB7EA5E77382 /* FireRun.h in Headers */,
 				0273E2AFA42EAB62FF0AC547 /* FireSolver.h in Headers */,
+				EC1545E36E7C227C9E74391F /* FireParameterSchema.h in Headers */,
 				20869C80EB77B43D3229E786 /* FireRunHostMemory.h in Headers */,
 				3D51895E00B240CE88706D82 /* ClothMaterial.h in Headers */,
 				4CFE9FAD02554D55BB45C8EC /* ClothLinearAlgebra.h in Headers */,
@@ -5792,6 +5840,7 @@
 				1F6F1F3B53C848D9AB4941D1 /* ClothContact.h in Headers */,
 				7D95D4A516894A74A5F73EE7 /* ClothValidation.h in Headers */,
 				2C2EF647EC484AE5AF0ECADC /* ClothSolver.h in Headers */,
+				EE1B4111D69FF3B165AA9FD4 /* ClothParameterSchema.h in Headers */,
 				5B9F1C8B21CFE464328ED16B /* FireProductionAcceptedStageBudget.h in Headers */,
 				C654CF3797B4DBCEAE578EB6 /* FireProductionAcceptedFuelBudget.h in Headers */,
 				F206DE6B562759DB532CA0CA /* FireProductionOnsetEvidence.h in Headers */,
@@ -5803,6 +5852,10 @@
 				88E8C3B14EB7BCDA1A18BD3D /* SimulatedMeshGeometry.h in Headers */,
 				6E84FDA2E93DDBF446CC4793 /* SimulatedMeshSource.h in Headers */,
 				13E99112CC31280D6899AF94 /* BuiltinSolvers.h in Headers */,
+				687420977F475B3D47096C70 /* SceneSimulationWorker.h in Headers */,
+				0B1FC4A66976185EFBFBBF02 /* SceneInputs.h in Headers */,
+				EB5293C13F56677A97936BA0 /* SceneSimulation.h in Headers */,
+				62D3C0B46AAD41F1575CE48D /* SimulationParameterSchema.h in Headers */,
 				B6AE4BC13D2A43A6ADA27069 /* SimulationTimeline.h in Headers */,
 				9B4BA6C45DA62BDFEEDDFC3E /* SimulationSolver.h in Headers */,
 				9A83CFE8552F7457D795811E /* SimulationHost.h in Headers */,
@@ -6453,6 +6506,7 @@
 				00C10732F96A8F6A100187BF /* FireRunDriver.cpp in Sources */,
 				05F7F3997CB782000CF75A5F /* FireRun.cpp in Sources */,
 				8DC57724A9F43A06F0EFA95B /* FireSolver.cpp in Sources */,
+				39F81B17D48A6E7643AB9352 /* FireParameterSchema.cpp in Sources */,
 				E4194BFEA3004934A4ACC263 /* ClothMaterial.cpp in Sources */,
 				F39CE5124D6F4A5C83C80C9C /* ClothLinearAlgebra.cpp in Sources */,
 				DCA2B4C155794BDE94C505C1 /* ClothModel.cpp in Sources */,
@@ -6460,11 +6514,16 @@
 				F4D0CA9A5CA74730A2661013 /* ClothContact.cpp in Sources */,
 				3AA13E45C4944989903A8DCC /* ClothValidation.cpp in Sources */,
 				665BD52915384D5B9A9EEDB5 /* ClothSolver.cpp in Sources */,
+				CD689C6F1C8A892B615EB9DB /* ClothParameterSchema.cpp in Sources */,
 				012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */,
 				C3B5E68EDB9D3F1D831285E3 /* SimulationField.cpp in Sources */,
 				4C7BE87A2418C74E4802CDA5 /* SimulatedMeshGeometry.cpp in Sources */,
 				3AF3CEDF4C0FAC54C8D8EF07 /* SimulatedMeshSource.cpp in Sources */,
 				7CD1C32B3C4CB5ABF9F9E251 /* BuiltinSolvers.cpp in Sources */,
+				50267BEF73FB6E9949EB5550 /* SceneSimulationWorker.cpp in Sources */,
+				D03F407A544ABD4F14F0BE6F /* SceneInputs.cpp in Sources */,
+				2AE0D4CC583DFCD26DCC5C63 /* SceneSimulation.cpp in Sources */,
+				CBB11B929476403B60D9E178 /* SimulationParameterSchema.cpp in Sources */,
 				71F2731A0CE76F67CA8980AA /* SimulationTimeline.cpp in Sources */,
 				7C92CABD98002AFF85C30056 /* SimulationSolver.cpp in Sources */,
 				AAFE1D6A5FFCA0F24111AB04 /* SimulationHost.cpp in Sources */,
@@ -6698,6 +6757,7 @@
 				F24B72452F52A632008304C4 /* TriangleMeshLoaderRAW2.h in Sources */,
 				F24B72462F52A632008304C4 /* IAnimator.h in Sources */,
 				6A10B007000000000000C0DE /* ProceduralDescriptors.h in Sources */,
+				7153AB7D778982604A50BA86 /* SimulationDescriptor.h in Sources */,
 				F24B72472F52A632008304C4 /* IBezierPatchGeometry.h in Sources */,
 				F24B72482F52A632008304C4 /* IBilinearPatchGeometry.h in Sources */,
 				F24B724A2F52A632008304C4 /* IBuffer.h in Sources */,
@@ -7468,6 +7528,7 @@
 				45442A37E9DCB1FCE32C852A /* FireRunDriver.cpp in Sources */,
 				F5EAF8098A45004B8CC2542C /* FireRun.cpp in Sources */,
 				0A09DCAF8E305338CDC23482 /* FireSolver.cpp in Sources */,
+				585A9A36311C2039C2A9B1A0 /* FireParameterSchema.cpp in Sources */,
 				A573C249A71F45E086A3C5EA /* ClothMaterial.cpp in Sources */,
 				6829BFCEBD1748B090C2A074 /* ClothLinearAlgebra.cpp in Sources */,
 				B3DF61DDE42948EFA439CA53 /* ClothModel.cpp in Sources */,
@@ -7475,11 +7536,16 @@
 				1B763BD9CBB540BFAA2304A3 /* ClothContact.cpp in Sources */,
 				E5DC38BDDC2D486EAB929B7E /* ClothValidation.cpp in Sources */,
 				4C768A85B1F54191BFF6FAB0 /* ClothSolver.cpp in Sources */,
+				7BE0274C865C13B99425C58D /* ClothParameterSchema.cpp in Sources */,
 				6348573A914F130527A8F234 /* SimulationMesh.cpp in Sources */,
 				0BE279A6842CCAC21A214D8B /* SimulationField.cpp in Sources */,
 				8401AA321BFFDAF10F7E3003 /* SimulatedMeshGeometry.cpp in Sources */,
 				3F5258A8BC864055713DB63C /* SimulatedMeshSource.cpp in Sources */,
 				6EB5300FF4EA9117E51CD4D8 /* BuiltinSolvers.cpp in Sources */,
+				00B03088EC3CB38266F055D5 /* SceneSimulationWorker.cpp in Sources */,
+				BB0F82F33D80479B0D795F5A /* SceneInputs.cpp in Sources */,
+				3AD0BC09F26C8CCD353CC4D3 /* SceneSimulation.cpp in Sources */,
+				15D5D455EF54710A79425144 /* SimulationParameterSchema.cpp in Sources */,
 				56FE5D1483D7A598AC5D960C /* SimulationTimeline.cpp in Sources */,
 				991873917EA5BC599177A762 /* SimulationSolver.cpp in Sources */,
 				A3F3972CE4BA9E2E7B5EA0DB /* SimulationHost.cpp in Sources */,

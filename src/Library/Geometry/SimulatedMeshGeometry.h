@@ -71,6 +71,12 @@ namespace RISE
 			static SimulatedMeshGeometry* Create( const std::string& cacheRoot,
 				const Options& options, std::string& error );
 
+			//! Simulation M4: a mesh with no frame source yet (its producer has
+			//! no cache): no triangles, hidden, every prepare a no-op.  The
+			//! first RebindSource (a live run's publication) builds the
+			//! topology from that source's bind frame.
+			static SimulatedMeshGeometry* CreateUnbound( const Options& options );
+
 			//! The shared-scene pose clock (the scene's animator), held by a
 			//! counted reference.  Set by the Job before each prepared render;
 			//! may be null (then the nominal time is used outside a
@@ -89,6 +95,16 @@ namespace RISE
 			//! source.  Only between frames (the caller parks the render) and
 			//! never under the freeze.  On success `source` holds the previous one.
 			bool RebindSource( std::unique_ptr<Simulation::MeshCacheSource>& source, std::string& error );
+			//! Simulation M4: drops the frame source (the mesh hides; its
+			//! topology stays, so a later RebindSource of the same topology
+			//! shows it again).  `previous` receives the source.  Same rules
+			//! as RebindSource (between frames, never under the freeze).
+			bool UnbindSource( std::unique_ptr<Simulation::MeshCacheSource>& previous, std::string& error );
+			//! False for an unbound mesh (CreateUnbound, UnbindSource): Source()
+			//! must not be called then.
+			bool HasSource() const { return static_cast<bool>( m_source ); }
+			//! The topology has been built (from a cache or a first live frame).
+			bool TopologyBuilt() const { return m_built; }
 
 			// Diagnostics / test hooks.
 			bool BlurActive() const { return m_blur; }
@@ -130,6 +146,7 @@ namespace RISE
 			};
 			bool PrepareFrame( const RenderTimeSupport& support, std::string& error,
 				std::function<void()>* rollback );
+			bool BuildTopology( const Simulation::MeshCacheSource& source );
 			State Capture() const;
 			bool Install( State& next, std::string& error );
 			void ComputeNormals( const VerticesListType& p, NormalsListType& out ) const;
@@ -154,6 +171,9 @@ namespace RISE
 			mutable std::mutex	m_freezeMutex;
 			unsigned int		m_leases;
 			unsigned long long	m_generation, m_frozenGeneration;
+			// M4: whether BuildTopology ran, and the digest of the topology it built.
+			bool				m_built;
+			std::string			m_builtTopology;
 		};
 	}
 }

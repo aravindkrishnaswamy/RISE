@@ -215,6 +215,7 @@ bool PortRelay::Offer(const std::string& port,double time,std::shared_ptr<const 
 bool PortRelay::OfferStatic(const std::string&,std::shared_ptr<const Bytes> payload,std::string& error)
 {
 	if (!payload) return Fail(error,"invalid static payload offer");
+	for (const auto& s : statics_) if (s.second==payload) return true; // the same immutable bytes again: no rehash
 	const auto digest=RISECBOR64::SHA256Hex(*payload);
 	for (const auto& s : statics_) if (s.first==digest) return true;
 	statics_.emplace_back(digest,std::move(payload));

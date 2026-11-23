@@ -7,6 +7,8 @@
 // output equal to the live feed, port compatibility, side outputs in
 // process, and evidence-driven fidelity with conditions bound into digests.
 #include "../src/Library/Simulation/SimulationHost.h"
+#include "../src/Library/Simulation/SimulatedMeshSource.h"
+#include "../src/Library/Simulation/SimulationTimeline.h"
 #include "SimulationReferenceSolvers.h"
 #include "TestTempDir.h"
 
@@ -641,6 +643,63 @@ void RestoreDiscards()
 	Check(host.StepToIndex(100, error) && Digests(*host.Snapshot()) == reference, "the replay republishes the same frames", error);
 }
 
+// The live viewport's per-frame reads (published count, latest contiguous frame, timeline range) follow a
+// 20,000-frame run through the snapshot's counting accessors: their cost does not grow with the run.
+void LiveReaderCost()
+{
+	std::string error;
+	const std::int64_t n = 20000, window = 2000;
+	const V params = Map({{"frames", V::Unsigned(n)}, {"vertices", V::Unsigned(3)}, {"substeps", V::Unsigned(1)}});
+	InProcessHost host(Make(MembraneSolver::Id));
+	Check(host.Configure(params, EmptySceneInputs(), error) && host.Start(error) && host.StepToIndex(0, error),
+		"configure a long live run and publish its first frame", error);
+	std::unique_ptr<MeshCacheSource> source;
+	MeshSourceOptions options;
+	Check(MeshCacheSource::OpenLive([&host]() { return host.Snapshot(); }, options, source, error),
+		"bind the viewport reader to the live publication", error);
+	if (!source) return;
+	double early = 0, late = 0;
+	bool exact = true;
+	for (std::int64_t i = 1; i < n && exact; ++i) {
+		exact = host.StepToIndex(i, error);
+		const auto t0 = std::chrono::steady_clock::now();
+		std::int64_t latest = -2;
+		TimelineRange range;
+		const auto snapshot = host.Snapshot();
+		const OutputSpan span = snapshot->Span("surface");
+		exact = exact && LatestContiguousMeshFrame(*source, latest, error) &&
+			DescribeMeshSource(*source, true, range, error);
+		const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		if (i < window) early += s;
+		if (i >= n - window) late += s;
+		exact = exact && latest == i && range.framesAvailable == static_cast<std::uint64_t>(i + 1) &&
+			span.count == static_cast<std::uint64_t>(i + 1) && span.first == 0 && span.last == i &&
+			snapshot->EntryCount() == static_cast<std::size_t>(i + 1) &&
+			range.availableEnd == MeshFrameSceneTime(*source, i);
+	}
+	std::cout << "live reader cost: first " << window << " frames " << early*1e6/window << " us/frame, last " << window
+		<< " frames " << late*1e6/window << " us/frame at " << n << " published frames\n";
+	Check(exact, "every reader answer follows the live run exactly", error);
+	Check(late < 4*early + 2e-6*window, "a long live run's per-frame reader cost stays flat");
+	// A gap in the run (a frame republished out of order) falls back to the walk and still answers exactly.
+	MemoryPublisher gaps;
+	CacheDescription d;
+	d.key = std::string(64, '3'); d.epoch = std::string(64, '4'); d.producer = "gaps"; d.producerVersion = "1";
+	d.count = 10;
+	d.outputs = {{"field", "grid.v1", {{"x", "1", "f32"}}}, {"other", "grid.v1", {{"x", "1", "f32"}}}};
+	gaps.Reset(d);
+	auto payload = std::make_shared<const Bytes>(Bytes{1});
+	Check(gaps.Publish(0, "field", 0, payload, {}, error) && gaps.Publish(1, "field", 1, payload, {}, error) &&
+		gaps.Publish(3, "field", 3, payload, {}, error) && gaps.Publish(2, "other", 2, payload, {}, error), "publish with a gap", error);
+	const auto g = gaps.Current();
+	const OutputSpan field = g->Span("field"), other = g->Span("other"), none = g->Span("absent");
+	Check(field.count == 3 && field.first == 0 && field.last == 3 && other.count == 1 && other.first == 2 && other.last == 2 &&
+		none.count == 0 && g->EntryCount() == 4, "spans count per output and expose the gap");
+	gaps.DiscardFrom(3);
+	Check(gaps.Current()->Span("field").count == 2 && gaps.Current()->Span("field").last == 1 &&
+		gaps.Current()->Span("other").count == 1 && g->Span("field").count == 3, "discarding recomputes the spans of later generations only");
+}
+
 // A long interactive run: publishing stays O(log n), snapshots stay immutable.
 void SnapshotSharing()
 {
@@ -859,6 +918,7 @@ int main()
 		PauseCycles();
 		RestoreDiscards();
 		SnapshotSharing();
+		LiveReaderCost();
 		StaticsInMemory();
 		if (DiskPublicationAvailable(root)) {
 			Recording(root);

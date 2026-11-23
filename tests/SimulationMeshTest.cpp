@@ -319,6 +319,18 @@ void MeshV2()
 	Check(EncodeMeshV2(decoded,layout,Budget,again,againFixed,digest,error) && again==GoldenV2Static() &&
 		againFixed==GoldenTopology(),"mesh.v2 round trip is canonical",error);
 
+	// A prepared static record writes the golden frame without re-encoding or hashing the static payload.
+	MeshStaticRecord record;
+	Bytes prepared;
+	Check(PrepareMeshStatic(FixtureV2Static(),layout,Budget,record,error) && record.payload==GoldenTopology() &&
+		record.digest==GoldenTopologyDigest && record.topologyDigest==t.digest &&
+		EncodeMeshV2(FixtureV2Static(),layout,Budget,record,prepared,error) && prepared==GoldenV2Static(),
+		"a prepared static record encodes the identical golden frame",error);
+	MeshStaticLayout inlineLayout;
+	Check(!PrepareMeshStatic(FixtureV2Static(),inlineLayout,Budget,record,error) &&
+		!EncodeMeshV2(FixtureV2Static(),inlineLayout,Budget,record,prepared,error),
+		"a prepared static record needs a static-topology layout");
+
 	// Verification failures.
 	auto bad=GoldenTopology(); bad[16]=2; // T = 2 in the static record
 	Check(!DecodeMesh(GoldenV2Static(),Budget,Statics({{GoldenTopologyDigest,bad}}),decoded,error),

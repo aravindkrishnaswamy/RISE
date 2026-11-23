@@ -27,6 +27,7 @@
 #include "IJobRasterizerOutput.h"
 #include "IEnumCallback.h"      // for EnumerateMediumNames callback
 #include "ProceduralDescriptors.h" // sweep / path-instances parameter blocks
+#include "SimulationDescriptor.h"   // Simulation M4: AddSimulation
 #include <string>
 #include <utility>   // std::pair -- ApplyCstParamEdits' (param, value) batch
 #include <vector>    // std::vector -- ditto
@@ -4911,6 +4912,84 @@ namespace RISE
 			const double /*time_offset*/, const double /*time_scale*/,
 			const char* /*end_policy*/, const char* /*missing_frame*/, const char* /*fidelity*/,
 			const bool /*motion_blur*/, const bool /*face_normals*/, const bool /*double_sided*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: declares a simulation producer (`cloth_simulation`,
+		//! `fire_simulation`, `simulation_cache`).  Data only, like
+		//! AddHairGuides: nothing is configured or run here.  Simulations live
+		//! in a Job-side name table under `ChunkCategory::Simulation`; the
+		//! cache key, the state and the bake are computed from the scene
+		//! later (IJobPriv::DescribeSimulations, `rise-sim bake <scene>`).
+		//! The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddSimulation(
+			const SimulationDescriptor& /*desc*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: removes a declared simulation (the incremental
+		//! re-derive of an edited producer chunk).  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool RemoveSimulation(
+			const char* /*name*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: enumerates the declared simulation names (the
+		//! editor's candidates for a `source` reference).  The default
+		//! enumerates nothing.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual void EnumerateSimulationNames(
+			IEnumCallback<const char*>& /*cb*/ ) const
+		{
+		}
+
+		//! Simulation M4: a simulated mesh bound to a producer's output
+		//! (`simulated_mesh_geometry { source <simulation>.<output> }`) instead
+		//! of a cache path.  The output must be a mesh codec.  The producer's
+		//! cache directory is read as AddSimulatedMeshGeometry reads `cache`;
+		//! a stale or partial cache loads (marked through DescribeSimulations),
+		//! a missing one gives an unbound, hidden mesh with a warning, unless
+		//! `fidelity` is predictive (then the load fails).  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddSimulatedMeshGeometryFromSimulation(
+			const char* /*name*/, const char* /*simulation*/, const char* /*output*/,
+			const double /*time_offset*/, const double /*time_scale*/,
+			const char* /*end_policy*/, const char* /*missing_frame*/, const char* /*fidelity*/,
+			const bool /*motion_blur*/, const bool /*face_normals*/, const bool /*double_sided*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: the directory relative `cache` paths of simulation
+		//! producers resolve against (the scene file's directory; set by the
+		//! scene loader before the derive).  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetSimulationSceneDirectory(
+			const char* /*directory*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: a fire medium bound to a producer's grid output
+		//! (`fire_medium { source <simulation>.<output> }`): the producer's
+		//! cache read exactly as AddFireMediumBound reads `sequence_manifest`
+		//! (<cache>/manifest.cbor).  A producer with no cache yet gives an empty
+		//! (vacuum) homogeneous medium of that name with a warning, unless the
+		//! scene requests predictive fire fidelity (then it fails).  The
+		//! default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddFireMediumFromSimulation(
+			const char* /*name*/, const char* /*source*/,
+			const char* /*channel_carbon*/, const char* /*channel_temperature*/,
+			const char* /*channel_condensed*/, const char* /*channel_reaction*/,
+			const char* /*channel_chem_ch*/, const char* /*channel_chem_c2*/,
+			const char* /*channel_chem_co2*/, const char* /*channel_velocity*/,
+			const bool /*chem_model_none*/ )
 		{
 			return false;
 		}

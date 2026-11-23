@@ -4386,6 +4386,7 @@ namespace RISE
 						{ "animation",         ChunkCategory::Animation },
 						{ "scene_variant",     ChunkCategory::SceneVariant },
 						{ "hair_guides",       ChunkCategory::HairGuides },
+						{ "simulation",        ChunkCategory::Simulation },
 					};
 					for( const auto& kv : kNames ) {
 						if( name == kv.first ) { out = kv.second; return true; }

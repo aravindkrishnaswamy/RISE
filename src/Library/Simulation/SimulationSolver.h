@@ -58,6 +58,10 @@ struct Capabilities {
 	std::string fidelityLimit;        // why "predictive" is not earnable here (empty when it is)
 	double costEstimate = 0;          // seconds per simulated second on the reference machine; 0 = unknown
 	std::uint64_t memoryEstimate = 0; // peak bytes; 0 = unknown
+	// M4, additive: the backend (one of `backends` by name) this configuration
+	// will run on, so a scheduler can apply "one GPU solver at a time" from the
+	// description alone. Empty = not stated (the pre-M4 behaviour).
+	std::string backend;
 };
 
 // One validation case. The solver computes error from an actual check; the

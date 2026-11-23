@@ -193,6 +193,19 @@ void Animator::CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vect
 	}
 }
 
+void Animator::CollectElementKeyframeTimes( IKeyframable* element, std::vector<Scalar>& out ) const
+{
+	const String& active =
+		!IsBlankName( activeAnimation ) ? activeAnimation :
+		( !animations.empty() ? animations[0].name : activeAnimation );
+	ElementList::const_iterator it = elements.find( element );
+	if( it == elements.end() ) {
+		return;
+	}
+	const Scalar huge = std::numeric_limits<Scalar>::max();
+	it->second->CollectKeyframeTimesForAnimation( -huge, huge, active, out );
+}
+
 void Animator::GetActiveAnimatedElements( std::vector<IKeyframable*>& out ) const
 {
 	const String& active =

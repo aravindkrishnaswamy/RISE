@@ -73,6 +73,9 @@
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObjectPriv.h"
+#include "../Simulation/SimulationParameterSchema.h"	// Simulation M4: producer chunk descriptors
+#include "../Simulation/Cloth/ClothParameterSchema.h"
+#include "../Simulation/Fire/FireParameterSchema.h"
 #include "../Managers/GenericManager.h"			// g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure (reserved camera name)
 // Phase B: descriptor-driven introspection used by
 // PopulateLoadedPropertySnapshot to capture loaded parameter values.
@@ -6334,13 +6337,36 @@ namespace RISE
 			};
 
 			// Simulation M3b: a deforming mesh read from a simulation cache's
-			// mesh.v1 output, one frame per render frame (docs/SIMULATION_M3B_RESULTS.md).
-			// The M4 `source <simulation>.<output>` binding to a producer chunk
-			// will name the same cache through the scene instead of a path.
+			// mesh output, one frame per render frame (docs/SIMULATION_M3B_RESULTS.md).
+			// M4: or bound to a producer chunk's output by `source <simulation>.<output>`
+			// (docs/SIMULATION_M4_RESULTS.md).
 			struct SimulatedMeshGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
+					const bool hasCache = bag.Has( "cache" ) && !bag.GetString( "cache" ).empty();
+					const bool hasSource = bag.Has( "source" ) && !bag.GetString( "source" ).empty();
+					if( hasCache == hasSource ) {
+						const std::string why = std::string( "simulated_mesh_geometry `" ) + bag.GetString( "name", "noname" ) +
+							"`: give exactly one of `cache <directory>` and `source <simulation>.<output>`";
+						GlobalLog()->PrintEasyError( why.c_str() );
+						if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = why;
+						return false;
+					}
+					if( hasSource ) {
+						return pJob.AddSimulatedMeshGeometryFromSimulation(
+							bag.GetString( "name", "noname" ).c_str(),
+							bag.GetString( "source", "" ).c_str(),
+							bag.Has( "output" ) ? bag.GetString( "output" ).c_str() : "",
+							bag.GetDouble( "time_offset", 0.0 ),
+							bag.GetDouble( "time_scale", 1.0 ),
+							bag.GetString( "end_policy", "cache" ).c_str(),
+							bag.GetString( "missing_frame", "hold" ).c_str(),
+							bag.GetString( "fidelity", "preview" ).c_str(),
+							bag.GetBool( "motion_blur", true ),
+							bag.GetBool( "face_normals", false ),
+							bag.GetBool( "double_sided", false ) );
+					}
 					return pJob.AddSimulatedMeshGeometry(
 						bag.GetString( "name", "noname" ).c_str(),
 						bag.GetString( "cache", "" ).c_str(),
@@ -6360,17 +6386,26 @@ namespace RISE
 						ChunkDescriptor cd;
 						cd.keyword = "simulated_mesh_geometry"; cd.category = ChunkCategory::Geometry;
 						cd.description = "Fixed-topology deforming triangle mesh read from a simulation cache "
-							"(a mesh.v1 output, e.g. cloth baked by `rise_sim bake cloth.shell`).  Every "
-							"animation frame installs the cache frame for its time (nearest frame, positions "
-							"extrapolated by the frame velocities), and with `motion_blur` the shutter-open "
-							"and shutter-close positions, interpolated per ray at the sample's time.  Positions "
-							"are object space, in metres.  No texture coordinates (mesh.v1 carries none).";
+							"(a mesh.v1 or mesh.v2 output, e.g. cloth baked by `rise-sim bake`): either a "
+							"producer's output (`source <simulation>.<output>`, e.g. a `cloth_simulation`) or a "
+							"cache directory (`cache`).  Every animation frame installs the cache frame for its "
+							"time (nearest frame, positions extrapolated by the frame velocities), and with "
+							"`motion_blur` the shutter-open and shutter-close positions, interpolated per ray at "
+							"the sample's time.  Positions are object space, in metres.  A producer with no cache "
+							"yet gives an empty, hidden mesh (preview) until it is baked or run live.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "cache"; p.kind = ValueKind::String; p.required = true;
+						{ auto& p = P(); p.name = "source"; p.kind = ValueKind::Reference; p.referenceCategories = { ChunkCategory::Simulation };
+						  p.semantics.pipe = ParameterPipe::Other;
+						  p.semantics.note = "Resolves against the Job's simulation table (a producer chunk), not a manager";
+						  p.description = "The producer and its output, `<simulation>.<output>` (e.g. `flag.surface`), or "
+							"`<simulation>` with `output`.  The output must be a mesh (mesh.v1/mesh.v2).  Exactly one of "
+							"`source` and `cache`"; }
+						{ auto& p = P(); p.name = "cache"; p.kind = ValueKind::String;
 						  p.description = "Simulation cache directory (the one holding manifest.cbor).  `~/` is the home "
-							"directory; any other relative path is resolved through the media path"; }
-						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::String; p.description = "Cache output to read; must be mesh.v1"; p.defaultValueHint = "surface"; }
+							"directory; any other relative path is resolved through the media path.  Exactly one of "
+							"`cache` and `source`"; }
+						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::String; p.description = "Cache output to read; must be mesh.v1 or mesh.v2 (with `source`: optional when the name is in `source`)"; p.defaultValueHint = "surface"; }
 						{ auto& p = P(); p.name = "time_offset"; p.kind = ValueKind::Double; p.description = "Scene seconds subtracted from the render time before scaling"; p.defaultValueHint = "0"; p.unitLabel = "s"; }
 						{ auto& p = P(); p.name = "time_scale"; p.kind = ValueKind::Double; p.description = "Playback rate: cache time advances by this many scene seconds per scene second (nonzero)"; p.defaultValueHint = "1"; }
 						{ auto& p = P(); p.name = "end_policy"; p.kind = ValueKind::Enum; p.enumValues = { "cache", "hold", "loop", "error" };
@@ -6378,10 +6413,182 @@ namespace RISE
 						{ auto& p = P(); p.name = "missing_frame"; p.kind = ValueKind::Enum; p.enumValues = { "hold", "hide" };
 						  p.description = "Preview only: a frame a partial cache has not baked yet keeps the previous frame (`hold`) or hides the surface (`hide`), with a warning.  A predictive binding fails instead"; p.defaultValueHint = "hold"; }
 						{ auto& p = P(); p.name = "fidelity"; p.kind = ValueKind::Enum; p.enumValues = { "preview", "predictive" };
-						  p.description = "`predictive` refuses (fail closed) a cache that is not complete and labelled predictive, verifies every frame at load, and fails any frame that cannot be installed"; p.defaultValueHint = "preview"; }
+						  p.description = "`predictive` refuses (fail closed) a cache that is not complete and labelled predictive (or missing), verifies every frame at load, and fails any frame that cannot be installed"; p.defaultValueHint = "preview"; }
 						{ auto& p = P(); p.name = "motion_blur"; p.kind = ValueKind::Bool; p.description = "Deformation motion blur from the frame velocities under camera exposure; FALSE renders the nearest frame as a static mesh"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool; p.description = "Flat per-face shading; otherwise the cache's normals (or area-weighted vertex normals when it has none)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool; p.description = "Treat triangles as double sided (cloth usually is)"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// Simulation M4: producer chunks (ChunkCategory::Simulation).  Each is
+			// data only (the `hair_guides` precedent): Finalize records the
+			// simulation in the Job's table; nothing is configured or run at load.
+			// A solver-backed producer is a thin descriptor over the solver's
+			// parameter schema (Simulation/SimulationParameterSchema.h), so the
+			// parameter names, defaults, ranges and docs have one source.
+			namespace SimulationChunks
+			{
+				inline ValueKind KindOf( Simulation::SchemaType t )
+				{
+					switch( t ) {
+						case Simulation::SchemaType::Bool:    return ValueKind::Bool;
+						case Simulation::SchemaType::Count:   return ValueKind::UInt;
+						case Simulation::SchemaType::Real:    return ValueKind::Double;
+						case Simulation::SchemaType::Enum:    return ValueKind::Enum;
+						case Simulation::SchemaType::Vector3: return ValueKind::DoubleVec3;
+						case Simulation::SchemaType::Text:    break;
+					}
+					return ValueKind::String;
+				}
+
+				inline void AddCommonParams( ChunkDescriptor& cd )
+				{
+					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+					{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.required = true;
+					  p.description = "Unique simulation name (no `.`); consumers bind `source <name>.<output>`"; }
+					{ auto& p = P(); p.name = "cache"; p.kind = ValueKind::String;
+					  p.description = "Cache directory: absolute, `~/...`, or relative to the scene file's directory.  "
+						"Default `caches/<name>` beside the scene.  The cache writer refuses directories other "
+						"users can modify (docs/SIMULATION_SOLVER_CONTRACT.md, cache location policy)";
+					  p.defaultValueHint = "caches/<name>"; }
+				}
+
+				inline ChunkDescriptor Build( const char* keyword, const Simulation::ParameterSchema& schema )
+				{
+					ChunkDescriptor cd;
+					cd.keyword = keyword;
+					cd.category = ChunkCategory::Simulation;
+					cd.description = schema.summary;
+					AddCommonParams( cd );
+					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+					for( const Simulation::SchemaParameter& s : schema.parameters ) {
+						auto& p = P();
+						p.name = s.name;
+						p.kind = KindOf( s.type );
+						p.enumValues = s.values;
+						p.unitLabel = s.units;
+						p.defaultValueHint = s.defaultText;
+						std::string d = s.doc;
+						if( !s.units.empty() ) d += " [" + s.units + "]";
+						if( !s.modeDefaults.empty() ) d += "; default " + ( s.defaultText.empty() ? std::string( "solver-chosen" ) : s.defaultText ) + ", " + s.modeDefaults;
+						if( s.hasRange ) {
+							char range[96];
+							std::snprintf( range, sizeof( range ), "; range %g to %g", s.minimum, s.maximum );
+							d += range;
+							p.SoftRange( s.minimum, s.maximum );
+						}
+						if( !s.keyed ) d += "; does not enter the cache key";
+						p.description = d;
+					}
+					for( const Simulation::SchemaChunkField& f : schema.chunkFields ) {
+						auto& p = P();
+						p.name = f.name;
+						p.repeatable = f.repeatable;
+						p.description = f.doc;
+						p.defaultValueHint = f.defaultText;
+						if( f.kind == Simulation::SchemaChunkField::Kind::ObjectReference ) {
+							p.kind = ValueKind::Reference;
+							p.referenceCategories = { ChunkCategory::Object };
+							p.semantics.pipe = ParameterPipe::Other;
+							p.semantics.note = "A scene input: the simulation reads the object's geometry and/or transform; its content enters the cache key";
+						} else if( !f.values.empty() ) {
+							p.kind = ValueKind::Enum;
+							p.enumValues = f.values;
+						} else {
+							p.kind = ValueKind::String;
+						}
+					}
+					std::string outputs;
+					for( const Simulation::SchemaOutput& o : schema.outputs )
+						outputs += ( outputs.empty() ? "" : "; " ) + o.name + " (" + o.codec + "): " + o.doc;
+					if( !outputs.empty() ) cd.description += "  Outputs: " + outputs + ".";
+					return cd;
+				}
+
+				inline bool Fail( const std::string& why )
+				{
+					GlobalLog()->PrintEasyError( why.c_str() );
+					if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = why;
+					return false;
+				}
+
+				inline bool FinalizeSolverChunk( const ChunkDescriptor& cd, const Simulation::ParameterSchema& schema,
+					const ParseStateBag& bag, IJob& pJob )
+				{
+					SimulationDescriptor d;
+					d.keyword = cd.keyword;
+					d.name = bag.GetString( "name", "" );
+					d.solverId = schema.solverId;
+					d.cache = bag.GetString( "cache", "" );
+					Simulation::SchemaFieldValues values;
+					for( const ParameterDescriptor& p : cd.parameters ) {
+						if( p.name == "name" || p.name == "cache" ) continue;
+						if( p.repeatable ) {
+							const std::vector<std::string>& r = bag.GetRepeatable( p.name );
+							if( !r.empty() ) values[p.name] = r;
+						} else if( bag.Has( p.name ) ) {
+							values[p.name] = { bag.GetString( p.name ) };
+						}
+					}
+					RISECBOR64::Value parameters;
+					std::string error;
+					if( !Simulation::TranslateSchemaChunk( schema, values, parameters, d.sceneInputs, error ) )
+						return Fail( cd.keyword + " `" + d.name + "`: " + error );
+					if( !RISECBOR64::Encode( parameters, d.parameters, &error ) )
+						return Fail( cd.keyword + " `" + d.name + "`: " + error );
+					for( const Simulation::SchemaOutput& o : schema.outputs ) d.outputs.emplace_back( o.name, o.codec );
+					return pJob.AddSimulation( d );
+				}
+			}
+
+			struct ClothSimulationAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return SimulationChunks::FinalizeSolverChunk( Describe(), Simulation::ClothParameterSchema(), bag, pJob );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = SimulationChunks::Build( "cloth_simulation", Simulation::ClothParameterSchema() );
+					return d;
+				}
+			};
+
+			struct FireSimulationAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return SimulationChunks::FinalizeSolverChunk( Describe(), Simulation::FireParameterSchema(), bag, pJob );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = SimulationChunks::Build( "fire_simulation", Simulation::FireParameterSchema() );
+					return d;
+				}
+			};
+
+			struct SimulationCacheAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					SimulationDescriptor d;
+					d.keyword = "simulation_cache";
+					d.name = bag.GetString( "name", "" );
+					d.cache = bag.GetString( "cache", "" );
+					return pJob.AddSimulation( d );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "simulation_cache";
+						cd.category = ChunkCategory::Simulation;
+						cd.description = "A simulation cache with no solver in this scene: imported (e.g. "
+							"`simulation_cache_import` from OpenVDB) or baked elsewhere.  A foreign producer: it is "
+							"never baked or keyed by this scene, its outputs are whatever its manifest declares, and "
+							"it plays as preview unless its own label and evidence say otherwise.  Consumers bind "
+							"`source <name>.<output>`.";
+						SimulationChunks::AddCommonParams( cd );
 						return cd;
 					}();
 					return d;
@@ -9786,6 +9993,24 @@ namespace RISE
 						 bag.GetString("channel_chem_co2") != "chem_CO2")) ) return false;
 					if( bag.Has("channel_condensed") && bag.GetString("channel_condensed") != "condensed" ) return false;
 					if( !pJob.SetFireFidelityMode(bag.GetString("fidelity_mode").c_str()) ) return false;
+					// M4: exactly one of `sequence_manifest <path>` and `source <simulation>.<output>`.
+					const bool hasManifest = bag.Has("sequence_manifest") && !bag.GetString("sequence_manifest").empty();
+					const bool hasSource = bag.Has("source") && !bag.GetString("source").empty();
+					if( hasManifest == hasSource ) {
+						const std::string why = "fire_medium `" + bag.GetString("name") +
+							"`: give exactly one of `sequence_manifest <path>` and `source <simulation>.<output>`";
+						GlobalLog()->PrintEasyError(why.c_str());
+						if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = why;
+						return false;
+					}
+					if( hasSource )
+						return pJob.AddFireMediumFromSimulation(bag.GetString("name").c_str(),
+							bag.GetString("source").c_str(),"carbon","temperature",
+							bag.Has("channel_condensed") ? "condensed" : "",
+							bag.Has("channel_reaction") ? "reaction" : "",
+							allChem ? "chem_CH" : "",allChem ? "chem_C2" : "",
+							allChem ? "chem_CO2" : "",
+							bag.Has("channel_velocity") ? "velocity" : "",chemNone);
 					return pJob.AddFireMediumBound(bag.GetString("name").c_str(),
 						bag.GetString("sequence_manifest").c_str(),"carbon","temperature",
 						bag.Has("channel_condensed") ? "condensed" : "",
@@ -9805,7 +10030,11 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p=P(); p.name="name"; p.kind=ValueKind::String; p.required=true; p.description="Unique medium name.  Creates a named medium manager entry that is inert until bound (as `global_medium`, or through a closed object's `interior_medium`)"; }
 						{ auto& p=P(); p.name="fidelity_mode"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"preview","predictive"}; p.description="Scene/job-wide fire-render fidelity request.  `preview` is the preview-only path; `predictive` requests predictive fidelity and is refused at preflight when the sequence does not qualify"; }
-						{ auto& p=P(); p.name="sequence_manifest"; p.kind=ValueKind::String; p.required=true; p.description="Path to the sequence manifest, the sole locator of the time sequence (ordered frame paths and digests) and carrier of the complete physical/record closure; sibling frames are never inferred from a filename pattern"; }
+						{ auto& p=P(); p.name="sequence_manifest"; p.kind=ValueKind::String; p.description="Path to the sequence manifest, the sole locator of the time sequence (ordered frame paths and digests) and carrier of the complete physical/record closure; sibling frames are never inferred from a filename pattern.  Exactly one of `sequence_manifest` and `source`"; }
+						{ auto& p=P(); p.name="source"; p.kind=ValueKind::Reference; p.referenceCategories={ChunkCategory::Simulation};
+						  p.semantics.pipe=ParameterPipe::Other;
+						  p.semantics.note="Resolves against the Job's simulation table (a producer chunk), not a manager";
+						  p.description="M4: a producer's grid output, `<simulation>.<output>` (a `fire_simulation`'s `volume`, or a fire-compatible `simulation_cache` output): the medium reads that simulation's cache.  A producer with no cache yet gives an empty medium with a warning (preview); `fidelity_mode predictive` fails closed.  Exactly one of `source` and `sequence_manifest`"; }
 						{ auto& p=P(); p.name="channel_carbon"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"carbon"}; p.description="Carbon channel binding; must be exactly `carbon` (the version-1 manifest schema name)"; }
 						{ auto& p=P(); p.name="channel_temperature"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"temperature"}; p.description="Temperature channel binding; must be exactly `temperature` (the version-1 manifest schema name)"; }
 						{ auto& p=P(); p.name="channel_condensed"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"condensed"}; p.description="Optional condensed-organic channel binding; when present must be exactly `condensed`"; }
@@ -14553,6 +14782,11 @@ namespace RISE
 		add( "displaced_geometry",                    std::make_unique<DisplacedGeometryAsciiChunkParser>() );
 		add( "hair_geometry",                         std::make_unique<HairGeometryAsciiChunkParser>() );
 		add( "hair_guides",                           std::make_unique<HairGuidesAsciiChunkParser>() );
+
+		// Simulations (M4; ChunkCategory::Simulation)
+		add( "cloth_simulation",                      std::make_unique<ClothSimulationAsciiChunkParser>() );
+		add( "fire_simulation",                       std::make_unique<FireSimulationAsciiChunkParser>() );
+		add( "simulation_cache",                      std::make_unique<SimulationCacheAsciiChunkParser>() );
 
 		// Modifiers
 		add( "relief_modifier",                       std::make_unique<ReliefModifierAsciiChunkParser>() );

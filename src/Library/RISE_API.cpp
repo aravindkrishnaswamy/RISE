@@ -11004,7 +11004,8 @@ namespace RISE
 #include "SceneEditor/SceneEditController.h"
 #include "SceneEditor/MaterialPreview.h"
 #include "SceneEditor/LiveSimulation.h"           // simulation M3c
-#include "Simulation/BuiltinSolvers.h"            // simulation M3c
+#include "Simulation/BuiltinSolvers.h"
+#include "Simulation/SceneSimulation.h"            // simulation M3c
 #include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
 #include "Utilities/Transformable.h"
 
@@ -12362,6 +12363,58 @@ namespace RISE
 	{
 		if( !p ) return 0;
 		try { return p->LiveSimulationCount(); } catch( ... ) { return 0; }
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationAttachSimulation(
+		SceneEditController* p, const char* simulationName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !simulationName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationAttachSimulation( simulationName, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationResync(
+		SceneEditController* p, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) { return p->LiveSimulationResync( error ); } );
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationCount( SceneEditController* p, unsigned int* outCount )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			std::vector<Simulation::SceneSimulationStatus> statuses;
+			if( !p->GetSimulations( statuses, error ) ) return false;
+			M3cSet( outCount, static_cast<unsigned int>( statuses.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetSimulation(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		char* cacheBuf, unsigned int cacheBufLen, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			std::vector<Simulation::SceneSimulationStatus> statuses;
+			if( !p->GetSimulations( statuses, error ) || index >= statuses.size() ) return false;
+			const Simulation::SceneSimulationStatus& s = statuses[index];
+			M3cCopyText( s.name, nameBuf, nameBufLen );
+			M3cCopyText( s.keyword, keywordBuf, keywordBufLen );
+			M3cSet( outState, static_cast<int>( s.state ) );
+			M3cSet( outUpstreamOutOfDate, s.upstreamOutOfDate );
+			M3cSet( outInteractive, s.interactive );
+			M3cSet( outFramesAvailable, static_cast<unsigned long long>( s.framesAvailable ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( s.framesTotal ) );
+			M3cCopyText( s.cacheDir.string(), cacheBuf, cacheBufLen );
+			M3cCopyText( s.error, errorBuf, errorBufLen );
+			return true;
+		} );
 	}
 
 	bool RISE_API_SceneEditController_PainterPreview(

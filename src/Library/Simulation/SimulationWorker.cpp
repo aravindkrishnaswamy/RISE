@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "SimulationWorker.h"
 #include "SimulationHost.h"
+#include "SceneSimulationWorker.h"
 #include "../Agent/Json.h"
 
 #include <atomic>
@@ -234,12 +235,7 @@ bool WriteStatus(const fs::path& root,const WorkerStatus& s,std::string& error)
 
 // ---------------------------------------------------------------- run loop
 
-struct Options {
-	double checkpointSeconds = 300;
-	std::size_t budget = std::size_t(1024)<<20;
-	std::uint64_t stopAfter = 0;
-	bool force = false;
-};
+using Options = WorkerOptions;
 
 class WriterSink final : public IFrameSink {
 public:
@@ -373,13 +369,12 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	return WorkerFinished;
 }
 
-bool Configure(ISimulationSolver& solver,const V& parameters,SolverDescription& d,const std::string& parent,
-	std::string& error)
+// `inputs` outlive the solver (a solver may keep the object it is configured
+// with): EmptySceneInputs() is process-lifetime, a scene's are the caller's.
+bool Configure(ISimulationSolver& solver,const V& parameters,const ISceneInputs& inputs,SolverDescription& d,
+	const std::string& parent,std::string& error)
 {
-	// Process-lifetime inputs: a solver may keep the object it is configured with.
-	const ISceneInputs& inputs=EmptySceneInputs();
 	if (!solver.Configure(parameters,inputs,d,error)) return false;
-	if (!d.inputs.empty()) return Fail(error,"this solver reads scene inputs; rise-sim bakes scenes from M4");
 	return PrepareCacheDescription(d,inputs,parent,error);
 }
 
@@ -426,32 +421,40 @@ double PriorWall(const fs::path& root)
 	return ReadWorkerStatus(root,s,ignored) ? s.wallSeconds : 0;
 }
 
-int Bake(const std::string& id,const fs::path& parameterFile,const fs::path& root,const Options& options,
-	std::ostream& out,std::ostream& err)
+int Resume(const fs::path& root,const Options& options,const ISceneInputs& inputs,std::ostream& out,std::ostream& err);
+
+int BakeWith(const std::string& id,const V& parameters,const ISceneInputs& inputs,const fs::path& root,
+	const Options& options,bool replace,std::ostream& out,std::ostream& err)
 {
 	std::string error;
-	V parameters;
-	if (!LoadParameters(parameterFile,options.budget,parameters,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	auto solver=CreateSolver(id,error);
 	if (!solver) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	SolverDescription d;
-	if (!Configure(*solver,parameters,d,"",error)) { err<<"rise-sim: configure: "<<error<<"\n"; return WorkerFailed; }
+	if (!Configure(*solver,parameters,inputs,d,"",error)) { err<<"rise-sim: configure: "<<error<<"\n"; return WorkerFailed; }
 	PrintNotes(d,out);
 	std::string parent;
 	if (Exists(root/"manifest.cbor")) {
 		CacheSnapshot old;
 		if (!CacheSnapshot::Open(root,options.budget,old,error)) { err<<"rise-sim: existing cache: "<<error<<"\n"; return WorkerFailed; }
+		const bool same=old.Description().key==d.cache.key;
 		if (!options.force) {
-			if (old.Description().key==d.cache.key && old.Complete()) {
+			if (same && old.Complete()) {
 				out<<"rise-sim: cache already complete for this configuration\n";
 				return WorkerFinished;
 			}
-			err<<"rise-sim: "<<(old.Description().key==d.cache.key ? "partial cache exists; use resume" :
-				"cache holds a different configuration")<<" (or --force to rebake)\n";
-			return WorkerFailed;
+			// A scene bake resumes its own partial cache and replaces a stale one.
+			if (replace && same) {
+				solver.reset();
+				return Resume(root,options,inputs,out,err);
+			}
+			if (!replace) {
+				err<<"rise-sim: "<<(same ? "partial cache exists; use resume" :
+					"cache holds a different configuration")<<" (or --force to rebake)\n";
+				return WorkerFailed;
+			}
 		}
 		parent=old.Digest();
-		if (!PrepareCacheDescription(d,EmptySceneInputs(),parent,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
+		if (!PrepareCacheDescription(d,inputs,parent,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	}
 	CacheWriter writer;
 	if (!writer.Begin(root,d.cache,parent,false,options.budget,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
@@ -467,7 +470,16 @@ int Bake(const std::string& id,const fs::path& parameterFile,const fs::path& roo
 	return Run(*solver,d,writer,root,job,options,0,out,err);
 }
 
-int Resume(const fs::path& root,const Options& options,std::ostream& out,std::ostream& err)
+int Bake(const std::string& id,const fs::path& parameterFile,const fs::path& root,const Options& options,
+	std::ostream& out,std::ostream& err)
+{
+	std::string error;
+	V parameters;
+	if (!LoadParameters(parameterFile,options.budget,parameters,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
+	return BakeWith(id,parameters,EmptySceneInputs(),root,options,false,out,err);
+}
+
+int Resume(const fs::path& root,const Options& options,const ISceneInputs& inputs,std::ostream& out,std::ostream& err)
 {
 	std::string error;
 	Job job;
@@ -475,7 +487,12 @@ int Resume(const fs::path& root,const Options& options,std::ostream& out,std::os
 	auto solver=CreateSolver(job.solver,error);
 	if (!solver) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	SolverDescription d;
-	if (!Configure(*solver,job.parameters,d,"",error)) { err<<"rise-sim: configure: "<<error<<"\n"; return WorkerFailed; }
+	if (!Configure(*solver,job.parameters,inputs,d,"",error)) {
+		err<<"rise-sim: configure: "<<error;
+		if (&inputs==&EmptySceneInputs()) err<<" (a configuration that reads scene inputs resumes from its scene: rise-sim resume <scene> <simulation>)";
+		err<<"\n";
+		return WorkerFailed;
+	}
 	Bytes stored,effective;
 	if (!RISECBOR64::Encode(job.parameters,stored,&error) || !RISECBOR64::Encode(d.effectiveParameters,effective,&error) ||
 		stored!=effective || d.version!=job.version || d.cache.key!=job.key) {
@@ -545,6 +562,9 @@ void Usage(std::ostream& err)
 	err<<"usage: rise-sim bake <solver id> <parameters.json|.cbor> <cache dir> [options]\n"
 		"       rise-sim resume <cache dir> [options]\n"
 		"       rise-sim status <cache dir>\n"
+		"       rise-sim bake <scene.RISEscene> (<simulation> ... | --all) [options]\n"
+		"       rise-sim resume <scene.RISEscene> [<simulation> ...] [options]\n"
+		"       rise-sim status <scene.RISEscene>\n"
 		"options: --checkpoint-seconds S  --budget-mb N  --stop-after-frames N  --force (bake)\n"
 		"exit: 0 finished, 1 failed, 2 usage, 3 stopped (resumable)\n";
 	const auto ids=RegisteredSolvers();
@@ -567,6 +587,18 @@ struct SignalScope {
 	}
 };
 } // namespace
+
+bool ReadWorkerJobRecord(const fs::path& root,std::string& solver,std::string& version,V& effectiveParameters,
+	std::string& key,std::string& error)
+{
+	Job job;
+	if (!ReadJob(root,std::size_t(64)<<20,job,error)) return false;
+	solver=job.solver;
+	version=job.version;
+	effectiveParameters=job.parameters;
+	key=job.key;
+	return true;
+}
 
 bool ReadWorkerStatus(const fs::path& root,WorkerStatus& status,std::string& error)
 {
@@ -605,6 +637,7 @@ int WorkerMain(const std::vector<std::string>& args,std::ostream& out,std::ostre
 		};
 		double value=0;
 		if (a=="--force") options.force=true;
+		else if (a=="--all") options.all=true;
 		else if (a=="--checkpoint-seconds") { if (!number(value)) { Usage(err); return WorkerUsage; } options.checkpointSeconds=value; }
 		else if (a=="--budget-mb") {
 			if (!number(value) || value<1 || value>32768) { Usage(err); return WorkerUsage; }
@@ -620,11 +653,28 @@ int WorkerMain(const std::vector<std::string>& args,std::ostream& out,std::ostre
 	if (positional.empty()) { Usage(err); return WorkerUsage; }
 	const auto& command=positional[0];
 	SignalScope signals;
+	// M4: a scene file in place of a solver id or a cache directory.
+	if (positional.size()>=2 && IsSceneFilePath(positional[1]) && (command=="bake" || command=="resume" || command=="status"))
+		return SceneWorkerMain(command,positional[1],
+			std::vector<std::string>(positional.begin()+2,positional.end()),options,out,err);
+	if (options.all) { Usage(err); return WorkerUsage; }
 	if (command=="bake" && positional.size()==4) return Bake(positional[1],positional[2],positional[3],options,out,err);
-	if (command=="resume" && positional.size()==2 && !options.force) return Resume(positional[1],options,out,err);
+	if (command=="resume" && positional.size()==2 && !options.force) return Resume(positional[1],options,EmptySceneInputs(),out,err);
 	if (command=="status" && positional.size()==2) return Status(positional[1],options,out,err);
 	Usage(err);
 	return WorkerUsage;
+}
+
+int WorkerBakeConfiguration(const std::string& solverId,const V& parameters,const ISceneInputs& inputs,
+	const fs::path& cache,const WorkerOptions& options,bool replace,std::ostream& out,std::ostream& err)
+{
+	return BakeWith(solverId,parameters,inputs,cache,options,replace,out,err);
+}
+
+int WorkerResumeConfiguration(const fs::path& cache,const ISceneInputs& inputs,const WorkerOptions& options,
+	std::ostream& out,std::ostream& err)
+{
+	return Resume(cache,options,inputs,out,err);
 }
 
 int WorkerMain(int argc,char** argv)

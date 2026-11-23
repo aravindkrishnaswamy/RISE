@@ -126,6 +126,11 @@ namespace RISE
 
 			void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const;
 
+			//! Simulation M4: every keyframe time of ONE element in the ACTIVE
+			//! animation (appended; unsorted, may repeat).  A scene input's
+			//! identity samples the element's motion at these times.
+			void CollectElementKeyframeTimes( IKeyframable* element, std::vector<Scalar>& out ) const;
+
 			// DL-465: read-only per-thread evaluation (see IAnimator.h).
 			void GetActiveAnimatedElements( std::vector<IKeyframable*>& out ) const;
 			bool GetActiveAnimatedParameters( IKeyframable* element, std::vector<String>& out ) const;

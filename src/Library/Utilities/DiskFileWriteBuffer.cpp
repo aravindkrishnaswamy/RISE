@@ -38,6 +38,7 @@
 #include <cerrno>
 #include "../Interfaces/ILog.h"
 #include "MediaPathLocator.h"
+#include "../Simulation/SimulationCache.h"
 
 using namespace RISE::Implementation;
 
@@ -133,14 +134,30 @@ namespace
 		struct Directory {
 			int descriptor;
 			~Directory() { if( descriptor >= 0 ) ::close(descriptor); }
-		} current{ ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC) };
+		} current{ -1 };
+		// Opt-in trusted cache roots (RISE_SIMULATION_TRUSTED_ROOTS, AddTrustedCacheRoot): when a
+		// canonical, normalised parent lies under one (the shared Simulation::FindTrustedCacheRoot
+		// policy), the walk starts at that root, which is not itself checked, and every directory
+		// below it still passes IsTrustedStagingDirectory through the same descriptor chain. With
+		// no trusted root configured this is the walk from "/" exactly as before.
+		std::filesystem::path trustedRoot, relative = parent.relative_path();
+		const bool underRoot = parent.is_absolute() && parent == parent.lexically_normal() &&
+			RISE::Simulation::FindTrustedCacheRoot(parent, trustedRoot);
+		if( underRoot ) relative = parent.lexically_relative(trustedRoot);
+		current.descriptor = ::open(underRoot ? trustedRoot.c_str() : "/",
+			O_RDONLY | O_DIRECTORY | O_CLOEXEC | (underRoot ? O_NOFOLLOW : 0));
 		if( current.descriptor < 0 ) {
 			error = std::error_code(errno, std::generic_category());
 			return false;
 		}
-		if( !IsTrustedStagingDirectory(current.descriptor, error) ) return false;
-		for( const auto& component : parent.relative_path() ) {
-			if( component.empty() ) continue;
+		bool belowRoot = false;
+		if( underRoot ) {
+			for( const auto& component : relative ) if( !component.empty() && component != "." ) belowRoot = true;
+		}
+		// "/" is checked like any ancestor; a trusted root only when it is the directory itself.
+		if( (!underRoot || !belowRoot) && !IsTrustedStagingDirectory(current.descriptor, error) ) return false;
+		for( const auto& component : relative ) {
+			if( component.empty() || ( underRoot && component == "." ) ) continue;
 			Directory next{ ::openat(current.descriptor, component.c_str(),
 				O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) };
 			if( next.descriptor < 0 ) {
@@ -167,6 +184,16 @@ namespace
 	}
 }
 #endif
+
+bool RISE::Implementation::ForTest_CheckStagingParents( const std::filesystem::path& parent, std::error_code& error )
+{
+	error.clear();
+#ifdef _WIN32
+	return true;
+#else
+	return CheckStagingParents(parent, error);
+#endif
+}
 
 DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name ) :
 	DiskFileWriteBuffer(file_name, nullptr, OpenPolicy::Direct)

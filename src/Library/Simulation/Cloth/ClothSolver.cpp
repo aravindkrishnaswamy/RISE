@@ -665,7 +665,7 @@ private:
 		r.position = Position();
 		return true;
 	}
-	bool Encode(Bytes& frame, Bytes& fixed, std::string& error);
+	bool Encode(Bytes& frame, std::shared_ptr<const Bytes>& fixed, std::string& error);
 	bool Publish(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports, std::string& error);
 	bool OfferState(double time, IPortExchange& ports, std::string& error);
 	bool AcceptLoads(double time, IPortExchange* ports, std::string& error);
@@ -691,6 +691,9 @@ private:
 	std::uint64_t segN_ = 0, segJ_ = 0;
 	bool held_ = false;                       // port values read for the macro step ending at heldFor_
 	bool staticSent_ = false;                 // topology published to the sink in this run
+	bool staticReady_ = false;                // staticRecord_ matches indices_ and materialUV_
+	MeshStaticRecord staticRecord_;           // mesh.topology.v1 bytes and digests, encoded once per configuration
+	std::shared_ptr<const Bytes> staticPayload_; // the same bytes, shared with sinks and port relays
 	StepStats stats_;
 	std::atomic<bool> stop_{false};
 };
@@ -804,6 +807,7 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 		materialUV_.push_back(F32(sheet.sizeV*static_cast<double>(j)/static_cast<double>(sheet.verticesV - 1)));
 	}
 	topology_ = MeshTopologyDigest(built.Vertices(), indices_);
+	staticReady_ = false;   // the static record is rebuilt for this configuration on first use
 	tracks_ = scene.tracks;
 	configured_ = true;
 
@@ -832,6 +836,7 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	caps.rollback = true;
 	caps.threadCountInvariant = true; // ClothParallel.h: bitwise the same for any thread count
 	caps.modes = {"bake", "interactive"};
+	caps.backend = "cpu";   // M4: the backend this configuration runs on
 	const std::uint64_t n = built.Vertices();
 	// About a dozen 3-vectors of doubles per vertex (state, history, Newton work)
 	// plus three block matrices (pattern, damping, Hessian) of ~13 3x3 blocks per row.
@@ -936,7 +941,7 @@ bool ClothSolver::TrackFailure(std::string& error) const
 
 // mesh.v2: positions, velocities and normals per frame; the connectivity and
 // the material UVs in one static topology payload.
-bool ClothSolver::Encode(Bytes& frame, Bytes& fixed, std::string& error)
+bool ClothSolver::Encode(Bytes& frame, std::shared_ptr<const Bytes>& fixed, std::string& error)
 {
 	const std::uint32_t n = system_.Vertices();
 	MeshFrame m;
@@ -956,16 +961,21 @@ bool ClothSolver::Encode(Bytes& frame, Bytes& fixed, std::string& error)
 	MeshStaticLayout layout;
 	layout.topology = true;
 	layout.staticUVSets = {"material"};
-	std::string digest;
-	return EncodeMeshV2(m, layout, CodecBudget, frame, fixed, digest, error);
+	if (!staticReady_) {
+		if (!PrepareMeshStatic(m, layout, CodecBudget, staticRecord_, error)) return false;
+		staticPayload_ = std::make_shared<const Bytes>(staticRecord_.payload);
+		staticReady_ = true;
+	}
+	fixed = staticPayload_;
+	return EncodeMeshV2(m, layout, CodecBudget, staticRecord_, frame, error);
 }
 
 bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports, std::string& error)
 {
 	auto bytes = std::make_shared<Bytes>();
-	auto fixed = std::make_shared<Bytes>();
+	std::shared_ptr<const Bytes> fixed;
 	std::string declared;
-	if (!Encode(*bytes, *fixed, error)) return false;
+	if (!Encode(*bytes, fixed, error)) return false;
 	// The static topology goes to the sink once per run, before the first frame.
 	if (!staticSent_ && !sink.PublishStatic(MeshTopologyStaticType, fixed, declared, error)) return false;
 	staticSent_ = true;
@@ -979,8 +989,8 @@ bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPo
 bool ClothSolver::OfferState(double time, IPortExchange& ports, std::string& error)
 {
 	auto bytes = std::make_shared<Bytes>();
-	auto fixed = std::make_shared<Bytes>();
-	if (!Encode(*bytes, *fixed, error)) return false;
+	std::shared_ptr<const Bytes> fixed;
+	if (!Encode(*bytes, fixed, error)) return false;
 	return ports.OfferStatic(MeshTopologyStaticType, fixed, error) && ports.Offer(StatePort, time, std::move(bytes), error);
 }
 

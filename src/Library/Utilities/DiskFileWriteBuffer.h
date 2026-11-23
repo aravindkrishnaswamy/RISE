@@ -18,6 +18,7 @@
 #include "Reference.h"
 #include <functional>
 #include <cstdint>
+#include <filesystem>
 #include <system_error>
 
 #ifndef DISKFILEWRITE_BUFFER_
@@ -30,6 +31,10 @@ namespace RISE
 		// Thread-local fault hook for recovery-file FILE adoption regressions.
 		// Returns the prior value for scoped restoration.
 		bool ForTest_SetRecoveryStreamAdoptionFailure( bool enabled );
+		// The POSIX staging-ancestor check on its own (true on Windows): an absolute canonical
+		// directory passes when every ancestor is owner-only, or, under an opt-in trusted cache
+		// root (Simulation::FindTrustedCacheRoot), when everything below the root is.
+		bool ForTest_CheckStagingParents( const std::filesystem::path& parent, std::error_code& error );
 
 		class DiskFileWriteBuffer : public virtual IWriteBuffer, public virtual DiskBuffer
 		{

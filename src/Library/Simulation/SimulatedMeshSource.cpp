@@ -112,9 +112,7 @@ bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const Snapsho
 		// Predictive admission (fail closed): a complete cache labelled
 		// predictive whose every frame of this output is present, verifies
 		// against its manifest digest and decodes to one topology.
-		std::uint64_t present = 0;
-		for( const CacheEntry& e : source->bound_->Entries() ) if( e.output == options.output ) ++present;
-		if( present != d.count )
+		if( source->bound_->Span( options.output ).count != d.count )
 			return Fail( error, "predictive simulated mesh requires every frame of the output" );
 		MeshCacheSource* self = source.get();
 		IReadOnlyCacheSnapshot::Qualification q;
@@ -143,14 +141,11 @@ bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const Snapsho
 	}
 
 	// The bind frame: the first frame of the output present in the cache.
-	const CacheEntry* first = nullptr;
-	for( const CacheEntry& e : source->bound_->Entries() ) {
-		if( e.output == options.output && ( !first || e.index < first->index ) ) first = &e;
-	}
-	if( !first ) return Fail( error, "simulation cache has no frame of output `" + options.output + "` yet" );
+	const OutputSpan firstSpan = source->bound_->Span( options.output );
+	if( firstSpan.count == 0 ) return Fail( error, "simulation cache has no frame of output `" + options.output + "` yet" );
 	MeshFrame frame;
 	std::string digest;
-	const FrameStatus status = source->ReadFrame( *source->bound_, first->index, frame, digest, error );
+	const FrameStatus status = source->ReadFrame( *source->bound_, firstSpan.first, frame, digest, error );
 	if( status != FrameStatus::Ready ) return Fail( error, "simulated mesh bind frame refused: " + error );
 	if( frame.indices.empty() || frame.positions.empty() )
 		return Fail( error, "simulated mesh needs a nonempty fixed-topology surface" );
@@ -170,7 +165,7 @@ bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const Snapsho
 	}
 	if( !options.uvSet.empty() && source->uvSetName_.empty() )
 		return Fail( error, "simulated mesh has no UV set named `" + options.uvSet + "`" );
-	source->bindIndex_ = first->index;
+	source->bindIndex_ = firstSpan.first;
 	out = std::move( source );
 	return true;
 }

@@ -90,6 +90,19 @@ bool EncodeMesh(const MeshFrame& frame, std::size_t budget,
 bool EncodeMeshV2(const MeshFrame& frame, const MeshStaticLayout& layout, std::size_t budget,
 	std::vector<std::uint8_t>& out, std::vector<std::uint8_t>& staticPayload, std::string& staticDigest,
 	std::string& error);
+// A fixed-topology stream encodes its static record and hashes once, not per frame:
+// PrepareMeshStatic fills `record` from a frame (layout.topology required); the
+// overload below then writes frames byte-identical to the one above for any frame
+// with the same connectivity and static UV sets, without re-encoding or hashing them.
+struct MeshStaticRecord {
+	std::vector<std::uint8_t> payload;  // the mesh.topology.v1 record
+	std::string digest;                 // its SHA-256 (the cache content digest)
+	std::string topologyDigest;         // MeshTopologyDigest of the frame's connectivity
+};
+bool PrepareMeshStatic(const MeshFrame& frame, const MeshStaticLayout& layout, std::size_t budget,
+	MeshStaticRecord& record, std::string& error);
+bool EncodeMeshV2(const MeshFrame& frame, const MeshStaticLayout& layout, std::size_t budget,
+	const MeshStaticRecord& record, std::vector<std::uint8_t>& out, std::string& error);
 // mesh.v1 or a self-contained mesh.v2 frame; a frame that references a static
 // payload is refused without a resolver.
 bool DecodeMesh(const std::vector<std::uint8_t>& bytes, std::size_t budget,

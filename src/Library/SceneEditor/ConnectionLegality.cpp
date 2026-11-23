@@ -94,6 +94,10 @@ namespace RISE
 				case ChunkCategory::Geometry:
 				case ChunkCategory::Object:
 					return ParameterPipe::Geometry;
+				// ChunkCategory::Simulation (M4) likewise falls through to
+				// `Other`: a producer is data in a Job table, and its one
+				// consumer port (`source`) declares `referenceCategories =
+				// {Simulation}`, checked by the `CategoryAllowed` fallback.
 				// ChunkCategory::HairGuides is DELIBERATELY ABSENT from the
 				// Geometry arm and falls through to `Other`.  A `hair_guides`
 				// set is not an IGeometry and never enters the geometry

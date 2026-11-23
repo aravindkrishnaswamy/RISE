@@ -103,6 +103,10 @@ constexpr const char* TrustedCacheRootsEnvironment = "RISE_SIMULATION_TRUSTED_RO
 bool AddTrustedCacheRoot(const std::filesystem::path& root, std::string& error);
 void ClearTrustedCacheRoots();                        // the API-added ones; the environment is read on use
 std::vector<std::filesystem::path> TrustedCacheRoots(); // canonical: environment, then API
+// The deepest trusted root (never "/") that the absolute, normalised `path` equals or lies under.
+// The one place that decides which trusted root, if any, a location falls under; every writer
+// that honours trusted roots (the cache writer, DiskFileWriteBuffer's staging check) asks here.
+bool FindTrustedCacheRoot(const std::filesystem::path& path, std::filesystem::path& root);
 // Would the writer accept (and, with `create`, create) this cache directory?
 bool CheckCacheLocation(const std::filesystem::path& root, bool create, std::string& error);
 
@@ -110,6 +114,14 @@ bool MakeCacheKey(const std::string& solver, const std::string& version,
 	const RISECBOR64::Value& effectiveParameters,
 	const std::vector<std::pair<std::string,std::string>>& orderedInputHashes,
 	std::string& key, std::string& error);
+
+// What a snapshot holds of one output, without materialising its entries:
+// how many frames, and the lowest and highest index (first > last when none).
+struct OutputSpan {
+	std::uint64_t count = 0;
+	std::int64_t first = 0;
+	std::int64_t last = -1;
+};
 
 // Disk and in-process publishers pass a shared immutable snapshot across the
 // render boundary. Read's budget is the remaining allowance for this frame.
@@ -129,6 +141,10 @@ public:
 		std::shared_ptr<const Bytes>& bytes, std::string& error) const;
 	// One entry by (index, output); the default searches Entries().
 	virtual bool FindEntry(std::int64_t index, const std::string& output, CacheEntry& entry) const;
+	// Additive accessors for readers that follow a live run (default: computed from Entries();
+	// the disk and memory snapshots answer without scanning or materialising the list).
+	virtual std::size_t EntryCount() const;
+	virtual OutputSpan Span(const std::string& output) const;
 	// Resolves frame references through ReadStatic (the snapshot must outlive it).
 	StaticPayloadResolver Resolver() const;
 	bool Stale(const std::string& expectedKey) const { return expectedKey != Description().key; }
@@ -149,6 +165,8 @@ public:
 		CacheSnapshot& snapshot, std::string& error);
 	const CacheDescription& Description() const override { return description_; }
 	const std::vector<CacheEntry>& Entries() const override { return entries_; }
+	std::size_t EntryCount() const override { return entries_.size(); }
+	OutputSpan Span(const std::string& output) const override;
 	const std::string& Digest() const override { return digest_; }
 	bool Complete() const override { return complete_; }
 	FrameStatus Read(std::int64_t index, const std::string& output, std::size_t byteBudget,
@@ -160,6 +178,8 @@ private:
 	friend class CacheWriter;
 	CacheDescription description_;
 	std::vector<CacheEntry> entries_;
+	std::vector<std::pair<std::string,OutputSpan>> spans_; // per output, kept with entries_
+	void IndexSpans();
 	std::vector<CacheStatic> statics_;
 	std::filesystem::path root_;
 	std::string digest_;

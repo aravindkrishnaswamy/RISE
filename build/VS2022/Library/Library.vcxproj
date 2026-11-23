@@ -568,6 +568,7 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireSolver.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireParameterSchema.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp" />
@@ -575,6 +576,10 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationTimeline.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\BuiltinSolvers.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SceneSimulationWorker.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SceneInputs.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SceneSimulation.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationParameterSchema.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationSolver.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationHost.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationWorker.cpp" />
@@ -599,6 +604,7 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothSolver.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothParameterSchema.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
@@ -724,6 +730,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW2.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\ProceduralDescriptors.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\SimulationDescriptor.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IAnimator.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IAtmosphere.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IBezierPatchGeometry.h" />
@@ -1212,6 +1219,7 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunDriver.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRun.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireSolver.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireParameterSchema.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunHostMemory.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedStageBudget.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedFuelBudget.h" />
@@ -1228,6 +1236,10 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTimeline.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\BuiltinSolvers.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SceneSimulationWorker.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SceneInputs.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SceneSimulation.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationParameterSchema.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationSolver.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationHost.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationWorker.h" />
@@ -1238,6 +1250,7 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothContact.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothSolver.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothParameterSchema.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />

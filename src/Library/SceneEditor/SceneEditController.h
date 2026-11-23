@@ -3770,6 +3770,24 @@ namespace RISE
 		bool GetLiveSimulationStatus( const std::string& geometry,
 			Implementation::LiveSimulationStatus& status ) const;
 		unsigned int LiveSimulationCount() const;
+		//! Simulation M4: run the scene's simulation `simulation` live (its
+		//! declared solver, parameters and scene inputs; the inputs are
+		//! captured under the render park, detached from the scene), bound to
+		//! the simulated_mesh_geometry whose `source` names it.  No bake is
+		//! needed: an unbound consumer takes its topology from the run's
+		//! first published frame.  Detach as for LiveSimulationAttach (by the
+		//! geometry's name); an unbound consumer becomes unbound again.
+		bool LiveSimulationAttachSimulation( const std::string& simulation, std::string& error );
+		//! Simulation M4: after a scene edit, restarts every live scene
+		//! simulation whose configuration (parameters, scene-input identities)
+		//! or consumer geometry changed, with the scene's current one (a new
+		//! cache key).  ApplyAgentParamEdit calls it; a GUI calls it after its
+		//! own edits.  Starts no bake.
+		bool LiveSimulationResync( std::string& error );
+		//! Simulation M4: every declared simulation's state (IJobPriv::
+		//! DescribeSimulations).  Non-blocking like GetTimeVaryingAssets: false
+		//! while an edit or a production render holds the scene.
+		bool GetSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses, std::string& error ) const;
 		//! Interactive passes finished without cancellation (the clock's
 		//! coalescing signal).
 		std::uint64_t GetCompletedPassCount() const;
@@ -7559,6 +7577,11 @@ namespace RISE
 			bool force, std::string& error );
 		bool RestartLive_( const std::string& geometry, const std::vector<unsigned char>* parameters,
 			const std::string* record, std::string& error );
+		// M4: a scene simulation's live run, built off the scene locks from what
+		// is captured under mMutex; and the shared tail of every attach.
+		bool PrepareSceneLive_( const std::string& simulation,
+			std::unique_ptr<Implementation::LiveSimulation>& live, std::string& error );
+		bool AttachPrepared_( std::unique_ptr<Implementation::LiveSimulation> live, std::string& error );
 		void ShutdownSimulation_();
 
 		// Disable copy / move

@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <set>
 
 namespace RISE { namespace Simulation {
 
@@ -24,10 +23,16 @@ bool LatestContiguousMeshFrame( const MeshCacheSource& source, std::int64_t& ind
 	std::shared_ptr<const IReadOnlyCacheSnapshot> snapshot;
 	if( !source.CurrentSnapshot( snapshot, error ) ) return false;
 	const std::string& output = source.Options().output;
-	std::set<std::int64_t> present;
-	for( const CacheEntry& e : snapshot->Entries() ) if( e.output == output ) present.insert( e.index );
-	std::int64_t next = snapshot->Description().firstIndex;
-	while( present.count( next ) ) ++next;
+	const std::int64_t firstIndex = snapshot->Description().firstIndex;
+	const OutputSpan span = snapshot->Span( output );
+	std::int64_t next = firstIndex;
+	if( span.count > 0 && span.first == firstIndex &&
+		static_cast<std::uint64_t>( span.last - span.first ) + 1 == span.count ) {
+		next = span.last + 1;   // distinct indices filling [first, last]: no gap, no scan
+	} else if( span.count > 0 && span.first <= firstIndex ) {
+		CacheEntry entry;       // a gap (rare): walk the contiguous prefix
+		while( snapshot->FindEntry( next, output, entry ) ) ++next;
+	}
 	index = next - 1;
 	return true;
 }
@@ -53,9 +58,7 @@ bool DescribeMeshSource( const MeshCacheSource& source, const bool availability,
 
 	std::shared_ptr<const IReadOnlyCacheSnapshot> snapshot;
 	if( !source.CurrentSnapshot( snapshot, error ) ) return false;
-	std::uint64_t present = 0;
-	for( const CacheEntry& e : snapshot->Entries() ) if( e.output == source.Options().output ) ++present;
-	range.framesAvailable = present;
+	range.framesAvailable = snapshot->Span( source.Options().output ).count;
 	std::int64_t contiguous = d.firstIndex - 1;
 	if( !LatestContiguousMeshFrame( source, contiguous, error ) ) return false;
 	range.availableEnd = contiguous < d.firstIndex ? range.start : MeshFrameSceneTime( source, contiguous );

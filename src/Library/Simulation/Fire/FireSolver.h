@@ -46,6 +46,18 @@ bool RegisterFireSolver(std::string& error);
 //! option, for tests and documentation.  "mode" maps to RISE_FIRE_FAST_MODE.
 std::vector<std::pair<std::string,std::string>> FireSolverEnvironmentOptions();
 
+//! M4 (not part of the solver contract): each result-affecting option as the
+//! solver reads it -- its parameter name, legacy variable, kind ("flag",
+//! "level" or "text"), the largest level, the value that means "the library
+//! default" and the validator of a text value -- so the fire parameter schema
+//! (FireParameterSchema.h) is generated from the solver's own table.
+struct FireSolverOptionInfo {
+	std::string parameter, environment, kind, defaultText;
+	unsigned maxLevel = 0;
+	bool (*valid)(const std::string&) = nullptr;
+};
+std::vector<FireSolverOptionInfo> FireSolverOptionInfos();
+
 } }
 
 #endif

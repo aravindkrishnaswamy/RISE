@@ -122,6 +122,8 @@ public:
 		std::shared_ptr<const Bytes>& bytes, std::string& error) const override;
 	bool FindEntry(std::int64_t index, const std::string& output, CacheEntry& entry) const override;
 	std::size_t Count() const { return items_.size(); }  // entries, without materialising them
+	std::size_t EntryCount() const override { return items_.size(); }
+	OutputSpan Span(const std::string& output) const override;
 private:
 	friend class MemoryPublisher;
 	struct Item { CacheEntry entry; std::shared_ptr<const Bytes> payload; };
@@ -132,6 +134,7 @@ private:
 	std::size_t LowerBound(std::int64_t index, const std::string& output) const;
 	std::shared_ptr<const CacheDescription> description_;
 	detail::PersistentVector<Item> items_;
+	std::vector<std::pair<std::string,OutputSpan>> spans_; // per output, O(outputs) per generation
 	std::shared_ptr<const StaticSet> statics_;
 	std::string digest_;
 	bool complete_ = false;

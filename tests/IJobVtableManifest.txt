@@ -365,3 +365,9 @@ virtual bool AddFireMedium(const char*,const char*){ return false;}
 virtual bool AddFireMediumBound(const char*name,const char*sequence_manifest,const char*channel_carbon,const char*channel_temperature,const char*channel_condensed,const char*channel_reaction,const char*channel_chem_ch,const char*channel_chem_c2,const char*channel_chem_co2,const char*channel_velocity,const bool chem_model_none){(void)channel_carbon;(void)channel_temperature;(void)channel_condensed;(void)channel_reaction;(void)channel_chem_ch;(void)channel_chem_c2;(void)channel_chem_co2;(void)channel_velocity;(void)chem_model_none;return AddFireMedium(name,sequence_manifest);}
 virtual bool AddOrenNayarMaterialModel(const char*name,const char*reflectance,const char*roughness,const char*model){ const std::string m=model ? model : "";if(m.empty()|| m=="classic"){ return AddOrenNayarMaterial(name,reflectance,roughness);} return false;}
 virtual bool AddSimulatedMeshGeometry(const char*,const char*,const char*,const double,const double,const char*,const char*,const char*,const bool,const bool,const bool){ return false;}
+virtual bool AddSimulation(const SimulationDescriptor&){ return false;}
+virtual bool RemoveSimulation(const char*){ return false;}
+virtual void EnumerateSimulationNames(IEnumCallback<const char*>&)const { }
+virtual bool AddSimulatedMeshGeometryFromSimulation(const char*,const char*,const char*,const double,const double,const char*,const char*,const char*,const bool,const bool,const bool){ return false;}
+virtual bool SetSimulationSceneDirectory(const char*){ return false;}
+virtual bool AddFireMediumFromSimulation(const char*,const char*,const char*,const char*,const char*,const char*,const char*,const char*,const char*,const char*,const bool){ return false;}

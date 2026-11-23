@@ -36,6 +36,8 @@
 #include "SceneEditController.h"
 #include "../Geometry/SimulatedMeshGeometry.h"   // SceneBindsSimulatedMesh (simulation M3b)
 #include "LiveSimulation.h"                       // simulation M3c: playback clock, live simulations
+#include "../Job.h"                                // simulation M4: scene simulations (SimulationSpecs, bindings)
+#include "../Simulation/SceneInputs.h"
 #include "../Simulation/SimulationTimeline.h"
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
@@ -19658,6 +19660,12 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEdit(
 			entityName, entityKind, param, value, baseVersionOrNull, occ, occAddressed );
 	}
 	mEditor.DrainDirtyNotification();
+	// Simulation M4: a live scene simulation follows the edited scene (a new key).
+	if( r.applied && LiveSimulationCount() > 0 ) {
+		std::string liveError;
+		if( !LiveSimulationResync( liveError ) )
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: %s", liveError.c_str() );
+	}
 	return r;
 }
 
@@ -21225,7 +21233,8 @@ bool SceneEditController::RebindParked_( Implementation::LiveSimulation& live,
 		if( !geometries || geometries->GetItem( live.GeometryName().c_str() ) != &mesh )
 			return LiveFail( error, "geometry `" + live.GeometryName() + "` is no longer in the scene" );
 	}
-	if( !mesh.RebindSource( source, error ) ) return false;
+	// M4: no source to go back to (an unbound consumer) unbinds again.
+	if( source ? !mesh.RebindSource( source, error ) : !mesh.UnbindSource( source, error ) ) return false;
 	if( std::isfinite( installTime ) ) {
 		// Move scene time with the frame in the same park, so no pass renders
 		// the new source at a time it has not published (a restart starts
@@ -21276,6 +21285,13 @@ bool SceneEditController::LiveSimulationAttach( const std::string& geometry, con
 		Implementation::LiveSimulation::Create( geometry, *mesh, solverId, parameters, error );
 	mesh->release();
 	if( !live ) return false;
+	return AttachPrepared_( std::move( live ), error );
+}
+
+// Caller holds mLiveOpMutex.
+bool SceneEditController::AttachPrepared_( std::unique_ptr<Implementation::LiveSimulation> live, std::string& error )
+{
+	const std::string geometry = live->GeometryName();
 	double latest = 0;
 	bool finished = false;
 	live->Latest( latest, finished );
@@ -21295,6 +21311,190 @@ bool SceneEditController::LiveSimulationAttach( const std::string& geometry, con
 	}
 	if( now > latest && mPlayback->Playing() ) mPlayback->Seek( latest );
 	return true;
+}
+
+bool SceneEditController::PrepareSceneLive_( const std::string& simulation,
+	std::unique_ptr<Implementation::LiveSimulation>& live, std::string& error )
+{
+	// Everything read from the scene is read here, under the scene lock: the
+	// producer's declaration, its consumer, and its scene inputs (captured
+	// detached, so the solver samples them later from its own thread while
+	// the viewport renders and scrubs).  Configuring and the first step run
+	// after, off every scene lock.
+	std::string geometryName, solverId, fingerprint;
+	std::vector<unsigned char> parameters;
+	std::shared_ptr<const Simulation::ISceneInputs> inputs;
+	Simulation::MeshSourceOptions options;
+	Implementation::SimulatedMeshGeometry* mesh = nullptr;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		Job* job = dynamic_cast<Job*>( &mJob );
+		if( !job ) return LiveFail( error, "scene simulations need a RISE Job" );
+		const std::vector<Simulation::SceneSimulationSpec> specs = job->SimulationSpecs();
+		const Simulation::SceneSimulationSpec* spec = nullptr;
+		for( const auto& s : specs ) if( s.name == simulation ) spec = &s;
+		if( !spec ) return LiveFail( error, "the scene declares no simulation named `" + simulation + "`" );
+		if( spec->solverId.empty() ) return LiveFail( error, "`" + simulation + "` is a " + spec->keyword + " (no solver to run)" );
+		// Its consumer: a simulated_mesh_geometry some object renders, bound by `source`.
+		IGeometryManager* geometries = mJob.GetGeometries();
+		struct Names : public IEnumCallback<const char*>
+		{
+			std::vector<std::string> names;
+			bool operator()( const char* const& name ) override { names.push_back( name ); return true; }
+		} names;
+		if( geometries ) geometries->EnumerateItemNames( names );
+		for( const std::string& n : names.names ) {
+			std::string sim, output;
+			if( !job->SimulationOfGeometry( n.c_str(), sim, output ) || sim != simulation ) continue;
+			auto* candidate = dynamic_cast<Implementation::SimulatedMeshGeometry*>( geometries->GetItem( n.c_str() ) );
+			Simulation::SimulatedGeometryBinding binding;
+			if( !candidate || !job->SimulatedGeometryBindingOf( candidate, binding ) ) continue;
+			mesh = candidate;
+			geometryName = n;
+			options = binding.options;
+			break;
+		}
+		if( !mesh ) return LiveFail( error, "no simulated_mesh_geometry binds `source " + simulation + ".<output>`" );
+		// Scene inputs.  One that shows another simulation's output needs that
+		// simulation's key, which planning the scene computes.
+		Simulation::SceneObjectInputProvider provider( *mJob.GetScene(),
+			[job]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return job->SimulatedGeometryBindingOf( g, b ); } );
+		bool upstream = false;
+		for( const auto& input : spec->sceneInputs ) {
+			std::vector<std::string> deps;
+			if( !provider.InputDependencies( input, deps, error ) ) return false;
+			upstream = upstream || !deps.empty();
+		}
+		if( upstream ) {
+			std::vector<Simulation::SceneSimulationPlan> plans;
+			std::vector<Simulation::SceneSimulationSpec> planned;
+			if( !job->PlanSimulations( plans, planned, error ) ) return false;
+			for( const auto& p : plans ) if( p.spec->name == simulation ) {
+				if( !p.inputs ) return LiveFail( error, "`" + simulation + "`: " + p.error );
+				inputs = p.inputs;
+			}
+		} else {
+			inputs = provider.Capture( spec->sceneInputs, {}, error );
+		}
+		if( !inputs ) return false;
+		if( !RISECBOR64::Encode( spec->parameters, parameters, &error ) ) return false;
+		solverId = spec->solverId;
+		std::string identities;
+		for( const auto& input : spec->sceneInputs ) {
+			std::string hash;
+			if( !inputs->Identity( input, hash, error ) ) return false;
+			identities += input + "=" + hash + ";";
+		}
+		fingerprint = RISECBOR64::SHA256Hex( parameters ) + "|" + identities;
+		mesh->addref();
+	}
+	live = Implementation::LiveSimulation::CreateForSimulation( simulation, geometryName, *mesh, solverId, parameters,
+		inputs, options, fingerprint, error );
+	mesh->release();
+	return live != nullptr;
+}
+
+bool SceneEditController::LiveSimulationAttachSimulation( const std::string& simulation, std::string& error )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return LiveFail( error, "a production or agent render owns the scene" );
+	std::lock_guard<std::mutex> opLk( mLiveOpMutex );
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		for( const auto& live : mLiveSims )
+			if( live->SimulationName() == simulation ) return LiveFail( error, "`" + simulation + "` already runs live" );
+	}
+	std::unique_ptr<Implementation::LiveSimulation> live;
+	if( !PrepareSceneLive_( simulation, live, error ) ) return false;
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		for( const auto& l : mLiveSims )
+			if( l->GeometryName() == live->GeometryName() )
+				return LiveFail( error, "`" + live->GeometryName() + "` already has a live simulation" );
+	}
+	return AttachPrepared_( std::move( live ), error );
+}
+
+bool SceneEditController::LiveSimulationResync( std::string& error )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return LiveFail( error, "a production or agent render owns the scene" );
+	std::lock_guard<std::mutex> opLk( mLiveOpMutex );
+	std::vector<std::string> simulations;
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		for( const auto& live : mLiveSims ) if( !live->SimulationName().empty() ) simulations.push_back( live->SimulationName() );
+	}
+	bool ok = true;
+	for( const std::string& simulation : simulations ) {
+		std::unique_ptr<Implementation::LiveSimulation> fresh;
+		std::string why;
+		const bool prepared = PrepareSceneLive_( simulation, fresh, why );
+		std::unique_ptr<Implementation::LiveSimulation> retired;
+		std::unique_ptr<Simulation::MeshCacheSource> previous;
+		const bool playing = mPlayback->Playing();
+		double first = 0;
+		{
+			std::lock_guard<std::mutex> liveLk( mLiveMutex );
+			auto it = std::find_if( mLiveSims.begin(), mLiveSims.end(),
+				[&]( const std::unique_ptr<Implementation::LiveSimulation>& l ) { return l->SimulationName() == simulation; } );
+			if( it == mLiveSims.end() ) continue;
+			Implementation::LiveSimulation& old = **it;
+			if( prepared && &old.Geometry() == &fresh->Geometry() && old.Fingerprint() == fresh->Fingerprint() ) continue;
+			old.Pause();
+			std::string ignored;
+			old.WaitIdle( ignored );
+			IGeometryManager* geometries = mJob.GetGeometries();
+			const bool orphaned = !geometries || geometries->GetItem( old.GeometryName().c_str() ) != &old.Geometry();
+			if( !prepared ) {
+				// The simulation or its consumer is gone, or no longer configures: stop it.
+				if( !orphaned ) {
+					previous = old.TakeOriginalSource();
+					if( !RebindParked_( old, previous, mEditor.LastSceneTime(), true, ignored ) )
+						old.KeepOriginalSource( std::move( previous ) );
+				}
+				retired = std::move( *it );
+				mLiveSims.erase( it );
+				ok = false;
+				error = "live simulation `" + simulation + "` stopped: " + why;
+			} else {
+				std::unique_ptr<Simulation::MeshCacheSource> source = fresh->TakeBindSource();
+				first = Simulation::MeshFrameSceneTime( *source, source->Description().firstIndex );
+				std::unique_ptr<Simulation::MeshCacheSource> original =
+					orphaned || &old.Geometry() != &fresh->Geometry() ? nullptr : old.TakeOriginalSource();
+				if( !RebindParked_( *fresh, source, first, false, why ) ) {
+					if( original ) old.KeepOriginalSource( std::move( original ) );
+					ok = false;
+					error = "live simulation `" + simulation + "` did not restart: " + why;
+					std::string playError;
+					if( playing ) old.Play( playError );
+					continue;
+				}
+				// The consumer's own source goes back on detach: the old run's
+				// original for the same geometry, else what the new geometry had.
+				fresh->KeepOriginalSource( original ? std::move( original ) : std::move( source ) );
+				retired = std::move( *it );
+				*it = std::move( fresh );
+				std::string playError;
+				if( playing && !( *it )->Play( playError ) )
+					GlobalLog()->PrintEx( eLog_Error, "SceneEditController: live simulation `%s` did not play: %s",
+						simulation.c_str(), playError.c_str() );
+			}
+		}
+		retired.reset();	// joins the old solver
+		if( prepared && playing ) mPlayback->Seek( first );
+	}
+	return ok;
+}
+
+bool SceneEditController::GetSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses, std::string& error ) const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return LiveFail( error, "a production render owns the scene" );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return LiveFail( error, "the scene is busy; poll again" );
+	return mJob.DescribeSimulations( statuses, error );
 }
 
 bool SceneEditController::LiveSimulationDetach( const std::string& geometry, std::string& error )
@@ -21421,7 +21621,9 @@ void SceneEditController::ShutdownSimulation_()
 		std::string error;
 		live->WaitIdle( error );
 		std::unique_ptr<Simulation::MeshCacheSource> source = live->TakeOriginalSource();
-		if( source && !RebindParked_( *live, source, std::numeric_limits<double>::quiet_NaN(), true, error ) )
+		// M4: a consumer that had no source before (a scene simulation never
+		// baked) is unbound again rather than left on a dead publication.
+		if( !RebindParked_( *live, source, std::numeric_limits<double>::quiet_NaN(), true, error ) )
 			GlobalLog()->PrintEx( eLog_Error, "SceneEditController: `%s` kept its live source at shutdown: %s",
 				live->GeometryName().c_str(), error.c_str() );
 		source.reset();

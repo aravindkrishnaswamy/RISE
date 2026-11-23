@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 #include "../Simulation/SimulationTimeline.h"   // Simulation M3c: TimelineRange (std-lib only)
+namespace RISE { namespace Simulation { struct SceneSimulationStatus; } }   // M4: DescribeSimulations
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: CstHeadVersion (a trivial POD returned by value below; Cst.h is std-lib-only weight)
 
 namespace RISE
@@ -471,6 +472,16 @@ namespace RISE
 		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL.
 		virtual bool DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
 			bool availability ) = 0;
+
+		//! Simulation M4: every declared simulation with its expected cache
+		//! key against the scene, its state against its cache on disk
+		//! (missing / baking / partial / complete / stale / failed) and its
+		//! dependencies, upstream first propagated.  Configures solvers (never
+		//! runs one); memoized, so an unchanged scene configures nothing.
+		//! Caller holds the scene stable (the editor's mutex).
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL.
+		virtual bool DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses,
+			std::string& error ) = 0;
 	};
 
 

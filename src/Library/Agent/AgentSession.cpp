@@ -11860,6 +11860,7 @@ namespace RISE
 					case ChunkCategory::Animation:           return "animation";
 					case ChunkCategory::SceneVariant:        return "scene_variant";
 					case ChunkCategory::HairGuides:         return "hair_guides";
+					case ChunkCategory::Simulation:         return "simulation";
 				}
 				return "chunk";
 			}
@@ -16209,6 +16210,7 @@ namespace RISE
 					case ChunkCategory::Material:
 					case ChunkCategory::Geometry:
 					case ChunkCategory::HairGuides:   // declared before the hair_geometry that reads it
+					case ChunkCategory::Simulation:   // declared before the simulated_mesh_geometry / fire_medium bound to it
 					case ChunkCategory::Modifier:
 					case ChunkCategory::Medium:
 					case ChunkCategory::Shader:

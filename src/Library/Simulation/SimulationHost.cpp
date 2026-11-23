@@ -139,6 +139,12 @@ const std::vector<CacheEntry>& MemoryCacheSnapshot::Entries() const
 	return entries_;
 }
 
+OutputSpan MemoryCacheSnapshot::Span(const std::string& output) const
+{
+	const auto it=std::find_if(spans_.begin(),spans_.end(),[&](const auto& s){return s.first==output;});
+	return it==spans_.end() ? OutputSpan{} : it->second;
+}
+
 bool MemoryCacheSnapshot::FindEntry(std::int64_t index,const std::string& output,CacheEntry& entry) const
 {
 	const auto at=LowerBound(index,output);
@@ -212,6 +218,7 @@ std::shared_ptr<MemoryCacheSnapshot> MemoryPublisher::Next(const char* event,con
 	auto next=std::make_shared<MemoryCacheSnapshot>();
 	next->description_=current_->description_;
 	next->items_=current_->items_;
+	next->spans_=current_->spans_;
 	next->statics_=current_->statics_;
 	next->digest_=RISECBOR64::SHA256Hex(encoded);
 	return next;
@@ -243,15 +250,23 @@ bool MemoryPublisher::Publish(std::int64_t index,const std::string& output,doubl
 	auto& items=next->items_;
 	if (at<items.size() && items[at].entry.index==index && items[at].entry.output==output) {
 		items=items.set(at,std::move(item));
-	} else if (at==items.size()) {
-		items=items.push_back(std::move(item));
 	} else {
-		// Out of order (rare: several outputs per index, or a replay after a
-		// restore): rebuild only the tail behind the insertion point.
-		std::vector<MemoryCacheSnapshot::Item> tail;
-		for (std::size_t i=at;i<items.size();++i) tail.push_back(items[i]);
-		items=items.truncate(at).push_back(std::move(item));
-		for (auto& t : tail) items=items.push_back(std::move(t));
+		auto sp=std::find_if(next->spans_.begin(),next->spans_.end(),[&](const auto& s){return s.first==output;});
+		if (sp==next->spans_.end()) { next->spans_.push_back({output,OutputSpan{}}); sp=next->spans_.end()-1; }
+		auto& span=sp->second;
+		if (span.count==0 || index<span.first) span.first=index;
+		if (span.count==0 || index>span.last) span.last=index;
+		++span.count;
+		if (at==items.size()) {
+			items=items.push_back(std::move(item));
+		} else {
+			// Out of order (rare: several outputs per index, or a replay after a
+			// restore): rebuild only the tail behind the insertion point.
+			std::vector<MemoryCacheSnapshot::Item> tail;
+			for (std::size_t i=at;i<items.size();++i) tail.push_back(items[i]);
+			items=items.truncate(at).push_back(std::move(item));
+			for (auto& t : tail) items=items.push_back(std::move(t));
+		}
 	}
 	next->complete_=items.size()==d.outputs.size()*d.count;
 	current_=std::move(next);
@@ -296,6 +311,16 @@ void MemoryPublisher::DiscardFrom(std::int64_t index)
 	auto next=Next("discard",V::Signed(index),ignored);
 	if (!next) return;
 	next->items_=next->items_.truncate(at);
+	next->spans_.clear(); // rare: recompute the per-output spans of what is left
+	for (std::size_t i=0;i<next->items_.size();++i) {
+		const auto& e=next->items_[i].entry;
+		auto sp=std::find_if(next->spans_.begin(),next->spans_.end(),[&](const auto& s){return s.first==e.output;});
+		if (sp==next->spans_.end()) { next->spans_.push_back({e.output,OutputSpan{}}); sp=next->spans_.end()-1; }
+		auto& span=sp->second;
+		if (span.count==0 || e.index<span.first) span.first=e.index;
+		if (span.count==0 || e.index>span.last) span.last=e.index;
+		++span.count;
+	}
 	const auto& d=*current_->description_;
 	next->complete_=next->items_.size()==d.outputs.size()*d.count;
 	current_=std::move(next);

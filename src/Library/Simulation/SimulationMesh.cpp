@@ -394,8 +394,45 @@ bool RISE::Simulation::EncodeMesh(const MeshFrame& frame,std::size_t budget,Byte
 	} catch (const std::exception& e) { error=e.what(); return false; }
 }
 
+namespace {
+bool EncodeV2(const MeshFrame& frame,const MeshStaticLayout& layout,std::size_t budget,
+	const RISE::Simulation::MeshStaticRecord* prepared,Bytes& out,Bytes& staticPayload,std::string& staticDigest,
+	std::string& error);
+}
+
 bool RISE::Simulation::EncodeMeshV2(const MeshFrame& frame,const MeshStaticLayout& layout,std::size_t budget,
 	Bytes& out,Bytes& staticPayload,std::string& staticDigest,std::string& error)
+{
+	return EncodeV2(frame,layout,budget,nullptr,out,staticPayload,staticDigest,error);
+}
+
+bool RISE::Simulation::PrepareMeshStatic(const MeshFrame& frame,const MeshStaticLayout& layout,std::size_t budget,
+	MeshStaticRecord& record,std::string& error)
+{
+	if (!layout.topology) { error="a static record needs layout.topology"; return false; }
+	Bytes ignored;
+	MeshStaticRecord candidate;
+	if (!EncodeV2(frame,layout,budget,nullptr,ignored,candidate.payload,candidate.digest,error)) return false;
+	candidate.topologyDigest=MeshTopologyDigest(static_cast<std::uint32_t>(frame.positions.size()/3),frame.indices);
+	record=std::move(candidate);
+	return true;
+}
+
+bool RISE::Simulation::EncodeMeshV2(const MeshFrame& frame,const MeshStaticLayout& layout,std::size_t budget,
+	const MeshStaticRecord& record,Bytes& out,std::string& error)
+{
+	if (!layout.topology || record.digest.size()!=2*DigestBytes || record.topologyDigest.size()!=2*DigestBytes) {
+		error="an invalid prepared static record";
+		return false;
+	}
+	Bytes noPayload;
+	std::string noDigest;
+	return EncodeV2(frame,layout,budget,&record,out,noPayload,noDigest,error);
+}
+
+namespace {
+bool EncodeV2(const MeshFrame& frame,const MeshStaticLayout& layout,std::size_t budget,
+	const MeshStaticRecord* prepared,Bytes& out,Bytes& staticPayload,std::string& staticDigest,std::string& error)
 {
 	try {
 		Budget remaining{budget};
@@ -410,10 +447,13 @@ bool RISE::Simulation::EncodeMeshV2(const MeshFrame& frame,const MeshStaticLayou
 				inStatic : inFrame).push_back(&s);
 		Require(inStatic.size()==layout.staticUVSets.size(),"a static UV set named by the layout is missing or repeated");
 		std::uint8_t topology[DigestBytes], reference[DigestBytes];
-		Unhex(MeshTopologyDigest(static_cast<std::uint32_t>(frame.positions.size()/3),frame.indices),topology);
+		Unhex(prepared ? prepared->topologyDigest :
+			MeshTopologyDigest(static_cast<std::uint32_t>(frame.positions.size()/3),frame.indices),topology);
 		Bytes fixed;
 		std::string fixedDigest;
-		if (layout.topology) {
+		if (prepared) {
+			Unhex(prepared->digest,reference);
+		} else if (layout.topology) {
 			Sink sizing{nullptr};
 			WriteStatic(sizing,frame,inStatic);
 			remaining.Take(sizing.count);
@@ -437,6 +477,7 @@ bool RISE::Simulation::EncodeMeshV2(const MeshFrame& frame,const MeshStaticLayou
 		return true;
 	} catch (const std::exception& e) { error=e.what(); return false; }
 }
+} // namespace
 
 bool RISE::Simulation::DecodeMesh(const Bytes& bytes,std::size_t budget,MeshFrame& out,std::string& error)
 {

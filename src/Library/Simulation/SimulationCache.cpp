@@ -571,8 +571,7 @@ bool SecureCacheDirectory(const fs::path& root,bool create,fs::path& location,st
 	return CreateDurableDirectory(location,error);
 #else
 	fs::path start("/");
-	for (const auto& r : TrustedCacheRoots())
-		if (Within(base,r) && std::distance(r.begin(),r.end())>std::distance(start.begin(),start.end())) start=r;
+	FindTrustedCacheRoot(base,start);
 	Descriptor current(::open(start.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|(start==fs::path("/")?0:O_NOFOLLOW)));
 	if (current.fd<0) return Fail(error,"cannot open cache ancestor "+start.string());
 	fs::path walked=start;
@@ -744,6 +743,16 @@ std::vector<fs::path> TrustedCacheRoots()
 	return roots;
 }
 
+bool FindTrustedCacheRoot(const fs::path& path,fs::path& root)
+{
+	fs::path best("/");
+	bool found=false;
+	for (const auto& r : TrustedCacheRoots())
+		if (Within(path,r) && std::distance(r.begin(),r.end())>std::distance(best.begin(),best.end())) { best=r; found=true; }
+	if (found) root=best;
+	return found;
+}
+
 bool CheckCacheLocation(const fs::path& root,bool create,std::string& error)
 {
 	fs::path location;
@@ -823,6 +832,7 @@ bool CacheSnapshot::Open(const fs::path& root,std::size_t budget,CacheSnapshot& 
 	}
 	if (candidate.complete_ && !Full(candidate.description_,candidate.entries_))
 		return Fail(error,"sealed cache has incomplete coverage");
+	candidate.IndexSpans();
 	candidate.digest_=RISECBOR64::SHA256Hex(bytes);
 	output=std::move(candidate);
 	return true;
@@ -898,6 +908,39 @@ FrameStatus IReadOnlyCacheSnapshot::ReadStatic(const std::string& digest,std::si
 	bytes.reset();
 	error="static payload not declared: "+digest;
 	return FrameStatus::Unavailable;
+}
+
+std::size_t IReadOnlyCacheSnapshot::EntryCount() const { return Entries().size(); }
+
+OutputSpan IReadOnlyCacheSnapshot::Span(const std::string& output) const
+{
+	OutputSpan span;
+	for (const auto& e : Entries()) {
+		if (e.output!=output) continue;
+		if (span.count==0 || e.index<span.first) span.first=e.index;
+		if (span.count==0 || e.index>span.last) span.last=e.index;
+		++span.count;
+	}
+	return span;
+}
+
+void CacheSnapshot::IndexSpans()
+{
+	spans_.clear();
+	for (const auto& e : entries_) {
+		auto it=std::find_if(spans_.begin(),spans_.end(),[&](const auto& s){return s.first==e.output;});
+		if (it==spans_.end()) { spans_.push_back({e.output,OutputSpan{}}); it=spans_.end()-1; }
+		auto& span=it->second;
+		if (span.count==0 || e.index<span.first) span.first=e.index;
+		if (span.count==0 || e.index>span.last) span.last=e.index;
+		++span.count;
+	}
+}
+
+OutputSpan CacheSnapshot::Span(const std::string& output) const
+{
+	const auto it=std::find_if(spans_.begin(),spans_.end(),[&](const auto& s){return s.first==output;});
+	return it==spans_.end() ? OutputSpan{} : it->second;
 }
 
 bool IReadOnlyCacheSnapshot::FindEntry(std::int64_t index,const std::string& output,CacheEntry& entry) const
@@ -1136,6 +1179,7 @@ bool CacheWriter::Append(std::int64_t index,const std::string& output,double tim
 	if (duplicate) return true;
 	CacheSnapshot next=snapshot_;
 	next.entries_.insert(next.entries_.begin()+(it-snapshot_.entries_.begin()),std::move(entry));
+	next.IndexSpans();
 	return Publish(next,error);
 }
 

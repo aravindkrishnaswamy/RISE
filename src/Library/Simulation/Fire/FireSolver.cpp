@@ -700,6 +700,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	out.capabilities.resumable=true;
 	out.capabilities.externalMacroStep=false;
 	out.capabilities.modes={"certified","fast"};
+	out.capabilities.backend="metal";   // M4: the backend this configuration runs on (not keyed)
 	out.capabilities.earnableFidelity={"preview"};
 	out.capabilities.fidelityLimit="no computed, digest-bound validation case exists for a fire configuration yet";
 	// The sealed fire sequences are preview_only; no computed, digest-bound
@@ -1083,6 +1084,15 @@ private:
 #endif // RISE_ENABLE_OPENVDB
 
 } // namespace
+
+std::vector<FireSolverOptionInfo> FireSolverOptionInfos()
+{
+	std::vector<FireSolverOptionInfo> out;
+	for (const auto& o : Options())
+		out.push_back({o.parameter,o.environment,o.kind==Kind::Flag ? "flag" : o.kind==Kind::Level ? "level" : "text",
+			o.defaultText,o.maxLevel,o.valid});
+	return out;
+}
 
 std::vector<std::pair<std::string,std::string>> FireSolverEnvironmentOptions()
 {

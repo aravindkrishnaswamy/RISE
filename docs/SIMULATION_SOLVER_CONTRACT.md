@@ -97,6 +97,7 @@ output is at `startTime + (count - 1) × interval`; this is the "end time" every
 | `earnableFidelity` | Labels this configuration can earn (`preview`, and `predictive` only if its conditions allow) |
 | `fidelityLimit` | One sentence: why `predictive` is not earnable here (empty when it is) |
 | `costEstimate`, `memoryEstimate` | Seconds per simulated second on the reference machine, peak bytes; 0 = unknown |
+| `backend` | (Additive, Appendix C.) The backend, by name from `backends`, this configuration will run on (`cpu` for cloth, `metal` for fire); empty = not stated. A scheduler applies "one GPU solver at a time" from it |
 
 ## 6. Fidelity and evidence
 
@@ -131,7 +132,10 @@ to `Configure` stays valid until the solver is configured again or destroyed):
   serves static payloads such a payload references (a `mesh.v2` collider).
 - `SampleTransform(name, time)` — a rigid transform (`R x + t`, metres) at any solver time, including inside a
   step; this is how pins and colliders follow scene objects (cloth: motion `{type: scene_transform, input: name}`).
-- `NoSceneInputs` / `EmptySceneInputs()` — the empty scene. The worker bakes only solvers with no inputs until M4.
+- `NoSceneInputs` / `EmptySceneInputs()` — the empty scene (`rise-sim bake <solver id>`). Since M4 a scene supplies
+  real inputs (`Simulation/SceneInputs.h`: detached object snapshots, world-space `mesh.v1` samples, rigid parts of
+  keyframed transforms) to `rise-sim bake <scene>` and to live sessions; identities are defined in
+  [M4 results](SIMULATION_M4_RESULTS.md) §3.
 
 ## 8. Ports and coupling
 
@@ -220,7 +224,7 @@ timing rules of §8; exact checkpoints when `resumable`.
 **InProcessHost**: caller-thread (`Step`, `StepToIndex`) or worker-thread (`Play`, `Pause`, `WaitIdle`) stepping;
 frames go to a `MemoryPublisher` and optionally to a recording `CacheWriter` (`Record`); generations share storage
 (a persistent 32-way vector: a publish costs O(log n), not a copy of the entry list; `Entries()` materialises once
-per generation, so a reader following a live run should use `FindEntry`); snapshots are immutable. `Pause`
+per generation, so a reader following a live run should use `FindEntry`, `EntryCount` and `Span`); snapshots are immutable. `Pause`
 interrupts the current step; a stop that misses it is consumed by the host's next step, never leaked into a later
 caller step. `RestoreCheckpoint` discards frames at or after the checkpoint's next index from later snapshots (a
 recording keeps its committed frames and refuses conflicting republication). `SetSideOutputDirectory` lets a
@@ -243,7 +247,7 @@ end = last output time); checkpoints at a wall-time cadence and on SIGINT/SIGTER
   (0600), verified on every read against the manifest digest and size, read with a caller budget
   (`BudgetExceeded` before allocating). A native frame may be appended only when its referenced statics are
   declared; resume verifies every frame and static.
-- **Snapshots**: `IReadOnlyCacheSnapshot` (`Description`, `Entries`, `FindEntry`, `Statics`, `Read`, `ReadStatic`,
+- **Snapshots**: `IReadOnlyCacheSnapshot` (`Description`, `Entries`, `FindEntry`, `EntryCount`, `Span`, `Statics`, `Read`, `ReadStatic`,
   `Resolver`, `MapTime`, `PreflightPredictive`) is served by disk (`CacheSnapshot`) and memory
   (`MemoryCacheSnapshot`) alike.
 - **States**: missing, baking (writer lock held), partial, complete, corrupt; a stale cache is one whose key no
@@ -292,7 +296,7 @@ optional density/velocity grid, two-way coupled to `cloth.shell`.
 |---|---|---|
 | Registry, parameters | `RegisterSolver("liquid.flip")`; canonical CBOR map; effective parameters fixed point | yes |
 | Backends, modes | `cpu` supported, `metal` experimental; `modes {bake, interactive}` | yes |
-| Inputs | Colliders by `Sample` (`mesh.v1`/`mesh.v2` through `ResolveStatic`) at substep times; emitters and rigid boundaries by `SampleTransform`; all named in `inputs` so their identities key the cache | contract yes; scene binding is M4 (the worker refuses solvers with inputs until then) |
+| Inputs | Colliders by `Sample` (`mesh.v1`/`mesh.v2` through `ResolveStatic`) at substep times; emitters and rigid boundaries by `SampleTransform`; all named in `inputs` so their identities key the cache | yes (M4: `rise-sim bake <scene>` feeds scene objects; the scene syntax for a liquid is not written yet) |
 | Outputs | `particles` as `points.v1`; `surface` as `mesh.v2` with inline indices (or a fresh `mesh.topology.v1` per frame) and velocities of the current frame's vertices; `volume` as `grid.v1` | `points.v1` is not implemented (cache readers return Unsupported); `mesh.v2` with changing topology encodes, caches and decodes, but `simulated_mesh_geometry` refuses a changing topology digest and the empty mesh (M7 renderer work) |
 | Evidence | Dam-break front against published data, hydrostatic rest, volume conservation; conditions (resolution, boundary kinds, surface-tension on/off) and a scope sentence | yes |
 | Ports to cloth | Accept cloth's `surface_state` (`mesh.v2`, channels normal/position/velocity, resolved via `ResolveStatic`), declared with an identical channel list; offer `cloth_load` as `field.v1` over the cloth's topology digest (read from the accepted payload with `PeekMeshTopology`), channels `pressure` [Pa] x1 and `traction` [Pa] x3, `domain` left empty in the declaration (decided per payload; cloth's is stated, so `PortsCompatible` passes) | yes; the offered field is live-only unless the liquid also declares a `field.v1` output for it |
@@ -330,10 +334,14 @@ Not working yet (each belongs to a later milestone):
 1. `points.v1` encoder/decoder and its renderer path (M7).
 2. Rendering a changing-topology or empty mesh (`SimulatedMeshSource` refuses both; M3b §8).
 3. The co-stepping group host, port adapters and sub-iteration (interfaces only; M6).
-4. Scene inputs in the worker (M4).
+4. ~~Scene inputs in the worker (M4).~~ Done in M4 (`rise-sim bake <scene>`).
 5. Streaming or chunked checkpoints for very large states (all of `Checkpoint` is one in-memory `Bytes`).
-6. No `Capabilities` field says which backend a configuration will actually run on, so a scheduler cannot yet
-   apply "one GPU solver at a time" from the description alone (it can only read `backends`).
+6. ~~No `Capabilities` field says which backend a configuration will actually run on.~~ M4 added
+   `Capabilities::backend` (Appendix C).
+7. (M4) A one-way coupling fed from a cached output through a port (`CachedPortFeed`) is not keyed: the key covers
+   `inputs` (scene inputs) only, so a downstream simulation fed through a port would not go stale when its upstream
+   changes. M4 binds an upstream simulation through a scene element instead (an object showing its output), whose
+   identity embeds the upstream key; keying port feeds (an additive key input) belongs with M6's group host.
 
 ## Appendix B. What the freeze changed
 
@@ -349,3 +357,15 @@ Not working yet (each belongs to a later milestone):
 | Host gaps | In-process side output; restore discards later frames; shared snapshot storage; worker end time = last output; checkpoint without an extra copy | `SimulationHost`, `SimulationWorker` |
 | Cache on 0775 drives | Ancestor policy kept (now enforced by the native writer) with trusted roots | `SimulationCache` |
 | Progress end time `1 / 1.0333` | End time = last output time | cloth, reference solvers, worker |
+
+## Appendix C. Additive changes after the freeze (contract version stays 1)
+
+| Date | Change | Default / compatibility |
+|---|---|---|
+| 2026-11-23 | `IReadOnlyCacheSnapshot::EntryCount()` and `Span(output)` (`OutputSpan`: frame count, lowest and highest index of one output). Readers that follow a live run use them (and `FindEntry`) instead of `Entries()`; the disk snapshot indexes its spans once per generation, the memory snapshot keeps them per generation in O(outputs). | Virtual with defaults computed from `Entries()`; third-party snapshots keep working unchanged. |
+| 2026-11-23 | `EncodeMeshV2` overload taking a prepared `MeshStaticRecord` (`PrepareMeshStatic`): a fixed-topology stream encodes and hashes its static record once; frames are byte-identical to the existing call. Cloth uses it. | New functions only; no codec or solver version change. |
+| 2026-11-23 | `PortRelay::OfferStatic` skips the hash when it is offered the same shared payload again. | Same relay contents. |
+| 2026-11-23 | (M4) `Capabilities::backend`: the backend this configuration runs on (cloth `cpu`, fire `metal`). | Empty string = not stated; not keyed; existing caches and keys unchanged. |
+| 2026-11-23 | (M4, host side) `rise-sim bake\|resume\|status <scene.RISEscene>`; the worker no longer refuses a configuration with scene inputs (it bakes it from its scene; `bake <solver id>` keeps the empty scene). `WorkerBakeConfiguration`, `WorkerResumeConfiguration`, `ReadWorkerJobRecord`. | Same sidecars, key and epoch rules; `bake <solver id>` behaves as before. |
+| 2026-11-23 | (M4, not part of the contract) Solver parameter schemas (`SimulationParameterSchema.h`, `RegisterSolverSchema` beside `RegisterSolver`): names, types, defaults, ranges, units, docs; scene producer chunks are generated from them. | Optional; a solver without one still works through the contract. |
+| 2026-11-23 | `FindTrustedCacheRoot(path, root)`: the one decision of which trusted root a location falls under (`SecureCacheDirectory` and `DiskFileWriteBuffer`'s staging-ancestor check both use it; opt-in, nothing trusted by default). | New function; the cache writer's behaviour is unchanged. |

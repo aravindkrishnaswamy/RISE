@@ -93,7 +93,8 @@ struct LiveSimulation::Run
 {
 	std::vector<unsigned char>						parameters;
 	std::filesystem::path							record;
-	Simulation::NoSceneInputs						inputs;		//!< outlives the solver (M4 binds scene inputs)
+	Simulation::NoSceneInputs						inputs;		//!< outlives the solver (an API attach has none)
+	std::shared_ptr<const Simulation::ISceneInputs>	sceneInputs;	//!< M4: a scene simulation's (outlives the solver)
 	std::shared_ptr<Feed>							feed;
 	std::unique_ptr<Simulation::InProcessHost>		host;
 	std::unique_ptr<Simulation::MeshCacheSource>	monitor;	//!< timing queries (the clock thread)
@@ -116,7 +117,7 @@ struct LiveSimulation::Run
 };
 
 bool LiveSimulation::StartRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
-	const Simulation::MeshSourceOptions& options, const Simulation::MeshCacheSource& topology,
+	const Simulation::MeshSourceOptions& options, const Simulation::MeshCacheSource* topology,
 	const std::filesystem::path* record, Run& run, std::string& error )
 {
 	RISECBOR64::Value value;
@@ -124,7 +125,8 @@ bool LiveSimulation::StartRun( const std::string& solverId, const std::vector<un
 	std::unique_ptr<Simulation::ISimulationSolver> solver = Simulation::CreateSolver( solverId, error );
 	if( !solver ) return false;
 	auto host = std::make_unique<Simulation::InProcessHost>( std::move( solver ) );
-	if( !host->Configure( value, run.inputs, error ) ) return false;
+	if( !host->Configure( value, run.sceneInputs ? *run.sceneInputs : static_cast<const Simulation::ISceneInputs&>( run.inputs ),
+		error ) ) return false;
 	if( !host->Description().capabilities.interactive )
 		return Fail( error, "solver `" + solverId + "` is not interactive; bake it with rise-sim instead" );
 	if( record && !host->Record( *record, kRecordBudget, error ) ) return false;
@@ -144,11 +146,12 @@ bool LiveSimulation::StartRun( const std::string& solverId, const std::vector<un
 	run.host = std::move( host );	// from here ~Run clears the feed before the host goes
 	if( !Simulation::MeshCacheSource::OpenLive( provider, options, run.monitor, error ) ||
 		!Simulation::MeshCacheSource::OpenLive( provider, options, run.bind, error ) ) return false;
-	if( run.bind->VertexCount() != topology.VertexCount() || run.bind->Indices() != topology.Indices() )
+	// An unbound mesh (M4: no bake yet) takes the run's topology.
+	if( topology && ( run.bind->VertexCount() != topology->VertexCount() || run.bind->Indices() != topology->Indices() ) )
 		return Fail( error, "solver `" + solverId + "` publishes a surface whose topology (" +
 			std::to_string( run.bind->VertexCount() ) + " vertices, " + std::to_string( run.bind->Indices().size() / 3 ) +
-			" triangles) differs from the bound mesh (" + std::to_string( topology.VertexCount() ) + " vertices, " +
-			std::to_string( topology.Indices().size() / 3 ) + " triangles); changing topology needs a reload (M7)" );
+			" triangles) differs from the bound mesh (" + std::to_string( topology->VertexCount() ) + " vertices, " +
+			std::to_string( topology->Indices().size() / 3 ) + " triangles); changing topology needs a reload (M7)" );
 	run.parameters = parameters;
 	if( record ) run.record = *record;
 	return true;
@@ -168,7 +171,32 @@ std::unique_ptr<LiveSimulation> LiveSimulation::Create( const std::string& geome
 	live->m_options.missing = Simulation::MeshMissingPolicy::Hold;
 	live->m_options.predictive = false;
 	std::unique_ptr<Run> run( new Run() );
-	if( !StartRun( solverId, parameters, live->m_options, geometry.Source(), nullptr, *run, error ) ) return nullptr;
+	if( !StartRun( solverId, parameters, live->m_options, &geometry.Source(), nullptr, *run, error ) ) return nullptr;
+	geometry.addref();
+	live->m_geometry = &geometry;
+	live->m_run = std::move( run );
+	return live;
+}
+
+std::unique_ptr<LiveSimulation> LiveSimulation::CreateForSimulation( const std::string& simulation,
+	const std::string& geometryName, SimulatedMeshGeometry& geometry, const std::string& solverId,
+	const std::vector<unsigned char>& parameters, std::shared_ptr<const Simulation::ISceneInputs> inputs,
+	const Simulation::MeshSourceOptions& options, const std::string& fingerprint, std::string& error )
+{
+	std::unique_ptr<LiveSimulation> live( new LiveSimulation() );
+	live->m_name = geometryName;
+	live->m_solverId = solverId;
+	live->m_simulation = simulation;
+	live->m_fingerprint = fingerprint;
+	live->m_inputs = std::move( inputs );
+	live->m_options = options;
+	live->m_options.end = Simulation::MeshEndPolicy::Hold;
+	live->m_options.missing = Simulation::MeshMissingPolicy::Hold;
+	live->m_options.predictive = false;
+	std::unique_ptr<Run> run( new Run() );
+	run->sceneInputs = live->m_inputs;
+	if( !StartRun( solverId, parameters, live->m_options, geometry.HasSource() ? &geometry.Source() : nullptr,
+		nullptr, *run, error ) ) return nullptr;
 	geometry.addref();
 	live->m_geometry = &geometry;
 	live->m_run = std::move( run );
@@ -247,7 +275,9 @@ bool LiveSimulation::PrepareRestart( const std::vector<unsigned char>* parameter
 		current = m_run->parameters;
 	}
 	std::unique_ptr<Run> run( new Run() );
-	if( !StartRun( m_solverId, parameters ? *parameters : current, m_options, m_geometry->Source(), record, *run, error ) )
+	run->sceneInputs = m_inputs;
+	if( !StartRun( m_solverId, parameters ? *parameters : current, m_options,
+		m_geometry->HasSource() ? &m_geometry->Source() : nullptr, record, *run, error ) )
 		return false;
 	std::lock_guard<std::mutex> lock( m_mutex );
 	m_pending = std::move( run );
@@ -317,7 +347,7 @@ LiveSimulationStatus LiveSimulation::GetStatus() const
 	status.lastSceneTime = Simulation::MeshFrameSceneTime( monitor, d.firstIndex + static_cast<std::int64_t>( d.count ) - 1 );
 	std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> snapshot = host.Snapshot();
 	if( snapshot ) {
-		for( const Simulation::CacheEntry& e : snapshot->Entries() ) if( e.output == m_options.output ) ++status.framesPublished;
+		status.framesPublished = snapshot->Span( m_options.output ).count;
 	}
 	std::int64_t latest = d.firstIndex - 1;
 	std::string ignored;

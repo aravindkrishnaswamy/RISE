@@ -5043,6 +5043,29 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		double* outSimulatedTime );
 	unsigned int RISE_API_SceneEditController_LiveSimulationCount( SceneEditController* p );
 
+	//! Simulation M4: run the scene's simulation `simulationName` live in the
+	//! viewport -- its declared solver, parameters and scene inputs -- bound to
+	//! the simulated_mesh_geometry whose `source` names it.  No pre-bake is
+	//! needed.  Detach with LiveSimulationDetach( <that geometry's name> ).
+	bool RISE_API_SceneEditController_LiveSimulationAttachSimulation(
+		SceneEditController* p, const char* simulationName, char* errorBuf, unsigned int errorBufLen );
+	//! Simulation M4: after a scene edit, restart every live scene simulation
+	//! whose configuration or consumer changed (a new cache key).  The agent
+	//! edit path calls it itself; a GUI calls it after its own edits.
+	bool RISE_API_SceneEditController_LiveSimulationResync(
+		SceneEditController* p, char* errorBuf, unsigned int errorBufLen );
+	//! Simulation M4: the declared simulations and their states.  Non-blocking:
+	//! false while the scene is busy (poll again).  `outState`: 0 missing,
+	//! 1 baking, 2 partial, 3 complete, 4 stale, 5 failed.  Every out pointer may
+	//! be null; text is truncated to its buffer.
+	bool RISE_API_SceneEditController_GetSimulationCount( SceneEditController* p, unsigned int* outCount );
+	bool RISE_API_SceneEditController_GetSimulation(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		char* cacheBuf, unsigned int cacheBufLen, char* errorBuf, unsigned int errorBufLen );
+
 	//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of a
 	//! named painter -- see PainterPreview.h (src/Library/SceneEditor) for
 	//! the domain / display-encode / scalar-normalization contract this

@@ -317,6 +317,12 @@ std::vector<String> CstIntrospection::CandidateNamesForChunkCategory(
 		// ChunkCategory::Geometry with the chunks that are.
 		job.EnumerateHairGuideNames( cb );
 		break;
+	case ChunkCategory::Simulation:
+		// Simulation M4: the third manager-less Job-side table
+		// (`simulationsMap`), the same shape as HairGuides above.  A
+		// `source` row's candidates are the declared producers.
+		job.EnumerateSimulationNames( cb );
+		break;
 	case ChunkCategory::Object:
 		if( IScenePriv* s = job.GetScene() )
 			if( const IObjectManager* m = s->GetObjects() )

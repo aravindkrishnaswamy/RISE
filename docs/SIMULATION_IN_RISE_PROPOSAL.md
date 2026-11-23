@@ -120,6 +120,11 @@ a release item, not an M1 gate: a warning-free macOS 26.2 release build of the a
 targets 26.2 for the import helper. M2 design: [SIMULATION_M2_DESIGN.md](SIMULATION_M2_DESIGN.md); execution moved
 from Codex to Claude.
 
+2026-11-23: **M4 implemented** (in review): producer chunks (`cloth_simulation`, `fire_simulation`,
+`simulation_cache`) in `ChunkCategory::Simulation`, `source <simulation>.<output>` consumers, scene inputs, the
+dependency graph with keys and states, `rise-sim bake|resume|status <scene>`, live runs from the scene without a
+pre-bake. [M4 results](SIMULATION_M4_RESULTS.md).
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.

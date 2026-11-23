@@ -27,6 +27,7 @@
 #define RISE_SCENE_EDITOR_LIVE_SIMULATION_
 
 #include "../Simulation/SimulatedMeshSource.h"
+#include "../Simulation/SimulationSolver.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -85,7 +86,24 @@ namespace RISE
 				const std::string& geometryName, SimulatedMeshGeometry& geometry,
 				const std::string& solverId, const std::vector<unsigned char>& parameters,
 				std::string& error );
+			//! Simulation M4: a live run of the scene's simulation `simulation`
+			//! (its solver and parameters as declared, its scene inputs captured
+			//! detached from the scene by the caller), bound to the consumer
+			//! `geometry`, which may have no source yet (its producer was never
+			//! baked): then the run's first frame gives it its topology.
+			//! `options` is the consumer's binding.  `fingerprint` identifies the
+			//! configuration (parameters and input identities), so the controller
+			//! can tell when a scene edit changed it.
+			static std::unique_ptr<LiveSimulation> CreateForSimulation(
+				const std::string& simulation, const std::string& geometryName, SimulatedMeshGeometry& geometry,
+				const std::string& solverId, const std::vector<unsigned char>& parameters,
+				std::shared_ptr<const Simulation::ISceneInputs> inputs, const Simulation::MeshSourceOptions& options,
+				const std::string& fingerprint, std::string& error );
 			~LiveSimulation();	//!< stops and joins the solver thread
+
+			//! The scene simulation this run plays (empty for an API attach).
+			const std::string& SimulationName() const { return m_simulation; }
+			const std::string& Fingerprint() const { return m_fingerprint; }
 
 			const std::string& GeometryName() const { return m_name; }
 			SimulatedMeshGeometry& Geometry() const { return *m_geometry; }
@@ -121,7 +139,7 @@ namespace RISE
 			struct Run;
 			LiveSimulation() = default;
 			static bool StartRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
-				const Simulation::MeshSourceOptions& options, const Simulation::MeshCacheSource& topology,
+				const Simulation::MeshSourceOptions& options, const Simulation::MeshCacheSource* topology,
 				const std::filesystem::path* record, Run& run, std::string& error );
 
 			std::string						m_name, m_solverId;
@@ -131,6 +149,11 @@ namespace RISE
 			mutable std::mutex				m_mutex;	//!< guards the run pointers (swapped by restart)
 			std::unique_ptr<Run>			m_run, m_pending;
 			std::uint64_t					m_restarts = 0;
+			// M4: the scene simulation, its captured scene inputs (shared by
+			// restarts; they outlive every solver configured with them) and
+			// the configuration fingerprint.
+			std::string						m_simulation, m_fingerprint;
+			std::shared_ptr<const Simulation::ISceneInputs> m_inputs;
 		};
 
 		//! The playback clock, as PlaybackClock::GetStatus reports it.

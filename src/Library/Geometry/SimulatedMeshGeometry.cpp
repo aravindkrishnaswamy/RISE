@@ -54,24 +54,36 @@ SimulatedMeshGeometry* SimulatedMeshGeometry::Create( const std::string& cacheRo
 	std::unique_ptr<Simulation::MeshCacheSource> source;
 	if( !Simulation::MeshCacheSource::Open( cacheRoot, options.source, source, error ) ) return nullptr;
 	SimulatedMeshGeometry* g = new SimulatedMeshGeometry( options, std::move( source ) );
-	const Simulation::MeshCacheSource& s = *g->m_source;
+	g->BuildTopology( *g->m_source );
+	return g;
+}
 
+SimulatedMeshGeometry* SimulatedMeshGeometry::CreateUnbound( const Options& options )
+{
+	SimulatedMeshGeometry* g = new SimulatedMeshGeometry( options, nullptr );
+	g->m_hidden = true;
+	g->m_identity = "unbound";
+	return g;
+}
+
+bool SimulatedMeshGeometry::BuildTopology( const Simulation::MeshCacheSource& s )
+{
 	VerticesListType positions;
 	ToPoints( s.BindPositions(), positions );
-	g->BeginIndexedTriangles();
-	g->AddVertices( positions );
-	if( !options.faceNormals ) {
+	BeginIndexedTriangles();
+	AddVertices( positions );
+	if( !m_options.faceNormals ) {
 		NormalsListType normals;
 		if( s.PayloadHasNormals() ) ToVectors( s.BindNormals(), normals );
-		else g->ComputeNormals( positions, normals );
-		g->AddNormals( normals );
+		else ComputeNormals( positions, normals );
+		AddNormals( normals );
 	}
 	// mesh.v2 UV set (fixed with the topology) as per-vertex texture coordinates.
 	const bool uvs = s.HasUVs();
 	if( uvs ) {
 		TexCoordsListType coords( s.VertexCount() );
 		for( std::size_t i = 0; i < coords.size(); ++i ) coords[i] = Point2( s.BindUVs()[2*i], s.BindUVs()[2*i+1] );
-		g->AddTexCoords( coords );
+		AddTexCoords( coords );
 	}
 	const std::vector<std::uint32_t>& indices = s.Indices();
 	for( std::size_t t = 0; t + 2 < indices.size(); t += 3 ) {
@@ -81,15 +93,18 @@ SimulatedMeshGeometry* SimulatedMeshGeometry::Create( const std::string& cacheRo
 			tri.iNormals[k] = indices[t + k];
 			tri.iCoords[k] = uvs ? indices[t + k] : 0;
 		}
-		g->AddIndexedTriangle( tri );
+		AddIndexedTriangle( tri );
 	}
-	g->DoneIndexedTriangles();
+	DoneIndexedTriangles();
 	// Uncertified from the first frame on, as every later (lean) install
 	// leaves it, so the mesh does not change technique between frames.
-	g->ClearSurfaceCertificates();
-	g->m_installedFrame = s.BindIndex();
-	g->m_identity = "bind|" + std::to_string( s.BindIndex() );
-	return g;
+	ClearSurfaceCertificates();
+	m_installedFrame = s.BindIndex();
+	m_identity = "bind|" + std::to_string( s.BindIndex() );
+	m_hidden = false;
+	m_built = true;
+	m_builtTopology = s.TopologyDigest();
+	return true;
 }
 
 SimulatedMeshGeometry::SimulatedMeshGeometry( const Options& options,
@@ -105,7 +120,8 @@ SimulatedMeshGeometry::SimulatedMeshGeometry( const Options& options,
   m_installs( 0 ),
   m_lastWarnedMissing( std::numeric_limits<std::int64_t>::min() ),
   m_leases( 0 ),
-  m_generation( 0 ), m_frozenGeneration( 0 )
+  m_generation( 0 ), m_frozenGeneration( 0 ),
+  m_built( false )
 {
 }
 
@@ -199,6 +215,7 @@ bool SimulatedMeshGeometry::PrepareAssetForRender( const RenderTimeSupport& supp
 		std::lock_guard<std::mutex> lock( m_freezeMutex );
 		if( m_leases ) { error = "mutation_frozen"; return false; }
 	}
+	if( !m_source ) return true;	// unbound (M4): hidden, nothing to install
 	std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> cheap = m_source->CheapSnapshot();
 	if( cheap && cheap == m_preparedSnapshot && support.nominal == m_preparedSupport.nominal &&
 		support.open == m_preparedSupport.open && support.close == m_preparedSupport.close ) return true;
@@ -226,15 +243,40 @@ bool SimulatedMeshGeometry::RebindSource( std::unique_ptr<Simulation::MeshCacheS
 		if( m_leases ) { error = "mutation_frozen"; return false; }
 	}
 	if( !source ) { error = "simulated mesh rebind needs a source"; return false; }
-	if( source->VertexCount() != m_source->VertexCount() || source->Indices() != m_source->Indices() ) {
+	const bool differs = m_source ?
+		( source->VertexCount() != m_source->VertexCount() || source->Indices() != m_source->Indices() ) :
+		( m_built && source->TopologyDigest() != m_builtTopology );
+	if( differs ) {
 		error = "simulated mesh rebind refused: the new source's topology differs from the bound mesh "
 			"(changing topology needs a reload; M7)";
 		return false;
 	}
-	m_source.swap( source );
+	if( !m_built ) {
+		// M4: an unbound mesh takes its topology from its first source.
+		m_source.swap( source );
+		BuildTopology( *m_source );
+	} else {
+		m_source.swap( source );
+		if( !source ) m_hidden = false;	// it was unbound: the next prepare installs a frame
+	}
 	// The next prepare installs from the new source whatever its identity.
 	m_preparedSnapshot.reset();
 	m_identity = "rebind|" + std::to_string( m_installedFrame );
+	m_lastWarnedMissing = std::numeric_limits<std::int64_t>::min();
+	++m_generation;
+	return true;
+}
+
+bool SimulatedMeshGeometry::UnbindSource( std::unique_ptr<Simulation::MeshCacheSource>& previous, std::string& error )
+{
+	{
+		std::lock_guard<std::mutex> lock( m_freezeMutex );
+		if( m_leases ) { error = "mutation_frozen"; return false; }
+	}
+	previous = std::move( m_source );
+	m_hidden = true;
+	m_preparedSnapshot.reset();
+	m_identity = "unbound";
 	m_lastWarnedMissing = std::numeric_limits<std::int64_t>::min();
 	++m_generation;
 	return true;
