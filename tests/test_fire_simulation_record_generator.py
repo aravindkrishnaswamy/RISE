@@ -350,7 +350,11 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         self.assertIn("OpenScalarInflow3D", flux_pair)
         self.assertNotIn("kind==PressureOpenBoundary3D&&projection.inflow", flux_pair)
 
-        sequence = (ROOT / "tests/FireSequenceTest.cpp").read_text(encoding="utf-8")
+        # M2: the production driver moved from tests/FireSequenceTest.cpp to src/Library/Simulation/Fire.
+        sequence = "\n".join(path.read_text(encoding="utf-8") for path in [
+            ROOT / "tests/FireSequenceTest.cpp",
+            *sorted((ROOT / "src/Library/Simulation/Fire").glob("FireRun*.h")),
+            *sorted((ROOT / "src/Library/Simulation/Fire").glob("FireRun*.cpp"))])
         self.assertIn('return "open_active_set_two_class_r81_v2"', sequence)
         self.assertIn("CurrentActiveSetAlgorithmVersion()", sequence)
         self.assertIn('"active_set_algorithm_version"', sequence)

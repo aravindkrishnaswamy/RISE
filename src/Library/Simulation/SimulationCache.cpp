@@ -279,6 +279,32 @@ bool SyncDirectory(const fs::path& path,std::string& error)
 	return synced || Fail(error,"durable cache publication unavailable: directory flush");
 }
 
+#if defined(_WIN32)
+bool WindowsWrite(const fs::path& root,const std::string& name,const Bytes& bytes,bool replace,std::string& error,
+	const char* pendingName)
+{
+	const auto pending=root/pendingName;
+	if (!DeleteFileW(pending.c_str()) && GetLastError()!=ERROR_FILE_NOT_FOUND)
+		return Fail(error,"cannot clear interrupted cache write");
+	HANDLE file=CreateFileW(pending.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+	if (file==INVALID_HANDLE_VALUE) return Fail(error,"cannot create staged cache file");
+	std::size_t pos=0;
+	while (pos<bytes.size()) {
+		DWORD wrote=0;
+		const auto chunk=static_cast<DWORD>(std::min<std::size_t>(bytes.size()-pos,1u<<20));
+		if (!WriteFile(file,bytes.data()+pos,chunk,&wrote,nullptr) || !wrote) break;
+		pos+=wrote;
+	}
+	const bool durable=pos==bytes.size() && FlushFileBuffers(file);
+	const bool closed=CloseHandle(file)!=0;
+	if (!durable || !closed) return Fail(error,"cache file flush failed");
+	const DWORD flags=MOVEFILE_WRITE_THROUGH|(replace?MOVEFILE_REPLACE_EXISTING:0);
+	if (!MoveFileExW(pending.c_str(),(root/name).c_str(),flags))
+		return Fail(error,"durable cache publish failed");
+	return SyncDirectory(root,error);
+}
+#endif
+
 // All leaf names are fixed literals or lower-case content digests.
 FrameStatus ReadFile(const fs::path& root,const std::string& name,std::uint64_t budget,
 	const std::uint64_t* expected,Bytes& bytes,std::string& error,bool ensureDurable=false)
@@ -372,10 +398,10 @@ bool CreateDurableDirectory(const fs::path& path,std::string& error)
 }
 
 #if !defined(_WIN32)
-bool SyncWrite(int dir,const std::string& name,const Bytes& bytes,bool replace,std::string& error)
+bool SyncWrite(int dir,const std::string& name,const Bytes& bytes,bool replace,std::string& error,
+	const char* pending=".cache.pending")
 {
 	// The writer lock covers the directory. Remove only a prior interrupted temp.
-	const char* pending=".cache.pending";
 	if (::unlinkat(dir,pending,0)!=0 && errno!=ENOENT) return Fail(error,"cannot clean interrupted cache write");
 	Descriptor file(::openat(dir,pending,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600));
 	if (file.fd<0) return Fail(error,"cannot create staged cache file");
@@ -402,6 +428,49 @@ bool SyncWrite(int dir,const std::string& name,const Bytes& bytes,bool replace,s
 bool CanDecodeCanonicalRecord(const Bytes& encoded,std::size_t budget)
 {
 	return WireFits(encoded,std::min<std::uint64_t>(budget,maximumBytes));
+}
+
+bool IsNativePayloadType(const std::string& type)
+{
+	return type=="grid.v1" || type=="mesh.v1";
+}
+
+bool ValidateCacheDescription(const CacheDescription& description,std::string& error)
+{
+	return DescriptionValid(description,error);
+}
+
+namespace {
+bool SidecarName(const std::string& name)
+{
+	return TextValid(name) && name.size()<=200 && name!="." && name!=".." && name!=manifestName &&
+		name!="writer.lock" && name!=".cache.pending" && name.find_first_of("/\\:")==std::string::npos &&
+		(name.size()<6 || name.compare(name.size()-6,6,".frame")!=0) &&
+		(name.size()<8 || name.compare(name.size()-8,8,".pending")!=0);
+}
+}
+
+bool ReplaceFileDurably(const fs::path& directory,const std::string& name,const Bytes& bytes,std::string& error)
+{
+	if (!SidecarName(name)) return Fail(error,"invalid sidecar file name");
+	const std::string pending="."+name+".pending";
+#if defined(_WIN32)
+	return WindowsWrite(directory,name,bytes,true,error,pending.c_str());
+#else
+	Descriptor dir(::open(directory.c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
+	if (dir.fd<0) return Fail(error,"cannot open sidecar directory");
+	return SyncWrite(dir.fd,name,bytes,true,error,pending.c_str());
+#endif
+}
+
+bool ReadSidecarFile(const fs::path& directory,const std::string& name,std::size_t budget,Bytes& bytes,
+	std::string& error)
+{
+	if (!SidecarName(name)) return Fail(error,"invalid sidecar file name");
+	Bytes candidate;
+	if (ReadFile(directory,name,budget,nullptr,candidate,error)!=FrameStatus::Ready) return false;
+	bytes.swap(candidate);
+	return true;
 }
 
 bool MakeCacheKey(const std::string& solver,const std::string& version,const V& params,
@@ -488,7 +557,7 @@ FrameStatus CacheSnapshot::Read(std::int64_t index,const std::string& output,std
 	result.reset();
 	const auto type=std::find_if(description_.outputs.begin(),description_.outputs.end(),
 		[&](const CacheOutput& descriptor){return descriptor.name==output;});
-	if (type==description_.outputs.end() || type->type!="grid.v1") {
+	if (type==description_.outputs.end() || !IsNativePayloadType(type->type)) {
 		error="undeclared output or unsupported native payload type"; return FrameStatus::Unsupported;
 	}
 	CacheEntry needle;
@@ -536,25 +605,7 @@ struct CacheWriter::Lock {
 		return LockFileEx(handle,flags,0,1,0,&range)!=0 || Fail(error,"cache writer lock busy or unavailable");
 	}
 	bool Write(const fs::path& root,const std::string& name,const Bytes& bytes,bool replace,std::string& error) {
-		const auto pending=root/".cache.pending";
-		if (!DeleteFileW(pending.c_str()) && GetLastError()!=ERROR_FILE_NOT_FOUND)
-			return Fail(error,"cannot clear interrupted cache write");
-		HANDLE file=CreateFileW(pending.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-		if (file==INVALID_HANDLE_VALUE) return Fail(error,"cannot create staged cache file");
-		std::size_t pos=0;
-		while (pos<bytes.size()) {
-			DWORD wrote=0;
-			const auto chunk=static_cast<DWORD>(std::min<std::size_t>(bytes.size()-pos,1u<<20));
-			if (!WriteFile(file,bytes.data()+pos,chunk,&wrote,nullptr) || !wrote) break;
-			pos+=wrote;
-		}
-		const bool durable=pos==bytes.size() && FlushFileBuffers(file);
-		const bool closed=CloseHandle(file)!=0;
-		if (!durable || !closed) return Fail(error,"cache file flush failed");
-		const DWORD flags=MOVEFILE_WRITE_THROUGH|(replace?MOVEFILE_REPLACE_EXISTING:0);
-		if (!MoveFileExW(pending.c_str(),(root/name).c_str(),flags))
-			return Fail(error,"durable cache publish failed");
-		return SyncDirectory(root,error);
+		return WindowsWrite(root,name,bytes,replace,error,".cache.pending");
 	}
 #else
 	Descriptor dir{-1},file{-1};

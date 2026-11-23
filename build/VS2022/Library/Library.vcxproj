@@ -551,8 +551,24 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionAdvectionUnsupported.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRunCheckpoint.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRunFrames.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRunDriver.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRun.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationCache.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationSolver.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationHost.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationWorker.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
@@ -1159,10 +1175,25 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireFastMode.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunCheckpoint.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunFrames.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunDriver.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRun.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunHostMemory.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedStageBudget.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedFuelBudget.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionOnsetEvidence.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionOwnerConvergenceProbe.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionStaggeredColumnBudget.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\fire_resident_resume_v2.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationGrid.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationVDBGrid.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationVDBBounds.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationCache.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationMesh.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationSolver.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationHost.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationWorker.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />

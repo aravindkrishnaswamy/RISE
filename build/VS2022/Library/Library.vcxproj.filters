@@ -4,6 +4,9 @@
     <Filter Include="Simulation">
       <UniqueIdentifier>{AA3EE819-09CD-4427-9180-B09591235AAE}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Simulation\Fire">
+      <UniqueIdentifier>{4F8B2C61-7E0D-4B5A-9C3E-2D1A6F0B8E47}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Utilities">
       <UniqueIdentifier>{c10fb33e-5a30-477a-969f-ee7dd721baa5}</UniqueIdentifier>
     </Filter>
@@ -309,10 +312,34 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRunCheckpoint.cpp">
+      <Filter>Simulation\Fire</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRunFrames.cpp">
+      <Filter>Simulation\Fire</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRunDriver.cpp">
+      <Filter>Simulation\Fire</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireRun.cpp">
+      <Filter>Simulation\Fire</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationCache.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationSolver.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationHost.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationWorker.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp">
@@ -1593,6 +1620,39 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunCheckpoint.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunFrames.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunDriver.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRun.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunHostMemory.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedStageBudget.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionAcceptedFuelBudget.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionOnsetEvidence.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionOwnerConvergenceProbe.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireProductionStaggeredColumnBudget.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\fire_resident_resume_v2.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationGrid.h">
       <Filter>Simulation</Filter>
     </ClInclude>
@@ -1603,6 +1663,18 @@
       <Filter>Simulation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationCache.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationMesh.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationSolver.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationHost.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationWorker.h">
       <Filter>Simulation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h">

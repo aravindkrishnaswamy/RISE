@@ -1,4 +1,4 @@
-#include "FireProductionAcceptedFuelBudget.h"
+#include "../src/Library/Simulation/Fire/FireProductionAcceptedFuelBudget.h"
 #include <iostream>
 struct Shape {std::size_t nx=2,ny=3,nz=4;float cellWidthM=.5f;};
 struct Trace {

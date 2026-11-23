@@ -282,6 +282,9 @@ TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvection.o FireProductionProjection.o \
 	FireProductionTransport.o FireProductionSource.o FireProductionForce.o \
 	OslNoise.o)
+# M2 track B: the fire run driver moved out of tests/FireSequenceTest.cpp.
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
+	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -357,7 +360,7 @@ $(LIBRISE_A) : $(OBJLIB) $(ARCHIVE_BUILD_DEFS)
 	@rm -f $(LIBRISE_A)
 	@ar rcs $(LIBRISE_A) $(OBJLIB)
 
-rise : $(OBJLIB) $(PATHSRCS)commandconsole.o | $(PATHTOOLDEST)simulation_cache_import
+rise : $(OBJLIB) $(PATHSRCS)commandconsole.o | $(PATHTOOLDEST)simulation_cache_import $(PATHTOOLDEST)rise_sim
 	@echo Linking $(PATHDEST)rise
 	@$(CXX)	$(CPPFLAGS) -o $(PATHDEST)rise $(PATHSRCS)commandconsole.o $(OBJLIB) $(LDLIBS)
 
@@ -604,6 +607,22 @@ $(PATHLIBRARY)Utilities/FireProductionProjectionMac.o : $(PATHLIBRARY)Utilities/
 $(PATHLIBRARY)Utilities/FireProductionForceMac.o : $(PATHLIBRARY)Utilities/FireProductionForceMac.mm
 	@echo "Compiling (safe fp32 ObjC++): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+# M2 track B: the production fire driver moved out of tests/FireSequenceTest.cpp
+# keeps that translation unit's flags exactly (no fast-math, no FP contraction),
+# so its accepted states and frames stay byte-identical.
+$(PATHLIBRARY)Simulation/Fire/FireRunCheckpoint.o : $(PATHLIBRARY)Simulation/Fire/FireRunCheckpoint.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHLIBRARY)Simulation/Fire/FireRunFrames.o : $(PATHLIBRARY)Simulation/Fire/FireRunFrames.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHLIBRARY)Simulation/Fire/FireRunDriver.o : $(PATHLIBRARY)Simulation/Fire/FireRunDriver.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHLIBRARY)Simulation/Fire/FireRun.o : $(PATHLIBRARY)Simulation/Fire/FireRun.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 .cpp.o:
 	@echo Compiling: $<

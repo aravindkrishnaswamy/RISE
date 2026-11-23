@@ -15,7 +15,7 @@ struct CacheChannel {
 	std::string name, units, representation;
 };
 struct CacheOutput {
-	std::string name, type; // native grid codec: "grid.v1"
+	std::string name, type; // native codecs: "grid.v1", "mesh.v1" (see IsNativePayloadType)
 	std::vector<CacheChannel> channels;
 };
 struct CacheDescription {
@@ -43,6 +43,21 @@ enum class CacheState { Missing, Baking, Partial, Complete, Corrupt };
 // Size and allocation preflight only. Call DecodeCanonical afterwards for actual
 // schema and canonicality validation. Use on each separately encoded record.
 bool CanDecodeCanonicalRecord(const Bytes& encoded, std::size_t budget);
+
+// Payload types a cache reader serves; any other declared type reads as Unsupported.
+bool IsNativePayloadType(const std::string& type);
+// The identity, time-support, output and fidelity rules CacheWriter::Begin enforces.
+bool ValidateCacheDescription(const CacheDescription& description, std::string& error);
+
+// Durably replace one small sidecar file in a directory: stage, sync, rename,
+// sync the directory. `name` is a plain leaf (no separators) and may not be a
+// cache-owned name (manifest, lock, payloads). Callers serialize writers of the
+// same name (a hosting worker does so under the cache writer lock).
+bool ReplaceFileDurably(const std::filesystem::path& directory, const std::string& name,
+	const Bytes& bytes, std::string& error);
+// Bounded read of such a sidecar; refuses symlinks and nonregular files.
+bool ReadSidecarFile(const std::filesystem::path& directory, const std::string& name,
+	std::size_t budget, Bytes& bytes, std::string& error);
 
 bool MakeCacheKey(const std::string& solver, const std::string& version,
 	const RISECBOR64::Value& effectiveParameters,

@@ -1,6 +1,6 @@
-// r211: resident r78 evidence adapter. Included inside FireSequenceTest's
-// implementation namespace, after the canonical-record helpers. No solver math.
-bool ResidentResumeSHA(const std::string& value)
+// r211: resident r78 evidence adapter. Included inside the fire run namespace by
+// FireRunDriver.h, after the canonical-record helpers. No solver math.
+inline bool ResidentResumeSHA(const std::string& value)
 {
 	return value.size()==64u&&std::all_of(value.begin(),value.end(),[](char c){
 		return (c>='0'&&c<='9')||(c>='a'&&c<='f');});
@@ -13,7 +13,7 @@ struct ResidentResumeTraceV2
 	std::vector<std::string> inputs,outputs,kernels;
 };
 
-bool ResidentResumeTraceV2Read(const RISECBOR64::Value& payload,
+inline bool ResidentResumeTraceV2Read(const RISECBOR64::Value& payload,
 	ResidentResumeTraceV2& trace,const std::uint64_t firstStep,
 	const std::uint64_t beginningTimeBits,const std::string& checkpointSHA,
 	const std::string& checkpointBuild,std::string& error)
@@ -170,7 +170,7 @@ bool ResidentResumeTraceV2Read(const RISECBOR64::Value& payload,
 	return true;
 }
 
-bool ParseResidentResumeCertificateV2(const RISECBOR64::Value& payload,
+inline bool ParseResidentResumeCertificateV2(const RISECBOR64::Value& payload,
 	ResumeEquivalenceCertificate& certificate,std::string& error)
 {
 	std::string kind;std::uint64_t version=0u,beginningBits=0u;
@@ -211,7 +211,7 @@ bool ParseResidentResumeCertificateV2(const RISECBOR64::Value& payload,
 
 // Called only after the native owner diagnostic has returned success into a
 // fresh output directory. No log string or caller assertion proves execution.
-bool ResidentExecutedOverlapRowsMatch(std::istream& csv,
+inline bool ResidentExecutedOverlapRowsMatch(std::istream& csv,
 	const ResumeEquivalenceCertificate& expected,std::string& error)
 {
 	const auto count=expected.acceptedStepCount;

@@ -146,6 +146,14 @@ set_source_files_properties(
     "${RISE_LIB}/Utilities/FireProductionForce.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
+# M2 track B: the fire run driver moved out of tests/FireSequenceTest.cpp keeps its strict flags.
+set_source_files_properties(
+    "${RISE_LIB}/Simulation/Fire/FireRunCheckpoint.cpp"
+    "${RISE_LIB}/Simulation/Fire/FireRunFrames.cpp"
+    "${RISE_LIB}/Simulation/Fire/FireRunDriver.cpp"
+    "${RISE_LIB}/Simulation/Fire/FireRun.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
 
 # Link rise against vendored libpng + zlib so PNG reader/writer resolve.
 target_link_libraries(rise PUBLIC png_local z_local)

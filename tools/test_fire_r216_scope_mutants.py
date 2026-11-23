@@ -8,7 +8,10 @@ import re
 import subprocess
 import tempfile
 
-source = (Path(__file__).resolve().parents[1] / "tests/FireSequenceTest.cpp").read_text()
+ROOT = Path(__file__).resolve().parents[1]
+# M2: the production driver moved from tests/FireSequenceTest.cpp to src/Library/Simulation/Fire.
+source = "\n".join(path.read_text() for path in [ROOT / "tests/FireSequenceTest.cpp", *sorted((ROOT / "src/Library/Simulation/Fire").glob("FireRun*.h")),
+                    *sorted((ROOT / "src/Library/Simulation/Fire").glob("FireRun*.cpp"))])
 constant = re.search(r'constexpr const char\* R216CheckpointSHA=.*?;', source).group()
 functions = []
 for name in ("R216KernelAccepted", "R216RetainedScopeAccepted", "R216AttemptPublicationAccepted"):

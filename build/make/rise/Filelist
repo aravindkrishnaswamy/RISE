@@ -95,8 +95,16 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/FireProductionForce.cpp	\
 	$(PATHLIBRARY)Utilities/FireCase.cpp			\
 	$(PATHLIBRARY)Utilities/FireSequence.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireRunCheckpoint.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRunFrames.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRunDriver.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRun.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationGrid.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationCache.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationMesh.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationSolver.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationHost.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationWorker.cpp			\
 	$(PATHLIBRARY)Utilities/FireSequenceCache.cpp			\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
 	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
