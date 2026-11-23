@@ -156,16 +156,29 @@ The `osl_` builtins are Cycles' / OSL's own definitions, there so a
 Blender material translates to the same pattern: `osl_snoise(p, w, dims)`;
 `osl_fractal(p, w, dims, type, detail, roughness, lacunarity, offset, gain,
 normalize)`; the Noise Texture node's `osl_noise_texture(...)` (Fac) and
-`osl_noise_texture_color(...)` (Color); and the White Noise node's
-`osl_white_noise(p, w, dims)` and `osl_white_noise_color(p, w, dims)`.
-`dims`, `type` and `normalize` are integer literals (full list:
-`src/Library/Painters/ExpressionOslBuiltins.h`).  The noise ones never fade
-octaves by footprint, so for hand-authored noise prefer `fbm`/`turbulence`/
-`ridged`, which do.  White noise hashes the coordinate's exact float bits,
-so any one-ulp change gives an unrelated value, and a coordinate that is
-not exactly representable in float may round to a different float than
-Cycles computed: feed it integer or cell ids (or use `cellhash`, RISE's
-own hash) when you want a stable per-cell value.
+`osl_noise_texture_color(...)` (Color); the White Noise node's
+`osl_white_noise(p, w, dims)` and `osl_white_noise_color(p, w, dims)`;
+the Voronoi Texture node's five outputs, `osl_voronoi_distance`,
+`osl_voronoi_color`, `osl_voronoi_position`, `osl_voronoi_w` and
+`osl_voronoi_radius`, each `(p, w, dims, feature, metric, scale, detail,
+roughness, lacunarity, smoothness, exponent, randomness, normalize)` with
+the coordinate passed BEFORE the Scale; the RGB/HSV/HSL colour conversions
+`osl_rgb2hsv(c)`, `osl_hsv2rgb(c)`, `osl_rgb2hsl(c)` and `osl_hsl2rgb(c)`;
+and the Mix Color node's 19 blend modes `osl_mix_color(mode, t, a, b,
+clamp_factor, clamp_result)`.  `dims`, `type`, `feature`, `metric`,
+`normalize`, `mode`, `clamp_factor` and `clamp_result` are integer
+literals (full list: `src/Library/Painters/ExpressionOslBuiltins.h`).  For hand-authored cells
+RISE's own `worley_*` (3D, Euclidean, one octave) usually suffice; the
+`osl_voronoi_` ones are there to match Blender, and their cost grows fast
+with dimension and detail (a 3D F1 at detail 0 is about 250 ns, 4D Smooth
+F1 at detail 15 about 150 us; `src/Library/Utilities/OslVoronoi.h`).
+None of the `osl_` noise or Voronoi builtins fade octaves by footprint, so for hand-authored
+noise prefer `fbm`/`turbulence`/`ridged`, which do.  White noise hashes
+the coordinate's exact float bits, so any one-ulp change gives an
+unrelated value, and a coordinate that is not exactly representable in
+float may round to a different float than Cycles computed: feed it integer
+or cell ids (or use `cellhash`, RISE's own hash) when you want a stable
+per-cell value.
 
 The body also sees `curv`/`curvR` (surface curvature at the hit: positive
 convex, negative concave, 0 flat) plus FIVE ARG-TAKING geometry-signal

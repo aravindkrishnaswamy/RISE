@@ -8,10 +8,11 @@
 //  FnSig table carries at most four arguments, its scalar-returning
 //  function-id band is full, and its CallFunc / CallFuncVec3 bodies are pinned for
 //  floating-point reproducibility (ExpressionMemo.h names the set).  The
-//  `osl_` family needs up to eleven arguments, compile-time literal
-//  arguments (a node's dimension count or fractal type), and will grow by
-//  whole groups (Voronoi, colour, safe math).  So it lives here: its own
-//  signature table, its own id space, and its own out-of-line Call that
+//  `osl_` family needs up to thirteen arguments, compile-time literal
+//  arguments (a node's dimension count, fractal type, normalize flag,
+//  Voronoi feature or metric, Mix blend mode or clamp flag), and grows
+//  by whole groups (safe math next).  So it lives here: its own signature
+//  table, its own id space, and its own out-of-line Call that
 //  the VM reaches through two opcodes of its own (Compiled::kOsl /
 //  kOslV3).  No existing builtin's case, id or arithmetic moves.
 //
@@ -21,13 +22,15 @@
 //  pixel footprint: Cycles does not, and matching Cycles' pattern is the
 //  point.  Hand authors who want anti-aliased noise should prefer fbm().
 //
-//  THE BUILTINS (group 1: gradient and fractal noise; group 2: white noise).
+//  THE BUILTINS (group 1: gradient and fractal noise; group 2: white noise;
+//  group 3: Voronoi; group 4: colour conversions and Mix Color).
 //
-//    Every noise builtin takes a vec3 `p` and a scalar `w` and reads the
+//    The texture builtins take a vec3 `p` and a scalar `w` and read the
 //    coordinates the dimension count names:
 //        dims 1 -> (w)      dims 2 -> (p.x, p.y)
 //        dims 3 -> p        dims 4 -> (p.x, p.y, p.z, w)
-//    The unused one is ignored (pass 0).  `dims`, `type` and `normalize`
+//    The unused one is ignored (pass 0).  `dims`, `type`, `feature`,
+//    `metric`, `normalize`, `mode`, `clamp_factor` and `clamp_result`
 //    must be integer LITERALS: they are node properties, and a computed
 //    value selecting a code path is almost certainly a mistake.
 //
@@ -63,22 +66,86 @@
 //        not exact in float (most of them, in a render) matches Cycles in
 //        distribution, not per pixel.  Color's first channel is Value.
 //
+//    osl_voronoi_distance(p, w, dims, feature, metric, scale, detail,
+//                         roughness, lacunarity, smoothness, exponent,
+//                         randomness, normalize) -> scalar
+//    osl_voronoi_color(...the same arguments...) -> vec3
+//    osl_voronoi_position(...) -> vec3
+//    osl_voronoi_w(...) -> scalar
+//    osl_voronoi_radius(...) -> scalar
+//        The Voronoi Texture node's Distance, Color, Position, W and
+//        Radius outputs (OslVoronoi.h).  feature: 0 F1, 1 F2, 2 Smooth F1,
+//        3 Distance to Edge, 4 N-Sphere Radius; metric: 0 Euclidean,
+//        1 Manhattan, 2 Chebychev, 3 Minkowski (Cycles' numbering; the
+//        metric is read by F1, F2 and Smooth F1 in 2D to 4D only).
+//        UNLIKE the noise builtins, the caller passes p and w BEFORE the
+//        Scale multiply and the Scale itself: the node divides Position
+//        and W back by it, so the kernel applies both in float, as Cycles
+//        does.  An output a feature does not produce reads 0, as in Cycles
+//        (Distance to Edge gives only Distance, N-Sphere Radius only
+//        Radius).  Position is 0 in 1D, where the point is in W; W is 0 in
+//        2D and, in 3D, a value Blender hides; these zeros carry Cycles'
+//        sign (-0 at a negative Scale; OslVoronoi.h, Result).  Each call
+//        runs the whole node, so using several outputs of one node costs one
+//        node evaluation per output used; bind each output used more than
+//        once to a `def` so it is evaluated once.
+//
+//    osl_rgb2hsv(c) -> vec3
+//    osl_hsv2rgb(c) -> vec3
+//    osl_rgb2hsl(c) -> vec3
+//    osl_hsl2rgb(c) -> vec3
+//        Cycles' RGB/HSV/HSL colour-space conversions (util/color.h,
+//        OslColor.h), as used by Separate Color, Combine Color and
+//        Hue/Saturation/Value.  Inputs are passed through unclamped, as
+//        in Cycles.
+//    osl_mix_color(mode, t, a, b, clamp_factor, clamp_result) -> vec3
+//        Cycles' Mix Color node (svm_node_mix_color, OslColor.h).
+//        `mode` (integer literal, 0..18) selects one of Cycles' 19
+//        NodeMix blend modes: 0 Mix/Blend, 1 Add, 2 Multiply, 3 Subtract,
+//        4 Screen, 5 Divide, 6 Difference, 7 Darken, 8 Lighten, 9 Overlay,
+//        10 Color Dodge, 11 Color Burn, 12 Hue, 13 Saturation, 14 Value,
+//        15 Color, 16 Soft Light, 17 Linear Light, 18 Exclusion.
+//        `clamp_factor` (0..1) clamps `t` to [0, 1] before mixing;
+//        `clamp_result` (0..1) clamps each output channel to [0, 1] after
+//        mixing (legacy MixRGB is clamp_factor=1, clamp_result=use_clamp).
+//        Not memo-worthy: arithmetic only, no loops or hashes.
+//
 //  A result that is not finite (a negative roughness can divide by zero
-//  in fBM's normalisation, as it does in Cycles) reads 0.
+//  in fBM's normalisation, or an out-of-gamut RGB in osl_rgb2hsl can
+//  divide by zero, as in Cycles) reads 0.
 //
 //  PRECISION.  The kernels are strict IEEE single precision, equal to a
-//  strict build of Cycles' sources bit for bit on the tested inputs,
-//  within the documented clamps (detail at most 15; a non-finite
+//  strict build of Cycles' sources bit for bit on the tested inputs (the
+//  Voronoi rows that call powf to 1e-6 off Apple arm64, whose libm the
+//  golden table was dumped with; OslVoronoi.h), within
+//  the documented clamps and guards (detail at most 15; a non-finite
 //  coordinate reads 0, except in White Noise, which hashes it as Cycles
-//  does).  Against Cycles as Blender builds it they agree to float
-//  rounding where float rounding stays small.  The high octaves amplify
-//  rounding by roughly (roughness * lacunarity)^octave: on outputs Cycles
-//  evaluates at shifted coordinates (Color G/B, distortion), high roughness
-//  with high detail parts RISE from Cycles by amounts that reach order
-//  one at roughness 1 and more above it -- and, inferred from the strict-vs-Blender-flags gap, Cycles' builds
-//  from each other -- and in a render every output is sensitive to the
-//  float coordinate the two renderers start from.  OslNoise.h tabulates
-//  the measurements and their conditions.
+//  does; a Voronoi octave whose coordinate is not finite ends the fractal
+//  -- OslVoronoi.h lists the Voronoi departures).  Against Cycles as
+//  Blender builds it the noise agrees to float rounding where float
+//  rounding stays small.  The high octaves amplify rounding by roughly
+//  (roughness * lacunarity)^octave: on outputs Cycles evaluates at shifted
+//  coordinates (Color G/B, distortion), high roughness with high detail
+//  parts RISE from Cycles by amounts that reach order one at roughness 1
+//  and more above it -- and, inferred from the strict-vs-Blender-flags
+//  gap, Cycles' builds from each other -- and in a render every output is
+//  sensitive to the float coordinate the two renderers start from.
+//  OslNoise.h tabulates the measurements and their conditions.
+//
+//  Voronoi differs in kind.  A rounding difference can change which point
+//  is nearest, so on cell boundaries Color and Position jump to another
+//  cell's and N-Sphere Radius can jump to another pair's, while the
+//  distances stay within float rounding.  Separately, a 1D coordinate of
+//  -0 hashes differently in Blender's -fno-signed-zeros build, and on
+//  Cycles' SIMD path a 3D or 4D cell id above int32 converts differently;
+//  both move distances too.  OslVoronoi.h, PRECISION, has the
+//  measurements.
+//
+//  Colour conversions and Mix Color use only correctly rounded IEEE 754
+//  operations (no transcendentals), match Cycles' strict build bit for
+//  bit on all 1098 golden rows, and stay within float rounding (<= 5.07e-7
+//  relative to max(1, |v|)) of the Blender-flags builds on the table;
+//  OslColor.h, PRECISION and COST, has the figures.
 //
 //  Tabs: 4
 //
@@ -104,7 +171,7 @@ namespace RISE
 			//! [litMin, litMax], so Call can read it as an int.
 			enum ArgKind { kScalarArg, kVec3Arg, kIntLiteralArg };
 
-			static const int kMaxArgs = 12;
+			static const int kMaxArgs = 13;
 
 			struct Sig
 			{

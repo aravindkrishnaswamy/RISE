@@ -102,6 +102,8 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
 	$(PATHLIBRARY)Utilities/ProceduralNoiseCore.cpp			\
 	$(PATHLIBRARY)Utilities/OslNoise.cpp			\
+	$(PATHLIBRARY)Utilities/OslVoronoi.cpp			\
+	$(PATHLIBRARY)Utilities/OslColor.cpp			\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
 	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\

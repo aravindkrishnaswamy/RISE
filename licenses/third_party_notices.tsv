@@ -25,6 +25,7 @@ Sobol-Joe-Kuo	licenses/Sobol-Joe-Kuo-LICENSE.txt	all
 Cycles	licenses/Cycles-NOTICE.txt	all
 Cycles	licenses/Apache-2.0.txt	all
 Cycles	licenses/BSD-3-Clause.txt	all
+Cycles	licenses/MIT-Inigo-Quilez.txt	all
 libpng	extlib/libpng/LICENSE	android
 zlib	licenses/zlib-LICENSE.txt	android
 Unicode	licenses/Unicode-LICENSE.txt	all

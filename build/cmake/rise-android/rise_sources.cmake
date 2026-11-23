@@ -79,6 +79,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"
     "${RISE_LIB}/Utilities/ProceduralNoiseCore.cpp"
     "${RISE_LIB}/Utilities/OslNoise.cpp"
+    "${RISE_LIB}/Utilities/OslVoronoi.cpp"
+    "${RISE_LIB}/Utilities/OslColor.cpp"
     "${RISE_LIB}/Utilities/Reference.cpp"
     "${RISE_LIB}/Utilities/PSSMLTSampler.cpp"
     "${RISE_LIB}/Utilities/Profiling.cpp"

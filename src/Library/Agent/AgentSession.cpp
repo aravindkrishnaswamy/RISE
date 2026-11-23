@@ -6714,12 +6714,13 @@ namespace RISE
 			//! condition E for the calibration evidence this threshold rests on.
 			//!
 			//! One exclusion: a number in an `osl_` builtin's INTEGER-LITERAL
-			//! slot (a node's dimension count, fractal type, normalize flag --
+			//! slot (a node's dimension count, fractal type, normalize flag,
+			//! Voronoi feature or metric, Mix blend mode or clamp flag --
 			//! ExpressionOslBuiltins.h) is not counted.  Those slots refuse a
 			//! param, so advising the author to promote them would advise a
-			//! compile error; without this, a translated
-			//! `osl_noise_texture(...)` call with a few other numbers would
-			//! trip the gate on its literal slots alone.
+			//! compile error; without this, a translated `osl_noise_texture(...)`
+			//! or `osl_mix_color(...)` call with a few other numbers would trip
+			//! the gate on its literal slots alone.
 			int CountDistinctNumericLiterals_( const std::string& text )
 			{
 				std::set<std::string> distinct;

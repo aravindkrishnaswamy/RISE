@@ -16,6 +16,14 @@
 		05C1A0000000000000000005 /* OslNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000002 /* OslNoise.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		05C1A0000000000000000004 /* OslNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000001 /* OslNoise.h */; };
 		05C1A0000000000000000003 /* OslNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000002 /* OslNoise.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000A06 /* OslVoronoi.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000A01 /* OslVoronoi.h */; };
+		05C1A0000000000000000A05 /* OslVoronoi.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000A02 /* OslVoronoi.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000A04 /* OslVoronoi.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000A01 /* OslVoronoi.h */; };
+		05C1A0000000000000000A03 /* OslVoronoi.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000A02 /* OslVoronoi.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000B06 /* OslColor.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000B01 /* OslColor.h */; };
+		05C1A0000000000000000B05 /* OslColor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000B02 /* OslColor.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000B04 /* OslColor.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000B01 /* OslColor.h */; };
+		05C1A0000000000000000B03 /* OslColor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000B02 /* OslColor.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
 		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
@@ -3023,10 +3031,14 @@
 		F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerDefaults.h; sourceTree = "<group>"; };
 		F2ADD0000000000000000001 /* ProceduralNoiseCore.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ProceduralNoiseCore.h; sourceTree = "<group>"; };
 		05C1A0000000000000000001 /* OslNoise.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslNoise.h; sourceTree = "<group>"; };
+		05C1A0000000000000000A01 /* OslVoronoi.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslVoronoi.h; sourceTree = "<group>"; };
+		05C1A0000000000000000B01 /* OslColor.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslColor.h; sourceTree = "<group>"; };
 		F5C0DEEE0000000000000001 /* SurfaceCurvature.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SurfaceCurvature.h; sourceTree = "<group>"; };
 		F5C0DEF00000000000000001 /* ExpressionMemo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionMemo.h; sourceTree = "<group>"; };
 		F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ProceduralNoiseCore.cpp; sourceTree = "<group>"; };
 		05C1A0000000000000000002 /* OslNoise.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslNoise.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000A02 /* OslVoronoi.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslVoronoi.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000B02 /* OslColor.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslColor.cpp; sourceTree = "<group>"; };
 		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BidirectionalRasterizerBase.cpp; sourceTree = "<group>"; };
@@ -4646,10 +4658,14 @@
 				F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */,
 				F2ADD0000000000000000001 /* ProceduralNoiseCore.h */,
 				05C1A0000000000000000001 /* OslNoise.h */,
+				05C1A0000000000000000A01 /* OslVoronoi.h */,
+				05C1A0000000000000000B01 /* OslColor.h */,
 				F5C0DEEE0000000000000001 /* SurfaceCurvature.h */,
 				F5C0DEF00000000000000001 /* ExpressionMemo.h */,
 				F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */,
 				05C1A0000000000000000002 /* OslNoise.cpp */,
+				05C1A0000000000000000A02 /* OslVoronoi.cpp */,
+				05C1A0000000000000000B02 /* OslColor.cpp */,
 				F27F0A37069C42900069C9E5 /* RandomNumbers.h */,
 				F27F0A38069C42900069C9E5 /* Ray.h */,
 				F2EE004000000000000000A1 /* RayDifferentials.h */,
@@ -5552,6 +5568,8 @@
 				F27F0C8F069C42910069C9E5 /* ProbabilityDensityFunction.h in Headers */,
 				F2ADD0000000000000000004 /* ProceduralNoiseCore.h in Headers */,
 				05C1A0000000000000000004 /* OslNoise.h in Headers */,
+				05C1A0000000000000000A04 /* OslVoronoi.h in Headers */,
+				05C1A0000000000000000B04 /* OslColor.h in Headers */,
 				F5C0DEEE0000000000000002 /* SurfaceCurvature.h in Headers */,
 				F5C0DEF00000000000000002 /* ExpressionMemo.h in Headers */,
 				F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */,
@@ -6174,6 +6192,8 @@
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
 				F2ADD0000000000000000003 /* ProceduralNoiseCore.cpp in Sources */,
 				05C1A0000000000000000003 /* OslNoise.cpp in Sources */,
+				05C1A0000000000000000A03 /* OslVoronoi.cpp in Sources */,
+				05C1A0000000000000000B03 /* OslColor.cpp in Sources */,
 				F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */,
 				F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */,
 				F27F0C9B069C42910069C9E5 /* ThreadsPTHREADs.cpp in Sources */,
@@ -7171,8 +7191,12 @@
 				F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */,
 				F2ADD0000000000000000005 /* ProceduralNoiseCore.cpp in Sources */,
 				05C1A0000000000000000005 /* OslNoise.cpp in Sources */,
+				05C1A0000000000000000A05 /* OslVoronoi.cpp in Sources */,
+				05C1A0000000000000000B05 /* OslColor.cpp in Sources */,
 				F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */,
 				05C1A0000000000000000006 /* OslNoise.h in Sources */,
+				05C1A0000000000000000A06 /* OslVoronoi.h in Sources */,
+				05C1A0000000000000000B06 /* OslColor.h in Sources */,
 				F5C0DEEE0000000000000003 /* SurfaceCurvature.h in Sources */,
 				F5C0DEF00000000000000003 /* ExpressionMemo.h in Sources */,
 				EE990000000000000000001E /* ExpressionPainter.cpp in Sources */,

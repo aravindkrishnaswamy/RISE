@@ -159,8 +159,10 @@
 //              They have their own signature table, ids and dispatch
 //              (ExpressionOslBuiltins.h, Compiled::kOsl / kOslV3) and
 //              are listed there; so far gradient noise, fractal
-//              noise, the Noise Texture node and White Noise.  Unlike fbm()
-//              they never fade octaves by footprint, and some arguments
+//              noise, the Noise Texture node, White Noise, the
+//              Voronoi Texture node, RGB/HSV/HSL colour conversions
+//              and Mix Color.  Unlike fbm() the noise/Voronoi ones
+//              never fade octaves by footprint, and some arguments
 //              must be integer literals.  They are pure functions, so
 //              they compile with context vars off too.
 //
@@ -1318,7 +1320,8 @@ namespace RISE
 							const Compiled::Instr& in = body.code[i];
 							// An `osl_` call qualifies when its signature says
 							// it is expensive (the gradient and fractal noise
-							// builtins do; white noise, a few hashes, does not).
+							// and Voronoi builtins do; white noise, colour
+							// conversions and Mix Color do not).
 							if( in.op == Compiled::kOsl || in.op == Compiled::kOslV3 ) {
 								const OslBuiltins::Sig* os = OslBuiltins::FindById( in.fn );
 								if( os && os->memoWorthy ) return true;
@@ -2805,11 +2808,13 @@ namespace RISE
 				//! parser because its signatures differ from FnSig's in two
 				//! ways: up to OslBuiltins::kMaxArgs arguments, and INTEGER
 				//! LITERAL arguments (a node's dimension count, fractal type,
-				//! normalize flag), each proved here to be one integer literal
-				//! in its declared range so the dispatch can read it as an int.
-				//! A literal argument is still pushed on the value stack like
-				//! any scalar.  No `osl_` builtin reads `fw`, so the call is
-				//! emitted with the identity domain scale.
+				//! normalize flag, Voronoi feature or metric, Mix blend mode
+				//! or clamp flags), each proved
+				//! here to be one integer literal in its declared range so
+				//! the dispatch can read it as an int.  A literal argument is
+				//! still pushed on the value stack like any scalar.  No `osl_`
+				//! builtin reads `fw`, so the call is emitted with the
+				//! identity domain scale.
 				bool ParseOslCall( const OslBuiltins::Sig& sig, size_t nameOff, VType& outType )
 				{
 					const std::string name( sig.name );

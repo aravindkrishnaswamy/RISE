@@ -2,9 +2,10 @@
 
 **Status:** draft 6, 2026-11-14. Nothing here is implemented except
 constant-reflectance GGX and energy-preserving Oren-Nayar (2026-11-19, §5.6),
-the first two groups of procedural builtins -- gradient noise, fractal
-noise, the Noise Texture node and White Noise (2026-11-20, §5.2(b)) -- and
-the companion's step P
+the first four groups of procedural builtins -- gradient noise, fractal
+noise, the Noise Texture node and White Noise (2026-11-20), the Voronoi
+Texture node (2026-11-22), and the colour conversions and Mix Color node
+(2026-11-22), §5.2(b) -- and the companion's step P
 (2026-11-16, DL-633). Draft 4 was
 reviewed by four independent reviewers
 ([round 1](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md)) and draft 5 by a
@@ -483,9 +484,9 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
 | Gradient noise | `osl_snoise(p, w, dims)` signed, 1D–4D. **Implemented 2026-11-20** | `kernel/svm/noise.h`: Jenkins lookup3 lattice hash, quintic fade, per-dimension scale constants, the `fmod(p, 100000)` wrap |
 | Fractal noise | `osl_fractal(p, w, dims, type, detail, roughness, lacunarity, offset, gain, normalize)`, the five types by Cycles' numbering. **Implemented 2026-11-20** | `kernel/svm/fractal_noise.h`, including the fractional-detail octave |
 | Noise Texture node | `osl_noise_texture(...)` (Fac) and `osl_noise_texture_color(...)` (Color): the node after its Scale, with its detail and roughness clamps, Distortion and the Color output's offsets. **Implemented 2026-11-20** | `noisetex.h` |
-| Voronoi | F1, F2, Smooth F1, Distance to Edge, N-Sphere Radius × Distance / Color / Position outputs; Euclidean, Manhattan, Chebychev, Minkowski; 1D–4D; fractal parameters | `kernel/svm/voronoi.h`: PCG integer cell hashes for 2D–4D (as of Blender 5.0; the hash changed in that release), the float hash in 1D |
+| Voronoi | `osl_voronoi_distance`, `osl_voronoi_color`, `osl_voronoi_position`, `osl_voronoi_w`, `osl_voronoi_radius`, each `(p, w, dims, feature, metric, scale, detail, roughness, lacunarity, smoothness, exponent, randomness, normalize)`: F1, F2, Smooth F1, Distance to Edge, N-Sphere Radius; Euclidean, Manhattan, Chebychev, Minkowski; 1D–4D; the fractal parameters. The coordinate is passed before the Scale, which the kernel applies (Position and W are divided back by it). **Implemented 2026-11-22** | `kernel/svm/voronoi.h`: PCG integer cell hashes for 2D–4D (as of Blender 5.0; the hash changed in that release), the float hash in 1D |
 | White noise | `osl_white_noise(p, w, dims)` (Value) and `osl_white_noise_color(p, w, dims)` (Color), 1D–4D. **Implemented 2026-11-20** | `kernel/svm/white_noise.h`, `util/hash.h`; see below |
-| Colour | `rgb2hsv`, `hsv2rgb`, `rgb2hsl`, `hsl2rgb`, `blend(mode, t, a, b)` for the 19 Mix modes, with the node's clamp options | `kernel/svm/color_util.h`, `mix.h` |
+| Colour | `osl_rgb2hsv(c)`, `osl_hsv2rgb(c)`, `osl_rgb2hsl(c)`, `osl_hsl2rgb(c)`, `osl_mix_color(mode, t, a, b, clamp_factor, clamp_result)` for the 19 Mix modes (`NodeMix` 0..18), with the node's factor and result clamps. **Implemented 2026-11-22** | `util/color.h`, `kernel/svm/color_util.h`, `kernel/svm/mix.h` |
 | Safe math | the 41 Math and the Vector Math operations with Cycles' zero-on-undefined results | `kernel/svm/math_util.h` |
 | Componentwise vec3 | `min/max/abs/floor/fract/pow/clamp`, `rotate(v, axis, angle)`, Euler rotation | Vector Math, Vector Rotate |
 | Space transforms | `to_object_point/vector/normal`, `to_world_*`, `to_camera_*` | Vector Transform, Camera coordinates; the camera matrix is read from the live scene, not baked as constants |
@@ -494,24 +495,86 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
   one cell search, and Noise returns a factor and a colour. Builtins in the
   VM return one value today; these are either split with the search repeated
   (Phase 1, measured) or given multi-result kernels (Phase 2). The Noise
-  Texture node is split this way, into a Fac builtin and a Color builtin.
-  Color's first channel is Fac bit for bit, so a node with both outputs used
-  lowers to one Color call in a `def` and reads Fac as its `.x`: three
-  fractal evaluations rather than four.
+  Texture node is split this way, into a Fac builtin and a Color builtin,
+  and the Voronoi node into one builtin per output, each repeating the
+  search (As built, group 3). The Noise node's Color has Fac as its first
+  channel bit for bit, so a Noise node with both outputs used lowers to one
+  Color call in a `def` and reads Fac as its `.x`: three fractal
+  evaluations rather than four.
 - **As built (group 1, 2026-11-20).** `src/Library/Utilities/OslNoise.*`
   holds the kernels; `src/Library/Painters/ExpressionOslBuiltins.*` holds the
   `osl_` signature table and an out-of-line dispatch the VM reaches through
   two appended opcodes, so no existing builtin moves. A node's dimension
   count, fractal type and normalize flag are integer-literal arguments, checked
   at compile time.
+- **As built (group 3, Voronoi, 2026-11-22).**
+  `src/Library/Utilities/OslVoronoi.*`, a port of `svm_node_tex_voronoi` with
+  its clamps, under the same strict-IEEE contract; its feature and metric are
+  integer literals too. Each output is its own builtin, so a node with several
+  outputs used costs one node evaluation per output (measured costs in
+  `OslVoronoi.h`). It equals a strict build of Cycles' own node exactly on all
+  1092 node rows of `tests/data/osl_voronoi_golden.inc`
+  (`tools/osl_golden/dump_voronoi_golden.sh`, which runs the real node entry
+  point; the file also holds 72 PCG hash rows, matched exactly), including 11 rows whose high octaves leave the int32 range, where
+  Cycles' conversion is undefined and the port saturates as Cycles' arm64
+  scalar path does. Against the Blender-flags builds it parts in three ways:
+  rounding (every output within 2.01e-7 relative to max(1, |v|) where the same
+  cells are chosen, but a different nearest point on 1 row per build, so cell
+  colours match only in distribution on cell boundaries); a 1D coordinate of
+  -0 in an octave that runs, which Blender's `-fno-signed-zeros` build hashes
+  as -0 where strict IEEE hashes +0 (8 of 12 such rows, F1, F2 and N-Sphere
+  Radius; reachable, e.g. W = 0 with a negative Scale); and, for the SIMD
+  build in 3D and 4D, cell ids above int32, which sse2neon maps to INT32_MIN
+  where the port saturates to INT32_MAX (4 of 8 such rows). The Minkowski
+  metric uses the platform's `powf`, which C libraries need not round alike,
+  so the test gates the rows that call it bit for bit only on Apple arm64
+  (to 1e-6 elsewhere). The port's own departures (a non-finite coordinate
+  gives 0; an octave whose coordinate is not finite ends the fractal) are
+  where Cycles' result is undefined (2D-4D) or meaningless (1D); an unknown
+  feature or metric, which the builtins' literal checks make unreachable, also
+  gives 0. `tests/OslVoronoiTest.cpp` also checks closed forms that do not use
+  Cycles: at randomness 0 every feature point is an integer corner.
+- **As built (group 4, colour and Mix Color, 2026-11-22).**
+  `src/Library/Utilities/OslColor.*` ports `util/color.h` (`rgb_to_hsv`,
+  `hsv_to_rgb`, `rgb_to_hsl`, `hsl_to_rgb`) and `kernel/svm/color_util.h` +
+  `mix.h` (`svm_node_mix_color` with Cycles' 19 `NodeMix` blend modes 0..18
+  and both clamp flags; legacy `svm_node_mix` plus its optional
+  `NODE_MIX_CLAMP` follow-up matches `clamp_factor = 1, clamp_result = use_clamp`
+  bit for bit) under the same strict-IEEE contract. Exposed as
+  `osl_rgb2hsv(c)`, `osl_hsv2rgb(c)`, `osl_rgb2hsl(c)`, `osl_hsl2rgb(c)` and
+  `osl_mix_color(mode, t, a, b, clamp_factor, clamp_result)` (`mode`,
+  `clamp_factor`, `clamp_result` integer literals; not memo-worthy: 2.7–12.2 ns
+  per call on M1 Max, measured by `tools/osl_golden/bench_color.cpp`).
+  Every operation is a correctly rounded IEEE 754 operation (no
+  transcendentals, no float-to-int conversions), so the port equals Cycles'
+  strict-IEEE build bit for bit
+  (sign of zero included) on all 1,098 rows of
+  `tests/data/osl_color_golden.inc` (300 conversion rows and 798 Mix Color
+  rows, dumped by `tools/osl_golden/dump_color_golden.sh` from Cycles' real
+  `svm_node_separate_color`, `svm_node_combine_color` and
+  `svm_node_mix_color` entry points). Against the Blender-flags builds
+  (whose SIMD and scalar columns agree bit-identically on all 1,098 rows),
+  only float rounding appears (FMA and `-freciprocal-math`): 251/300
+  bit-exact and max relative error 1.24e-7 on conversions, 761/798 bit-exact
+  and max relative error 5.07e-7 on Mix Color, with 0 sign-of-zero-only rows,
+  0 non-finite disagreements, and 0 departures above 1e-5. The only departure
+  from Cycles is that `MixColor` maps `mode` outside 0..18 (including Cycles'
+  internal sentinel `NODE_MIX_CLAMP = 19`, unreachable from the builtin) to
+  `(0, 0, 0)`, and uses IEEE `std::fmax` everywhere (Cycles' `_WIN32` build
+  overrides `fmaxf` with `(a > b) ? a : b`). `tests/OslColorTest.cpp` also
+  verifies independent closed forms (round-trips, primaries, all 19 blend
+  formulas at t = 0 and t = 1, clamps, aliasing).
 - **Precision, as built.** The kernels evaluate in strict IEEE single
   precision in the order of Cycles' scalar path, compiled that way on every
-  platform (the file refuses to build under fast-math; built and run so far
-  on macOS arm64 only), so the pattern is the same bits everywhere by
-  construction and equals a strict-IEEE build of Cycles' own sources
-  exactly on the tested inputs, within the documented guards (detail at
-  most 15, a NaN detail read as 0, a non-finite coordinate giving 0 --
-  except in White Noise, which hashes it as Cycles does).
+  platform (each kernel file refuses to build under fast-math; built and
+  run so far on macOS arm64 only), so the pattern is the same bits
+  everywhere by construction (except Voronoi's Minkowski metric, which
+  calls the platform's `powf`; see the Voronoi bullet above) and equals a
+  strict-IEEE build of Cycles' own sources exactly on the tested inputs,
+  within the documented guards (detail at most 15, a NaN detail read as 0,
+  a non-finite coordinate giving 0 -- except in White Noise, which hashes
+  it as Cycles does; a Voronoi octave whose coordinate is not finite ends
+  the fractal, and Voronoi cell ids saturate at int32).
   Double precision was tried first and rejected: where Cycles rounds is
   part of its pattern. Against Cycles' sources rebuilt with Blender's
   flags, on identical inputs, the fractals and the Noise Texture node's
@@ -534,8 +597,9 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
   path; neither result is a meaningful pattern there.
 - **Golden values** come from Cycles' own kernels compiled three ways (SIMD
   and scalar as Blender builds them, and the scalar path as strict IEEE) by
-  `tools/osl_golden/dump_noise_golden.sh` (Blender commit afc6d7a4, the 5.2
-  alpha); the licences are in `licenses/`.
+  `tools/osl_golden/dump_noise_golden.sh`, `dump_voronoi_golden.sh` and
+  `dump_color_golden.sh` (Blender commit afc6d7a4, the 5.2 alpha); the
+  licences are in `licenses/`.
 - **White Noise matches in distribution, not per pixel.** Cycles hashes the
   raw 32-bit float pattern of its input, with no `floor`. RISE computes in
   double precision, so a last-bit difference upstream changes the whole
@@ -977,9 +1041,18 @@ by colour management.
      statistical comparison where they approach order one, as at high
      roughness with high detail). (The builtins equal a strict build of
      Cycles' sources exactly on identical float inputs;
-     `tests/OslNoiseTest.cpp` gates that.)
+     `tests/OslNoiseTest.cpp`, `tests/OslVoronoiTest.cpp` and
+     `tests/OslColorTest.cpp` gate that,
+     Voronoi's Minkowski rows bit for bit only on Apple arm64.)
    - Discontinuous outputs (Voronoi cell colour, constant ramps, Checker):
-     at most 0.1% of pixels differing.
+     at most 0.1% of pixels differing, excluding a 1D Voronoi (F1, F2 or
+     N-Sphere Radius) whose W is a constant 0 and which reaches an octave
+     at -0: with a negative Scale (every octave, while Lacunarity is
+     positive) or a linked negative Lacunarity (alternate octaves, which
+     run only at Detail and Roughness above 0). There Blender's
+     `-fno-signed-zeros` build hashes the centre cell's feature point
+     differently, so the constant image can differ at every pixel
+     (`OslVoronoi.h`, PRECISION).
    - White Noise on a non-quantised input: a distribution test, not a pixel
      test (§5.2b).
 6. **Lobe parity.** One lit sphere per shader and option under a point
@@ -1136,8 +1209,10 @@ sinks through node groups):
 
 - May start: the procedural builtins and their golden tests (gradient noise,
   fractal noise, the Noise Texture node and White Noise **implemented
-  2026-11-20**, `tests/OslNoiseTest.cpp`; Voronoi, colour, safe math and
-  transforms next); the compiler's
+  2026-11-20**, `tests/OslNoiseTest.cpp`; Voronoi **implemented
+  2026-11-22**, `tests/OslVoronoiTest.cpp`; colour conversions and Mix Color
+  **implemented 2026-11-22**, `tests/OslColorTest.cpp`; safe math,
+  componentwise vec3 and transforms next); the compiler's
   unit tests; the lowered-size measurement; the performance baseline;
   constant-reflectance GGX and energy-preserving Oren-Nayar
   (**implemented 2026-11-19**, `tests/BlenderLobeAdditionsTest.cpp`); the

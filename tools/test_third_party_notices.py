@@ -30,7 +30,7 @@ REPO = tpn.default_repo_root()
 # Notices every distribution must carry: code compiled into the library
 # on every platform.
 CORE_PACKAGES = {"stb", "cgltf", "mt19937", "Sobol-Joe-Kuo", "Cycles"}
-CYCLES_FILES = {"Cycles-NOTICE.txt", "Apache-2.0.txt", "BSD-3-Clause.txt"}
+CYCLES_FILES = {"Cycles-NOTICE.txt", "Apache-2.0.txt", "BSD-3-Clause.txt", "MIT-Inigo-Quilez.txt"}
 
 # Which build file decides what a distribution compiles.  The Blender
 # bridge links the make Filelist's library; the macOS release builds the
@@ -48,8 +48,8 @@ BUILD_FILES = {
 EXTERNAL_EXTLIB = {"oidn"}
 
 # Source files with a third-party copyright or licence line, and the
-# manifest package that carries their notice.  OslNoise is ported from
-# Cycles; it may not be on every branch yet.
+# manifest package that carries their notice.  OslNoise, OslVoronoi and
+# OslColor are ported from Cycles.
 SOURCE_NOTICES = {
     "src/Library/Sampling/SobolDirectionNumbers.cpp": "Sobol-Joe-Kuo",
     "src/Library/Utilities/MersenneTwister.cpp": "mt19937",
@@ -57,6 +57,10 @@ SOURCE_NOTICES = {
     "src/Library/Utilities/UnicodeNFCData.inc": "Unicode",
     "src/Library/Utilities/OslNoise.cpp": "Cycles",
     "src/Library/Utilities/OslNoise.h": "Cycles",
+    "src/Library/Utilities/OslVoronoi.cpp": "Cycles",
+    "src/Library/Utilities/OslVoronoi.h": "Cycles",
+    "src/Library/Utilities/OslColor.cpp": "Cycles",
+    "src/Library/Utilities/OslColor.h": "Cycles",
 }
 # Third-party code whose terms a notice cannot satisfy; see "Not covered
 # by these notices" in licenses/README.md.
