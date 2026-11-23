@@ -36,6 +36,10 @@
 //  Shared and immutable during the pass: geometry, materials, painters,
 //  the TLAS (built from shutter-swept bounds, DL-457), the light-selection
 //  tables and light BVH (rebuilt per frame from the same sweep, DL-463).
+//  A simulated deforming mesh (simulation M3b) is immutable too: it holds
+//  shutter-open and shutter-close keys and interpolates them per ray at
+//  the thread's sample time, which PoseAt publishes in
+//  TimeIndexed::tlsSampleTime.
 //
 //  PER SAMPLE vs PER RAY.  Per SAMPLE (once per pixel sample, per moving
 //  element, on the sample's own thread): interpolate the keyframes and
@@ -165,6 +169,7 @@ namespace RISE
 			TimeIndexed::ThreadSlots		table;
 			const TimeIndexed::ThreadSlots*	previousTable;
 			TimeIndexedThread*				previousCurrent;
+			TimeIndexed::SampleTime			previousSampleTime;	//!< restored on retire (M3b)
 		};
 	}
 }

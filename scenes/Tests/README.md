@@ -176,6 +176,10 @@ fixture preserves the documented approximation rather than correcting it.
   spectral PT rasterizer with uniform SMS, matching the SF11/geometry of
   the legacy snell-mode `spectral_dispersive_caustic_pt_sms.RISEscene`
 - `Samplers/`: Sobol, ZSobol, and sampler comparison scenes
+- `Simulation/`: scenes that read simulation caches.  `simulated_cloth_drape.RISEscene`
+  renders a baked cloth through `simulated_mesh_geometry` with deformation motion
+  blur; it needs a bake in `~/.cache` (`tools/simulation/render_cloth_drape.sh`), see
+  docs/SIMULATION_M3B_RESULTS.md
 - `SubsurfaceScattering/`: focused SSS and PT-vs-BDPT comparison scenes (includes `pathtracing_pel_rasterizer` variants)
 - `UnifiedLighting/`: direct-light sampling and many-light regression scenes
 - `VCM/`: vertex-connection-and-merging regression scenes (Cornell baseline,

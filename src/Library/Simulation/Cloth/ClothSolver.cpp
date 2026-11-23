@@ -31,7 +31,7 @@ using V = RISECBOR64::Value;
 using namespace Cloth;
 
 constexpr std::size_t CodecBudget = std::size_t(256) << 20;
-constexpr const char* SolverVersion = "m3a.1";
+constexpr const char* SolverVersion = "m3a.2";
 constexpr const char* StateFormat = "cloth.shell.state.v1";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";
@@ -237,14 +237,31 @@ bool ParsePins(const V* v, const SheetSpec& sheet, std::vector<PinGroup>& pins, 
 	return true;
 }
 
-bool ParseColliders(const V* v, std::vector<Collider>& colliders, V& effective, std::string& error)
+double FromF32(std::uint32_t bits);
+
+// Flat array of finite numbers.
+bool Numbers(const V* v, std::vector<double>& out)
+{
+	out.clear();
+	if (!v || v->GetType() != V::Array) return false;
+	for (const V& e : v->GetArray()) {
+		double x = 0;
+		if (!Number(e, x)) return false;
+		out.push_back(x);
+	}
+	return true;
+}
+
+bool ParseColliders(const V* v, const ISceneInputs& inputs, std::vector<Collider>& colliders,
+	std::vector<MeshCollider>& meshes, V& effective, std::string& error)
 {
 	V::Values out;
 	colliders.clear();
+	meshes.clear();
 	if (v && v->GetType() != V::Array) return Fail(error, "colliders must be an array");
 	if (v) for (const V& item : v->GetArray()) {
 		Reader r(item, "collider", error);
-		const std::string type = r.Text("type", "plane", {"plane", "sphere", "box"});
+		const std::string type = r.Text("type", "plane", {"plane", "sphere", "box", "cylinder", "mesh"});
 		Collider c;
 		if (type == "plane") {
 			c.type = Collider::Type::Plane;
@@ -260,11 +277,63 @@ bool ParseColliders(const V* v, std::vector<Collider>& colliders, V& effective, 
 			c.a = r.Vector("center", {{0, 0, 0}});
 			c.radius = r.Real("radius", 0.25);
 			if (!(c.radius > 0)) r.Bad("sphere radius must be positive");
-		} else {
+		} else if (type == "cylinder") {
+			c.type = Collider::Type::Cylinder;
+			c.a = r.Vector("point", {{0, 0, 0}});
+			V3 n = r.Vector("axis", {{0, 0, 1}}, false);
+			const double l = Length(n);
+			if (!(l > 0)) r.Bad("cylinder axis must be nonzero");
+			else n = {{n[0]/l, n[1]/l, n[2]/l}};
+			c.b = n;
+			r.out.emplace_back("axis", Vec(n));
+			c.radius = r.Real("radius", 0.1);
+			if (!(c.radius > 0)) r.Bad("cylinder radius must be positive");
+		} else if (type == "box") {
 			c.type = Collider::Type::Box;
 			c.a = r.Vector("min", {{-0.5, -0.5, -0.5}});
 			c.b = r.Vector("max", {{0.5, 0.5, 0.5}});
 			if (!(c.a[0] < c.b[0] && c.a[1] < c.b[1] && c.a[2] < c.b[2])) r.Bad("box min must be below max");
+		} else {
+			// A triangle mesh: inline arrays, or a scene input (mesh.v1) sampled at time 0.
+			MeshCollider mesh;
+			const std::string input = r.Text("scene_input", "-", {}, false);
+			if (input != "-") {
+				std::string hash, codec;
+				std::shared_ptr<const Bytes> bytes;
+				MeshFrame frame;
+				if (!inputs.Identity(input, hash, error) || !inputs.Sample(input, 0.0, bytes, codec, error) || !bytes)
+					return Fail(error, "collider scene input " + input + ": " + error);
+				if (codec != "mesh.v1" || !DecodeMesh(*bytes, CodecBudget, frame, error))
+					return Fail(error, "collider scene input " + input + " is not a mesh.v1 frame: " + error);
+				for (std::uint32_t bits : frame.positions) mesh.vertices.push_back(FromF32(bits));
+				mesh.triangles = frame.indices;
+				r.out.emplace_back("scene_input", V::String(input));
+				r.out.emplace_back("identity", V::String(hash));
+				r.Raw("identity"); // written back by Configure; accepted on input
+			} else {
+				std::vector<double> idx;
+				if (!Numbers(r.Raw("vertices"), mesh.vertices) || mesh.vertices.size() % 3 != 0 || mesh.vertices.empty())
+					return r.Bad("mesh vertices must be a flat array of 3n finite numbers");
+				if (!Numbers(r.Raw("triangles"), idx) || idx.size() % 3 != 0 || idx.empty())
+					return r.Bad("mesh triangles must be a flat array of 3m vertex indices");
+				for (double k : idx) {
+					if (!(k >= 0) || std::floor(k) != k || k >= static_cast<double>(mesh.vertices.size()/3))
+						return r.Bad("mesh triangle index out of range");
+					mesh.triangles.push_back(static_cast<std::uint32_t>(k));
+				}
+				V::Values vs, ts;
+				for (double x : mesh.vertices) vs.push_back(V::Float(x));
+				for (std::uint32_t k : mesh.triangles) ts.push_back(V::Unsigned(k));
+				r.out.emplace_back("vertices", V::ArrayValue(vs));
+				r.out.emplace_back("triangles", V::ArrayValue(ts));
+			}
+			V motionValue;
+			if (!ParseMotion(r.Raw("motion"), mesh.motion, motionValue, error)) return false;
+			r.out.emplace_back("motion", motionValue);
+			if (!r.Finish()) return false;
+			meshes.push_back(std::move(mesh));
+			out.push_back(V::MapValue(r.out));
+			continue;
 		}
 		if (!r.Finish()) return false;
 		colliders.push_back(c);
@@ -344,23 +413,51 @@ const EvidenceSpec EvidenceSpecs[] = {
 	{"order-membrane", "membrane (1,1) frequency error at 8/16 cells: 2 - observed order (floor 0)",
 		{0.2, 0.2, 0.2}},
 };
+// Barrier contact (only when the run has contact; tests/ClothValidationTest.cpp
+// "Contact evidence" over the built-in records with the default contact
+// settings).  rest, stick and slide are exact up to the Newton tolerance (their
+// tolerance is a solver-tolerance level, not 1.25 x observed); the mesh case
+// must have no violation; the bounce must not gain energy.
+const EvidenceSpec ContactSpecs[] = {
+	{"contact-rest-n20", "strip on a plane: max(|contact force / weight - 1|, max |gap - barrier law| / gap)",
+		{1e-8, 1e-8, 1e-8}},
+	{"contact-cylinder-n40", "strip draped over a cylinder, 40 segments: max centre-line error / half length vs the wrapped elastica",
+		{2.0e-3, 2.0e-3, 2.0e-3}},
+	{"contact-stick", "sheet on a plane tilted to half the friction angle: |creep speed - smoothed-friction law| / slip speed",
+		{1e-5, 1e-5, 1e-5}},
+	{"contact-slide", "sheet on a plane tilted 0.2 rad past the friction angle: relative acceleration error vs g (sin - mu cos)",
+		{1e-6, 1e-6, 1e-6}},
+	{"contact-mesh", "sheet falling over a tilted cube mesh, 0.5 s: steps whose straight path or end state violates the offset",
+		{0.5, 0.5, 0.5}},
+	{"contact-bounce", "sheet dropped on a frictionless plane, undamped: largest total-energy rise / drop energy",
+		{1e-6, 1e-6, 1e-6}},
+};
 
 struct EvidenceKey {
 	Material material;
 	Triangulation triangulation;
 	BendingModel bending;
 	Scheme scheme;
+	bool contact = false;          // barrier contact cases too
+	BarrierSettings barrier;
+	double thickness = 0;
 };
 
 V EvidenceConfiguration(const EvidenceKey& k, const char* id, int resolution)
 {
-	return V::MapValue({{"solver", V::String(ClothSolverId)}, {"version", V::String(SolverVersion)},
+	V::Members m{{"solver", V::String(ClothSolverId)}, {"version", V::String(SolverVersion)},
 		{"case", V::String(id)}, {"resolution", V::Unsigned(static_cast<std::uint64_t>(resolution))},
 		{"material", MaterialToValue(k.material)}, {"triangulation", V::String(TriangulationName(k.triangulation))},
-		{"bending_model", V::String(BendingModelName(k.bending))}, {"integrator", V::String(SchemeName(k.scheme))}});
+		{"bending_model", V::String(BendingModelName(k.bending))}, {"integrator", V::String(SchemeName(k.scheme))}};
+	if (k.contact)
+		m.emplace_back("contact", V::MapValue({{"barrier_stiffness", V::Float(k.barrier.stiffness)},
+			{"contact_activation", V::Float(k.barrier.activation)}, {"friction", V::Float(k.barrier.friction)},
+			{"friction_velocity", V::Float(k.barrier.frictionVelocity)}, {"contact_thickness", V::Float(k.thickness)}}));
+	return V::MapValue(m);
 }
 
-std::vector<EvidenceCase> RunEvidence(const EvidenceKey& k)
+// The canonical cases (contact off in k), or only the contact cases.
+std::vector<EvidenceCase> RunEvidence(const EvidenceKey& k, bool contactPart)
 {
 	CaseSettings s;
 	s.material = k.material;
@@ -378,54 +475,94 @@ std::vector<EvidenceCase> RunEvidence(const EvidenceKey& k)
 		c.digest = EvidenceDigest(c.id, EvidenceConfiguration(k, spec.id, resolution), c.error, c.tolerance, c.passed);
 		out.push_back(c);
 	};
-	s.resolution = 20;
-	const CaseResult cat = RunCatenary(s);
-	add(EvidenceSpecs[0], 20, cat, cat.error);
-	CaseResult cw[3], cf;
-	const int levels[3] = {10, 20, 40};
-	for (int l = 0; l < 3; ++l) { s.resolution = levels[l]; cw[l] = RunCantilever(s, false); }
-	s.resolution = 20;
-	cf = RunCantilever(s, true);
-	add(EvidenceSpecs[1], 20, cw[1], cw[1].error);
-	add(EvidenceSpecs[2], 20, cf, cf.error);
-	s.resolution = 16;
-	const CaseResult m11 = RunMembraneMode(s, 1, 1), m21 = RunMembraneMode(s, 2, 1);
-	add(EvidenceSpecs[3], 16, m11, m11.error);
-	add(EvidenceSpecs[4], 16, m21, m21.error);
-	const CaseResult plate = RunPlate(s, false);
-	add(EvidenceSpecs[5], 16, plate, plate.error);
-	const CaseResult energy = RunEnergyDrift(s);
-	add(EvidenceSpecs[6], 16, energy, energy.error);
-	CaseResult order = cw[2];
-	order.ok = cw[0].ok && cw[1].ok && cw[2].ok;
-	if (!order.ok) order.failure = "a cantilever level failed";
-	const double pc = std::min(ObservedOrder(cw[0].error, cw[1].error), ObservedOrder(cw[1].error, cw[2].error));
-	add(EvidenceSpecs[7], 40, order, std::max(0.0, 2 - pc));
-	s.resolution = 8;
-	CaseResult m8 = RunMembraneMode(s, 1, 1);
-	m8.ok = m8.ok && m11.ok;
-	const double pm = ObservedOrder(m8.error, m11.error);
-	add(EvidenceSpecs[8], 16, m8, std::max(0.0, 2 - pm));
+	if (!contactPart) {
+		s.resolution = 20;
+		const CaseResult cat = RunCatenary(s);
+		add(EvidenceSpecs[0], 20, cat, cat.error);
+		CaseResult cw[3], cf;
+		const int levels[3] = {10, 20, 40};
+		for (int l = 0; l < 3; ++l) { s.resolution = levels[l]; cw[l] = RunCantilever(s, false); }
+		s.resolution = 20;
+		cf = RunCantilever(s, true);
+		add(EvidenceSpecs[1], 20, cw[1], cw[1].error);
+		add(EvidenceSpecs[2], 20, cf, cf.error);
+		s.resolution = 16;
+		const CaseResult m11 = RunMembraneMode(s, 1, 1), m21 = RunMembraneMode(s, 2, 1);
+		add(EvidenceSpecs[3], 16, m11, m11.error);
+		add(EvidenceSpecs[4], 16, m21, m21.error);
+		const CaseResult plate = RunPlate(s, false);
+		add(EvidenceSpecs[5], 16, plate, plate.error);
+		const CaseResult energy = RunEnergyDrift(s);
+		add(EvidenceSpecs[6], 16, energy, energy.error);
+		CaseResult order = cw[2];
+		order.ok = cw[0].ok && cw[1].ok && cw[2].ok;
+		if (!order.ok) order.failure = "a cantilever level failed";
+		const double pc = std::min(ObservedOrder(cw[0].error, cw[1].error), ObservedOrder(cw[1].error, cw[2].error));
+		add(EvidenceSpecs[7], 40, order, std::max(0.0, 2 - pc));
+		s.resolution = 8;
+		CaseResult m8 = RunMembraneMode(s, 1, 1);
+		m8.ok = m8.ok && m11.ok;
+		const double pm = ObservedOrder(m8.error, m11.error);
+		add(EvidenceSpecs[8], 16, m8, std::max(0.0, 2 - pm));
+		return out;
+	}
+	if (k.contact) {
+		ContactSettings c;
+		c.barrier = k.barrier;
+		c.barrier.selfCollision = false;
+		c.thickness = k.thickness;
+		s.resolution = 20;
+		const CaseResult rest = RunContactRest(s, c);
+		add(ContactSpecs[0], 20, rest, rest.error);
+		s.resolution = 40;
+		const CaseResult cyl = RunContactCylinder(s, c);
+		add(ContactSpecs[1], 40, cyl, cyl.error);
+		s.resolution = 10;
+		const double mu = c.barrier.friction;
+		CaseResult stick = RunContactIncline(s, c, 0.5*std::atan(mu));
+		if (!(mu > 0)) { stick.ok = false; stick.failure = "no friction"; }
+		add(ContactSpecs[2], 10, stick, stick.error);
+		const CaseResult slide = RunContactIncline(s, c, std::atan(mu) + 0.2);
+		add(ContactSpecs[3], 10, slide, slide.error);
+		const CaseResult mesh = RunContactMesh(s, c, false, 0.5);
+		add(ContactSpecs[4], 10, mesh, mesh.error);
+		const CaseResult bounce = RunContactBounce(s, c);
+		add(ContactSpecs[5], 10, bounce, bounce.error);
+	}
 	return out;
 }
 
 // Deterministic, so a process-wide memo is exact.
-std::vector<EvidenceCase> Evidence(const EvidenceKey& k)
+std::vector<EvidenceCase> Memoised(const EvidenceKey& k, bool contactPart)
 {
 	static std::mutex mutex;
 	static std::map<std::string, std::vector<EvidenceCase>> memo;
 	Bytes key;
 	std::string ignored;
-	RISECBOR64::Encode(EvidenceConfiguration(k, "all", 0), key, &ignored);
+	RISECBOR64::Encode(EvidenceConfiguration(k, contactPart ? "contact" : "all", 0), key, &ignored);
 	const std::string digest = RISECBOR64::SHA256Hex(key);
 	{
 		std::lock_guard<std::mutex> hold(mutex);
 		const auto it = memo.find(digest);
 		if (it != memo.end()) return it->second;
 	}
-	std::vector<EvidenceCase> cases = RunEvidence(k);
+	std::vector<EvidenceCase> cases = RunEvidence(k, contactPart);
 	std::lock_guard<std::mutex> hold(mutex);
 	memo[digest] = cases;
+	return cases;
+}
+
+// The canonical cases (bound to the configuration without contact), then the
+// contact cases when the run has barrier contact.
+std::vector<EvidenceCase> Evidence(const EvidenceKey& k)
+{
+	EvidenceKey base = k;
+	base.contact = false;
+	std::vector<EvidenceCase> cases = Memoised(base, false);
+	if (k.contact) {
+		const std::vector<EvidenceCase> more = Memoised(k, true);
+		cases.insert(cases.end(), more.begin(), more.end());
+	}
 	return cases;
 }
 
@@ -459,7 +596,7 @@ private:
 	NewtonOptions newton_;
 	std::uint64_t count_ = 0, substeps_ = 1;
 	double interval_ = 1.0/30;
-	unsigned paceMs_ = 0;
+	unsigned paceMs_ = 0, threads_ = 1;
 	ClothSystem system_;
 	std::vector<std::uint32_t> indices_;
 	double t_ = 0, segStart_ = 0, segTarget_ = 0;
@@ -469,7 +606,7 @@ private:
 	std::atomic<bool> stop_{false};
 };
 
-bool ClothSolver::Configure(const V& parameters, const ISceneInputs&, SolverDescription& d, std::string& error)
+bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, SolverDescription& d, std::string& error)
 {
 	configured_ = started_ = false;
 	Reader p(parameters, "", error);
@@ -513,10 +650,17 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs&, SolverDesc
 	V pinsValue, collidersValue;
 	if (!ParsePins(p.Raw("pins"), sheet, model.pins, pinsValue, error)) return false;
 	p.out.emplace_back("pins", pinsValue);
-	if (!ParseColliders(p.Raw("colliders"), model.colliders, collidersValue, error)) return false;
+	if (!ParseColliders(p.Raw("colliders"), inputs, model.colliders, model.meshColliders, collidersValue, error)) return false;
 	p.out.emplace_back("colliders", collidersValue);
+	const std::string contact = p.Text("contact", interactive ? "penalty" : "barrier", {"barrier", "penalty"});
+	model.contact = contact == "barrier" ? ContactModel::Barrier : ContactModel::Penalty;
 	model.contactStiffness = p.Real("contact_stiffness", 1e5);
 	model.contactThickness = p.Real("contact_thickness", 0.002);
+	model.barrier.stiffness = p.Real("barrier_stiffness", 1e5);
+	model.barrier.activation = p.Real("contact_activation", 1e-3);
+	model.barrier.friction = p.Real("friction", 0.3);
+	model.barrier.frictionVelocity = p.Real("friction_velocity", 1e-3);
+	model.barrier.selfCollision = p.Bool("self_collision", false);
 	model.pressure = p.Real("pressure", 0.0);
 	model.dragCoefficient = p.Real("drag_coefficient", 0.0);
 	model.airDensity = p.Real("air_density", 1.2);
@@ -527,11 +671,17 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs&, SolverDesc
 	newton.cgTolerance = p.Real("cg_tolerance", interactive ? 1e-2 : 1e-6);
 	newton.exactHessianFirst = !interactive;
 	newton.cgIterations = static_cast<int>(p.Count("cg_iterations", 2000, 1, 1000000));
-	const std::string solver = p.Text("linear_solver", "auto", {"auto", "pcg", "direct"});
-	newton.solver = solver == "auto" ? LinearSolver::Auto : solver == "pcg" ? LinearSolver::ConjugateGradient : LinearSolver::Direct;
+	const std::string solver = p.Text("linear_solver", "auto", {"auto", "mg_pcg", "pcg", "direct"});
+	newton.solver = solver == "auto" ? LinearSolver::Auto : solver == "pcg" ? LinearSolver::ConjugateGradient :
+		solver == "mg_pcg" ? LinearSolver::MultigridCG : LinearSolver::Direct;
 	newton.requireConvergence = !interactive;
 	const unsigned pace = static_cast<unsigned>(p.Count("pace_ms", 0, 0, 10000));
 	p.out.pop_back(); // pace never enters the key
+	// Results are bitwise the same for any thread count (ClothParallel.h), so
+	// the count never enters the key either.
+	const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+	const unsigned threads = static_cast<unsigned>(p.Count("threads", std::min(4u, hardware), 1, 256));
+	p.out.pop_back();
 	SolverDescription candidate;
 	if (!p.Finish()) return false;
 	candidate.effectiveParameters = V::MapValue(p.out);
@@ -540,6 +690,12 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs&, SolverDesc
 	if (!(rate > 0)) return Fail(error, "frame_rate must be positive");
 	if (!(model.contactStiffness >= 0) || !(model.contactThickness >= 0) || !(model.dragCoefficient >= 0) ||
 		!(model.airDensity >= 0)) return Fail(error, "contact and drag parameters must not be negative");
+	const bool anyContact = !model.colliders.empty() || !model.meshColliders.empty() ||
+		(model.contact == ContactModel::Barrier && model.barrier.selfCollision);
+	if (model.contact == ContactModel::Penalty && (!model.meshColliders.empty() || model.barrier.selfCollision))
+		return Fail(error, "mesh colliders and self-collision need contact = barrier");
+	if (model.contact == ContactModel::Barrier && anyContact && integrator == "implicit_midpoint")
+		return Fail(error, "barrier contact integrates with bdf2 or backward_euler");
 	if (!(newton.tolerance > 0) || !(newton.cgTolerance > 0) || newton.cgTolerance >= 1)
 		return Fail(error, "solver tolerances must be positive (cg_tolerance below 1)");
 	Sheet built;
@@ -547,7 +703,7 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs&, SolverDesc
 	if (!BuildSheet(sheet, model.material, built, error) || !probe.Initialize(built, model, error)) return false;
 	sheet_ = sheet; model_ = model; newton_ = newton;
 	scheme_ = integrator == "bdf2" ? Scheme::BDF2 : integrator == "backward_euler" ? Scheme::BackwardEuler : Scheme::ImplicitMidpoint;
-	count_ = frames; substeps_ = substeps; interval_ = 1/rate; paceMs_ = pace;
+	count_ = frames; substeps_ = substeps; interval_ = 1/rate; paceMs_ = pace; threads_ = threads;
 	indices_.clear();
 	for (const auto& t : built.triangles) indices_.insert(indices_.end(), {t.v[0], t.v[1], t.v[2]});
 	configured_ = true;
@@ -567,20 +723,34 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs&, SolverDesc
 		{StatePort, "surface", "m", "mesh.v1", true, "surface"},
 		{LoadPort, "surface load", "Pa", "grid.v1", false, ""}};
 	auto& caps = candidate.capabilities;
-	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17, single thread"}};
+	caps.backends = {{"cpu", BackendStatus::Supported, true,
+		"portable C++17; `threads` (default min(4, cores)) does not change results"}};
 	caps.interactive = caps.deterministic = caps.resumable = caps.externalMacroStep = true;
 	caps.fidelityModes = {"preview", "predictive"};
 	const std::uint64_t n = built.Vertices();
 	// About a dozen 3-vectors of doubles per vertex (state, history, Newton work)
 	// plus three block matrices (pattern, damping, Hessian) of ~13 3x3 blocks per row.
 	caps.memoryEstimate = n*(12*24 + 3*13*72) + (std::uint64_t(1) << 20);
-	const bool predictiveConditions = !interactive && model.colliders.empty() && model.dragCoefficient == 0;
+	// predictive needs bake mode, no air drag, and contact (if any) by barrier
+	// without self-collision; the contact cases then join the evidence.
+	const bool barrierContact = model.contact == ContactModel::Barrier && anyContact;
+	const bool predictiveConditions = !interactive && model.dragCoefficient == 0 &&
+		(!anyContact || (barrierContact && !model.barrier.selfCollision));
 	candidate.evidence.fidelity = predictiveConditions ? "predictive" : "preview";
-	candidate.evidence.cases = Evidence({model.material, sheet.triangulation, sheet.bending, scheme_});
+	EvidenceKey key{model.material, sheet.triangulation, sheet.bending, scheme_};
+	key.contact = barrierContact;
+	key.barrier = model.barrier;
+	key.thickness = model.contactThickness;
+	candidate.evidence.cases = Evidence(key);
 	candidate.notes.push_back("material " + model.material.name + ": " + model.material.source);
 	candidate.notes.push_back("Rayleigh damping is calibrated, not measured");
 	if (interactive) candidate.notes.push_back("interactive mode: truncated Newton, preview only");
-	if (!model.colliders.empty()) candidate.notes.push_back("penalty contact without collision detection: preview only");
+	if (anyContact && model.contact == ContactModel::Penalty)
+		candidate.notes.push_back("penalty contact without collision detection: preview only");
+	if (barrierContact)
+		candidate.notes.push_back("barrier contact with continuous collision detection and lagged smoothed friction");
+	if (barrierContact && model.barrier.selfCollision)
+		candidate.notes.push_back("self-collision is not validated: preview only");
 	if (model.dragCoefficient > 0) candidate.notes.push_back("air drag is explicit and unvalidated: preview only");
 	d = std::move(candidate);
 	return true;
@@ -591,7 +761,10 @@ bool ClothSolver::Start(std::string& error)
 	if (!configured_) return Fail(error, "configure first");
 	Sheet sheet;
 	if (!BuildSheet(sheet_, model_.material, sheet, error) || !system_.Initialize(sheet, model_, error)) return false;
+	system_.SetThreads(threads_);
 	system_.Reset(0);
+	if (!(system_.ContactGap(system_.x, 0) > 0))
+		return Fail(error, "the sheet starts within the contact offset of a collider (contact_thickness)");
 	system_.portPressure.clear();
 	system_.portTraction.clear();
 	t_ = 0; next_ = 0; finished_ = count_ == 0; segN_ = segJ_ = 0; segStart_ = segTarget_ = 0;
@@ -751,6 +924,7 @@ bool ClothSolver::Restore(const Bytes& state, std::string& error)
 	Sheet sheet;
 	ClothSystem system;
 	if (!BuildSheet(sheet_, model_.material, sheet, error) || !system.Initialize(sheet, model_, error)) return false;
+	system.SetThreads(threads_);
 	const std::size_t dofs = 3*static_cast<std::size_t>(sheet.Vertices());
 	std::vector<double> x, vel, xp, vp, pressure, traction;
 	if (!UnpackDoubles(v.Find("x"), dofs, x, false) || !UnpackDoubles(v.Find("v"), dofs, vel, false) ||

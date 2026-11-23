@@ -4892,6 +4892,29 @@ namespace RISE
 			return false;
 		}
 
+		//! Simulation M3b: adds a fixed-topology deforming triangle mesh read
+		//! from a simulation cache (`cache`: the cache directory; `~/` is the
+		//! home directory, any other relative path goes through the media path)
+		//! and its mesh.v1 output `output`.  Each prepared render installs the
+		//! frame for its time: scene time t maps to cache time
+		//! (t - time_offset) * time_scale, then through the cache's own time
+		//! map; `end_policy` is cache|hold|loop|error outside the frames;
+		//! `missing_frame` (hold|hide) is what a preview binding does with a
+		//! frame a partial cache has not baked yet; `fidelity` predictive
+		//! refuses a cache that is not complete and labelled predictive, and
+		//! fails a frame closed.  `motion_blur` installs shutter keys from the
+		//! frame velocities; `face_normals` shades flat, otherwise the cache's
+		//! normals (or area-weighted ones) are used.  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddSimulatedMeshGeometry(
+			const char* /*name*/, const char* /*cache*/, const char* /*output*/,
+			const double /*time_offset*/, const double /*time_scale*/,
+			const char* /*end_policy*/, const char* /*missing_frame*/, const char* /*fidelity*/,
+			const bool /*motion_blur*/, const bool /*face_normals*/, const bool /*double_sided*/ )
+		{
+			return false;
+		}
+
 	};
 
 

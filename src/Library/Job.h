@@ -391,6 +391,12 @@ namespace RISE
 											fireSequenceControllers;
 		std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> >
 			ActiveFireSequenceControllers( std::string& error );
+		//! Simulation M3b: the bound simulated meshes (their sample clock set
+		//! to the scene's animator), walked by the per-frame preparation.
+		std::vector<ITimeVaryingAssetProvider*> ActiveTimeVaryingAssets();
+		//! Time-varying media or a bound simulated mesh: the render goes
+		//! through the prepared (per-frame install, frozen) path.
+		bool HasTimeVaryingAssets();
 		std::map<const IFunction1D*, std::vector<unsigned char> >
 											fireFunction1DDefinitionRecords;
 		bool										m_firePredictiveRequested = false;
@@ -2260,6 +2266,14 @@ namespace RISE
 			const char* channel_chem_co2, const char* channel_velocity,
 			bool chem_model_none );
 		bool SetFireFidelityMode( const char* mode );
+
+		//! Simulation M3b: a deforming triangle mesh read from a simulation
+		//! cache's mesh.v1 output (see IJob::AddSimulatedMeshGeometry).
+		bool AddSimulatedMeshGeometry(
+			const char* name, const char* cache, const char* output,
+			const double time_offset, const double time_scale,
+			const char* end_policy, const char* missing_frame, const char* fidelity,
+			const bool motion_blur, const bool face_normals, const bool double_sided );
 
 		//! Adds a unit-transmission medium boundary distinct from "none".
 		//! Appended beside IJob's corresponding ABI-tail extension.

@@ -1111,6 +1111,148 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 	return refitMs ? refitMs : 1;
 }
 
+unsigned int TriangleMeshGeometryIndexed::UpdateVerticesLean(
+	const VerticesListType& newVertices,
+	const NormalsListType&  newNormals,
+	const bool recomputeAreas )
+{
+	// Same between-frames contract (and DEBUG guard) as UpdateVertices.
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"TriangleMeshGeometryIndexed::UpdateVerticesLean() during the parallel render -- vertex mutation "
+		"and BVH refit are between-frames operations (docs/ARCHITECTURE.md, Animation / Temporal Sampling)" );
+	if( !pPtrBVH ) {
+		GlobalLog()->PrintEasyWarning(
+			"TriangleMeshGeometryIndexed::UpdateVerticesLean:: no BVH yet -- call DoneIndexedTriangles first" );
+		return 0;
+	}
+	if( newVertices.size() != pPoints.size() ||
+		( !bUseFaceNormals && newNormals.size() != pNormals.size() ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"TriangleMeshGeometryIndexed::UpdateVerticesLean:: vertex/normal count mismatch (%u/%u vs %u/%u)",
+			(unsigned)newVertices.size(), (unsigned)newNormals.size(),
+			(unsigned)pPoints.size(), (unsigned)pNormals.size() );
+		return 0;
+	}
+	// Overwrite in place: ptr_polygons point into these arrays.
+	for( size_t i = 0; i < pPoints.size(); ++i ) {
+		pPoints[i] = newVertices[i];
+	}
+	if( !bUseFaceNormals ) {
+		for( size_t i = 0; i < pNormals.size(); ++i ) {
+			pNormals[i] = newNormals[i];
+		}
+	}
+	if( recomputeAreas ) {
+		ComputeAreasUncertified();
+	} else {
+		// Areas (and the orientation audit) are left describing the previous
+		// positions -- the caller asked for that -- but the certificates are
+		// claims about the CURRENT shape, so they go regardless.
+		ClearSurfaceCertificates();
+	}
+	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
+	InvalidateSignalBakes();
+
+	const unsigned int refitMs = pPtrBVH->Refit( false );
+	if( pPtrBVH->SAHDegradationRatio() > 2.0 ) {
+		RebuildBVHFromPolygons();
+	}
+	return refitMs ? refitMs : 1;
+}
+
+void TriangleMeshGeometryIndexed::RebuildBVHFromPolygons()
+{
+	safe_release( pPtrBVH );
+	BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+	                  Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY ) );
+	std::vector<const PointerTriangle*> temp;
+	temp.reserve( ptr_polygons.size() );
+	for( MyPointerTriangleList::iterator pi = ptr_polygons.begin(); pi != ptr_polygons.end(); ++pi ) {
+		temp.push_back( &(*pi) );
+	}
+	for( MyPointsList::const_iterator mi = pPoints.begin(); mi != pPoints.end(); ++mi ) {
+		bbox.Include( *mi );
+	}
+	AccelerationConfig cfg;
+	cfg.maxLeafSize         = 4;
+	cfg.binCount            = 32;
+	cfg.sahTraversalCost    = 1.0;
+	cfg.sahIntersectionCost = 1.0;
+	cfg.doubleSided         = bDoubleSided;
+	pPtrBVH = new BVH<const PointerTriangle*>( *this, temp, bbox, cfg );
+	GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH (rebuilt after SAH-degradation)" );
+}
+
+void TriangleMeshGeometryIndexed::ComputeAreasUncertified()
+{
+	// The first half of ComputeAreas (same formulas, same order, so the area
+	// CDF a lean install produces equals the full path's bit for bit).
+	areas.clear();
+	areasCDF.clear();
+	m_faceNormals.clear();
+	areas.reserve( ptr_polygons.size() );
+	areasCDF.reserve( ptr_polygons.size() );
+	m_faceNormals.reserve( ptr_polygons.size() );
+	totalArea = 0;
+	smsUncertainNormalOrientation = ptr_polygons.empty();
+	++smsOrientationAudits;
+	smsOrientationTriangleVisits += ptr_polygons.size();
+	for( std::size_t t = 0; t < ptr_polygons.size(); ++t ) {
+		const PointerTriangle& thisTri = ptr_polygons[t];
+		const Point3& p0 = *thisTri.pVertices[0];
+		const Vector3 vEdgeA = Vector3Ops::mkVector3( *thisTri.pVertices[1], p0 );
+		const Vector3 vEdgeB = Vector3Ops::mkVector3( *thisTri.pVertices[2], p0 );
+		const Vector3 face = Vector3Ops::Cross( vEdgeA, vEdgeB );
+		const Scalar faceLength = Vector3Ops::Magnitude( face );
+		const Vector3 unitFace = faceLength > Scalar( 0 ) ? face * ( Scalar( 1 ) / faceLength ) : Vector3( 0, 0, 0 );
+		m_faceNormals.push_back( unitFace );
+		const Vector3 faceNormal = faceLength > NEARZERO ? unitFace : Vector3( 0, 0, 1 );
+		for( unsigned k = 0; k < 3; ++k ) {
+			const Scalar orientation = Vector3Ops::Dot( face, thisTri.pNormals[k] ? *thisTri.pNormals[k] : faceNormal );
+			if( !std::isfinite( orientation ) || orientation < 0 ) smsUncertainNormalOrientation = true;
+		}
+		const Scalar thisArea = faceLength * 0.5;
+		totalArea += thisArea;
+		areas.push_back( thisArea );
+	}
+	if( totalArea > 0 ) {
+		const Scalar invArea = 1.0 / totalArea;
+		Scalar sum = 0;
+		for( TriangleAreasList::const_iterator i = areas.begin(), e = areas.end(); i != e; i++ ) {
+			sum += (*i) * invArea;
+			areasCDF.push_back( sum );
+		}
+	}
+	ClearSurfaceCertificates();
+}
+
+void TriangleMeshGeometryIndexed::ClearSurfaceCertificates()
+{
+	// UNCERTIFIED: no position weld, so no open-sheet, zero-volume,
+	// signed-volume or watertight claim, and no reusable proof witness.
+	m_bWatertight = false;
+	m_bShapeOpenSheet = false;
+	m_bZeroVolumeSheet = false;
+	m_bOpenSignedVolumeNegative = false;
+	m_bProvablyOpenSheet = false;
+	openGraphAxis = -1;
+	openRefusalPair[0] = openRefusalPair[1] = size_t( -1 );
+	openGraphCoincidentPairs.clear();
+	m_lastWeldValid = false;
+	m_cachedOpenTopologyPassed = false;
+	m_cachedTopologicalOpenRefusal = false;
+	m_cachedOpenTopologyWeldedId.clear();
+	m_certifiedOpenExactSeams = false;
+	m_certifiedOpenSeparation = Scalar( 0 );
+	m_certifiedOpenPositions.clear();
+	m_certifiedOpenSeamPairs.clear();
+	openRefusalTris[0] = openRefusalTris[1] = size_t( -1 );
+	m_watertightTopologyWeldedId.clear();
+	m_cachedTopologicalWatertightRefusal = false;
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+}
+
 void TriangleMeshGeometryIndexed::ComputeAreas(bool positionsChanged, bool graphProofReusable, bool refusalProofReusable)
 {
 	// Self-clearing: the inner loops both push_back, so we MUST clear

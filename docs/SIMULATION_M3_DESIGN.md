@@ -30,6 +30,12 @@ default is a line-bending discretisation: each vertex row and column bends as a 
 twist. It converges at second order on all six analytic cases and has no Poisson coupling in bending (D12 = 0),
 stated in [SIMULATION_M3A_RESULTS.md](SIMULATION_M3A_RESULTS.md).
 
+**Changed in M3a, second pass (2026-11-23, `m3a.2`):** the linear algebra is multigrid-preconditioned CG (line
+Gauss–Seidel smoothing, Galerkin coarse levels) on a deterministic thread pool instead of block-Jacobi PCG, because
+the woven membrane's anisotropy defeats point smoothers; bake-mode contact is built as designed (barrier with
+offset, additive CCD, lagged smoothed friction, rigidly moving mesh colliders) with its own evidence cases;
+self-collision exists but is `preview`. Results in [SIMULATION_M3A_RESULTS.md](SIMULATION_M3A_RESULTS.md) §2, §4b, §7.
+
 **Not captured:** hysteresis, yarn-level effects, wrinkles below mesh resolution.
 
 ## 2. Material data
@@ -77,6 +83,11 @@ motion blur is transform-only, with per-sample scene time held per thread and no
 | Update cost | A lean update path: positions, normals, refit. The watertightness weld, area recomputation and logging in `UpdateVertices` are measured first and skipped or deferred where they are not needed per frame |
 | Deformation blur | Two position keys per frame (shutter open and close, from positions and velocities). BVH boxes bound both keys. Intersection and shading interpolate vertices at the sample's time, read from the same per-thread sample time the transform blur uses. A `MotionBlurTimeAverageTest` row with a deforming mesh is the check |
 | Emissive cloth | Light tables refreshed per frame; reported as unsupported until tested |
+
+**Built in M3b (2026-11-23):** as above, with the keys taken from the nearest frame's velocities (adjacent-frame
+differences when a payload has none), the sample time read from the time-indexed pose or the animator's shared
+pose time, and emissive meshes tested without blur (unsupported under blur). Results, timings and limits:
+[SIMULATION_M3B_RESULTS.md](SIMULATION_M3B_RESULTS.md).
 
 ## 6. Live viewport
 

@@ -287,7 +287,7 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
 	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o FireSolver.o)
 # M3a: the cloth solver (strict IEEE arithmetic for reproducible checkpoints and evidence).
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, \
-	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothValidation.o ClothSolver.o)
+	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -633,7 +633,7 @@ $(PATHLIBRARY)Simulation/Fire/FireSolver.o : $(PATHLIBRARY)Simulation/Fire/FireS
 # M3a: the cloth solver runs without fast-math or FP contraction, so its
 # checkpoints, frames and evidence digests do not depend on the compiler's
 # reassociation choices.
-CLOTH_STRICT_OBJS = $(addprefix $(PATHLIBRARY)Simulation/Cloth/, ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothValidation.o ClothSolver.o)
+CLOTH_STRICT_OBJS = $(addprefix $(PATHLIBRARY)Simulation/Cloth/, ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 $(CLOTH_STRICT_OBJS) : $(PATHLIBRARY)Simulation/Cloth/%.o : $(PATHLIBRARY)Simulation/Cloth/%.cpp
 	@echo "Compiling (strict cloth solver): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@

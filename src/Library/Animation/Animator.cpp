@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Animator.h"
+#include <limits>
 #include "../Interfaces/ILog.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Utilities/CubicInterpolator.h"
@@ -38,7 +39,8 @@ namespace
 }
 
 Animator::Animator() :
-  activeWasSet( false )
+  activeWasSet( false ),
+  lastEvaluatedTime( std::numeric_limits<double>::quiet_NaN() )
 {
 }
 
@@ -176,6 +178,7 @@ void Animator::EvaluateAtTime( const Scalar time )
 	for( ElementList::iterator it=elements.begin(); it!=elements.end(); it++ ) {
 		it->second->EvaluateAtTimeForAnimation( time, active );
 	}
+	lastEvaluatedTime.store( double( time ), std::memory_order_relaxed );
 }
 
 void Animator::CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const

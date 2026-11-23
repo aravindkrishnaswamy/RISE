@@ -34,6 +34,7 @@
 
 #include "pch.h"
 #include "SceneEditController.h"
+#include "../Geometry/SimulatedMeshGeometry.h"   // SceneBindsSimulatedMesh (simulation M3b)
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
 #include <map>                            // source-traceability reverse: cached keyword -> Category map
@@ -3560,7 +3561,11 @@ bool SceneEditController::RequestProductionRender()
 				// path deliberately skips photon-map regeneration.
 				scene->SetSceneTime( mEditor.LastSceneTime() );
 				scene->GetObjects()->PrepareForRendering();
-				return scene->HasTimeVaryingMedia() ? mJob.RasterizeAtSceneTime(mEditor.LastSceneTime()) : mJob.Rasterize();
+				// A scene with time-varying media or (simulation M3b) a simulated
+				// mesh renders prepared, installing its frame for the time it is
+				// given: give it the scrubbed time, not the animation start.
+				return scene->HasTimeVaryingMedia() || Implementation::SceneBindsSimulatedMesh( *scene ) ?
+					mJob.RasterizeAtSceneTime(mEditor.LastSceneTime()) : mJob.Rasterize();
 			} );
 	}
 	catch( const std::exception& e )

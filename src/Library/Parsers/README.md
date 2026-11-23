@@ -209,7 +209,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
 | Materials | 29 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
-| Geometry | 27 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry` |
+| Geometry | 28 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry`, `simulated_mesh_geometry` (a deforming mesh read from a simulation cache's mesh.v1 output, with deformation motion blur; docs/SIMULATION_M3B_RESULTS.md) |
 | Hair guides | 1 | `hair_guides` |
 | Modifiers | 4 | `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
 | Media | 5 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `global_medium` |
@@ -226,7 +226,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 176 unique chunk keywords** -- counted directly from the 176 `add(...)` registrations in `CreateAllChunkParsers()`. Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
+**Total: 181 unique chunk keywords** -- counted directly from the 181 `add(...)` registrations in `CreateAllChunkParsers()`. Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
 
 ### Composite chunks (parse-time sugar)
 

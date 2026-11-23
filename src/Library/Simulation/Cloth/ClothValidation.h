@@ -100,6 +100,49 @@ CaseResult RunEnergyDrift(const CaseSettings& settings);
 //! Observed order from errors at successive refinements by a factor 2.
 double ObservedOrder(double coarse, double fine);
 
+// ---------------------------------------------------------------- contact cases
+//
+// Barrier contact (ClothContact.h), bake integrators (BDF2, backward Euler):
+//   rest       strip lying on a frictionless plane (static): the barrier
+//              forces against the weight, each vertex's gap against the
+//              barrier law kappa |b'(z)| = sigma g, and gap > 0 everywhere;
+//              `measured` is the gap z (above the offset), which tends to 0
+//              (the gap to the offset) as dhat -> 0.
+//   cylinder   heavy strip draped over a frictionless cylinder (static):
+//              the wrapped elastica (contact arc of radius rho = R + xi + z*,
+//              free parts B theta'' = -q (L/2 - s) cos theta with theta' = 1/rho
+//              at lift-off and 0 at the free end; shooting on the lift-off
+//              point).  error = max centre-line position error / (L/2).
+//   incline    square sheet on a plane with gravity tilted by `angle`
+//              (no damping): below the friction angle the sheet sticks, which
+//              under smoothed friction is a creep at v = eps_v (1 - sqrt(1 -
+//              tan(angle)/mu)) (error = |v - that| / eps_v, and v < eps_v); above it
+//              slides with acceleration g (sin a - mu cos a) (error = relative
+//              acceleration error over the second half of the run).
+//   mesh       sheet falling and tumbling over a tilted cube given as a
+//              triangle mesh (static, or rotating about the vertical): every
+//              accepted step checked exactly for intersections along its
+//              straight path, and the end gap > 0; error = violations.
+//   bounce     sheet dropped flat onto a frictionless plane, undamped: the
+//              largest rise of the total energy (kinetic + gravity + elastic
+//              + barrier) above its initial value, over the drop energy.
+struct ContactSettings {
+	BarrierSettings barrier;
+	double thickness = 0.002;    // xi, m
+};
+//! Gap z > 0 of the barrier equilibrium kappa |b'(z)| = pressure.
+double BarrierEquilibriumGap(double pressure, double kappa, double dhat);
+CaseResult RunContactRest(const CaseSettings& settings, const ContactSettings& contact);
+CaseResult RunContactCylinder(const CaseSettings& settings, const ContactSettings& contact);
+CaseResult RunContactIncline(const CaseSettings& settings, const ContactSettings& contact, double angle);
+CaseResult RunContactMesh(const CaseSettings& settings, const ContactSettings& contact, bool rotating, double duration);
+CaseResult RunContactBounce(const CaseSettings& settings, const ContactSettings& contact);
+//! The elastica draped over a cylinder (see "cylinder" above): positions (x
+//! from the top, y down from the top of the arc) at arc lengths s from the
+//! centre; also the lift-off arc length.
+bool ElasticaOverCylinder(double q, double rigidity, double halfLength, double rho, const std::vector<double>& s,
+	std::vector<double>& x, std::vector<double>& y, double& liftOff, std::string& error);
+
 } } }
 
 #endif

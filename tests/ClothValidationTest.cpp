@@ -12,12 +12,23 @@
 //   case 4          simply supported and clamped square plates vs lambda^2 = 2 pi^2, 35.985
 //   case 5          energy change per period of each integrator vs its linear theory
 //   case 6          observed orders for cases 2, 3 (and 1, 4)
+//   contact         barrier contact (ClothContact.h): distance, barrier and
+//                   shape derivatives against finite differences, CCD and the
+//                   exact crossing test; (i) strip resting on a plane (force
+//                   balance, the barrier law, gap -> offset as dhat -> 0);
+//                   (ii) strip draped over a cylinder vs the wrapped elastica
+//                   (mesh and dhat refinement); (iii) friction on an incline
+//                   (sticks below the friction angle, slides at
+//                   g (sin - mu cos) above); (iv) no intersection on a sheet
+//                   tumbling over a static and a rotating cube mesh, every step
+//                   checked exactly; (v) no energy gain on a bounce
 //
 // Fast tier: three refinement levels per case.  --extended (or
 // RISE_TEST_EXTENDED=1) adds finer levels.  Tolerances are 1.25 x the error
 // observed at that level (rounded up), so a regression in accuracy fails;
 // orders must reach 1.8 (second-order schemes).
 #include "../src/Library/Simulation/Cloth/ClothValidation.h"
+#include "../src/Library/Simulation/Cloth/ClothContact.h"
 
 #include <chrono>
 #include <cmath>
@@ -405,6 +416,217 @@ void EvidenceFamily()
 		std::printf("  largest %-17s m11 %.3e  m21 %.3e  plate %.3e  energy %.2e\n", SchemeName(static_cast<Scheme>(k)),
 			dyn[k][0], dyn[k][1], dyn[k][2], dyn[k][3]);
 }
+// ---------------------------------------------------------------- contact
+
+void ContactKernels()
+{
+	std::printf("\nContact kernels\n");
+	std::mt19937 rng(11);
+	std::uniform_real_distribution<double> u(-1, 1);
+	double worst = 0;
+	int regions[2][3] = {{0, 0, 0}, {0, 0, 0}}; // by kind: face/interior, edge, vertex (by gradient support)
+	for (int kind = 0; kind < 2; ++kind)
+		for (int trial = 0; trial < 200; ++trial) {
+			V3 x[4];
+			for (auto& p : x) for (auto& c : p) c = u(rng);
+			auto f = [&](const V3* y, double* g, double* h) {
+				return kind == 0 ? PointTriangleDistance2(y[0], y[1], y[2], y[3], g, h) : EdgeEdgeDistance2(y[0], y[1], y[2], y[3], g, h);
+			};
+			double g[12], h[144];
+			f(x, g, h);
+			int support = 0;
+			for (int a = 0; a < 4; ++a) if (std::fabs(g[3*a]) + std::fabs(g[3*a+1]) + std::fabs(g[3*a+2]) > 0) ++support;
+			++regions[kind][support == 4 ? 0 : support == 3 ? 1 : 2];
+			const double eps = 1e-6;
+			double scale = 0, err = 0;
+			for (int k = 0; k < 12; ++k) {
+				V3 xp[4], xm[4];
+				for (int i = 0; i < 4; ++i) { xp[i] = x[i]; xm[i] = x[i]; }
+				xp[k/3][k%3] += eps; xm[k/3][k%3] -= eps;
+				double gp[12], gm[12];
+				const double fp = f(xp, gp, nullptr), fm = f(xm, gm, nullptr);
+				err = std::max(err, std::fabs((fp - fm)/(2*eps) - g[k]));
+				scale = std::max(scale, std::fabs(g[k]));
+				for (int j = 0; j < 12; ++j) err = std::max(err, std::fabs((gp[j] - gm[j])/(2*eps) - h[12*j + k]));
+			}
+			worst = std::max(worst, err/std::max(scale, 1.0));
+		}
+	std::printf("  squared distances: gradient and Hessian vs finite differences, worst %.2e over 400 pairs\n", worst);
+	std::printf("  point-triangle pieces face/edge/vertex %d/%d/%d; edge-edge interior/point-edge/point-point %d/%d/%d\n",
+		regions[0][0], regions[0][1], regions[0][2], regions[1][0], regions[1][1], regions[1][2]);
+	Check(worst < 1e-6 && regions[0][0] > 0 && regions[0][1] > 0 && regions[0][2] > 0 && regions[1][0] > 0 && regions[1][1] > 0,
+		"distance derivatives match finite differences in every piece", std::to_string(worst));
+	// Barrier derivatives.
+	double berr = 0;
+	for (double z : {1e-6, 1e-5, 1e-4, 5e-4, 9e-4}) {
+		const double dh = 1e-3, e = 1e-4*z;
+		double b1, b2, p1, m1;
+		Barrier(z, dh, &b1, &b2);
+		const double bp = Barrier(z + e, dh, &p1, nullptr), bm = Barrier(z - e, dh, &m1, nullptr);
+		berr = std::max(berr, std::max(std::fabs((bp - bm)/(2*e) - b1)/std::fabs(b1), std::fabs((p1 - m1)/(2*e) - b2)/std::fabs(b2)));
+	}
+	double c2[2];
+	Barrier(1e-3, 1e-3, &c2[0], &c2[1]);
+	std::printf("  barrier derivatives vs finite differences %.2e; b'(dhat) = %.1e, b''(dhat) = %.1e (C2 at the cut-off)\n",
+		berr, c2[0], c2[1]);
+	Check(berr < 1e-6 && c2[0] == 0 && c2[1] == 0, "barrier derivatives", std::to_string(berr));
+	// Shape distances: Hessians vs finite differences of the gradient.
+	double serr = 0;
+	Collider shapes[3];
+	shapes[0].type = Collider::Type::Sphere; shapes[0].a = {{0.1, 0.2, 0.3}}; shapes[0].radius = 0.5;
+	shapes[1].type = Collider::Type::Cylinder; shapes[1].a = {{0, 0, 0}}; shapes[1].b = {{0.6, 0.8, 0}}; shapes[1].radius = 0.3;
+	shapes[2].type = Collider::Type::Box; shapes[2].a = {{-0.5, -0.5, -0.5}}; shapes[2].b = {{0.5, 0.5, 0.5}};
+	const V3 points[3] = {{{1.0, 0.9, 0.7}}, {{0.4, -0.62, 0.6}}, {{0.9, 0.7, 0.2}}};
+	for (const auto& c : shapes)
+		for (const auto& p : points) {
+			V3 g;
+			double hh[9];
+			c.Distance(p, g, hh);
+			for (int k = 0; k < 3; ++k) {
+				V3 pp = p, pm = p, gp, gm;
+				pp[k] += 1e-6; pm[k] -= 1e-6;
+				c.Distance(pp, gp); c.Distance(pm, gm);
+				for (int j = 0; j < 3; ++j) serr = std::max(serr, std::fabs((gp[j] - gm[j])/2e-6 - hh[3*j + k]));
+			}
+		}
+	std::printf("  sphere, cylinder, box signed-distance Hessians vs finite differences %.2e\n", serr);
+	Check(serr < 1e-6, "shape Hessians", std::to_string(serr));
+	// CCD: a point falling through a triangle stops at s = 0.1 of its gap; crossings detected exactly.
+	const V3 x0[4] = {{{0.2, 0.2, 1.0}}, {{0, 0, 0}}, {{1, 0, 0}}, {{0, 1, 0}}}, dx[4] = {{{0, 0, -2}}, {{0, 0, 0}}, {{0, 0, 0}}, {{0, 0, 0}}};
+	const double t = AdditiveCCD(0, x0, dx, 0.01);
+	const double gapAt = 1.0 - 2*t - 0.01;
+	const V3 through[4] = {{{0.2, 0.2, -1.0}}, {{0, 0, 0}}, {{1, 0, 0}}, {{0, 1, 0}}}, above[4] = {{{0.2, 0.2, 0.5}}, {{0, 0, 0}}, {{1, 0, 0}}, {{0, 1, 0}}};
+	const V3 e0[4] = {{{0, -1, 1}}, {{0, 1, 1}}, {{-1, 0, 0}}, {{1, 0, 0}}}, e1[4] = {{{0, -1, -1}}, {{0, 1, -1}}, {{-1, 0, 0}}, {{1, 0, 0}}};
+	std::printf("  additive CCD: time of impact %.6f, gap there %.6f (0.1 of 0.99); exact test: through %d, short %d, edges %d\n",
+		t, gapAt, CrossesDuringStep(0, x0, through), CrossesDuringStep(0, x0, above), CrossesDuringStep(1, e0, e1));
+	Check(gapAt >= 0.099 - 1e-12 && gapAt < 0.2 && CrossesDuringStep(0, x0, through) && !CrossesDuringStep(0, x0, above) &&
+		CrossesDuringStep(1, e0, e1), "continuous collision detection");
+}
+
+void ContactCases(bool extended)
+{
+	CaseSettings s;
+	s.material = Cotton();
+	s.scheme = Scheme::BDF2;
+	ContactSettings c;
+	Header("Contact (i): strip on a plane; error = max(|contact force / weight - 1|, max |gap - barrier law| / gap)");
+	std::vector<double> gaps, dhats;
+	for (double dh : {1e-3, 5e-4, 2.5e-4, 1.25e-4}) {
+		c.barrier.activation = dh;
+		s.resolution = 20;
+		const double t0 = Seconds();
+		const CaseResult r = RunContactRest(s, c);
+		Row("rest", "kappa |b'(z)| = sigma g", r, 1e-8, Seconds() - t0);
+		gaps.push_back(r.measured);
+		dhats.push_back(dh);
+	}
+	std::printf("| gap above the offset as dhat halves:");
+	double lowest = 10;
+	for (std::size_t k = 0; k + 1 < gaps.size(); ++k) {
+		const double p = ObservedOrder(gaps[k], gaps[k+1]);
+		lowest = std::min(lowest, p);
+		std::printf(" %.2e -> %.2e (order %.2f)", gaps[k], gaps[k+1], p);
+	}
+	std::printf("\n");
+	Check(lowest > 0.95, "the gap tends to the thickness offset linearly in dhat", std::to_string(lowest));
+	c.barrier.activation = 1e-3;
+
+	Header("Contact (ii): strip draped over a cylinder vs the wrapped elastica; error = max centre-line error / half length");
+	// Observed (dhat = 1 mm): 2.377e-3, 9.005e-4, 5.826e-4; the floor is the barrier's gap varying with
+	// the contact pressure (rho is fixed at the gap for the weight), which shrinks like sqrt(dhat).
+	const std::vector<std::pair<int,double>> tol{{20, 3.0e-3}, {40, 1.2e-3}, {80, 7.3e-4}};
+	for (int n : {20, 40, 80}) {
+		s.resolution = n;
+		const double t0 = Seconds();
+		Row("cylinder dhat 1e-3", "wrapped elastica (shooting)", RunContactCylinder(s, c), Tolerance(tol, n), Seconds() - t0);
+	}
+	if (extended) {
+		std::printf("| mesh and dhat refinement (errors):\n");
+		std::vector<double> finest;
+		for (double dh : {1e-3, 2.5e-4, 6.25e-5}) {
+			c.barrier.activation = dh;
+			std::vector<CaseResult> rs;
+			std::printf("|   dhat %.2e:", dh);
+			for (int n : {20, 40, 80, 160}) {
+				s.resolution = n;
+				rs.push_back(RunContactCylinder(s, c));
+				std::printf(" n%d %.3e", n, rs.back().error);
+				Check(rs.back().ok, "cylinder refinement run", rs.back().failure);
+			}
+			std::printf("  orders %.2f %.2f %.2f\n", ObservedOrder(rs[0].error, rs[1].error), ObservedOrder(rs[1].error, rs[2].error),
+				ObservedOrder(rs[2].error, rs[3].error));
+			finest.push_back(rs.back().error);
+			if (dh < 1e-4) Check(ObservedOrder(rs[0].error, rs[2].error)/2 > 1.4, "mesh order of the drape over two refinements at small dhat");
+		}
+		std::printf("|   finest-mesh error vs dhat (x1/4 per step): orders in dhat %.2f %.2f (sqrt: 0.5)\n",
+			std::log(finest[0]/finest[1])/std::log(4.0), std::log(finest[1]/finest[2])/std::log(4.0));
+		c.barrier.activation = 1e-3;
+	}
+
+	Header("Contact (iii): sheet on an incline, mu = 0.3, eps_v = 1 mm/s; stick: creep speed error / eps_v; slide: acceleration error");
+	const double mu = c.barrier.friction, friction = std::atan(mu);
+	s.resolution = 10;
+	for (double a : {0.25*friction, 0.5*friction, 0.9*friction}) {
+		const double t0 = Seconds();
+		const CaseResult r = RunContactIncline(s, c, a);
+		Row("stick", "eps (1 - sqrt(1 - tan/mu))", r, 1e-5, Seconds() - t0);
+		Check(r.ok && r.measured < c.barrier.frictionVelocity, "below the friction angle the sheet sticks (creeps below eps_v)");
+	}
+	for (double a : {friction + 0.05, friction + 0.2, friction + 0.4}) {
+		const double t0 = Seconds();
+		const CaseResult r = RunContactIncline(s, c, a);
+		Row("slide", "g (sin a - mu cos a)", r, 1e-6, Seconds() - t0);
+	}
+	{
+		CaseSettings be = s;
+		be.scheme = Scheme::BackwardEuler;
+		const double t0 = Seconds();
+		Row("slide backward Euler", "g (sin a - mu cos a)", RunContactIncline(be, c, friction + 0.2), 1e-6, Seconds() - t0);
+	}
+
+	Header("Contact (iv): sheet tumbling over a cube mesh; error = steps with an intersection on the straight path or gap <= 0");
+	for (int rotating = 0; rotating < 2; ++rotating) {
+		s.resolution = extended ? 30 : 20;
+		const double t0 = Seconds();
+		const CaseResult r = RunContactMesh(s, c, rotating != 0, extended ? 2.0 : 1.0);
+		Row(rotating ? "cube mesh rotating 3 rad/s" : "cube mesh static", "exact crossing test", r, 0.5, Seconds() - t0);
+	}
+
+	Header("Contact (v): sheet dropped on a frictionless plane, undamped; error = largest energy rise / drop energy");
+	for (Scheme sc : {Scheme::BDF2, Scheme::BackwardEuler}) {
+		s.scheme = sc;
+		s.resolution = 10;
+		const double t0 = Seconds();
+		Row(sc == Scheme::BDF2 ? "bounce bdf2" : "bounce backward Euler", "no energy gain", RunContactBounce(s, c), 1e-6, Seconds() - t0);
+	}
+}
+
+// The contact evidence cases over the built-in records (the solver's tolerances, ClothSolver.cpp ContactSpecs).
+void ContactEvidenceFamily()
+{
+	std::printf("\nContact evidence over the built-in records (default contact settings):\n");
+	double worst[6] = {0, 0, 0, 0, 0, 0};
+	for (const auto& m : BuiltInMaterials())
+		for (Scheme sc : {Scheme::BackwardEuler, Scheme::BDF2}) {
+			CaseSettings s;
+			s.material = m;
+			s.scheme = sc;
+			ContactSettings c;
+			const double mu = c.barrier.friction;
+			s.resolution = 20; const CaseResult a = RunContactRest(s, c);
+			s.resolution = 40; const CaseResult b = RunContactCylinder(s, c);
+			s.resolution = 10;
+			const CaseResult st = RunContactIncline(s, c, 0.5*std::atan(mu)), sl = RunContactIncline(s, c, std::atan(mu) + 0.2);
+			const CaseResult me = RunContactMesh(s, c, false, 0.5), bo = RunContactBounce(s, c);
+			const double v[6] = {a.error, b.error, st.error, sl.error, me.error, bo.error};
+			std::printf("  %-20s %-15s rest %.2e  cylinder %.3e  stick %.3e  slide %.2e  mesh %.0f  bounce %.2e\n", m.name.c_str(),
+				SchemeName(sc), v[0], v[1], v[2], v[3], v[4], v[5]);
+			for (int k = 0; k < 6; ++k) worst[k] = std::max(worst[k], v[k]);
+			Check(a.ok && b.ok && st.ok && sl.ok && me.ok && bo.ok, "contact evidence cases run for " + m.name);
+		}
+	std::printf("  largest: rest %.2e  cylinder %.3e  stick %.3e  slide %.2e  mesh %.0f  bounce %.2e\n", worst[0], worst[1],
+		worst[2], worst[3], worst[4], worst[5]);
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -421,6 +643,9 @@ int main(int argc, char** argv)
 	Plate(extended);
 	Energy();
 	EvidenceFamily();
+	ContactKernels();
+	ContactCases(extended);
+	ContactEvidenceFamily();
 	std::printf("\ntotal %.1f s\n", Seconds() - t0);
 	if (failures) { std::cerr << failures << " cloth validation check(s) failed\n"; return 1; }
 	std::cout << "Cloth validation passed\n";

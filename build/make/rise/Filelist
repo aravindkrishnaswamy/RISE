@@ -103,12 +103,15 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Simulation/SimulationGrid.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationCache.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationMesh.cpp			\
+	$(PATHLIBRARY)Simulation/SimulatedMeshSource.cpp		\
 	$(PATHLIBRARY)Simulation/SimulationSolver.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationHost.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationWorker.cpp			\
 	$(PATHLIBRARY)Simulation/Cloth/ClothMaterial.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothLinearAlgebra.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothModel.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothParallel.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothContact.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothValidation.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothSolver.cpp		\
 	$(PATHLIBRARY)Utilities/FireSequenceCache.cpp			\
@@ -302,6 +305,7 @@ SRCLIBGEOMETRY = \
 	$(PATHLIBRARY)Geometry/TorusGeometry.cpp					\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometryIndexed.cpp		\
+	$(PATHLIBRARY)Geometry/SimulatedMeshGeometry.cpp		\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoader3DS.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderPLY.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW.cpp			\

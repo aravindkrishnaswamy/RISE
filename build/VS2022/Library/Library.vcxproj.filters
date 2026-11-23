@@ -339,6 +339,9 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationSolver.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
@@ -355,6 +358,12 @@
       <Filter>Simulation\Cloth</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothModel.cpp">
+      <Filter>Simulation\Cloth</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothParallel.cpp">
+      <Filter>Simulation\Cloth</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothContact.cpp">
       <Filter>Simulation\Cloth</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.cpp">
@@ -769,6 +778,9 @@
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.cpp">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\SimulatedMeshGeometry.cpp">
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Intersection\RayBezierPatchIntersection.cpp">
@@ -1692,6 +1704,9 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationMesh.h">
       <Filter>Simulation</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationSolver.h">
       <Filter>Simulation</Filter>
     </ClInclude>
@@ -1708,6 +1723,12 @@
       <Filter>Simulation\Cloth</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothModel.h">
+      <Filter>Simulation\Cloth</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothParallel.h">
+      <Filter>Simulation\Cloth</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothContact.h">
       <Filter>Simulation\Cloth</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.h">
@@ -2380,6 +2401,9 @@
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.h">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\SimulatedMeshGeometry.h">
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexedSpecializations.h">

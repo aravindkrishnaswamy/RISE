@@ -9,6 +9,7 @@
 
 #include "pch.h"
 #include "ClothValidation.h"
+#include "ClothContact.h"
 
 #include <algorithm>
 #include <cmath>
@@ -578,6 +579,414 @@ CaseResult RunEnergyDrift(const CaseSettings& settings)
 	r.reference = 1 - predicted;
 	r.error = std::fabs(r.measured - r.reference);
 	r.detail = Format("energy loss per period %.4e (linear theory %.4e); %.0f steps/period", r.measured, r.reference, perPeriod);
+	return r;
+}
+
+// ---------------------------------------------------------------- contact cases
+
+double BarrierEquilibriumGap(double pressure, double kappa, double dhat)
+{
+	// |b'(z)| decreases from infinity at 0 to 0 at dhat: bisection.
+	double lo = 1e-30*dhat, hi = dhat;
+	for (int it = 0; it < 200; ++it) {
+		const double mid = 0.5*(lo + hi);
+		double b1 = 0;
+		Barrier(mid, dhat, &b1, nullptr);
+		if (kappa*std::fabs(b1) > pressure) lo = mid; else hi = mid;
+	}
+	return 0.5*(lo + hi);
+}
+
+namespace {
+ModelConfig ContactConfig(const CaseSettings& settings, const ContactSettings& contact)
+{
+	ModelConfig config;
+	config.material = settings.material;
+	config.contact = ContactModel::Barrier;
+	config.barrier = contact.barrier;
+	config.contactThickness = contact.thickness;
+	return config;
+}
+}
+
+CaseResult RunContactRest(const CaseSettings& settings, const ContactSettings& contact)
+{
+	const Material& mat = settings.material;
+	const double L = 0.2, width = 0.02, dhat = contact.barrier.activation, xi = contact.thickness;
+	const double q = mat.density*Gravity;
+	const double zStar = BarrierEquilibriumGap(q, contact.barrier.stiffness, dhat);
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.sizeU = L; spec.sizeV = width;
+	spec.verticesU = static_cast<std::uint32_t>(settings.resolution + 1); spec.verticesV = 3;
+	spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+	spec.origin = {{-0.5*L, xi + 0.5*dhat, -0.5*width}};
+	ModelConfig config = ContactConfig(settings, contact);
+	config.gravity = {{0, -Gravity, 0}};
+	config.damping = false;
+	config.barrier.friction = 0;
+	Collider plane;
+	plane.type = Collider::Type::Plane; plane.a = {{0, 0, 0}}; plane.b = {{0, 1, 0}};
+	config.colliders.push_back(plane);
+	ClothSystem system;
+	std::string error;
+	if (!Build(spec, config, system, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-9*Gravity;
+	newton.maxIterations = 100;
+	CaseResult r;
+	r.resolution = settings.resolution;
+	// Frictionless: horizontal translation is free, so the solve keeps the last stage's mass term.
+	if (!system.SolveStatic(newton, r.stats, error, 0.01, 10, false)) return Failed(error);
+	double weight = 0;
+	for (double m : system.GetSheet().mass) weight += m*Gravity;
+	const V3 force = system.ContactForce(system.x, system.time);
+	double worstGap = 0, smallest = std::numeric_limits<double>::infinity(), mean = 0;
+	const std::uint32_t n = system.Vertices();
+	for (std::uint32_t q2 = 0; q2 < n; ++q2) {
+		const double z = system.x[3*static_cast<std::size_t>(q2) + 1] - xi;
+		worstGap = std::max(worstGap, std::fabs(z - zStar));
+		smallest = std::min(smallest, z);
+		mean += z/n;
+	}
+	const double balance = std::fabs(force[1] - weight)/weight;
+	r.ok = true;
+	r.error = std::max(balance, worstGap/zStar);
+	if (!(smallest > 0)) r.error = 1;
+	r.measured = mean;
+	r.reference = zStar;
+	r.secondary = balance;
+	r.detail = Format("contact force / weight - 1 = %.2e; gap z %.6e m (barrier law %.6e m); smallest gap %.3e m",
+		(force[1] - weight)/weight, mean, zStar, smallest);
+	return r;
+}
+
+bool ElasticaOverCylinder(double q, double rigidity, double halfLength, double rho, const std::vector<double>& s,
+	std::vector<double>& x, std::vector<double>& y, double& liftOff, std::string& error)
+{
+	if (!(q > 0) || !(rigidity > 0) || !(halfLength > 0) || !(rho > 0)) { error = "elastica needs positive data"; return false; }
+	const double alpha = q/rigidity;
+	const int steps = 8000;
+	// From the lift-off point sc: state (theta, theta', x, y); returns theta'(L/2).
+	auto integrate = [&](double sc, const std::vector<double>* samples, std::vector<double>* xs, std::vector<double>* ys) {
+		double st[4] = {sc/rho, 1/rho, rho*std::sin(sc/rho), rho*(1 - std::cos(sc/rho))};
+		const double h = (halfLength - sc)/steps;
+		auto rhs = [&](double sv, const double* z, double* d) {
+			d[0] = z[1];
+			d[1] = -alpha*(halfLength - sv)*std::cos(z[0]);
+			d[2] = std::cos(z[0]);
+			d[3] = std::sin(z[0]);
+		};
+		auto rk4 = [&](double sv, double* z, double dt) {
+			double k1[4], k2[4], k3[4], k4[4], w[4];
+			rhs(sv, z, k1);
+			for (int i = 0; i < 4; ++i) w[i] = z[i] + 0.5*dt*k1[i];
+			rhs(sv + 0.5*dt, w, k2);
+			for (int i = 0; i < 4; ++i) w[i] = z[i] + 0.5*dt*k2[i];
+			rhs(sv + 0.5*dt, w, k3);
+			for (int i = 0; i < 4; ++i) w[i] = z[i] + dt*k3[i];
+			rhs(sv + dt, w, k4);
+			for (int i = 0; i < 4; ++i) z[i] += dt/6*(k1[i] + 2*k2[i] + 2*k3[i] + k4[i]);
+		};
+		std::size_t next = 0;
+		if (samples) while (next < samples->size() && (*samples)[next] < sc) ++next;
+		for (int k = 0; k < steps; ++k) {
+			const double sv = sc + h*k;
+			while (samples && next < samples->size() && (*samples)[next] < sv + h - 1e-15) {
+				double z[4] = {st[0], st[1], st[2], st[3]};
+				const double dt = (*samples)[next] - sv;
+				if (dt > 0) rk4(sv, z, dt);
+				(*xs)[next] = z[2]; (*ys)[next] = z[3];
+				++next;
+			}
+			rk4(sv, st, h);
+		}
+		while (samples && next < samples->size()) { (*xs)[next] = st[2]; (*ys)[next] = st[3]; ++next; }
+		return st[1];
+	};
+	// The physical root is the largest lift-off point at which theta'(L/2) = 0
+	// (smaller roots bend the free part back up, against the moment's sign).
+	const double top = std::min(halfLength, 0.5*3.14159265358979323846*rho);
+	double lo = 0, hi = 0;
+	bool found = false;
+	double prev = integrate(top*(1 - 1e-9), nullptr, nullptr, nullptr);
+	for (int k = 1999; k >= 1 && !found; --k) {
+		const double sc = top*k/2000.0;
+		const double f = integrate(sc, nullptr, nullptr, nullptr);
+		if ((f > 0) != (prev > 0)) { lo = sc; hi = top*(k + 1)/2000.0; found = true; }
+		prev = f;
+	}
+	if (!found) { error = "no wrapped elastica (the strip is too light or too short to lift off)"; return false; }
+	const bool loPositive = integrate(lo, nullptr, nullptr, nullptr) > 0;
+	for (int it = 0; it < 80; ++it) {
+		const double mid = 0.5*(lo + hi);
+		if ((integrate(mid, nullptr, nullptr, nullptr) > 0) == loPositive) lo = mid; else hi = mid;
+	}
+	liftOff = 0.5*(lo + hi);
+	x.assign(s.size(), 0.0);
+	y.assign(s.size(), 0.0);
+	for (std::size_t k = 0; k < s.size(); ++k)
+		if (s[k] <= liftOff) { x[k] = rho*std::sin(s[k]/rho); y[k] = rho*(1 - std::cos(s[k]/rho)); }
+	integrate(liftOff, &s, &x, &y);
+	return true;
+}
+
+CaseResult RunContactCylinder(const CaseSettings& settings, const ContactSettings& contact)
+{
+	const Material& mat = settings.material;
+	const double B = mat.bendWarp, q = mat.density*Gravity;
+	if (!(B > 0)) return Failed("the drape needs bending rigidity");
+	const double lb = std::cbrt(B/q), R = 2*lb, half = 6*lb, width = half/5;
+	const double dhat = contact.barrier.activation, xi = contact.thickness;
+	const int segments = 2*((settings.resolution + 1)/2);
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.sizeU = 2*half; spec.sizeV = width;
+	spec.verticesU = static_cast<std::uint32_t>(segments + 1); spec.verticesV = 3;
+	spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+	spec.origin = {{-half, R + xi + 0.5*dhat, -0.5*width}};
+	ModelConfig config = ContactConfig(settings, contact);
+	config.gravity = {{0, -Gravity, 0}};
+	config.damping = false;
+	config.barrier.friction = 0;
+	Collider cyl;
+	cyl.type = Collider::Type::Cylinder; cyl.a = {{0, 0, 0}}; cyl.b = {{0, 0, 1}}; cyl.radius = R;
+	config.colliders.push_back(cyl);
+	// Symmetry: the centre column is held at the top of the contact arc (x = 0,
+	// height rho), which removes the free sliding along the arc (unstable on a
+	// frictionless cylinder) and along the axis; by symmetry its reaction is
+	// the contact force it replaces.
+	const double rho = R + xi + BarrierEquilibriumGap(q, contact.barrier.stiffness, dhat);
+	spec.origin[1] = rho;
+	PinGroup top;
+	for (std::uint32_t j = 0; j < 3; ++j) top.vertices.push_back(static_cast<std::uint32_t>(segments/2) + spec.verticesU*j);
+	config.pins.push_back(top);
+	ClothSystem system;
+	std::string error;
+	if (!Build(spec, config, system, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-8*Gravity;
+	newton.maxIterations = 200;
+	CaseResult r;
+	r.resolution = segments;
+	if (!system.SolveStatic(newton, r.stats, error, 0.01, 10, true)) return Failed(error);
+	// Reference: the contact arc at the barrier's equilibrium gap for the weight.
+	const double h = 2*half/segments;
+	std::vector<double> sv;
+	for (int k = 0; k <= segments/2; ++k) sv.push_back(h*k);
+	std::vector<double> xr, yr;
+	double liftOff = 0;
+	if (!ElasticaOverCylinder(q, B, half, rho, sv, xr, yr, liftOff, error)) return Failed(error);
+	double worst = 0;
+	const std::uint32_t nu = spec.verticesU, centre = static_cast<std::uint32_t>(segments/2);
+	for (std::uint32_t i = 0; i < nu; ++i) {
+		const std::uint32_t vtx = i + nu;  // the middle row
+		const std::size_t k = i >= centre ? i - centre : centre - i;
+		const double sign = i >= centre ? 1.0 : -1.0;
+		const double dx = system.x[3*static_cast<std::size_t>(vtx)] - sign*xr[k];
+		const double dy = system.x[3*static_cast<std::size_t>(vtx) + 1] - (rho - yr[k]);
+		worst = std::max(worst, std::sqrt(dx*dx + dy*dy));
+	}
+	r.ok = true;
+	r.error = worst/half;
+	r.measured = system.ContactGap(system.x, system.time);
+	r.reference = liftOff;
+	r.detail = Format("max centre-line error / (L/2) %.3e; lift-off at s = %.4f m of %.4f; smallest gap %.3e m",
+		r.error, liftOff, half, r.measured);
+	return r;
+}
+
+CaseResult RunContactIncline(const CaseSettings& settings, const ContactSettings& contact, double angle)
+{
+	const Material& mat = settings.material;
+	const double size = 0.1, dhat = contact.barrier.activation, xi = contact.thickness, mu = contact.barrier.friction;
+	const double gn = Gravity*std::cos(angle), gt = Gravity*std::sin(angle);
+	const double zStar = BarrierEquilibriumGap(mat.density*gn, contact.barrier.stiffness, dhat);
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.sizeU = spec.sizeV = size;
+	spec.verticesU = spec.verticesV = static_cast<std::uint32_t>(settings.resolution + 1);
+	spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+	spec.origin = {{-0.5*size, xi + zStar, -0.5*size}};
+	ModelConfig config = ContactConfig(settings, contact);
+	config.gravity = {{gt, -gn, 0}};
+	config.damping = false;
+	Collider plane;
+	plane.type = Collider::Type::Plane; plane.a = {{0, 0, 0}}; plane.b = {{0, 1, 0}};
+	config.colliders.push_back(plane);
+	ClothSystem system;
+	std::string error;
+	if (!Build(spec, config, system, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-6*Gravity;
+	const double T = 0.5, dt = 1.0/240;
+	const int steps = static_cast<int>(std::lround(T/dt));
+	CaseResult r;
+	r.resolution = settings.resolution;
+	auto meanVelocity = [&]() {
+		double s = 0, m = 0;
+		for (std::uint32_t k = 0; k < system.Vertices(); ++k) { s += system.GetSheet().mass[k]*system.v[3*static_cast<std::size_t>(k)]; m += system.GetSheet().mass[k]; }
+		return s/m;
+	};
+	double vHalf = 0, smallest = std::numeric_limits<double>::infinity();
+	for (int k = 0; k < steps; ++k) {
+		if (!system.Step(dt, settings.scheme, newton, r.stats, error)) return Failed(error);
+		smallest = std::min(smallest, system.ContactGap(system.x, system.time));
+		if (k + 1 == steps/2) vHalf = meanVelocity();
+	}
+	const double vEnd = meanVelocity();
+	const double reference = gt - mu*gn;
+	r.ok = true;
+	if (reference <= 0) {
+		// Sticking under smoothed friction is a steady creep at the speed where
+		// f1(v) = tan(angle)/mu: v = eps (1 - sqrt(1 - tan(angle)/mu)).
+		const double eps = contact.barrier.frictionVelocity, ratio = std::tan(angle)/mu;
+		const double creep = eps*(1 - std::sqrt(1 - ratio));
+		r.measured = vEnd;
+		r.reference = creep;
+		r.error = std::fabs(vEnd - creep)/eps;
+		r.detail = Format("sticks: creeps at %.6e m/s (smoothed law %.6e m/s, slip speed %.1e m/s); tan(angle)/mu = %.3f",
+			vEnd, creep, eps, ratio) + Format("; smallest gap %.2e m", smallest);
+	} else {
+		const double a = (vEnd - vHalf)/(T - dt*(steps/2));
+		r.measured = a;
+		r.reference = reference;
+		r.error = std::fabs(a - reference)/reference;
+		r.detail = Format("slides: acceleration %.6f m/s^2 (g(sin - mu cos) = %.6f); smallest gap %.2e m",
+			a, reference, smallest);
+	}
+	if (!(smallest > 0)) r.error = std::max(r.error, 1.0);
+	return r;
+}
+
+namespace {
+// A cube of side `side` centred at c, rotated by `ax` about x then `az` about z.
+MeshCollider CubeMesh(const V3& c, double side, double ax, double az)
+{
+	MeshCollider m;
+	const double h = 0.5*side;
+	for (int k = 0; k < 8; ++k) {
+		V3 p{{(k & 1) ? h : -h, (k & 2) ? h : -h, (k & 4) ? h : -h}};
+		const V3 p1{{p[0], std::cos(ax)*p[1] - std::sin(ax)*p[2], std::sin(ax)*p[1] + std::cos(ax)*p[2]}};
+		const V3 p2{{std::cos(az)*p1[0] - std::sin(az)*p1[1], std::sin(az)*p1[0] + std::cos(az)*p1[1], p1[2]}};
+		for (int d = 0; d < 3; ++d) m.vertices.push_back(c[d] + p2[d]);
+	}
+	const std::uint32_t faces[12][3] = {{0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+		{2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5}};
+	for (const auto& f : faces) m.triangles.insert(m.triangles.end(), {f[0], f[1], f[2]});
+	return m;
+}
+}
+
+CaseResult RunContactMesh(const CaseSettings& settings, const ContactSettings& contact, bool rotating, double duration)
+{
+	const double size = 0.5, xi = contact.thickness;
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.sizeU = spec.sizeV = size;
+	spec.verticesU = spec.verticesV = static_cast<std::uint32_t>(settings.resolution + 1);
+	// Tilted by 0.2 rad about z, its centre 0.08 m off the cube's axis, 0.1 m above the top corner.
+	const double tilt = 0.2;
+	spec.axisU = {{std::cos(tilt), std::sin(tilt), 0}}; spec.axisV = {{0, 0, 1}};
+	ModelConfig config = ContactConfig(settings, contact);
+	config.gravity = {{0, -Gravity, 0}};
+	MeshCollider cube = CubeMesh({{0, 0, 0}}, 0.2, 0.6154797, 0.7853982); // a corner pointing up
+	double top = -1;
+	for (std::size_t k = 1; k < cube.vertices.size(); k += 3) top = std::max(top, cube.vertices[k]);
+	spec.origin = {{0.08 - 0.5*size*spec.axisU[0], top + 0.1 + xi - 0.5*size*spec.axisU[1], -0.5*size}};
+	if (rotating) {
+		cube.motion.type = Motion::Type::Rotate;
+		cube.motion.center = {{0, 0, 0}}; cube.motion.axis = {{0, 1, 0}}; cube.motion.rate = 3.0;
+	}
+	config.meshColliders.push_back(cube);
+	ClothSystem system;
+	std::string error;
+	if (!Build(spec, config, system, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-3;
+	const double dt = 1.0/240;
+	const int steps = static_cast<int>(std::lround(duration/dt));
+	CaseResult r;
+	r.resolution = settings.resolution;
+	int violations = 0, contactSteps = 0;
+	double smallest = std::numeric_limits<double>::infinity();
+	std::string first;
+	for (int k = 0; k < steps; ++k) {
+		const std::vector<double> before = system.x;
+		const int halvings = r.stats.halvings;
+		if (!system.Step(dt, settings.scheme, newton, r.stats, error)) return Failed(error);
+		std::string detail;
+		if (!system.PathIntersectionFree(before, system.x, system.time, detail)) { ++violations; if (first.empty()) first = detail; }
+		const double gap = system.ContactGap(system.x, system.time);
+		if (!(gap > 0)) { ++violations; if (first.empty()) first = "gap " + std::to_string(gap); }
+		if (std::isfinite(gap)) ++contactSteps;
+		smallest = std::min(smallest, gap);
+		(void)halvings;
+	}
+	r.ok = true;
+	r.error = violations;
+	r.measured = smallest;
+	r.secondary = r.stats.ccdLimited;
+	r.detail = Format("%.0f violations in %.0f steps (%.0f with pairs in reach); smallest gap %.3e m; ", violations, steps,
+		contactSteps, smallest) + Format("CCD shortened %.0f line searches; %.0f halvings", r.stats.ccdLimited, r.stats.halvings) +
+		(first.empty() ? std::string() : "; first: " + first);
+	return r;
+}
+
+CaseResult RunContactBounce(const CaseSettings& settings, const ContactSettings& contact)
+{
+	const double size = 0.2, xi = contact.thickness, drop = 0.05;
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.sizeU = spec.sizeV = size;
+	spec.verticesU = spec.verticesV = static_cast<std::uint32_t>(settings.resolution + 1);
+	spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+	spec.origin = {{-0.5*size, xi + contact.barrier.activation + drop, -0.5*size}};
+	ModelConfig config = ContactConfig(settings, contact);
+	config.gravity = {{0, -Gravity, 0}};
+	config.damping = false;
+	config.barrier.friction = 0;
+	Collider plane;
+	plane.type = Collider::Type::Plane; plane.a = {{0, 0, 0}}; plane.b = {{0, 1, 0}};
+	config.colliders.push_back(plane);
+	ClothSystem system;
+	std::string error;
+	if (!Build(spec, config, system, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-6*Gravity;
+	auto energy = [&]() {
+		return system.KineticEnergy(system.v) + system.GravityPotential(system.x) + system.ElasticEnergy(system.x) +
+			system.ContactEnergy(system.x, system.time);
+	};
+	const double e0 = energy();
+	double mass = 0;
+	for (double m : system.GetSheet().mass) mass += m;
+	const double scale = mass*Gravity*drop;
+	const double dt = 1.0/240, T = 0.4;
+	const int steps = static_cast<int>(std::lround(T/dt));
+	double worst = -std::numeric_limits<double>::infinity(), smallest = std::numeric_limits<double>::infinity(), peak = 0;
+	bool bounced = false;
+	double lowest = std::numeric_limits<double>::infinity();
+	CaseResult r;
+	r.resolution = settings.resolution;
+	for (int k = 0; k < steps; ++k) {
+		if (!system.Step(dt, settings.scheme, newton, r.stats, error)) return Failed(error);
+		worst = std::max(worst, (energy() - e0)/scale);
+		const double gap = system.ContactGap(system.x, system.time);
+		smallest = std::min(smallest, gap);
+		double y = 0;
+		for (std::uint32_t q2 = 0; q2 < system.Vertices(); ++q2) y += system.x[3*static_cast<std::size_t>(q2) + 1]/system.Vertices();
+		lowest = std::min(lowest, y);
+		if (y > lowest + 1e-4) bounced = true;
+		if (bounced) peak = std::max(peak, y);
+	}
+	r.ok = true;
+	r.error = std::max(0.0, worst);
+	if (!(smallest > 0)) r.error = std::max(r.error, 1.0);
+	r.measured = worst;
+	r.secondary = peak;
+	r.detail = Format("largest energy rise / drop energy %.3e (final change %.3e); smallest gap %.3e m; bounce peak %.4f m",
+		worst, (energy() - e0)/scale, smallest, peak) + Format(" (dropped from %.4f m)", spec.origin[1]);
 	return r;
 }
 

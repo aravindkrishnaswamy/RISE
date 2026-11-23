@@ -51,8 +51,8 @@ BDPTStrategyBalanceTest	single	194	one render thread so 10 tests share cores cle
 BDPTZeroExitanceBSSRDFTest	pool	6
 BidirectionalTextureFootprintParityTest	wide:7	18	128x96 renders (PT 64 spp, BDPT and VCM 1024 spp), 6.05 cores mean (112 s user / 18.5 s real; seconds measured alone on an idle machine, peak window not measured)
 CallbackOutputRenderScopeTest	wide:5	2	4.7 cores (measured)
-ClothSolverTest	pool	6
-ClothValidationTest	pool	16
+ClothSolverTest	pool	7
+ClothValidationTest	pool	25
 CompositeEnergyConservationTest	pool	8
 ConnectionTypeSplitTest	pool	14
 CstDeriveGoldenTest	pool	22

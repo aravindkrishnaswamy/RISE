@@ -86,6 +86,52 @@ private:
 
 double F(std::uint32_t bits) { float f; std::memcpy(&f, &bits, 4); return f; }
 
+// A cube of side 0.2 m under the small sheet's fall (x -0.4..-0.2, y 0.7..0.9,
+// z 0.2..0.4) as a mesh collider, optionally rotating about its vertical axis.
+V CubeCollider(bool rotating)
+{
+	V::Values vs, ts;
+	for (int k = 0; k < 8; ++k) {
+		vs.push_back(V::Float((k & 1) ? -0.2 : -0.4));
+		vs.push_back(V::Float((k & 2) ? 0.9 : 0.7));
+		vs.push_back(V::Float((k & 4) ? 0.4 : 0.2));
+	}
+	const unsigned faces[12][3] = {{0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+		{2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5}};
+	for (const auto& f : faces) for (unsigned k : f) ts.push_back(V::Unsigned(k));
+	V::Members m{{"type", V::String("mesh")}, {"vertices", V::ArrayValue(vs)}, {"triangles", V::ArrayValue(ts)}};
+	if (rotating) m.emplace_back("motion", Map({{"type", V::String("rotate")}, {"center", Vec(-0.3, 0.8, 0.3)},
+		{"axis", Vec(0, 1, 0)}, {"rate", V::Float(2.0)}}));
+	return V::ArrayValue({V::MapValue(m)});
+}
+
+// Scene inputs offering one mesh.v1 frame named "cube".
+class CubeInput final : public ISceneInputs {
+public:
+	bool Identity(const std::string& name, std::string& hash, std::string& error) const override {
+		if (name != "cube") { error = "no such input"; return false; }
+		hash = "cube-identity";
+		return true;
+	}
+	bool Sample(const std::string& name, double, std::shared_ptr<const Bytes>& encoded, std::string& codec,
+		std::string& error) const override {
+		if (name != "cube") { error = "no such input"; return false; }
+		MeshFrame m;
+		for (int k = 0; k < 8; ++k) for (double c : {(k & 1) ? -0.2 : -0.4, (k & 2) ? 0.9 : 0.7, (k & 4) ? 0.4 : 0.2}) {
+			const float f = static_cast<float>(c);
+			std::uint32_t bits;
+			std::memcpy(&bits, &f, 4);
+			m.positions.push_back(bits);
+		}
+		m.indices = {0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5};
+		auto bytes = std::make_shared<Bytes>();
+		if (!EncodeMesh(m, budget, *bytes, error)) return false;
+		encoded = std::move(bytes);
+		codec = "mesh.v1";
+		return true;
+	}
+};
+
 void Description()
 {
 	std::string error;
@@ -132,14 +178,45 @@ void Description()
 	Check(!other->Configure(With(Small(), "material", V::String("unobtainium")), inputs, again, error), "unknown material refused");
 	Check(!other->Configure(With(With(Small(), "mode", V::String("interactive")).GetMap(), "integrator", V::String("bdf2")),
 		inputs, again, error), "interactive mode refuses a non-backward-Euler integrator");
-	// Labels: interactive, colliders and the hinge bending model are preview.
-	SolverDescription interactive, contact, hinges, midpoint;
+	// Labels: interactive, penalty contact, self-collision and the hinge bending model are preview;
+	// bake-mode barrier contact earns predictive from its own evidence cases.
+	SolverDescription interactive, contact, barrier, self, interactiveContact, hinges, midpoint;
 	Check(other->Configure(With(Small(), "mode", V::String("interactive")), inputs, interactive, error) &&
 		interactive.evidence.fidelity == "preview" && EffectiveFidelity(interactive.evidence) == "preview",
 		"interactive mode is preview", error);
-	Check(other->Configure(With(Small(), "colliders", V::ArrayValue({Map({{"type", V::String("sphere")},
-		{"center", Vec(0, 0, 0)}, {"radius", V::Float(0.1)}})})), inputs, contact, error) &&
+	const V sphere = V::ArrayValue({Map({{"type", V::String("sphere")}, {"center", Vec(0, 0, 0)}, {"radius", V::Float(0.1)}})});
+	Check(other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "contact", V::String("penalty")), inputs, contact, error) &&
 		EffectiveFidelity(contact.evidence) == "preview", "penalty contact is preview", error);
+	const double tb = Seconds();
+	Check(other->Configure(With(Small(), "colliders", sphere), inputs, barrier, error) && barrier.evidence.fidelity == "predictive" &&
+		EffectiveFidelity(barrier.evidence) == "predictive" && barrier.evidence.cases.size() == d.evidence.cases.size() + 6,
+		"bake-mode barrier contact earns predictive from its contact cases", error);
+	std::printf("contact evidence (barrier defaults), first Configure %.2f s:\n", Seconds() - tb);
+	for (const auto& e : barrier.evidence.cases)
+		if (e.id.compare(0, 8, "contact-") == 0)
+			std::printf("  %-22s error %.3e tolerance %.2e %s\n", e.id.c_str(), e.error, e.tolerance, e.passed ? "pass" : "FAIL");
+	Check(other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "self_collision", V::Bool(true)), inputs, self, error) &&
+		EffectiveFidelity(self.evidence) == "preview", "self-collision is preview", error);
+	Check(other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "mode", V::String("interactive")), inputs,
+		interactiveContact, error) && EffectiveFidelity(interactiveContact.evidence) == "preview", "interactive contact is preview", error);
+	Check(!other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "integrator", V::String("implicit_midpoint")), inputs,
+		again, error), "barrier contact refuses implicit midpoint");
+	Check(!other->Configure(With(With(Small(), "colliders", CubeCollider(false)).GetMap(), "contact", V::String("penalty")), inputs,
+		again, error), "mesh colliders refuse penalty contact");
+	// A mesh collider: effective parameters are a fixed point; a scene-input mesh enters by name and identity.
+	SolverDescription mesh, meshAgain, scene;
+	Check(other->Configure(With(Small(), "colliders", CubeCollider(true)), inputs, mesh, error) &&
+		other->Configure(mesh.effectiveParameters, inputs, meshAgain, error), "mesh collider configures", error);
+	Bytes ma, mb;
+	RISE::RISECBOR64::Encode(mesh.effectiveParameters, ma, &error);
+	RISE::RISECBOR64::Encode(meshAgain.effectiveParameters, mb, &error);
+	Check(ma == mb && EffectiveFidelity(mesh.evidence) == "predictive", "mesh collider parameters are a fixed point and predictive");
+	CubeInput cube;
+	Check(other->Configure(With(Small(), "colliders", V::ArrayValue({Map({{"type", V::String("mesh")},
+		{"scene_input", V::String("cube")}})})), cube, scene, error), "scene-input mesh collider configures", error);
+	const V* list = scene.effectiveParameters.Find("colliders");
+	Check(list && list->GetArray().size() == 1 && list->GetArray()[0].Find("identity") &&
+		list->GetArray()[0].Find("identity")->GetText() == "cube-identity", "the scene input's identity enters the parameters");
 	Check(other->Configure(With(Small(), "bending_model", V::String("hinges")), inputs, hinges, error) &&
 		hinges.evidence.fidelity == "predictive" && EffectiveFidelity(hinges.evidence) == "preview",
 		"the hinge bending model fails its evidence and is preview", error);
@@ -164,12 +241,13 @@ void Frames()
 	CountingSink sink;
 	AdvanceResult r;
 	Check(solver->Configure(With(Small(), "colliders", V::ArrayValue({Map({{"type", V::String("sphere")},
-		{"center", Vec(0, 0.75, -0.2)}, {"radius", V::Float(0.15)}})})), inputs, d, error) && solver->Start(error),
+		{"center", Vec(-0.3, 0.75, 0.3)}, {"radius", V::Float(0.1)}})})), inputs, d, error) && solver->Start(error),
 		"sheet over a sphere starts", error);
 	while (!solver->Position().finished && solver->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, error)) {}
 	Check(error.empty() && sink.frames.size() == 10, "publishes one frame per output index", error);
 	std::string digest;
 	bool fixed = true, moving = false, pinned = true, clear = true;
+	double nearest = 1e9;
 	MeshFrame first;
 	for (std::size_t k = 0; k < sink.frames.size(); ++k) {
 		MeshFrame m;
@@ -181,13 +259,16 @@ void Frames()
 		for (std::uint32_t corner : {0u, 8u}) for (int c = 0; c < 3; ++c)
 			pinned = pinned && m.positions[3*corner + c] == first.positions[3*corner + c];
 		for (std::size_t q = 0; q < 81; ++q) {
-			const double dx = F(m.positions[3*q]), dy = F(m.positions[3*q+1]) - 0.75, dz = F(m.positions[3*q+2]) + 0.2;
-			clear = clear && std::sqrt(dx*dx + dy*dy + dz*dz) > 0.15 - 0.002; // penalty: shallow penetration of the 2 mm offset
+			const double dx = F(m.positions[3*q]) + 0.3, dy = F(m.positions[3*q+1]) - 0.75, dz = F(m.positions[3*q+2]) - 0.3;
+			const double d = std::sqrt(dx*dx + dy*dy + dz*dz);
+			nearest = std::min(nearest, d);
+			clear = clear && d > 0.1 + 0.002; // barrier: outside the 2 mm offset
 		}
 	}
 	Check(fixed && moving, "fixed-topology stream with velocities and normals");
 	Check(pinned, "pinned corners stay put");
-	Check(clear, "penalty contact keeps the sheet outside the sphere");
+	Check(clear && nearest < 0.1 + 0.002 + 0.001, "barrier contact keeps the sheet outside the sphere's offset (and touches it)",
+		std::to_string(nearest));
 	// Prescribed motion: a translating pin moves at its velocity.
 	SolverDescription dm;
 	CountingSink moved;
@@ -207,11 +288,10 @@ void Frames()
 }
 
 // Stop inside a segment, checkpoint, restore in a new instance, continue: byte-identical.
-void StopRestore()
+void StopRestore(const V& params, const std::string& what)
 {
 	std::string error;
 	NoSceneInputs inputs;
-	const V params = Map(Small());
 	auto whole = Make(), first = Make(), second = Make();
 	SolverDescription d0, d1, d2;
 	CountingSink all, head, tail;
@@ -231,8 +311,42 @@ void StopRestore()
 	bool same = head.frames.size() + tail.frames.size() == all.frames.size();
 	for (std::size_t i = 0; same && i < head.frames.size(); ++i) same = *head.frames[i].second == *all.frames[i].second;
 	for (std::size_t i = 0; same && i < tail.frames.size(); ++i) same = *tail.frames[i].second == *all.frames[head.frames.size()+i].second;
-	Check(same, "stop and restore reproduces the uninterrupted frames byte for byte");
+	Check(same, what + ": stop and restore reproduces the uninterrupted frames byte for byte");
 	Check(!second->Restore(Bytes{1, 2, 3}, error), "malformed checkpoint refused");
+}
+
+// The same frames, byte for byte, for any thread count (barrier contact with
+// friction against a sphere and a rotating mesh).
+void Threads()
+{
+	std::string error;
+	NoSceneInputs inputs;
+	V::Members base = Small();
+	base.emplace_back("colliders", V::ArrayValue({Map({{"type", V::String("sphere")}, {"center", Vec(-0.1, 0.85, 0.25)},
+		{"radius", V::Float(0.04)}}), CubeCollider(true).GetArray()[0]}));
+	std::vector<std::vector<Bytes>> runs;
+	for (unsigned threads : {1u, 3u, 4u}) {
+		auto solver = Make();
+		SolverDescription d;
+		CountingSink sink;
+		AdvanceResult r;
+		Check(solver->Configure(With(base, "threads", V::Unsigned(threads)), inputs, d, error) && solver->Start(error),
+			"threaded run " + std::to_string(threads), error);
+		while (!solver->Position().finished && solver->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, error)) {}
+		Check(error.empty() && sink.frames.size() == 10, "threaded run finishes", error);
+		std::vector<Bytes> frames;
+		for (const auto& f : sink.frames) frames.push_back(*f.second);
+		runs.push_back(frames);
+		if (threads == 1) {
+			Bytes a, b;
+			SolverDescription d4;
+			Check(solver->Configure(With(base, "threads", V::Unsigned(4)), inputs, d4, error), "reconfigure with threads", error);
+			RISE::RISECBOR64::Encode(d.effectiveParameters, a, &error);
+			RISE::RISECBOR64::Encode(d4.effectiveParameters, b, &error);
+			Check(a == b, "the thread count does not enter the effective parameters");
+		}
+	}
+	Check(runs[0] == runs[1] && runs[0] == runs[2], "1, 3 and 4 threads publish identical frames");
 }
 
 // Macro steps on the output grid equal free stepping exactly; half-interval
@@ -435,7 +549,14 @@ int main()
 	try {
 		Description();
 		Frames();
-		StopRestore();
+		StopRestore(Map(Small()), "free sheet");
+		{
+			V::Members contact = Small();
+			contact.emplace_back("colliders", V::ArrayValue({Map({{"type", V::String("sphere")}, {"center", Vec(-0.1, 0.85, 0.25)},
+				{"radius", V::Float(0.04)}}), CubeCollider(true).GetArray()[0]}));
+			StopRestore(V::MapValue(contact), "barrier contact with friction and a rotating mesh");
+		}
+		Threads();
 		MacroSteps();
 		PortFeed();
 		InteractiveMode();

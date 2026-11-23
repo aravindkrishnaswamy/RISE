@@ -10,6 +10,7 @@
 
 #include "pch.h"
 #include "ClothModel.h"
+#include "ClothContact.h"
 
 #include <algorithm>
 #include <cmath>
@@ -216,9 +217,10 @@ const char* LinearSolverName(LinearSolver s)
 	switch (s) {
 	case LinearSolver::Auto: return "auto";
 	case LinearSolver::ConjugateGradient: return "pcg";
-	case LinearSolver::Direct: break;
+	case LinearSolver::Direct: return "direct";
+	case LinearSolver::MultigridCG: break;
 	}
-	return "direct";
+	return "mg_pcg";
 }
 
 V3 Motion::Position(const V3& rest, double t) const
@@ -251,8 +253,30 @@ V3 Motion::Velocity(const V3& rest, double t) const
 	return {{0, 0, 0}};
 }
 
-double Collider::Distance(const V3& x, V3& gradient) const
+V3 Motion::Advance(const V3& x, double t0, double t1) const
 {
+	switch (type) {
+	case Type::Fixed: return x;
+	case Type::Translate: return Add(x, Mul(vector, t1 - t0));
+	case Type::Oscillate:
+		return Add(x, Mul(vector, std::sin(2*Pi*frequency*t1) - std::sin(2*Pi*frequency*t0)));
+	case Type::Rotate: {
+		const double angle = rate*(t1 - t0), c = std::cos(angle), s = std::sin(angle);
+		const V3 p = Sub(x, center);
+		return Add(center, Add(Add(Mul(p, c), Mul(Cross(axis, p), s)), Mul(axis, Dot(axis, p)*(1 - c))));
+	}
+	}
+	return x;
+}
+
+const char* ContactModelName(ContactModel c)
+{
+	return c == ContactModel::Penalty ? "penalty" : "barrier";
+}
+
+double Collider::Distance(const V3& x, V3& gradient, double* hessian) const
+{
+	if (hessian) std::fill(hessian, hessian + 9, 0.0);
 	switch (type) {
 	case Type::Plane:
 		gradient = b;
@@ -261,18 +285,36 @@ double Collider::Distance(const V3& x, V3& gradient) const
 		const V3 d = Sub(x, a);
 		const double l = std::sqrt(Dot(d, d));
 		gradient = l > 0 ? Mul(d, 1/l) : V3{{0, 1, 0}};
+		if (hessian && l > 0)
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+				hessian[3*i + j] = ((i == j ? 1.0 : 0.0) - gradient[i]*gradient[j])/l;
+		return l - radius;
+	}
+	case Type::Cylinder: {
+		const V3 w = Sub(x, a);
+		const V3 perp = Sub(w, Mul(b, Dot(w, b)));
+		const double l = std::sqrt(Dot(perp, perp));
+		V3 n{{0, 1, 0}};
+		if (l > 0) n = Mul(perp, 1/l);
+		gradient = n;
+		if (hessian && l > 0)
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+				hessian[3*i + j] = ((i == j ? 1.0 : 0.0) - b[i]*b[j] - n[i]*n[j])/l;
 		return l - radius;
 	}
 	case Type::Box: {
 		V3 out{{0, 0, 0}};
-		bool outside = false;
+		bool outside = false, clamped[3] = {false, false, false};
 		for (int k = 0; k < 3; ++k) {
-			if (x[k] < a[k]) { out[k] = x[k] - a[k]; outside = true; }
-			else if (x[k] > b[k]) { out[k] = x[k] - b[k]; outside = true; }
+			if (x[k] < a[k]) { out[k] = x[k] - a[k]; outside = clamped[k] = true; }
+			else if (x[k] > b[k]) { out[k] = x[k] - b[k]; outside = clamped[k] = true; }
 		}
 		if (outside) {
 			const double l = std::sqrt(Dot(out, out));
 			gradient = Mul(out, 1/l);
+			if (hessian)
+				for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+					hessian[3*i + j] = ((i == j && clamped[i] ? 1.0 : 0.0) - gradient[i]*gradient[j])/l;
 			return l;
 		}
 		double best = x[0] - a[0];
@@ -450,9 +492,44 @@ bool ClothSystem::Initialize(const Sheet& sheet, const ModelConfig& config, std:
 	order_ = bu <= bv ? uFast : vFast;
 	const double bw = static_cast<double>(std::min(bu, bv));
 	directCost_ = 3.0*static_cast<double>(n)*bw*bw;
+	barrier_.reset();
+	if (config.contact == ContactModel::Barrier) {
+		barrier_ = std::make_shared<BarrierContact>();
+		if (!barrier_->Initialize(sheet, config, error)) return false;
+		if (!barrier_->Active()) barrier_.reset();
+	} else if (!config.meshColliders.empty()) {
+		error = "mesh colliders need barrier contact";
+		return false;
+	}
 	damping_ = pattern_;
+	multigrid_.Build(pattern_, nu, nv, fixed_);
+	multigrid_.SetPool(pool_.get());
+	// Greedy colouring of each element family in element order.
+	auto colour = [&](std::size_t count, int arity, auto vertexOf, std::vector<std::vector<std::uint32_t>>& colours) {
+		std::vector<std::uint64_t> used(n, 0);
+		colours.clear();
+		for (std::size_t e = 0; e < count; ++e) {
+			std::uint64_t taken = 0;
+			for (int a = 0; a < arity; ++a) taken |= used[vertexOf(e, a)];
+			int c = 0;
+			while (c < 63 && (taken >> c & 1u)) ++c;
+			for (int a = 0; a < arity; ++a) used[vertexOf(e, a)] |= std::uint64_t(1) << c;
+			if (colours.size() <= static_cast<std::size_t>(c)) colours.resize(static_cast<std::size_t>(c) + 1);
+			colours[static_cast<std::size_t>(c)].push_back(static_cast<std::uint32_t>(e));
+		}
+	};
+	colour(sheet.triangles.size(), 3, [&](std::size_t e, int a) { return sheet_.triangles[e].v[a]; }, triColors_);
+	colour(sheet.hinges.size(), 4, [&](std::size_t e, int a) { return sheet_.hinges[e].v[a]; }, hingeColors_);
+	colour(sheet.rods.size(), 3, [&](std::size_t e, int a) { return sheet_.rods[e].v[a]; }, rodColors_);
+	elementEnergy_.assign(sheet.triangles.size() + sheet.hinges.size() + sheet.rods.size(), 0.0);
 	Reset(0);
 	return true;
+}
+
+void ClothSystem::SetThreads(unsigned threads)
+{
+	pool_ = threads > 1 ? std::make_shared<ParallelPool>(threads) : nullptr;
+	multigrid_.SetPool(pool_.get());
 }
 
 void ClothSystem::PinTargets(double t, std::vector<double>& pos, std::vector<double>* vel) const
@@ -492,39 +569,65 @@ void ClothSystem::MaskFixed(BlockMatrix& h) const
 double ClothSystem::ElementEnergies(const std::vector<double>& pos, std::vector<double>* gradient,
 	BlockMatrix* hessian, bool contact, double allowance) const
 {
+	// Each family runs colour by colour; the elements of a colour share no vertex,
+	// so they scatter into the gradient and Hessian without conflicts (in chunks
+	// that may run in parallel).  Energies go to a per-element buffer summed in
+	// element order afterwards.  The result does not depend on the pool.
+	ParallelPool* pool = pool_.get();
+	constexpr std::size_t span = 128;
+	const std::size_t nt = sheet_.triangles.size(), nh = sheet_.hinges.size();
+	double* energies = elementEnergy_.data();
+	for (const auto& list : triColors_)
+		ParallelFor(pool, Chunks(list.size(), span), [&](std::size_t chunk) {
+			double ge[9], he[81];
+			const std::size_t end = std::min(list.size(), (chunk + 1)*span);
+			for (std::size_t k = chunk*span; k < end; ++k) {
+				const std::uint32_t t = list[k];
+				const Triangle& tri = sheet_.triangles[t];
+				const V3 xs[3] = {At(pos, tri.v[0]), At(pos, tri.v[1]), At(pos, tri.v[2])};
+				energies[t] = MembraneElement(tri, xs, c11_, c12_, c22_, c66_, gradient ? ge : nullptr, hessian ? he : nullptr, allowance);
+				if (gradient) for (int a = 0; a < 3; ++a) Accumulate(*gradient, tri.v[a], {{ge[3*a], ge[3*a+1], ge[3*a+2]}});
+				if (hessian) for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) {
+					double* blk = hessian->Block(triSlots_[t][3*a + b]);
+					for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += he[(3*a + i)*9 + 3*b + j];
+				}
+			}
+		});
+	for (const auto& list : hingeColors_)
+		ParallelFor(pool, Chunks(list.size(), span), [&](std::size_t chunk) {
+			double ge[12], he[144];
+			const std::size_t end = std::min(list.size(), (chunk + 1)*span);
+			for (std::size_t k = chunk*span; k < end; ++k) {
+				const std::uint32_t e = list[k];
+				const Hinge& hg = sheet_.hinges[e];
+				const V3 xs[4] = {At(pos, hg.v[0]), At(pos, hg.v[1]), At(pos, hg.v[2]), At(pos, hg.v[3])};
+				energies[nt + e] = HingeElement(xs, hg.stiffness*hingeScale_[e], gradient ? ge : nullptr, hessian ? he : nullptr);
+				if (gradient) for (int a = 0; a < 4; ++a) Accumulate(*gradient, hg.v[a], {{ge[3*a], ge[3*a+1], ge[3*a+2]}});
+				if (hessian) for (int a = 0; a < 4; ++a) for (int b = 0; b < 4; ++b) {
+					double* blk = hessian->Block(hingeSlots_[e][4*a + b]);
+					for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += he[(3*a + i)*12 + 3*b + j];
+				}
+			}
+		});
+	for (const auto& list : rodColors_)
+		ParallelFor(pool, Chunks(list.size(), span), [&](std::size_t chunk) {
+			double ge[9], he[81];
+			const std::size_t end = std::min(list.size(), (chunk + 1)*span);
+			for (std::size_t k = chunk*span; k < end; ++k) {
+				const std::uint32_t e = list[k];
+				const Rod& rd = sheet_.rods[e];
+				const V3 xs[3] = {At(pos, rd.v[0]), At(pos, rd.v[1]), At(pos, rd.v[2])};
+				energies[nt + nh + e] = RodElement(xs, rd.stiffness*rodScale_[e], gradient ? ge : nullptr, hessian ? he : nullptr);
+				if (gradient) for (int a = 0; a < 3; ++a) Accumulate(*gradient, rd.v[a], {{ge[3*a], ge[3*a+1], ge[3*a+2]}});
+				if (hessian) for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) {
+					double* blk = hessian->Block(rodSlots_[e][3*a + b]);
+					for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += he[(3*a + i)*9 + 3*b + j];
+				}
+			}
+		});
 	double energy = 0;
-	double ge[12], he[144];
-	for (std::size_t t = 0; t < sheet_.triangles.size(); ++t) {
-		const Triangle& tri = sheet_.triangles[t];
-		const V3 xs[3] = {At(pos, tri.v[0]), At(pos, tri.v[1]), At(pos, tri.v[2])};
-		energy += MembraneElement(tri, xs, c11_, c12_, c22_, c66_, gradient ? ge : nullptr, hessian ? he : nullptr, allowance);
-		if (gradient) for (int a = 0; a < 3; ++a) Accumulate(*gradient, tri.v[a], {{ge[3*a], ge[3*a+1], ge[3*a+2]}});
-		if (hessian) for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) {
-			double* blk = hessian->Block(triSlots_[t][3*a + b]);
-			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += he[(3*a + i)*9 + 3*b + j];
-		}
-	}
-	for (std::size_t e = 0; e < sheet_.hinges.size(); ++e) {
-		const Hinge& hg = sheet_.hinges[e];
-		const V3 xs[4] = {At(pos, hg.v[0]), At(pos, hg.v[1]), At(pos, hg.v[2]), At(pos, hg.v[3])};
-		energy += HingeElement(xs, hg.stiffness*hingeScale_[e], gradient ? ge : nullptr, hessian ? he : nullptr);
-		if (gradient) for (int a = 0; a < 4; ++a) Accumulate(*gradient, hg.v[a], {{ge[3*a], ge[3*a+1], ge[3*a+2]}});
-		if (hessian) for (int a = 0; a < 4; ++a) for (int b = 0; b < 4; ++b) {
-			double* blk = hessian->Block(hingeSlots_[e][4*a + b]);
-			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += he[(3*a + i)*12 + 3*b + j];
-		}
-	}
-	for (std::size_t e = 0; e < sheet_.rods.size(); ++e) {
-		const Rod& rd = sheet_.rods[e];
-		const V3 xs[3] = {At(pos, rd.v[0]), At(pos, rd.v[1]), At(pos, rd.v[2])};
-		energy += RodElement(xs, rd.stiffness*rodScale_[e], gradient ? ge : nullptr, hessian ? he : nullptr);
-		if (gradient) for (int a = 0; a < 3; ++a) Accumulate(*gradient, rd.v[a], {{ge[3*a], ge[3*a+1], ge[3*a+2]}});
-		if (hessian) for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) {
-			double* blk = hessian->Block(rodSlots_[e][3*a + b]);
-			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += he[(3*a + i)*9 + 3*b + j];
-		}
-	}
-	if (contact && !config_.colliders.empty()) {
+	for (double e : elementEnergy_) energy += e;
+	if (contact && config_.contact == ContactModel::Penalty && !config_.colliders.empty()) {
 		for (std::uint32_t q = 0; q < sheet_.Vertices(); ++q) {
 			const V3 p = At(pos, q);
 			const double k = config_.contactStiffness*sheet_.area[q];
@@ -560,6 +663,11 @@ double ClothSystem::Evaluate(const Potential& p, const std::vector<double>& pos,
 	// Projected: keep the compression the inertia can absorb (clamp it in statics).
 	const double allowance = project ? 0.25*config_.material.density*p.inertia : std::numeric_limits<double>::infinity();
 	double energy = ElementEnergies(pos, gradient, hessian, true, allowance);
+	if (p.contact && barrier_) {
+		const double e = barrier_->Evaluate(*p.contact, pos, gradient, hessian, project, fixed_);
+		if (!std::isfinite(e)) return std::numeric_limits<double>::infinity();
+		energy += e;
+	}
 	if (p.inertia > 0) {
 		double s = 0;
 		for (std::uint32_t q = 0; q < sheet_.Vertices(); ++q) {
@@ -583,7 +691,7 @@ double ClothSystem::Evaluate(const Potential& p, const std::vector<double>& pos,
 	if (p.useDamping) {
 		std::vector<double> r(dofs), dr;
 		for (std::size_t k = 0; k < dofs; ++k) r[k] = pos[k] - p.xTilde[k];
-		damping_.Multiply(r, dr);
+		damping_.Multiply(r, dr, pool_.get());
 		double s = 0;
 		for (std::size_t k = 0; k < dofs; ++k) {
 			s += r[k]*dr[k];
@@ -600,22 +708,30 @@ double ClothSystem::Evaluate(const Potential& p, const std::vector<double>& pos,
 }
 
 bool ClothSystem::Solve(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& solution,
-	const NewtonOptions& options, bool preferDirect, StepStats& stats, bool* indefinite) const
+	const NewtonOptions& options, bool preferDirect, StepStats& stats, bool* indefinite, bool reuse) const
 {
 	if (indefinite) *indefinite = false;
 	const bool direct = options.solver == LinearSolver::Direct ||
 		(options.solver == LinearSolver::Auto && directCost_ <= (preferDirect ? 5e9 : 2e7));
 	if (direct) {
-		BandedCholesky chol;
-		if (chol.Factor(a, order_)) {
-			chol.Solve(b, solution);
+		if (!(reuse && factorValid_)) factorValid_ = factor_.Factor(a, order_);
+		if (factorValid_) {
+			factor_.Solve(b, solution);
 			++stats.directSolves;
 			return true;
 		}
 		if (indefinite) { *indefinite = true; solution.assign(b.size(), 0.0); return false; }
 	}
 	LinearSolveStats ls;
-	const bool ok = SolveConjugateGradient(a, b, solution, options.cgTolerance, options.cgIterations, ls);
+	bool ok = false;
+	if (options.solver == LinearSolver::ConjugateGradient)
+		ok = SolveConjugateGradient(a, b, solution, options.cgTolerance, options.cgIterations, ls);
+	else if (!reuse && !multigrid_.Setup(a)) {
+		// The coarsest Galerkin operator (or a line block) is not positive definite: so is not A.
+		if (indefinite) *indefinite = true;
+		solution.assign(b.size(), 0.0);
+		return false;
+	} else ok = SolveConjugateGradient(a, b, solution, options.cgTolerance, options.cgIterations, ls, multigrid_);
 	stats.cgIterations += ls.iterations;
 	if (!ok && indefinite) *indefinite = true;
 	return ok || ls.iterations > 0;
@@ -626,7 +742,7 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 {
 	const std::uint32_t n = sheet_.Vertices();
 	const std::size_t dofs = pos.size();
-	std::vector<double> g, rhs(dofs), dx, trial(dofs);
+	std::vector<double> g, gt, rhs(dofs), dx, trial(dofs);
 	BlockMatrix h = pattern_;
 	auto residual = [&](const std::vector<double>& grad) {
 		double worst = 0;
@@ -642,17 +758,21 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 	// tolerance or within the floating-point floor of its own force: positions
 	// carry about eps*|x| absolute error, so forces carry eps*|x|*|H_ii|
 	// (this floor grows as 1/h^2 under refinement and is reported as such).
-	auto converged = [&](const std::vector<double>& grad, const BlockMatrix& hess) {
+	// Without a current Hessian only the tolerance applies.
+	auto converged = [&](const std::vector<double>& grad, const BlockMatrix* hess) {
 		double scale = 0;
 		for (double c : pos) scale = std::max(scale, std::fabs(c));
 		const double floorFactor = 8*std::numeric_limits<double>::epsilon()*scale;
 		for (std::uint32_t q = 0; q < n; ++q) {
 			if (fixed_[q]) continue;
 			const std::size_t k = 3*static_cast<std::size_t>(q);
-			const double* b = hess.Block(hess.DiagonalSlot(q));
-			double hn = 0;
-			for (int r = 0; r < 9; ++r) hn += b[r]*b[r];
-			const double limit = std::max(options.tolerance, floorFactor*std::sqrt(hn)/sheet_.mass[q]);
+			double limit = options.tolerance;
+			if (hess) {
+				const double* b = hess->Block(hess->DiagonalSlot(q));
+				double hn = 0;
+				for (int r = 0; r < 9; ++r) hn += b[r]*b[r];
+				limit = std::max(limit, floorFactor*std::sqrt(hn)/sheet_.mass[q]);
+			}
 			const double r = std::sqrt(grad[k]*grad[k] + grad[k+1]*grad[k+1] + grad[k+2]*grad[k+2])/sheet_.mass[q];
 			if (!(r <= limit)) return false;
 		}
@@ -660,32 +780,40 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 	};
 	// Each iteration tries the exact Hessian first (the inertia term usually keeps
 	// it positive definite) and uses the projected one when the exact one is
-	// found indefinite or gives no descent direction.
+	// found indefinite or gives no descent direction.  With lagHessian the first
+	// iteration's matrix (and its factor or preconditioner) serves the whole solve.
 	const bool exactFirst = options.exactHessianFirst;
+	const bool lag = options.lagHessian;
+	if (p.contact) barrier_->Candidates(*p.contact, pos, nullptr);
 	double phi = Evaluate(p, pos, &g, &h, !exactFirst);
+	bool haveH = true;   // h is the Hessian at pos (or the lagged one)
+	bool hFresh = true;  // h changed since the last linear solve
 	for (int it = 0;; ++it) {
 		const double res = residual(g);
 		stats.residual = res;
 		if (!std::isfinite(res) || !std::isfinite(phi)) { error = "cloth Newton produced a nonfinite state"; return false; }
-		if (converged(g, h)) return true;
+		if (converged(g, haveH ? &h : nullptr)) { ++stats.solves; stats.residualSum += res; return true; }
 		if (it >= options.maxIterations) {
 			if (options.requireConvergence) {
 				error = "cloth Newton did not reach its tolerance (residual " + std::to_string(res) + " m/s^2)";
 				return false;
 			}
 			++stats.unconverged;
+			++stats.solves; stats.residualSum += res;
 			return true;
 		}
+		if (!haveH) { Evaluate(p, pos, nullptr, &h, !exactFirst); haveH = hFresh = true; }
 		++stats.newtonIterations;
 		for (std::size_t k = 0; k < dofs; ++k) rhs[k] = -g[k];
 		bool indefinite = false;
-		Solve(h, rhs, dx, options, preferDirect, stats, &indefinite);
+		Solve(h, rhs, dx, options, preferDirect, stats, &indefinite, !hFresh);
+		hFresh = false;
 		double slope = 0;
 		for (std::size_t k = 0; k < dofs; ++k) slope += g[k]*dx[k];
 		if (exactFirst && (indefinite || !(slope < 0) || !std::isfinite(slope))) {
 			++stats.projections;
 			Evaluate(p, pos, nullptr, &h, true);
-			Solve(h, rhs, dx, options, preferDirect, stats, nullptr);
+			Solve(h, rhs, dx, options, preferDirect, stats, nullptr, false);
 			slope = 0;
 			for (std::size_t k = 0; k < dofs; ++k) slope += g[k]*dx[k];
 		}
@@ -703,22 +831,47 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 			}
 			if (!(slope < 0)) { error = "cloth Newton found no descent direction"; return false; }
 		}
+		// The full step is evaluated with its gradient (and, unless the matrix is
+		// lagged or this is the last iteration of a truncated solve, its Hessian):
+		// it is usually accepted.  Backtracked trials are evaluated energy-only.
+		const bool lastTruncated = !options.requireConvergence && it + 1 >= options.maxIterations;
+		const bool wantH = !lag && !lastTruncated;
 		// Roundoff allowance: the potential's terms are O(|phi| + |slope|) and lose
 		// about 1e-13 relative; within that band a step that lowers the residual is taken.
 		const double slack = 1e-12*(std::fabs(phi) + std::fabs(slope));
+		// Barrier contact: candidates for the whole segment, and CCD bounds the step.
 		double alpha = 1;
+		if (p.contact) {
+			barrier_->Candidates(*p.contact, pos, &dx);
+			alpha = barrier_->MaxStep(*p.contact, pos, dx);
+			if (alpha < 1) ++stats.ccdLimited;
+			if (!(alpha > 0)) { error = "cloth contact: the collision detection allows no step"; return false; }
+		}
 		bool accepted = false;
 		for (int ls = 0; ls < 30 && !accepted; ++ls, alpha *= 0.5) {
 			for (std::size_t k = 0; k < dofs; ++k) trial[k] = pos[k] + alpha*dx[k];
-			const double phiTrial = Evaluate(p, trial, nullptr, nullptr, true);
+			const bool full = ls == 0;
+			if (full && wantH) { haveH = false; hFresh = true; }
+			const double phiTrial = full ? Evaluate(p, trial, &gt, wantH ? &h : nullptr, !exactFirst) :
+				Evaluate(p, trial, nullptr, nullptr, true);
 			if (!std::isfinite(phiTrial)) continue;
+			bool haveGt = full;
 			if (phiTrial <= phi + 1e-4*alpha*slope) accepted = true;
 			else if (phiTrial <= phi + slack) {
-				std::vector<double> gt;
-				Evaluate(p, trial, &gt, nullptr, true);
+				if (!haveGt) { Evaluate(p, trial, &gt, nullptr, true); haveGt = true; }
 				accepted = residual(gt) < res;
 			}
-			if (accepted) { pos.swap(trial); phi = Evaluate(p, pos, &g, &h, !exactFirst); }
+			if (accepted) {
+				pos.swap(trial);
+				phi = phiTrial;
+				if (full) { g.swap(gt); haveH = wantH || lag; }
+				else {
+					const bool evalH = wantH;
+					phi = Evaluate(p, pos, &g, evalH ? &h : nullptr, !exactFirst);
+					haveH = evalH || lag;
+					if (evalH) hFresh = true;
+				}
+			}
 		}
 		if (!accepted) { error = "cloth Newton line search failed"; return false; }
 	}
@@ -819,6 +972,35 @@ bool ClothSystem::StepOnce(double h, Scheme scheme, const NewtonOptions& options
 			blk[0] += w; blk[4] += w; blk[8] += w;
 		}
 	}
+	if (barrier_) {
+		if (scheme == Scheme::ImplicitMidpoint) { error = "barrier contact does not support implicit midpoint"; return false; }
+		p.contact = std::make_shared<ContactFrame>();
+		ContactFrame& f = *p.contact;
+		barrier_->Place(tNext, f, time);
+		// A feasible start: x_n (pins at their targets), carried rigidly with the
+		// moving colliders wherever they could reach it during the step.  The jump
+		// from x_n is checked exactly against everything that does not move with
+		// it (pins and carried vertices against static colliders and the cloth).
+		std::vector<double> start = x;
+		bool jumped = barrier_->MovingColliders() && barrier_->Carry(x, time, tNext, start);
+		if (jumped) ++stats.carried;
+		for (std::uint32_t q = 0; q < sheet_.Vertices(); ++q)
+			if (fixed_[q]) { jumped = jumped || At(target, q) != At(x, q); Put(start, q, At(target, q)); }
+		std::string crossing;
+		if (jumped && !barrier_->IntersectionFree(f, x, start, crossing, true)) {
+			error = "cloth contact: a pin or a collider-carried region passes through something (" + crossing + ")";
+			return false;
+		}
+		barrier_->Candidates(f, start, nullptr);
+		if (!(barrier_->SmallestGap(f, start) > 0)) { error = "cloth contact: the step starts inside a collider's offset"; return false; }
+		barrier_->LagFriction(f, start, p.dampingScale, p.xTilde);
+		// The predictor x_n + h v_n, as far as the collision detection allows.
+		std::vector<double> d(dofs);
+		for (std::size_t k = 0; k < dofs; ++k) d[k] = guess[k] - start[k];
+		barrier_->Candidates(f, start, &d);
+		const double alpha = barrier_->MaxStep(f, start, d);
+		for (std::size_t k = 0; k < dofs; ++k) guess[k] = start[k] + alpha*d[k];
+	}
 	if (!Newton(p, guess, options, false, stats, error)) return false;
 	std::vector<double> xNew(dofs), vNew(dofs);
 	if (scheme == Scheme::ImplicitMidpoint) {
@@ -868,13 +1050,20 @@ bool ClothSystem::Step(double h, Scheme scheme, const NewtonOptions& options, St
 	return true;
 }
 
-bool ClothSystem::SolveStatic(const NewtonOptions& options, StepStats& stats, std::string& error, double tau0, int stages)
+bool ClothSystem::SolveStatic(const NewtonOptions& options, StepStats& stats, std::string& error, double tau0, int stages,
+	bool finish)
 {
 	const std::size_t dofs = x.size();
 	std::vector<double> vel(dofs, 0.0);
 	PinTargets(time, x, nullptr);
 	Potential p;
 	ExternalForce(x, vel, p.force);
+	if (barrier_) {
+		p.contact = std::make_shared<ContactFrame>();
+		barrier_->Place(time, *p.contact);
+		barrier_->Candidates(*p.contact, x, nullptr);
+		if (!(barrier_->SmallestGap(*p.contact, x) > 0)) { error = "cloth contact: the sheet starts inside a collider's offset"; return false; }
+	}
 	NewtonOptions stage = options;
 	stage.requireConvergence = false;
 	stage.maxIterations = std::min(options.maxIterations, 25);
@@ -885,11 +1074,50 @@ bool ClothSystem::SolveStatic(const NewtonOptions& options, StepStats& stats, st
 		p.xRef = x;
 		if (!Newton(p, x, stage, true, stats, error)) return false;
 	}
-	p.inertia = 0;
-	p.xRef = x;
-	if (!Newton(p, x, options, true, stats, error)) return false;
+	if (finish) {
+		p.inertia = 0;
+		p.xRef = x;
+		if (!Newton(p, x, options, true, stats, error)) return false;
+	}
 	v.assign(dofs, 0.0);
 	return true;
+}
+
+double ClothSystem::ContactGap(const std::vector<double>& positions, double t) const
+{
+	if (!barrier_) return std::numeric_limits<double>::infinity();
+	ContactFrame f;
+	barrier_->Place(t, f);
+	barrier_->Candidates(f, positions, nullptr);
+	return barrier_->SmallestGap(f, positions);
+}
+
+V3 ClothSystem::ContactForce(const std::vector<double>& positions, double t) const
+{
+	if (!barrier_) return {{0, 0, 0}};
+	ContactFrame f;
+	barrier_->Place(t, f);
+	barrier_->Candidates(f, positions, nullptr);
+	return barrier_->TotalForce(f, positions);
+}
+
+double ClothSystem::ContactEnergy(const std::vector<double>& positions, double t) const
+{
+	if (!barrier_) return 0;
+	ContactFrame f;
+	barrier_->Place(t, f);
+	barrier_->Candidates(f, positions, nullptr);
+	const std::vector<char> none(sheet_.Vertices(), 0);
+	return barrier_->Evaluate(f, positions, nullptr, nullptr, false, none);
+}
+
+bool ClothSystem::PathIntersectionFree(const std::vector<double>& x0, const std::vector<double>& x1, double t,
+	std::string& detail) const
+{
+	if (!barrier_) return true;
+	ContactFrame f;
+	barrier_->Place(t, f);
+	return barrier_->IntersectionFree(f, x0, x1, detail);
 }
 
 double ClothSystem::ElasticEnergy(const std::vector<double>& positions) const

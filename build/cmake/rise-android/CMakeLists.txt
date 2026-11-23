@@ -161,6 +161,8 @@ set_source_files_properties(
     "${RISE_LIB}/Simulation/Cloth/ClothMaterial.cpp"
     "${RISE_LIB}/Simulation/Cloth/ClothLinearAlgebra.cpp"
     "${RISE_LIB}/Simulation/Cloth/ClothModel.cpp"
+    "${RISE_LIB}/Simulation/Cloth/ClothParallel.cpp"
+    "${RISE_LIB}/Simulation/Cloth/ClothContact.cpp"
     "${RISE_LIB}/Simulation/Cloth/ClothValidation.cpp"
     "${RISE_LIB}/Simulation/Cloth/ClothSolver.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"

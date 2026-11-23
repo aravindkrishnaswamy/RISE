@@ -2750,6 +2750,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	}
 
 	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
+	// The prepared (fire) path poses the nominal frame time through
+	// SetPreparedNominalSceneTime.  A prepared render whose only time-varying
+	// inputs are simulated meshes (simulation M3b) has no fire media and no
+	// mutation freeze, so it keeps the ordinary SetSceneTime: photon maps
+	// regenerate and the spatial structure (with its shutter sweep, which the
+	// time-indexed motion blur needs) is not invalidated after it was built.
+	const bool preparedNominalTime = gPreparedRenderDepth != 0u && pScene.HasTimeVaryingMedia();
 
 	// Movie-wide progress accounting.  One RenderFrameOfAnimation
 	// call processes numTilesPerPass tiles at `totalSPPPerFrame`
@@ -2820,7 +2827,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height );
-			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_upper);
+			if( preparedNominalTime ) SetPreparedNominalSceneTime(pScene,curtime_upper);
 			else pScene.SetSceneTime(curtime_upper);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime_upper,invert_fields ? "lower" : "upper") ) {
@@ -2857,7 +2864,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					// fallback. The fallback deliberately does not replay the beauty
 					// pass's temporal sample distribution (AGENT_PERCEPTION.md).
 					PrepareSceneForFrame( pScene, curtime_upper, bHasKeyframedObjects, width, height, false );
-					if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_upper);
+					if( preparedNominalTime ) SetPreparedNominalSceneTime(pScene,curtime_upper);
 					else pScene.SetSceneTime(curtime_upper);
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2868,7 +2875,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 			// Lower field
 			PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height );
-			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_lower);
+			if( preparedNominalTime ) SetPreparedNominalSceneTime(pScene,curtime_lower);
 			else pScene.SetSceneTime(curtime_lower);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime_lower,invert_fields ? "upper" : "lower") ) {
@@ -2890,7 +2897,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// RenderFrameOfAnimation may leave the animator at its final
 				// exposure sample. Re-establish the nominal lower-field state.
 				PrepareSceneForFrame( pScene, curtime_lower, bHasKeyframedObjects, width, height, false );
-				if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime_lower);
+				if( preparedNominalTime ) SetPreparedNominalSceneTime(pScene,curtime_lower);
 				else pScene.SetSceneTime(curtime_lower);
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
@@ -2904,7 +2911,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			PrepareSceneForFrame( pScene, curtime, bHasKeyframedObjects, width, height );
-			if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,curtime);
+			if( preparedNominalTime ) SetPreparedNominalSceneTime(pScene,curtime);
 			else pScene.SetSceneTime(curtime);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime,"both") ) {
@@ -2954,7 +2961,7 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// animator at an arbitrary sample time. The bounded fallback is a
 				// deterministic nominal-frame approximation, not temporal replay.
 				PrepareSceneForFrame( pScene, fallbackNominalTime, bHasKeyframedObjects, width, height, false );
-				if( gPreparedRenderDepth ) SetPreparedNominalSceneTime(pScene,fallbackNominalTime);
+				if( preparedNominalTime ) SetPreparedNominalSceneTime(pScene,fallbackNominalTime);
 				else pScene.SetSceneTime(fallbackNominalTime);
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter, pRect );

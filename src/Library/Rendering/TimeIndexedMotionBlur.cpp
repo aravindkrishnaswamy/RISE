@@ -300,7 +300,8 @@ TimeIndexedThread::TimeIndexedThread( const TimeIndexedFrame* frame_ ) :
   frame( frame_ ),
   camera( 0 ),
   previousTable( 0 ),
-  previousCurrent( 0 )
+  previousCurrent( 0 ),
+  previousSampleTime( TimeIndexed::SampleTime{ 0.0, false } )
 {
 	table.slots = 0;
 	table.count = 0;
@@ -367,6 +368,9 @@ TimeIndexedThread::TimeIndexedThread( const TimeIndexedFrame* frame_ ) :
 	TimeIndexed::tlsSlots = &table;
 	previousCurrent = tlsCurrentThread;
 	tlsCurrentThread = this;
+	// No sample posed yet: a deforming geometry reads the shared pose time.
+	previousSampleTime = TimeIndexed::tlsSampleTime;
+	TimeIndexed::tlsSampleTime.valid = false;
 	Transformable::BumpThreadTransformPoseEpoch();
 	Transformable::BumpThreadCsgPoseEpoch();
 	Transformable::BumpThreadTrackablePoseEpoch();
@@ -379,6 +383,7 @@ TimeIndexedThread::~TimeIndexedThread()
 	}
 	TimeIndexed::tlsSlots = previousTable;
 	tlsCurrentThread = previousCurrent;
+	TimeIndexed::tlsSampleTime = previousSampleTime;
 	Transformable::BumpThreadTransformPoseEpoch();
 	Transformable::BumpThreadCsgPoseEpoch();
 	Transformable::BumpThreadTrackablePoseEpoch();
@@ -404,6 +409,10 @@ void TimeIndexedThread::PoseAt( const Scalar time )
 	if( !frame ) {
 		return;
 	}
+	// 0. Simulation M3b: deforming geometry (a simulated mesh) interpolates
+	//    its shutter keys at this thread's sample time.
+	TimeIndexed::tlsSampleTime.time = time;
+	TimeIndexed::tlsSampleTime.valid = true;
 	// 1. Every animated element, exactly as IAnimator::EvaluateAtTime would
 	//    move it, but into this thread's clone.
 	for( std::size_t i = 0; i < keyframable.size(); i++ ) {

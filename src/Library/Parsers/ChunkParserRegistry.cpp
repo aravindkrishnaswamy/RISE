@@ -6333,6 +6333,61 @@ namespace RISE
 				}
 			};
 
+			// Simulation M3b: a deforming mesh read from a simulation cache's
+			// mesh.v1 output, one frame per render frame (docs/SIMULATION_M3B_RESULTS.md).
+			// The M4 `source <simulation>.<output>` binding to a producer chunk
+			// will name the same cache through the scene instead of a path.
+			struct SimulatedMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.AddSimulatedMeshGeometry(
+						bag.GetString( "name", "noname" ).c_str(),
+						bag.GetString( "cache", "" ).c_str(),
+						bag.GetString( "output", "surface" ).c_str(),
+						bag.GetDouble( "time_offset", 0.0 ),
+						bag.GetDouble( "time_scale", 1.0 ),
+						bag.GetString( "end_policy", "cache" ).c_str(),
+						bag.GetString( "missing_frame", "hold" ).c_str(),
+						bag.GetString( "fidelity", "preview" ).c_str(),
+						bag.GetBool( "motion_blur", true ),
+						bag.GetBool( "face_normals", false ),
+						bag.GetBool( "double_sided", false ) );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "simulated_mesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Fixed-topology deforming triangle mesh read from a simulation cache "
+							"(a mesh.v1 output, e.g. cloth baked by `rise_sim bake cloth.shell`).  Every "
+							"animation frame installs the cache frame for its time (nearest frame, positions "
+							"extrapolated by the frame velocities), and with `motion_blur` the shutter-open "
+							"and shutter-close positions, interpolated per ray at the sample's time.  Positions "
+							"are object space, in metres.  No texture coordinates (mesh.v1 carries none).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "cache"; p.kind = ValueKind::String; p.required = true;
+						  p.description = "Simulation cache directory (the one holding manifest.cbor).  `~/` is the home "
+							"directory; any other relative path is resolved through the media path"; }
+						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::String; p.description = "Cache output to read; must be mesh.v1"; p.defaultValueHint = "surface"; }
+						{ auto& p = P(); p.name = "time_offset"; p.kind = ValueKind::Double; p.description = "Scene seconds subtracted from the render time before scaling"; p.defaultValueHint = "0"; p.unitLabel = "s"; }
+						{ auto& p = P(); p.name = "time_scale"; p.kind = ValueKind::Double; p.description = "Playback rate: cache time advances by this many scene seconds per scene second (nonzero)"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "end_policy"; p.kind = ValueKind::Enum; p.enumValues = { "cache", "hold", "loop", "error" };
+						  p.description = "Outside the cache frames: `cache` follows the cache's time map (hold or error), `hold` keeps the first/last frame, `loop` repeats, `error` fails the frame"; p.defaultValueHint = "cache"; }
+						{ auto& p = P(); p.name = "missing_frame"; p.kind = ValueKind::Enum; p.enumValues = { "hold", "hide" };
+						  p.description = "Preview only: a frame a partial cache has not baked yet keeps the previous frame (`hold`) or hides the surface (`hide`), with a warning.  A predictive binding fails instead"; p.defaultValueHint = "hold"; }
+						{ auto& p = P(); p.name = "fidelity"; p.kind = ValueKind::Enum; p.enumValues = { "preview", "predictive" };
+						  p.description = "`predictive` refuses (fail closed) a cache that is not complete and labelled predictive, verifies every frame at load, and fails any frame that cannot be installed"; p.defaultValueHint = "preview"; }
+						{ auto& p = P(); p.name = "motion_blur"; p.kind = ValueKind::Bool; p.description = "Deformation motion blur from the frame velocities under camera exposure; FALSE renders the nearest frame as a static mesh"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool; p.description = "Flat per-face shading; otherwise the cache's normals (or area-weighted vertex normals when it has none)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool; p.description = "Treat triangles as double sided (cloth usually is)"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct GLTFImportAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -14482,6 +14537,7 @@ namespace RISE
 		add( "rawmesh2_geometry",                     std::make_unique<RAWMesh2GeometryAsciiChunkParser>() );
 		add( "risemesh_geometry",                     std::make_unique<RISEMeshGeometryAsciiChunkParser>() );
 		add( "plymesh_geometry",                      std::make_unique<PLYMeshGeometryAsciiChunkParser>() );
+		add( "simulated_mesh_geometry",               std::make_unique<SimulatedMeshGeometryAsciiChunkParser>() );
 		add( "gltfmesh_geometry",                     std::make_unique<GLTFMeshGeometryAsciiChunkParser>() );
 		add( "gltf_import",                           std::make_unique<GLTFImportAsciiChunkParser>() );
 		add( "circulardisk_geometry",                 std::make_unique<CircularDiskGeometryAsciiChunkParser>() );

@@ -74,6 +74,7 @@
 #include "ClothLinearAlgebra.h"
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -84,11 +85,14 @@ using V3 = std::array<double,3>;
 enum class Triangulation { Alternating, Consistent };
 enum class BendingModel { Lines, Hinges };
 enum class Scheme { BackwardEuler, BDF2, ImplicitMidpoint };
-enum class LinearSolver { Auto, ConjugateGradient, Direct };
+enum class LinearSolver { Auto, ConjugateGradient, Direct, MultigridCG };
 const char* TriangulationName(Triangulation t);
 const char* BendingModelName(BendingModel b);
 const char* SchemeName(Scheme s);
 const char* LinearSolverName(LinearSolver s);
+
+class BarrierContact;
+struct ContactFrame;
 
 struct SheetSpec {
 	double sizeU = 1, sizeV = 1;                 // rest size in material coordinates, m
@@ -141,18 +145,43 @@ struct Motion {
 	double frequency = 0;   // Oscillate: Hz
 	V3 Position(const V3& rest, double t) const;
 	V3 Velocity(const V3& rest, double t) const;
+	//! The rigid map from time t0 to t1 applied to a point x (where a point
+	//! at x at time t0 is at time t1).
+	V3 Advance(const V3& x, double t0, double t1) const;
+	bool Moving() const { return type != Type::Fixed; }
 };
 struct PinGroup {
 	std::vector<std::uint32_t> vertices;
 	Motion motion;
 };
 struct Collider {
-	enum class Type { Plane, Sphere, Box };
+	enum class Type { Plane, Sphere, Box, Cylinder };
 	Type type = Type::Plane;
-	V3 a{{0, 0, 0}}, b{{0, 1, 0}}; // plane: point, unit normal; sphere: centre; box: min, max
+	V3 a{{0, 0, 0}}, b{{0, 1, 0}}; // plane: point, unit normal; sphere: centre; box: min, max;
+	                               // cylinder (infinite): point on the axis, unit axis
 	double radius = 0;
-	//! Signed distance (positive outside) and its gradient.
-	double Distance(const V3& x, V3& gradient) const;
+	//! Signed distance (positive outside), its gradient and, when `hessian` is
+	//! given, its Hessian (3x3 row-major; valid outside the shape).
+	double Distance(const V3& x, V3& gradient, double* hessian = nullptr) const;
+};
+
+//! A triangle-mesh collider: rest vertices moved by a rigid prescribed motion.
+struct MeshCollider {
+	std::vector<double> vertices;          // 3 per vertex, positions at motion time 0 (m)
+	std::vector<std::uint32_t> triangles;  // 3 per triangle
+	Motion motion;
+};
+
+enum class ContactModel { Penalty, Barrier };
+const char* ContactModelName(ContactModel c);
+
+//! Barrier contact (bake quality; ClothContact.h).
+struct BarrierSettings {
+	double stiffness = 1e5;          // kappa, N/m^3: energy kappa A b(z) per unit cloth area
+	double activation = 1e-3;        // d-hat, m: the barrier acts for 0 < z < d-hat
+	double friction = 0.3;           // Coulomb coefficient (static = kinetic)
+	double frictionVelocity = 1e-3;  // eps_v, m/s: slip speed below which friction is smoothed (sticking)
+	bool selfCollision = false;
 };
 
 struct ModelConfig {
@@ -160,8 +189,11 @@ struct ModelConfig {
 	V3 gravity{{0, -9.81, 0}};
 	std::vector<PinGroup> pins;
 	std::vector<Collider> colliders;
-	double contactStiffness = 1e5;  // N/m^3 (per unit vertex area per unit depth)
-	double contactThickness = 0.002; // m
+	std::vector<MeshCollider> meshColliders; // barrier contact only
+	ContactModel contact = ContactModel::Penalty;
+	BarrierSettings barrier;
+	double contactStiffness = 1e5;  // penalty: N/m^3 (per unit vertex area per unit depth)
+	double contactThickness = 0.002; // m: penalty offset; barrier: the cloth's distance offset xi
 	double pressure = 0;            // Pa on the front face, pushing along -normal
 	double dragCoefficient = 0, airDensity = 1.2;
 	bool damping = true;            // apply the material's Rayleigh damping
@@ -175,15 +207,22 @@ struct NewtonOptions {
 	LinearSolver solver = LinearSolver::Auto;
 	bool requireConvergence = true; // false: accept the iterate after maxIterations (interactive)
 	bool exactHessianFirst = true;  // try the unprojected Hessian before the projected one
+	bool lagHessian = false;        // modified Newton: keep the first iteration's Hessian (and its
+	                                // preconditioner) for the whole solve (interactive)
 	int maxHalvings = 4;
 };
 
 struct StepStats {
 	int newtonIterations = 0, cgIterations = 0, directSolves = 0, halvings = 0, unconverged = 0, projections = 0;
-	double residual = 0;
+	int solves = 0;                 // Newton solves finished
+	int ccdLimited = 0;             // line searches whose first trial CCD shortened
+	int carried = 0;                // steps that started by carrying vertices with a moving collider
+	double residual = 0;            // last residual (m/s^2)
+	double residualSum = 0;         // sum of the final residuals of finished solves
 	void Add(const StepStats& o) {
 		newtonIterations += o.newtonIterations; cgIterations += o.cgIterations; directSolves += o.directSolves;
 		halvings += o.halvings; unconverged += o.unconverged; projections += o.projections; residual = o.residual;
+		solves += o.solves; residualSum += o.residualSum; ccdLimited += o.ccdLimited; carried += o.carried;
 	}
 };
 
@@ -195,6 +234,11 @@ public:
 	std::uint32_t Vertices() const { return sheet_.Vertices(); }
 	bool Fixed(std::uint32_t v) const { return fixed_[v] != 0; }
 
+	//! Threads for assembly and the linear solver (1: the caller only).  Results
+	//! are bitwise the same for any count (ClothParallel.h).
+	void SetThreads(unsigned threads);
+	unsigned Threads() const { return pool_ ? pool_->Threads() : 1; }
+
 	//! x = initial placement (pins at time t), v = pin velocities, history cleared.
 	void Reset(double t);
 	//! One step of length h from `time` (pins, loads and collider state at the
@@ -202,9 +246,11 @@ public:
 	bool Step(double h, Scheme scheme, const NewtonOptions& options, StepStats& stats, std::string& error);
 	//! Static equilibrium from the current x by damped pseudo-time continuation
 	//! (stages with a mass term |x - x_k|^2_M / (2 tau^2), tau growing by 4) then
-	//! full Newton.  Leaves v = 0.
+	//! full Newton (unless `finish` is false: a problem with free rigid modes,
+	//! such as a sheet on a frictionless plane, keeps the last stage's mass
+	//! term).  Leaves v = 0.
 	bool SolveStatic(const NewtonOptions& options, StepStats& stats, std::string& error,
-		double tau0 = 0.01, int stages = 8);
+		double tau0 = 0.01, int stages = 8, bool finish = true);
 
 	// State (public for the solver's checkpoint and for validation).
 	std::vector<double> x, v, xPrev, vPrev;
@@ -212,6 +258,17 @@ public:
 	bool havePrev = false;
 	std::vector<double> portPressure;  // per vertex, Pa (empty: none)
 	std::vector<double> portTraction;  // 3 per vertex, Pa (empty: none)
+
+	// Barrier contact (null without it) and diagnostics for validation.
+	const BarrierContact* Barrier() const { return barrier_.get(); }
+	//! Smallest gap d - xi over the barrier's pairs at x with colliders at time t (infinity without contact).
+	double ContactGap(const std::vector<double>& x, double t) const;
+	//! Total barrier force on the cloth at x (N), colliders at time t.
+	V3 ContactForce(const std::vector<double>& x, double t) const;
+	//! Barrier energy at x (no friction), colliders at time t.
+	double ContactEnergy(const std::vector<double>& x, double t) const;
+	//! Exact check of the straight path x0 -> x1 against the colliders at time t.
+	bool PathIntersectionFree(const std::vector<double>& x0, const std::vector<double>& x1, double t, std::string& detail) const;
 
 	// Diagnostics.
 	double ElasticEnergy(const std::vector<double>& positions) const; // membrane + bending
@@ -223,8 +280,10 @@ public:
 	//! replaced by identity.  Equals the linearised operator at a flat unstressed state.
 	void ElasticHessian(const std::vector<double>& positions, BlockMatrix& h) const;
 	//! Solves A x = b with the configured solver policy (for validation).
+	//! `reuse`: `a` is the matrix of the previous call, unchanged (keeps its factor or preconditioner).
 	bool Solve(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& solution,
-		const NewtonOptions& options, bool preferDirect, StepStats& stats, bool* indefinite = nullptr) const;
+		const NewtonOptions& options, bool preferDirect, StepStats& stats, bool* indefinite = nullptr,
+		bool reuse = false) const;
 
 private:
 	struct Potential {
@@ -234,6 +293,7 @@ private:
 		std::vector<double> xTilde;
 		std::vector<double> force, xRef;    // constant external force and its reference point
 		bool useDamping = false;
+		std::shared_ptr<ContactFrame> contact; // barrier contact state (null: none)
 	};
 	double Evaluate(const Potential& p, const std::vector<double>& pos, std::vector<double>* gradient,
 		BlockMatrix* hessian, bool project) const;
@@ -260,6 +320,15 @@ private:
 	std::vector<double> hingeScale_, rodScale_; // clamp correction (1 or 2)
 	std::vector<std::uint32_t> order_;        // banded ordering
 	double directCost_ = 0;                   // dofs * bandwidth^2 under order_
+	mutable GridMultigrid multigrid_;         // CG preconditioner on the sheet's grid
+	std::shared_ptr<ParallelPool> pool_;
+	std::shared_ptr<BarrierContact> barrier_;
+	// Elements by colour (greedy, in element order): the elements of one colour
+	// share no vertex, so they assemble in parallel without conflicts.
+	std::vector<std::vector<std::uint32_t>> triColors_, hingeColors_, rodColors_;
+	mutable std::vector<double> elementEnergy_; // per element: triangles, hinges, rods
+	mutable BandedCholesky factor_;           // the last direct factorisation
+	mutable bool factorValid_ = false;
 };
 
 } } }

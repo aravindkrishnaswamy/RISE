@@ -100,6 +100,20 @@ namespace RISE
 			const ThreadSlots* t = tlsSlots;
 			return t ? t->camera : nullptr;
 		}
+
+		//! Simulation M3b: the calling render thread's current motion-blur
+		//! sample time inside a time-indexed pass (written by
+		//! TimeIndexedThread::PoseAt, cleared when the thread's view
+		//! retires).  Geometry that deforms over the shutter (a simulated
+		//! mesh) reads it inside its own intersection only, so nothing else
+		//! pays for it.  Outside a time-indexed pass the shared scene's pose
+		//! time is the animator's (Animator::LastEvaluatedTime).
+		struct SampleTime
+		{
+			double	time;
+			bool	valid;
+		};
+		inline thread_local SampleTime tlsSampleTime = { 0.0, false };
 	}
 }
 

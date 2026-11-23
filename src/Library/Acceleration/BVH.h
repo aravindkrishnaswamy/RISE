@@ -239,9 +239,11 @@ namespace RISE
 		//  notifications on DisplacedGeometry whose detail is fixed.
 		//
 		//  Returns refit duration in milliseconds for the caller's bench
-		//  reporting.
+		//  reporting.  `logSummary` false (Simulation M3b's per-frame
+		//  mesh install, which rebuilds past the 2x guard itself) drops
+		//  the summary, float-filter and SAH-degradation lines.
 		//////////////////////////////////////////////////////////////////
-		unsigned int Refit()
+		unsigned int Refit( const bool logSummary = true )
 		{
 			const auto tStart = std::chrono::steady_clock::now();
 			if( nodes.empty() ) {
@@ -298,7 +300,7 @@ namespace RISE
 			// refit BVH2.  These walks are O(N) and parallel-friendly —
 			// dominated by per-prim float-vertex extraction (filter)
 			// and a single tree walk (collapse).
-			BuildFastFilter();
+			BuildFastFilter( logSummary );
 			BuildBVH4();
 
 			const auto tEnd = std::chrono::steady_clock::now();
@@ -309,6 +311,9 @@ namespace RISE
 			// only the caller does) — instead we emit a warning at
 			// 2.0× and let the caller decide based on
 			// SAHDegradationRatio().
+			// A quiet caller (logSummary false) reads SAHDegradationRatio()
+			// itself and rebuilds.
+			if( !logSummary ) return ms;
 			const Scalar ratio = SAHDegradationRatio();
 			if( ratio > 2.0 ) {
 				GlobalLog()->PrintEx( eLog_Warning,
@@ -429,7 +434,7 @@ namespace RISE
 		//  vertices for.  Called once at construction after the main
 		//  build (so prims[] is in its final reordered layout).
 		//////////////////////////////////////////////////////////////////
-		void BuildFastFilter()
+		void BuildFastFilter( const bool logSummary = true )
 		{
 			if( prims.empty() ) {
 				hasFastFilter = false;
@@ -461,7 +466,7 @@ namespace RISE
 			}
 			hasFastFilter = true;
 
-			GlobalLog()->PrintEx( eLog_Info,
+			if( logSummary ) GlobalLog()->PrintEx( eLog_Info,
 				"BVH:: Float filter enabled (%u triangles precomputed, %u bytes)",
 				(unsigned)fastFilter.size(),
 				(unsigned)( fastFilter.size() * sizeof( TriangleFilterData ) ) );
