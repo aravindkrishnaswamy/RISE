@@ -214,15 +214,15 @@ namespace RISE
 		//! different inputs, and an infinity or NaN is hashed like any other
 		//! bit pattern (no guard is needed: nothing converts it to an int).
 		//! `dims` outside 1..4 gives Cycles' fallback, Value 0 and Color
-		//! (1, 0, 1).  Two render-time differences fall under the
+		//! (1, 0, 1).  One render-time difference falls under the
 		//! in-distribution caveat: Cycles enables flush-to-zero for Embree
 		//! on whichever thread constructs the Embree BVH (a TBB worker that
 		//! may later shade), and its CUDA/OptiX kernels are compiled with
 		//! --use_fast_math, which flushes (the other GPU backends use
 		//! fast-math modes that may), so a subnormal coordinate Cycles
-		//! computes can arrive as 0 where RISE hashes it; and RISE's expression memo compares coordinates with
-		//! ==, so a memoised body treats -0 and +0 as one input and returns
-		//! whichever result was cached first.
+		//! computes can arrive as 0 where RISE hashes it.  (RISE's
+		//! expression memo compares double key fields bit for bit, so a
+		//! memoised body keeps -0 and +0 apart.)
 		void WhiteNoise( int dims, const Scalar* p, Scalar& value, Scalar* color );
 
 		//////////////////////////////////////////////////////////////

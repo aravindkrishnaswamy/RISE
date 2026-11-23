@@ -85,6 +85,15 @@
 //        because the two entry points produce identical bits on this
 //        toolchain.  The check pins the contract, not an observed
 //        divergence -- see its own header, and EvalPipe's.
+//    (q) SIGNED-ZERO KEY SEPARATION (+0.0 vs -0.0).  Bit-exact double key
+//        comparison (SameDoubleBits in ExpressionMemo.h) keeps +0.0 and
+//        -0.0 apart under -ffast-math / -fno-signed-zeros: direct
+//        SameDoubleBits signed-zero/NaN checks, end-to-end on 1D Voronoi
+//        Distance to Edge (both painter pipes + coexistence via u, and
+//        ExpressionPainter via P.x), memo-worthy White Noise, signed-zero
+//        output preservation on Mix Dodge, an L1 sign-sensitive provider,
+//        and all 41 double fields across SignalHitKey,
+//        PainterSampleHitKey, SignalKey and ProgramKey.
 //
 //  Tabs: 4
 //
@@ -95,6 +104,7 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -2232,6 +2242,457 @@ static void TestCrossPipeL2Separation()
 	colour->release();
 }
 
+//======================================================================
+// (q) signed-zero key separation (+0.0 vs -0.0)
+//======================================================================
+
+namespace
+{
+	std::uint64_t DoubleBits( const double v )
+	{
+		std::uint64_t b = 0;
+		std::memcpy( &b, &v, sizeof( b ) );
+		return b;
+	}
+
+	double DoubleFromBits( const std::uint64_t b )
+	{
+		double v = 0.0;
+		std::memcpy( &v, &b, sizeof( v ) );
+		return v;
+	}
+
+	double PosZeroDouble() { return DoubleFromBits( 0x0000000000000000ull ); }
+	double NegZeroDouble() { return DoubleFromBits( 0x8000000000000000ull ); }
+
+	void CheckSameBits( const Scalar got, const Scalar want, const std::string& name )
+	{
+		const std::uint64_t bg = DoubleBits( (double)got );
+		const std::uint64_t bw = DoubleBits( (double)want );
+		if( bg == bw ) { ++passCount; }
+		else {
+			++failCount;
+			std::cout.precision( 17 );
+			std::cout << "  FAIL: " << name << "  got " << got
+				<< " (0x" << std::hex << bg << ")"
+				<< "  want " << want
+				<< " (0x" << bw << ")" << std::dec << std::endl;
+		}
+	}
+
+	//! L1 provider whose answer depends on the sign bit of ptObject.x,
+	//! giving the L1 memo path a red-provable +0.0 vs -0.0 check.
+	class SignSensitiveProvider : public ISurfaceSignalProvider
+	{
+	public:
+		bool ComputeOcclusion( const SurfaceSignalInfo& s, const Scalar, const bool, Scalar& out ) const override
+		{
+			out = ( DoubleBits( (double)s.ptObject.x ) == 0x8000000000000000ull )
+				? Scalar( 0.25 ) : Scalar( 0.75 );
+			return true;
+		}
+		bool ComputeThickness( const SurfaceSignalInfo&, const Scalar, const bool, Scalar& ) const override { return false; }
+		bool ComputeConvexity( const SurfaceSignalInfo&, const Scalar, const bool, Scalar& ) const override { return false; }
+	};
+}
+
+//! Bit-exact double key comparison (ExpressionMemo::SameDoubleBits).
+//!
+//! `OslVoronoi` 1D Distance to Edge hashes the floored coordinate's bit
+//! pattern directly, so +0.0 and -0.0 produce distinct non-zero distances.
+//! `OslNoise::WhiteNoise` hashes the float coordinate bits the same way,
+//! and `OslColor::MixColor` (Color Dodge) preserves the sign of zero on
+//! output.  Comparing memo key doubles with `==` (or letting `-ffast-math`
+//! / `-fno-signed-zeros` fold the compare) conflates +0.0 and -0.0 into
+//! one cache entry and makes a memoised render disagree with direct
+//! evaluation.
+//!
+//! Checks:
+//!   0. Direct SameDoubleBits invariants (signed zero and NaN bit patterns).
+//!   1. 1D Voronoi Distance to Edge: via `u` through BOTH painter pipes
+//!      (memo-off differs; memo-on keeps +0.0 and -0.0 apart in both fill
+//!      orders and with both entries coexisting), and via `P.x` through
+//!      ExpressionPainter in both fill orders.
+//!   2. Memo-worthy `osl_white_noise` body: same separation in both orders.
+//!   3. Mix Color Dodge in a memo-worthy body: separates +0.0 vs -0.0 on
+//!      input AND preserves the -0.0 output sign bit across a cache hit.
+//!   4. L1 memo via SignSensitiveProvider: separates ptObject.x = +0.0
+//!      from -0.0 in both orders.
+//!   5. Every double field of SignalHitKey (12), PainterSampleHitKey (12),
+//!      SignalKey (1 own), and ProgramKey (16 own) -- all 41 double fields
+//!      -- separates +0.0 from -0.0, plus nested delegation from
+//!      ProgramKey into signals and sampleHit.
+static void TestSignedZeroKeySeparation()
+{
+	std::cout << "(q) signed-zero key separation (+0.0 vs -0.0, L1 and L2)" << std::endl;
+
+	const double pz = PosZeroDouble();
+	const double nz = NegZeroDouble();
+
+	// 0. SameDoubleBits direct invariants (signed zero and NaN bit patterns).
+	{
+		const double qnan1 = DoubleFromBits( 0x7ff8000000000001ull );
+		const double qnan2 = DoubleFromBits( 0x7ff8000000000002ull );
+		Check(  ExpressionMemo::SameDoubleBits( pz, pz ), "(q) SameDoubleBits(+0, +0) is true" );
+		Check(  ExpressionMemo::SameDoubleBits( nz, nz ), "(q) SameDoubleBits(-0, -0) is true" );
+		Check( !ExpressionMemo::SameDoubleBits( pz, nz ), "(q) SameDoubleBits(+0, -0) is false" );
+		Check( !ExpressionMemo::SameDoubleBits( nz, pz ), "(q) SameDoubleBits(-0, +0) is false" );
+		Check(  ExpressionMemo::SameDoubleBits( qnan1, qnan1 ), "(q) SameDoubleBits(qnan1, qnan1) is true" );
+		Check( !ExpressionMemo::SameDoubleBits( qnan1, qnan2 ), "(q) SameDoubleBits(qnan1, qnan2) is false" );
+	}
+
+	// 1a. 1D Voronoi Distance to Edge via `u` on BOTH painter pipes.
+	{
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( CompileWithContext(
+			"osl_voronoi_distance(P, u, 1, 3, 0, 1, 0, 0.5, 2, 1, 1, 1, 0)", prog ),
+			"(q) 1D Voronoi Distance to Edge (u) compiles" );
+		Check( prog.MemoWorthy(), "(q) 1D Voronoi Distance to Edge (u) is memo-worthy" );
+
+		std::vector<ParamSpec> specs;
+		IPainter*       colour = 0;
+		IScalarPainter* scalar = 0;
+		Check( RISE_API_CreateExpressionPainter( &colour, prog, specs, Scalar( 0 ) ), "(q) colour painter" );
+		Check( RISE_API_CreateExpressionScalarPainter( &scalar, prog, specs ), "(q) scalar painter" );
+
+		if( colour && scalar ) {
+			RayIntersection hitPos = MkRI( Point3( 0.25, 0.5, 0.75 ), Vector3( 0, 1, 0 ) );
+			hitPos.geometric.ptCoord = Point2( Scalar( pz ), Scalar( 0.25 ) );
+			RayIntersection hitNeg = hitPos;
+			hitNeg.geometric.ptCoord = Point2( Scalar( nz ), Scalar( 0.25 ) );
+
+			Scalar refPosC = 0, refNegC = 0, refPosS = 0, refNegS = 0;
+			{
+				MemoSwitch off( 0 );
+				refPosC = colour->GetColor( hitPos.geometric )[0];
+				refNegC = colour->GetColor( hitNeg.geometric )[0];
+				refPosS = scalar->GetValuesAt( hitPos.geometric ).v[0];
+				refNegS = scalar->GetValuesAt( hitNeg.geometric ).v[0];
+			}
+			Check( refPosC != refNegC && DoubleBits( (double)refPosC ) != DoubleBits( (double)refNegC ),
+				"(q) Voronoi 1D Distance to Edge (u, colour): +0 and -0 really differ (has teeth)" );
+			Check( refPosS != refNegS && DoubleBits( (double)refPosS ) != DoubleBits( (double)refNegS ),
+				"(q) Voronoi 1D Distance to Edge (u, scalar): +0 and -0 really differ (has teeth)" );
+
+			// Colour pipe: +0 then -0
+			{
+				MemoSwitch on( 1 );
+				ExpressionMemo::Invalidate();
+				CheckSameBits( colour->GetColor( hitPos.geometric )[0], refPosC, "(q) Voronoi u colour (+0 then -0): warm +0" );
+				CheckSameBits( colour->GetColor( hitNeg.geometric )[0], refNegC, "(q) Voronoi u colour (+0 then -0): query -0" );
+			}
+			// Colour pipe: -0 then +0
+			{
+				MemoSwitch on( 1 );
+				ExpressionMemo::Invalidate();
+				CheckSameBits( colour->GetColor( hitNeg.geometric )[0], refNegC, "(q) Voronoi u colour (-0 then +0): warm -0" );
+				CheckSameBits( colour->GetColor( hitPos.geometric )[0], refPosC, "(q) Voronoi u colour (-0 then +0): query +0" );
+			}
+			// Colour pipe: both entries coexist across repeated hits
+			{
+				MemoSwitch on( 1 );
+				ExpressionMemo::Invalidate();
+				colour->GetColor( hitPos.geometric );
+				colour->GetColor( hitNeg.geometric );
+				CheckSameBits( colour->GetColor( hitPos.geometric )[0], refPosC, "(q) Voronoi u colour coexist: +0 hit" );
+				CheckSameBits( colour->GetColor( hitNeg.geometric )[0], refNegC, "(q) Voronoi u colour coexist: -0 hit" );
+			}
+			// Scalar pipe: +0 then -0
+			{
+				MemoSwitch on( 1 );
+				ExpressionMemo::Invalidate();
+				CheckSameBits( scalar->GetValuesAt( hitPos.geometric ).v[0], refPosS, "(q) Voronoi u scalar (+0 then -0): warm +0" );
+				CheckSameBits( scalar->GetValuesAt( hitNeg.geometric ).v[0], refNegS, "(q) Voronoi u scalar (+0 then -0): query -0" );
+			}
+			// Scalar pipe: -0 then +0
+			{
+				MemoSwitch on( 1 );
+				ExpressionMemo::Invalidate();
+				CheckSameBits( scalar->GetValuesAt( hitNeg.geometric ).v[0], refNegS, "(q) Voronoi u scalar (-0 then +0): warm -0" );
+				CheckSameBits( scalar->GetValuesAt( hitPos.geometric ).v[0], refPosS, "(q) Voronoi u scalar (-0 then +0): query +0" );
+			}
+			// Scalar pipe: both entries coexist
+			{
+				MemoSwitch on( 1 );
+				ExpressionMemo::Invalidate();
+				scalar->GetValuesAt( hitPos.geometric );
+				scalar->GetValuesAt( hitNeg.geometric );
+				CheckSameBits( scalar->GetValuesAt( hitPos.geometric ).v[0], refPosS, "(q) Voronoi u scalar coexist: +0 hit" );
+				CheckSameBits( scalar->GetValuesAt( hitNeg.geometric ).v[0], refNegS, "(q) Voronoi u scalar coexist: -0 hit" );
+			}
+		}
+		if( scalar ) scalar->release();
+		if( colour ) colour->release();
+	}
+
+	// 1b. 1D Voronoi Distance to Edge via `P.x`.
+	{
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( CompileWithContext(
+			"osl_voronoi_distance(P, P.x, 1, 3, 0, 1, 0, 0.5, 2, 1, 1, 1, 0)", prog ),
+			"(q) 1D Voronoi Distance to Edge (P.x) compiles" );
+		Check( prog.MemoWorthy(), "(q) 1D Voronoi Distance to Edge (P.x) is memo-worthy" );
+
+		std::vector<ParamSpec> specs;
+		ExpressionPainter* painter = new ExpressionPainter( prog, specs, Scalar( 0 ) );
+
+		RayIntersection hitPos = MkRI( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		hitPos.geometric.ptIntersection = Point3( Scalar( pz ), 0.25, 0.5 );
+		RayIntersection hitNeg = hitPos;
+		hitNeg.geometric.ptIntersection.x = Scalar( nz );
+
+		Scalar refPos = 0, refNeg = 0;
+		{
+			MemoSwitch off( 0 );
+			refPos = painter->GetColor( hitPos.geometric )[0];
+			refNeg = painter->GetColor( hitNeg.geometric )[0];
+		}
+		Check( refPos != refNeg, "(q) Voronoi 1D Distance to Edge (P.x): +0 and -0 really differ" );
+
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckSameBits( painter->GetColor( hitPos.geometric )[0], refPos, "(q) Voronoi P.x (+0 then -0): warm +0" );
+			CheckSameBits( painter->GetColor( hitNeg.geometric )[0], refNeg, "(q) Voronoi P.x (+0 then -0): query -0" );
+		}
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckSameBits( painter->GetColor( hitNeg.geometric )[0], refNeg, "(q) Voronoi P.x (-0 then +0): warm -0" );
+			CheckSameBits( painter->GetColor( hitPos.geometric )[0], refPos, "(q) Voronoi P.x (-0 then +0): query +0" );
+		}
+
+		painter->release();
+	}
+
+	// 2. Memo-worthy White Noise body (combined with osl_snoise so L2 memo activates).
+	{
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( CompileWithContext(
+			"vec3( osl_white_noise(P, u, 1), osl_snoise(P, 0, 3), 0 )", prog ),
+			"(q) memo-worthy White Noise body compiles" );
+		Check( prog.MemoWorthy(), "(q) memo-worthy White Noise body qualifies for L2" );
+
+		std::vector<ParamSpec> specs;
+		ExpressionPainter* painter = new ExpressionPainter( prog, specs, Scalar( 0 ) );
+
+		RayIntersection hitPos = MkRI( Point3( 0.25, 0.5, 0.75 ), Vector3( 0, 1, 0 ) );
+		hitPos.geometric.ptCoord = Point2( Scalar( pz ), Scalar( 0.25 ) );
+		RayIntersection hitNeg = hitPos;
+		hitNeg.geometric.ptCoord = Point2( Scalar( nz ), Scalar( 0.25 ) );
+
+		Scalar refPos = 0, refNeg = 0;
+		{
+			MemoSwitch off( 0 );
+			refPos = painter->GetColor( hitPos.geometric )[0];
+			refNeg = painter->GetColor( hitNeg.geometric )[0];
+		}
+		Check( refPos != refNeg, "(q) White Noise 1D: +0 and -0 really differ" );
+
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckSameBits( painter->GetColor( hitPos.geometric )[0], refPos, "(q) White Noise (+0 then -0): warm +0" );
+			CheckSameBits( painter->GetColor( hitNeg.geometric )[0], refNeg, "(q) White Noise (+0 then -0): query -0" );
+		}
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckSameBits( painter->GetColor( hitNeg.geometric )[0], refNeg, "(q) White Noise (-0 then +0): warm -0" );
+			CheckSameBits( painter->GetColor( hitPos.geometric )[0], refPos, "(q) White Noise (-0 then +0): query +0" );
+		}
+
+		painter->release();
+	}
+
+	// 3. Mix Color Dodge (mode 10): preserves the sign bit of 0 on output AND
+	//    keeps +0.0 vs -0.0 inputs separate across cache hits.
+	{
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( CompileWithContext(
+			"vec3( osl_mix_color(10, 0.5, P, Po, 0, 0).x, osl_snoise(Po, 0, 3), 0 )", prog ),
+			"(q) memo-worthy Mix Dodge body compiles" );
+		Check( prog.MemoWorthy(), "(q) memo-worthy Mix Dodge body qualifies for L2" );
+
+		std::vector<ParamSpec> specs;
+		ExpressionPainter* painter = new ExpressionPainter( prog, specs, Scalar( 0 ) );
+
+		RayIntersection hitPos = MkRI( Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		hitPos.geometric.ptIntersection = Point3( Scalar( pz ), 0.25, 0.5 );
+		hitPos.geometric.ptObjIntersec = Point3( 0.3, 0.4, 0.5 );
+		RayIntersection hitNeg = hitPos;
+		hitNeg.geometric.ptIntersection.x = Scalar( nz );
+
+		Scalar refPos = 0, refNeg = 0;
+		{
+			MemoSwitch off( 0 );
+			refPos = painter->GetColor( hitPos.geometric )[0];
+			refNeg = painter->GetColor( hitNeg.geometric )[0];
+		}
+		CheckSameBits( refPos, Scalar( pz ), "(q) Mix Dodge memo-off at P.x = +0 returns +0.0" );
+		CheckSameBits( refNeg, Scalar( nz ), "(q) Mix Dodge memo-off at P.x = -0 returns -0.0" );
+
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckSameBits( painter->GetColor( hitPos.geometric )[0], Scalar( pz ), "(q) Mix Dodge (+0 then -0): warm +0" );
+			CheckSameBits( painter->GetColor( hitNeg.geometric )[0], Scalar( nz ), "(q) Mix Dodge (+0 then -0): miss -0" );
+			CheckSameBits( painter->GetColor( hitNeg.geometric )[0], Scalar( nz ), "(q) Mix Dodge (+0 then -0): cached hit preserves -0.0" );
+		}
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckSameBits( painter->GetColor( hitNeg.geometric )[0], Scalar( nz ), "(q) Mix Dodge (-0 then +0): warm -0" );
+			CheckSameBits( painter->GetColor( hitPos.geometric )[0], Scalar( pz ), "(q) Mix Dodge (-0 then +0): miss +0" );
+			CheckSameBits( painter->GetColor( hitPos.geometric )[0], Scalar( pz ), "(q) Mix Dodge (-0 then +0): cached hit preserves +0.0" );
+		}
+
+		painter->release();
+	}
+
+	// 4. L1 memo end-to-end signed-zero separation via SignSensitiveProvider.
+	{
+		SignSensitiveProvider provider;
+		SurfaceSignalInfo sPos;
+		sPos.pProvider = &provider;
+		sPos.ptObject  = Point3( Scalar( pz ), Scalar( 0.2 ), Scalar( 0.3 ) );
+		SurfaceSignalInfo sNeg = sPos;
+		sNeg.ptObject.x = Scalar( nz );
+
+		Scalar refPos = 0, refNeg = 0;
+		{
+			MemoSwitch off( 0 );
+			refPos = sPos.Occlusion( Scalar( 0.5 ), true );
+			refNeg = sNeg.Occlusion( Scalar( 0.5 ), true );
+		}
+		CheckExact( refPos, Scalar( 0.75 ), "(q) L1 SignSensitiveProvider memo-off +0" );
+		CheckExact( refNeg, Scalar( 0.25 ), "(q) L1 SignSensitiveProvider memo-off -0" );
+
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckExact( sPos.Occlusion( Scalar( 0.5 ), true ), refPos, "(q) L1 (+0 then -0): warm +0" );
+			CheckExact( sNeg.Occlusion( Scalar( 0.5 ), true ), refNeg, "(q) L1 (+0 then -0): query -0" );
+		}
+		{
+			MemoSwitch on( 1 );
+			ExpressionMemo::Invalidate();
+			CheckExact( sNeg.Occlusion( Scalar( 0.5 ), true ), refNeg, "(q) L1 (-0 then +0): warm -0" );
+			CheckExact( sPos.Occlusion( Scalar( 0.5 ), true ), refPos, "(q) L1 (-0 then +0): query +0" );
+		}
+	}
+
+	// 5. Exhaustive direct key-struct signed-zero checks across all 41
+	//    double fields of SignalHitKey (12), PainterSampleHitKey (12),
+	//    SignalKey (1 own), and ProgramKey (16 own).
+	{
+		ExpressionMemo::SignalHitKey shBase = {};
+		Check( shBase.Equals( shBase ), "(q) SignalHitKey base == base" );
+		struct SHField { const char* name; double ExpressionMemo::SignalHitKey::*ptr; };
+		const SHField shFields[] = {
+			{ "ptx", &ExpressionMemo::SignalHitKey::ptx },
+			{ "pty", &ExpressionMemo::SignalHitKey::pty },
+			{ "ptz", &ExpressionMemo::SignalHitKey::ptz },
+			{ "nx", &ExpressionMemo::SignalHitKey::nx },
+			{ "ny", &ExpressionMemo::SignalHitKey::ny },
+			{ "nz", &ExpressionMemo::SignalHitKey::nz },
+			{ "baryA", &ExpressionMemo::SignalHitKey::baryA },
+			{ "baryB", &ExpressionMemo::SignalHitKey::baryB },
+			{ "wx", &ExpressionMemo::SignalHitKey::wx },
+			{ "wy", &ExpressionMemo::SignalHitKey::wy },
+			{ "wz", &ExpressionMemo::SignalHitKey::wz },
+			{ "time", &ExpressionMemo::SignalHitKey::time },
+		};
+		for( size_t i = 0; i < sizeof( shFields ) / sizeof( shFields[0] ); ++i ) {
+			ExpressionMemo::SignalHitKey m = shBase;
+			m.*( shFields[i].ptr ) = nz;
+			const std::string tag = std::string( "(q) SignalHitKey." ) + shFields[i].name;
+			Check( !shBase.Equals( m ) && !m.Equals( shBase ) && m.Equals( m ),
+				tag + ": +0.0 and -0.0 compare unequal symmetrically" );
+		}
+
+		ExpressionMemo::PainterSampleHitKey psBase = {};
+		psBase.hasHit = true;
+		Check( psBase.Equals( psBase ), "(q) PainterSampleHitKey base == base" );
+		struct PSField { const char* name; double ExpressionMemo::PainterSampleHitKey::*ptr; };
+		const PSField psFields[] = {
+			{ "dudx", &ExpressionMemo::PainterSampleHitKey::dudx },
+			{ "dudy", &ExpressionMemo::PainterSampleHitKey::dudy },
+			{ "dvdx", &ExpressionMemo::PainterSampleHitKey::dvdx },
+			{ "dvdy", &ExpressionMemo::PainterSampleHitKey::dvdy },
+			{ "rdx", &ExpressionMemo::PainterSampleHitKey::rdx },
+			{ "rdy", &ExpressionMemo::PainterSampleHitKey::rdy },
+			{ "rdz", &ExpressionMemo::PainterSampleHitKey::rdz },
+			{ "u1", &ExpressionMemo::PainterSampleHitKey::u1 },
+			{ "v1", &ExpressionMemo::PainterSampleHitKey::v1 },
+			{ "vcr", &ExpressionMemo::PainterSampleHitKey::vcr },
+			{ "vcg", &ExpressionMemo::PainterSampleHitKey::vcg },
+			{ "vcb", &ExpressionMemo::PainterSampleHitKey::vcb },
+		};
+		for( size_t i = 0; i < sizeof( psFields ) / sizeof( psFields[0] ); ++i ) {
+			ExpressionMemo::PainterSampleHitKey m = psBase;
+			m.*( psFields[i].ptr ) = nz;
+			const std::string tag = std::string( "(q) PainterSampleHitKey." ) + psFields[i].name;
+			Check( !psBase.Equals( m ) && !m.Equals( psBase ) && m.Equals( m ),
+				tag + ": +0.0 and -0.0 compare unequal symmetrically" );
+		}
+
+		ExpressionMemo::SignalKey skBase = {};
+		Check( skBase.Equals( skBase ), "(q) SignalKey base == base" );
+		{
+			ExpressionMemo::SignalKey m = skBase;
+			m.radius = nz;
+			Check( !skBase.Equals( m ) && !m.Equals( skBase ) && m.Equals( m ),
+				"(q) SignalKey.radius: +0.0 and -0.0 compare unequal symmetrically" );
+		}
+
+		ExpressionMemo::ProgramKey pkBase = {};
+		pkBase.progId = 42;
+		pkBase.usesPainterSample = true;
+		pkBase.sampleHit.hasHit = true;
+		Check( pkBase.Equals( pkBase ), "(q) ProgramKey base == base" );
+		struct PKField { const char* name; double ExpressionMemo::ProgramKey::*ptr; };
+		const PKField pkFields[] = {
+			{ "u", &ExpressionMemo::ProgramKey::u },
+			{ "v", &ExpressionMemo::ProgramKey::v },
+			{ "Px", &ExpressionMemo::ProgramKey::Px },
+			{ "Py", &ExpressionMemo::ProgramKey::Py },
+			{ "Pz", &ExpressionMemo::ProgramKey::Pz },
+			{ "Pox", &ExpressionMemo::ProgramKey::Pox },
+			{ "Poy", &ExpressionMemo::ProgramKey::Poy },
+			{ "Poz", &ExpressionMemo::ProgramKey::Poz },
+			{ "Nx", &ExpressionMemo::ProgramKey::Nx },
+			{ "Ny", &ExpressionMemo::ProgramKey::Ny },
+			{ "Nz", &ExpressionMemo::ProgramKey::Nz },
+			{ "fw", &ExpressionMemo::ProgramKey::fw },
+			{ "fwo", &ExpressionMemo::ProgramKey::fwo },
+			{ "time", &ExpressionMemo::ProgramKey::time },
+			{ "curv", &ExpressionMemo::ProgramKey::curv },
+			{ "curvR", &ExpressionMemo::ProgramKey::curvR },
+		};
+		for( size_t i = 0; i < sizeof( pkFields ) / sizeof( pkFields[0] ); ++i ) {
+			ExpressionMemo::ProgramKey m = pkBase;
+			m.*( pkFields[i].ptr ) = nz;
+			const std::string tag = std::string( "(q) ProgramKey." ) + pkFields[i].name;
+			Check( !pkBase.Equals( m ) && !m.Equals( pkBase ) && m.Equals( m ),
+				tag + ": +0.0 and -0.0 compare unequal symmetrically" );
+		}
+		// Nested delegation from ProgramKey into signals and sampleHit.
+		{
+			ExpressionMemo::ProgramKey m = pkBase;
+			m.signals.ptx = nz;
+			Check( !pkBase.Equals( m ) && !m.Equals( pkBase ),
+				"(q) ProgramKey.signals.ptx: +0.0 and -0.0 compare unequal" );
+		}
+		{
+			ExpressionMemo::ProgramKey m = pkBase;
+			m.sampleHit.dudx = nz;
+			Check( !pkBase.Equals( m ) && !m.Equals( pkBase ),
+				"(q) ProgramKey.sampleHit.dudx: +0.0 and -0.0 compare unequal" );
+		}
+	}
+}
+
 int main( int argc, char** argv )
 {
 	// The child half of (j), before anything else can warm a table or
@@ -2262,6 +2723,7 @@ int main( int argc, char** argv )
 	TestProximityEntryClearsOnBump();
 	TestInteriorEntryKeysApartAndClears();
 	TestCrossPipeL2Separation();
+	TestSignedZeroKeySeparation();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount;

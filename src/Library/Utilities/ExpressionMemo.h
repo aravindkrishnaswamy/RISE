@@ -167,7 +167,14 @@
 //  cases are now part of RunAny's pinned text.  They read no `fw` and
 //  add no key field: an `osl_` builtin is a pure function of its
 //  arguments.  ComputeMemoWorthiness counts a call whose signature is
-//  marked expensive (every noise builtin) as worth an L2 entry.
+//  marked expensive (the gradient and fractal noise builtins, and since
+//  2026-11-22 the Voronoi ones; not White Noise, colour conversions or
+//  Mix Color -- none of which adds a case to RunAny) as worth an L2
+//  entry.  All double key fields in L1 and L2 are compared bit for bit
+//  via `SameDoubleBits` (integer bit-pattern equality via `memcpy`)
+//  rather than `==`, so `-0.0` and `+0.0` stay distinct even under
+//  `-ffast-math` / `-fno-signed-zeros` whenever a body distinguishes
+//  them (e.g. 1D Voronoi Distance to Edge, White Noise, or Mix Dodge).
 //
 //  ⚠ THE FIRST IMPLEMENTATION CLAIMED THE KEY NEED NOT GROW, AND IT WAS
 //  WRONG.  It said: `sample()`/`sample_scalar()` evaluate the bound painter
@@ -249,6 +256,8 @@
 #include "../Interfaces/IOptions.h"
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 namespace RISE
@@ -616,6 +625,22 @@ namespace RISE
 			return n.fetch_add( 1, std::memory_order_relaxed ) + 1ull;
 		}
 
+		//! Bit-exact IEEE-754 double comparison.  Unlike `==`, separates
+		//! -0.0 from +0.0 (and survives -ffast-math / -fno-signed-zeros,
+		//! because the comparison is on integer bit patterns) while
+		//! treating identical bit patterns as equal.  Load-bearing for
+		//! memo soundness whenever a body distinguishes -0 and +0
+		//! (e.g. 1D Voronoi Distance to Edge, White Noise, or Mix Dodge).
+		inline bool SameDoubleBits( const double a, const double b )
+		{
+			static_assert( sizeof( double ) == sizeof( std::uint64_t ),
+				"SameDoubleBits requires 64-bit IEEE double" );
+			std::uint64_t ba, bb;
+			std::memcpy( &ba, &a, sizeof( ba ) );
+			std::memcpy( &bb, &b, sizeof( bb ) );
+			return ba == bb;
+		}
+
 		//! The part of a hit's SurfaceSignalInfo that a provider's answer
 		//! can depend on -- every field of it, compared EXACTLY.  Held as
 		//! plain scalars rather than as a SurfaceSignalInfo so this header
@@ -671,14 +696,14 @@ namespace RISE
 				// describe the hit, not the query), so they decide a mismatch
 				// almost never and belong past the fields that do.
 				return pProvider == o.pProvider
-					&& ptx == o.ptx && pty == o.pty && ptz == o.ptz
+					&& SameDoubleBits( ptx, o.ptx ) && SameDoubleBits( pty, o.pty ) && SameDoubleBits( ptz, o.ptz )
 					&& primId == o.primId
-					&& baryA == o.baryA && baryB == o.baryB
-					&& nx == o.nx && ny == o.ny && nz == o.nz
+					&& SameDoubleBits( baryA, o.baryA ) && SameDoubleBits( baryB, o.baryB )
+					&& SameDoubleBits( nx, o.nx ) && SameDoubleBits( ny, o.ny ) && SameDoubleBits( nz, o.nz )
 					&& bComplementedField == o.bComplementedField
 					&& pScene == o.pScene && pSelf == o.pSelf
-					&& wx == o.wx && wy == o.wy && wz == o.wz
-					&& time == o.time;
+					&& SameDoubleBits( wx, o.wx ) && SameDoubleBits( wy, o.wy ) && SameDoubleBits( wz, o.wz )
+					&& SameDoubleBits( time, o.time );
 			}
 		};
 
@@ -760,13 +785,13 @@ namespace RISE
 			bool Equals( const PainterSampleHitKey& o ) const
 			{
 				return hasHit == o.hasHit
-					&& dudx == o.dudx && dudy == o.dudy
-					&& dvdx == o.dvdx && dvdy == o.dvdy
+					&& SameDoubleBits( dudx, o.dudx ) && SameDoubleBits( dudy, o.dudy )
+					&& SameDoubleBits( dvdx, o.dvdx ) && SameDoubleBits( dvdy, o.dvdy )
 					&& footprintValid == o.footprintValid
-					&& rdx == o.rdx && rdy == o.rdy && rdz == o.rdz
-					&& u1 == o.u1 && v1 == o.v1
+					&& SameDoubleBits( rdx, o.rdx ) && SameDoubleBits( rdy, o.rdy ) && SameDoubleBits( rdz, o.rdz )
+					&& SameDoubleBits( u1, o.u1 ) && SameDoubleBits( v1, o.v1 )
 					&& hasTexCoord1 == o.hasTexCoord1
-					&& vcr == o.vcr && vcg == o.vcg && vcb == o.vcb
+					&& SameDoubleBits( vcr, o.vcr ) && SameDoubleBits( vcg, o.vcg ) && SameDoubleBits( vcb, o.vcb )
 					&& hasVertexColor == o.hasVertexColor;
 			}
 		};
@@ -788,7 +813,7 @@ namespace RISE
 				// distinct query the body makes, so this is the field that
 				// usually decides a mismatch.
 				return fn == o.fn
-					&& radius == o.radius
+					&& SameDoubleBits( radius, o.radius )
 					&& bRadiusIsConstant == o.bRadiusIsConstant
 					&& hit.Equals( o.hit );
 			}
@@ -925,12 +950,12 @@ namespace RISE
 				// function is this".
 				return progId == o.progId
 					&& pipe == o.pipe
-					&& Px == o.Px && Py == o.Py && Pz == o.Pz
-					&& u == o.u && v == o.v
-					&& Pox == o.Pox && Poy == o.Poy && Poz == o.Poz
-					&& Nx == o.Nx && Ny == o.Ny && Nz == o.Nz
-					&& fw == o.fw && fwo == o.fwo && time == o.time
-					&& curv == o.curv && curvR == o.curvR
+					&& SameDoubleBits( Px, o.Px ) && SameDoubleBits( Py, o.Py ) && SameDoubleBits( Pz, o.Pz )
+					&& SameDoubleBits( u, o.u ) && SameDoubleBits( v, o.v )
+					&& SameDoubleBits( Pox, o.Pox ) && SameDoubleBits( Poy, o.Poy ) && SameDoubleBits( Poz, o.Poz )
+					&& SameDoubleBits( Nx, o.Nx ) && SameDoubleBits( Ny, o.Ny ) && SameDoubleBits( Nz, o.Nz )
+					&& SameDoubleBits( fw, o.fw ) && SameDoubleBits( fwo, o.fwo ) && SameDoubleBits( time, o.time )
+					&& SameDoubleBits( curv, o.curv ) && SameDoubleBits( curvR, o.curvR )
 					&& signals.Equals( o.signals )
 					// LAST, and SHORT-CIRCUITED for the overwhelming
 					// majority of programs, which never call `sample()`:
