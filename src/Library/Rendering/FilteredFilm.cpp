@@ -47,7 +47,8 @@ void FilteredFilm::Splat(
 	const Scalar screenX,
 	const Scalar screenY,
 	const XYZPel& color,
-	const IPixelFilter& filter
+	const IPixelFilter& filter,
+	const Scalar sampleAlpha
 	)
 {
 	if( width == 0 || height == 0 || !std::isfinite(screenX) || !std::isfinite(screenY) ) return;
@@ -89,6 +90,7 @@ void FilteredFilm::Splat(
 				FilteredPixel& pixel = pixels[static_cast<std::size_t>(py) * width + px];
 				pixel.colorSum = pixel.colorSum + color * w;
 				pixel.weightSum += w;
+				pixel.alphaSum += sampleAlpha * w;
 			}
 		}
 	}
@@ -149,7 +151,18 @@ void FilteredFilm::Resolve(
 
 			if( fabs(pixel.weightSum) > 1e-10 ) {
 				const XYZPel resolvedXYZ = pixel.colorSum * (1.0 / pixel.weightSum);
-				target.SetPEL( x, y, RISEColor( RISEPel( resolvedXYZ ), 1.0 ) );
+				if( fabs(pixel.alphaSum - pixel.weightSum) <= 1e-10 ) {
+					target.SetPEL( x, y, RISEColor( RISEPel( resolvedXYZ ), 1.0 ) );
+				} else {
+					Scalar alpha = pixel.alphaSum / pixel.weightSum;
+					if( alpha < 0.0 ) alpha = 0.0;
+					else if( alpha > 1.0 ) alpha = 1.0;
+					if( alpha > 1e-6 ) {
+						target.SetPEL( x, y, RISEColor( RISEPel( resolvedXYZ * (1.0 / alpha) ), alpha ) );
+					} else {
+						target.SetPEL( x, y, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) );
+					}
+				}
 			}
 		}
 	}
@@ -183,7 +196,17 @@ void FilteredFilm::Unresolve(
 			if( fabs(pixel.weightSum) > 1e-10 ) {
 				RISEColor existing = target.GetPEL( x, y );
 				const XYZPel resolvedXYZ = pixel.colorSum * (1.0 / pixel.weightSum);
-				const RISEPel resolved = RISEPel( resolvedXYZ );
+				RISEPel resolved( 0, 0, 0 );
+				if( fabs(pixel.alphaSum - pixel.weightSum) <= 1e-10 ) {
+					resolved = RISEPel( resolvedXYZ );
+				} else {
+					Scalar alpha = pixel.alphaSum / pixel.weightSum;
+					if( alpha < 0.0 ) alpha = 0.0;
+					else if( alpha > 1.0 ) alpha = 1.0;
+					if( alpha > 1e-6 ) {
+						resolved = RISEPel( resolvedXYZ * (1.0 / alpha) );
+					}
+				}
 				RISEColor combined( existing.base - resolved, existing.a );
 				target.SetPEL( x, y, combined );
 			}
@@ -196,5 +219,6 @@ void FilteredFilm::Clear()
 	for( auto& pixel : pixels ) {
 		pixel.colorSum = XYZPel( 0, 0, 0 );
 		pixel.weightSum = 0;
+		pixel.alphaSum = 0;
 	}
 }

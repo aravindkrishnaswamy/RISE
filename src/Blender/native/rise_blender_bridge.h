@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 18
+#define RISE_BLENDER_API_VERSION 19
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,7 +44,11 @@ enum rise_blender_painter_kind {
 	// convention RISE's UVTransformPainter implements.  Used by the
 	// exporter to honour Blender's Mapping node (vector_type=POINT)
 	// between a Texture Coordinate and an Image Texture node.
-	RISE_BLENDER_PAINTER_UV_TRANSFORM = 7
+	RISE_BLENDER_PAINTER_UV_TRANSFORM = 7,
+	// ABI v19 — Expression painter (`IJob::AddExpressionPainter`).
+	// `expression` holds the compiled RISE expression string (e.g.
+	// procedural Voronoi / Noise / White Noise / Mix / Hue-Sat subgraphs).
+	RISE_BLENDER_PAINTER_EXPRESSION = 8
 };
 
 enum rise_blender_color_space {
@@ -262,6 +266,12 @@ typedef struct rise_blender_painter {
 	float uv_rotation;
 	float uv_scale_u;
 	float uv_scale_v;
+	// ABI v19 — Expression painter (kind = RISE_BLENDER_PAINTER_EXPRESSION):
+	// NUL-terminated RISE expression source string.  Optional leading
+	// newline-delimited `def <var> <expr>` lines are passed as `defs` to
+	// `Job::AddExpressionPainter`; the single non-empty non-`def` line is
+	// the root expression.  Unused / NULL for all other painter kinds.
+	const char* expression;
 } rise_blender_painter;
 
 typedef struct rise_blender_modifier {
@@ -779,6 +789,23 @@ typedef struct rise_blender_render_settings {
 	uint32_t mlt_chains;
 	uint32_t mlt_mutations_per_pixel;
 	float mlt_large_step_prob;
+
+	// ABI v19 — Render region (top-down inclusive RISE film coordinates)
+	// and transparent film background (`scene.render.film_transparent`).
+	// When `use_region` is non-zero and the active rasterizer honors regions,
+	// only [region_left..region_right] x [region_top..region_bottom] is
+	// rasterized.  When `film_transparent` is non-zero, primary camera rays
+	// that miss all geometry yield transparent black (RGBA = 0,0,0,0) while
+	// indirect lighting still sees the world radiance map.  Note: MLT does
+	// not implement transparent background alpha, and primary-ray scattering
+	// in an unbounded global medium without a surface hit is dropped because
+	// RISE's straight-RGB film cannot represent non-zero RGB at alpha = 0.
+	int use_region;
+	uint32_t region_left;
+	uint32_t region_top;
+	uint32_t region_right;
+	uint32_t region_bottom;
+	int film_transparent;
 } rise_blender_render_settings;
 
 typedef struct rise_blender_scene {

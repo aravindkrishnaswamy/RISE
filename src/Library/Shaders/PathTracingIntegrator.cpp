@@ -6054,7 +6054,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	const IRadianceMap* pRadianceMap,
 	PixelAOV* pAOV,
 	typename SpectralValueTraits<Tag>::value_type* pDirectResult,
-	const Tag& tag
+	const Tag& tag,
+	bool* pPrimaryHit
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -6090,6 +6091,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRaySampled( ri, sampler );
+	if( pPrimaryHit ) {
+		*pPrimaryHit = ri.geometric.bHit;
+	}
 	if constexpr ( Traits::supports_aov ) {
 		// Primary depth is independent of Accurate-mode albedo/normal
 		// traversal.  Never replace this camera-ray range with a later
@@ -7168,11 +7172,12 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
 	return IntegrateRayTemplated<PelTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, nullptr, PelTag{} );
+		sampler, pRadianceMap, pAOV, nullptr, PelTag{}, pPrimaryHit );
 }
 
 RISEPel PathTracingIntegrator::IntegrateRayDirectIndirect(
@@ -7184,12 +7189,13 @@ RISEPel PathTracingIntegrator::IntegrateRayDirectIndirect(
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
 	RISEPel& direct,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
 	direct = RISEPel( 0, 0, 0 );
 	return IntegrateRayTemplated<PelTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, &direct, PelTag{} );
+		sampler, pRadianceMap, pAOV, &direct, PelTag{}, pPrimaryHit );
 }
 
 
@@ -9196,11 +9202,12 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
 	return IntegrateRayTemplated<NMTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, nullptr, NMTag( nm ) );
+		sampler, pRadianceMap, pAOV, nullptr, NMTag( nm ), pPrimaryHit );
 }
 
 
@@ -9221,7 +9228,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
 	Scalar result[SampledWavelengths::N],
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
     // Phase 4: HWSS evaluates extended SMS per lane (see
@@ -9278,10 +9286,17 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			}
 		}
 		if( dispersiveContainment ) {
+			bool anyHit = false;
 			for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
-				if( !swl.terminated[w] ) result[w] = IntegrateRayNM( rc, rast, cameraRay,
-					swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV );
+				if( !swl.terminated[w] ) {
+					bool laneHit = false;
+					result[w] = IntegrateRayNM( rc, rast, cameraRay,
+						swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV,
+						pPrimaryHit ? &laneHit : nullptr );
+					if( laneHit ) anyHit = true;
+				}
 			}
+			if( pPrimaryHit ) *pPrimaryHit = anyHit;
 			return;
 		}
 		if( IORStackSeeding::StackHasOpenSheet( iorStack ) ) {
@@ -9294,6 +9309,9 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRaySampled( ri, sampler );
+	if( pPrimaryHit ) {
+		*pPrimaryHit = ri.geometric.bHit;
+	}
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
 	if( pAOV ) {

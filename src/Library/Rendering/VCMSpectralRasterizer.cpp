@@ -159,6 +159,8 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// px.colorSum is XYZPel; defer XYZ->ROMM RGB to here.
 				const XYZPel avgXYZ = px.colorSum * ( Scalar( 1 ) / px.alphaSum );
 				cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -290,6 +292,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 			XYZPel spectralSum( 0, 0, 0 );
 			XYZPel spectralMerge( 0, 0, 0 );
 
+			bool anyPrimaryHit = false;
 			for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 			{
 				// Camera ray.
@@ -380,6 +383,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 				}
 				if( eyeVerts.empty() ) {
 					continue;
+				}
+				if( eyeVerts.size() >= 2 && !eyeVerts[1].IsInfiniteLight() ) {
+					anyPrimaryHit = true;
 				}
 				// Single subpath each (no branching) — branching at multi-
 				// lobe delta vertices was excised in 2026-05.
@@ -624,6 +630,12 @@ void VCMSpectralRasterizer::IntegratePixel(
 			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 			// now accumulates XYZ; no per-sample chromaticity clip.
 
+			const bool transparentBg = GetTransparentBackground();
+			const Scalar sampleAlpha = ( transparentBg && !anyPrimaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+			if( sampleAlpha == Scalar( 0.0 ) ) {
+				spectralSum = XYZPel( 0, 0, 0 );
+			}
+
 			// Approach C: cross-pixel filter-weighted splat — see
 			// BDPTPelRasterizer::IntegratePixel for the rationale.
 			if( pFilteredFilm ) {
@@ -631,11 +643,12 @@ void VCMSpectralRasterizer::IntegratePixel(
 					ptOnScreen.x,
 					static_cast<Scalar>(height) - ptOnScreen.y,
 					spectralSum,
-					*pPixelFilter );
+					*pPixelFilter,
+					sampleAlpha );
 			}
 
 			colAccrued = colAccrued + spectralSum * weight;
-			alphasAccrued += weight;
+			alphasAccrued += sampleAlpha * weight;
 
 			// Welford update gated on `adaptive` only — see
 			// BDPTPelRasterizer for the multi-pass selection-bias

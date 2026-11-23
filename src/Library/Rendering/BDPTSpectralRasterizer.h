@@ -96,7 +96,8 @@ namespace RISE
 				uint32_t pixelSeed,
 				uint32_t mortonIndex,
 				uint32_t log2SPP,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
 			/// Evaluates BDPT at a specific wavelength for a single camera ray.
@@ -111,7 +112,8 @@ namespace RISE
 				const Scalar nm,
 				uint32_t sampleIndex,
 				uint32_t pixelSeed,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
 			AdaptiveSamplingConfig		adaptiveConfig;

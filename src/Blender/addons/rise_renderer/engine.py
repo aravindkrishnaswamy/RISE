@@ -36,20 +36,51 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
             ]
 
     @staticmethod
-    def _flip_full_image_rows(pixels, width, height):
-        expected_value_count = width * height * 4
-        if width <= 0 or height <= 0 or len(pixels) != expected_value_count:
+    def _extract_flipped_region(
+        pixels,
+        full_width,
+        full_height,
+        crop_left,
+        crop_top,
+        crop_width,
+        crop_height,
+    ):
+        expected_full = full_width * full_height * 4
+        if (
+            full_width <= 0
+            or full_height <= 0
+            or crop_width <= 0
+            or crop_height <= 0
+            or len(pixels) != expected_full
+        ):
             return pixels
 
-        flipped = array.array("f", [0.0]) * expected_value_count
-        row_width = width * 4
-        for src_row in range(height):
-            src_base = src_row * row_width
-            dst_base = (height - 1 - src_row) * row_width
-            row_values = array.array("f", pixels[src_base:src_base + row_width])
-            flipped[dst_base:dst_base + row_width] = row_values
+        cropped = array.array("f", [0.0]) * (crop_width * crop_height * 4)
+        dst_row_values = crop_width * 4
+        src_row_stride = full_width * 4
+        for row in range(crop_height):
+            src_y = crop_top + row
+            if src_y < 0 or src_y >= full_height:
+                continue
+            src_x0 = max(crop_left, 0)
+            src_x1 = min(crop_left + crop_width, full_width)
+            if src_x1 <= src_x0:
+                continue
+            copy_values = (src_x1 - src_x0) * 4
+            src_base = src_y * src_row_stride + src_x0 * 4
+            # Blender render passes expect rows in bottom-up order.
+            dst_y = crop_height - 1 - row
+            dst_base = dst_y * dst_row_values + (src_x0 - crop_left) * 4
+            cropped[dst_base:dst_base + copy_values] = array.array(
+                "f", pixels[src_base:src_base + copy_values]
+            )
+        return cropped
 
-        return flipped
+    @staticmethod
+    def _flip_full_image_rows(pixels, width, height):
+        return RISEBlenderRenderEngine._extract_flipped_region(
+            pixels, width, height, 0, 0, width, height
+        )
 
     @staticmethod
     def _apply_region_to_buffer(
@@ -61,12 +92,22 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         full_height,
         region_top,
         region_left,
+        crop_left=0,
+        crop_top=0,
+        crop_width=None,
+        crop_height=None,
     ):
+        if crop_width is None:
+            crop_width = full_width
+        if crop_height is None:
+            crop_height = full_height
         if (
             region_width <= 0
             or region_height <= 0
             or full_width <= 0
             or full_height <= 0
+            or crop_width <= 0
+            or crop_height <= 0
         ):
             return
 
@@ -84,13 +125,25 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         if len(values) != expected_value_count:
             return
 
+        # Clip incoming full-frame tile against the active crop window.
+        x0 = max(region_left, crop_left)
+        x1 = min(region_left + region_width, crop_left + crop_width)
+        y0 = max(region_top, crop_top)
+        y1 = min(region_top + region_height, crop_top + crop_height)
+        if x1 <= x0 or y1 <= y0:
+            return
+
         scale = 1.0 / 65535.0
-        for row in range(region_height):
-            src_base = row * region_width * 4
+        copy_cols = x1 - x0
+        for full_y in range(y0, y1):
+            src_row = full_y - region_top
+            src_col = x0 - region_left
+            src_base = (src_row * region_width + src_col) * 4
             # Blender render passes expect rows in bottom-up order.
-            dst_row = full_height - 1 - (region_top + row)
-            dst_base = (dst_row * full_width + region_left) * 4
-            for offset in range(region_width * 4):
+            dst_row = crop_height - 1 - (full_y - crop_top)
+            dst_col = x0 - crop_left
+            dst_base = (dst_row * crop_width + dst_col) * 4
+            for offset in range(copy_cols * 4):
                 buffer[dst_base + offset] = values[src_base + offset] * scale
 
     def _progress(self, progress, title):
@@ -178,8 +231,26 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         progress_state = {"seq": 0, "progress": -1.0, "title": ""}
         preview_state = {"payloads": []}
         final_state = {"done": False, "image": None, "error": None}
-        preview_buffer = array.array("f", [0.0]) * (render_settings.width * render_settings.height * 4)
-        result = self.begin_result(0, 0, render_settings.width, render_settings.height)
+        if getattr(render_settings, "use_region", False):
+            crop_left = int(render_settings.region_left)
+            crop_top = int(render_settings.region_top)
+            crop_width = int(render_settings.region_right) - crop_left + 1
+            crop_height = int(render_settings.region_bottom) - crop_top + 1
+        else:
+            crop_left = 0
+            crop_top = 0
+            crop_width = int(render_settings.width)
+            crop_height = int(render_settings.height)
+        result = self.begin_result(0, 0, crop_width, crop_height)
+        # Always match Blender's allocated pass extents (guards against any
+        # 1px border rounding edge case between Python and Blender C), and
+        # keep the rasterizer's region bounds synchronized before rendering.
+        crop_width = int(result.resolution_x)
+        crop_height = int(result.resolution_y)
+        if getattr(render_settings, "use_region", False) and crop_width > 0 and crop_height > 0:
+            render_settings.region_right = min(int(render_settings.width) - 1, crop_left + crop_width - 1)
+            render_settings.region_bottom = min(int(render_settings.height) - 1, crop_top + crop_height - 1)
+        preview_buffer = array.array("f", [0.0]) * (crop_width * crop_height * 4)
         layer = result.layers[0].passes["Combined"]
 
         def _queue_progress(progress_value, title):
@@ -246,7 +317,14 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
 
             if preview_payloads:
                 for payload in preview_payloads:
-                    self._apply_region_to_buffer(preview_buffer, *payload)
+                    self._apply_region_to_buffer(
+                        preview_buffer,
+                        *payload,
+                        crop_left=crop_left,
+                        crop_top=crop_top,
+                        crop_width=crop_width,
+                        crop_height=crop_height,
+                    )
                 preview_dirty = True
 
             now = time.monotonic()
@@ -285,7 +363,15 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
 
         self._set_pass_rect(
             layer,
-            self._flip_full_image_rows(image.rgba, image.width, image.height),
+            self._extract_flipped_region(
+                image.rgba,
+                image.width,
+                image.height,
+                crop_left,
+                crop_top,
+                crop_width,
+                crop_height,
+            ),
         )
         self.update_result(result)
         self.end_result(result)

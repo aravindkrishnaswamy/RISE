@@ -756,7 +756,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 18)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 19)
 
     def test_mesh_struct_matches(self):
         self._assert_matches(bridge._Mesh, "rise_blender_mesh")
@@ -796,6 +796,12 @@ class BridgeAbiLayoutTest(unittest.TestCase):
 
     def test_render_result_struct_matches(self):
         self._assert_matches(bridge._RenderResult, "rise_blender_render_result")
+
+    def test_render_settings_struct_matches(self):
+        self._assert_matches(bridge._RenderSettings, "rise_blender_render_settings")
+
+    def test_capabilities_struct_matches(self):
+        self._assert_matches(bridge._Capabilities, "rise_blender_capabilities")
 
     def test_all_pointer_target_structs_match(self):
         """Every ctypes.Structure named as a POINTER(...) target in

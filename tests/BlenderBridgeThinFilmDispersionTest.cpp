@@ -181,7 +181,7 @@ void CauchyReference( const double n_d, const double abbe, double& A, double& B 
 void TestAbiVersionAndLayout()
 {
 	std::cout << "Test: ABI version 18 and append-only v18 fields" << std::endl;
-	Check( RISE_BLENDER_API_VERSION == 18, "RISE_BLENDER_API_VERSION is 18" );
+	Check( RISE_BLENDER_API_VERSION == 19, "RISE_BLENDER_API_VERSION is 19" );
 	Check( rise_blender_api_version() == RISE_BLENDER_API_VERSION,
 		"rise_blender_api_version() reports the compiled-in constant" );
 	Check( offsetof( rise_blender_material, thin_film_thickness ) >

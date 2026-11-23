@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import ctypes
 import math
 import os
 import re
@@ -11,7 +12,7 @@ import bpy
 from bpy_extras.node_shader_utils import PrincipledBSDFWrapper
 from mathutils import Vector
 
-from . import hair_file_writer
+from . import hair_file_writer, procedural_expr
 from .bridge import resolve_rasterizer_selection
 from .hair_material_math import (
     anisotropic_rotation_turns_to_radians,
@@ -49,6 +50,7 @@ PAINTER_TEXTURE_TIFF = 4
 PAINTER_BLEND = 5
 PAINTER_TEXTURE_JPEG = 6
 PAINTER_UV_TRANSFORM = 7
+PAINTER_EXPRESSION = 8
 
 COLOR_SPACE_LINEAR = 0
 COLOR_SPACE_SRGB = 1
@@ -179,6 +181,14 @@ class RenderSettingsData:
     mlt_chains: int = 0
     mlt_mutations_per_pixel: int = 0
     mlt_large_step_prob: float = 0.0
+    # ABI v19 — render region (top-down inclusive RISE film coords) and
+    # transparent film background (`scene.render.film_transparent`).
+    use_region: bool = False
+    region_left: int = 0
+    region_top: int = 0
+    region_right: int = 0
+    region_bottom: int = 0
+    film_transparent: bool = False
 
 
 @dataclass
@@ -234,6 +244,8 @@ class PainterData:
     uv_rotation: float = 0.0
     uv_scale_u: float = 1.0
     uv_scale_v: float = 1.0
+    # ABI v19 — Expression painter (kind=PAINTER_EXPRESSION).
+    expression: str | None = None
 
 
 @dataclass
@@ -945,6 +957,22 @@ def _add_uniform_painter(
     return name
 
 
+def _add_expression_painter(
+    state: _ExportState,
+    label: str,
+    expression: str,
+) -> str:
+    key = ("expression", expression)
+    if key in state.painter_cache:
+        return state.painter_cache[key]
+
+    name = _unique_name(state, "pnt", label)
+    payload = PainterData(name=name, kind=PAINTER_EXPRESSION, expression=expression)
+    state.painters.append(payload)
+    state.painter_cache[key] = name
+    return name
+
+
 def _add_texture_painter(
     state: _ExportState,
     label: str,
@@ -1137,7 +1165,12 @@ def _check_principled_feature(state: _ExportState, node, material_name: str, soc
             _warn_principled_feature(state, material_name, feature)
 
 
-def _warn_unsupported_principled_features(state: _ExportState, material, wrapper: PrincipledBSDFWrapper):
+def _warn_unsupported_principled_features(
+    state: _ExportState,
+    material,
+    wrapper: PrincipledBSDFWrapper,
+    translated_sockets: set[str] | None = None,
+):
     node = wrapper.node_principled_bsdf
     material_name = material.name_full
     # Anisotropy ("Anisotropic"/"Anisotropic Rotation"), Specular IOR
@@ -1215,6 +1248,8 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
     for socket in node.inputs:
         if socket.name == "Tangent":
             continue        # the Tangent producer bakes its whole linked graph (DL-213)
+        if translated_sockets and socket.name in translated_sockets:
+            continue        # natively compiled to an expression_painter
         links = _live_links(socket) if socket.is_linked else []
         if not links:
             continue
@@ -1242,12 +1277,15 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
                     stack.append(upstream_links[0].from_node)
 
 
-# Procedural texture nodes the classifier admits as "simple" but the
-# exporter does not translate (RISE has perlin3d / voronoi3d / checker
-# painters; the bridge does not emit them yet).
+# Procedural texture nodes the classifier admits as "simple".  Noise,
+# Voronoi, and White Noise compile natively to RISE `expression_painter`
+# expressions on supported Principled sockets; this table drives the
+# per-socket fallback warning whenever one of them feeds an untranslated
+# socket (e.g. Bump, Alpha) or an unsupported node/mode (e.g. Checker).
 _UNTRANSLATED_PROCEDURAL_TEXTURES = {
     "ShaderNodeTexNoise": "Noise",
     "ShaderNodeTexVoronoi": "Voronoi",
+    "ShaderNodeTexWhiteNoise": "White Noise",
     "ShaderNodeTexChecker": "Checker",
 }
 
@@ -2098,8 +2136,14 @@ def _find_world_output(world):
     return None
 
 
-def _material_payload(material, state: _ExportState) -> _MaterialBinding:
+def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _MaterialBinding:
     key = _pointer_key(material)
+    bbox_key = None
+    if mesh_bbox is not None:
+        bmin, bmax = mesh_bbox
+        bbox_key = tuple(round(float(v), 6) for v in (*bmin, *bmax))
+    if (key, bbox_key) in state.material_map:
+        return state.material_map[(key, bbox_key)]
     if key in state.material_map:
         return state.material_map[key]
 
@@ -2256,8 +2300,6 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             state.material_map[key] = binding
             return binding
 
-    _warn_unsupported_principled_features(state, material, wrapper)
-
     # All per-socket lookups go through `_maybe_resolve_socket_texture`
     # so reroute / RGB-Curves / Mix chains feeding the Principled BSDF
     # still produce per-material textures.  `PrincipledBSDFWrapper`'s
@@ -2266,7 +2308,38 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     # in between — that was the root cause of every material in the
     # lone-monk demo scene collapsing onto a single shared painter via
     # `_add_uniform_painter`'s colour-keyed cache.
+    #
+    # When no image texture is found on a linked socket, try compiling the
+    # upstream procedural shader subgraph (Voronoi, Noise, White Noise,
+    # Mix, Hue/Sat, Mapping, TexCoord, ColorRamp, ...) directly into a RISE
+    # `expression_painter` (ABI v19).
     principled_node = wrapper.node_principled_bsdf
+    bbox_min = mesh_bbox[0] if mesh_bbox is not None else None
+    bbox_max = mesh_bbox[1] if mesh_bbox is not None else None
+    translated_sockets: set[str] = set()
+    used_generated_coords = False
+
+    def _try_expr_painter(
+        socket_name: str,
+        label: str,
+        want_type: str,
+        scale=None,
+    ) -> str | None:
+        nonlocal used_generated_coords
+        sock = _node_input(principled_node, socket_name)
+        compiled = procedural_expr.compile_socket_expression(
+            sock,
+            want_type=want_type,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            scale=scale,
+        )
+        if compiled is None:
+            return None
+        translated_sockets.add(socket_name)
+        if compiled.uses_generated:
+            used_generated_coords = True
+        return _add_expression_painter(state, label, compiled.expression)
 
     base_color = _float_color3(wrapper.base_color)
     base_color_texture = _maybe_resolve_socket_texture(
@@ -2274,7 +2347,11 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         wrapper.base_color_texture,
         colorspace_is_data=False,
     )
-    base_painter = _color_or_texture_painter(
+    base_expr = (
+        _try_expr_painter("Base Color", f"{material.name_full}_base_expr", "vec3")
+        if base_color_texture is None else None
+    )
+    base_painter = base_expr if base_expr is not None else _color_or_texture_painter(
         state,
         f"{material.name_full}_base",
         base_color,
@@ -2282,15 +2359,20 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     )
 
     metallic = _clamp01(wrapper.metallic)
-    metallic_painter = _scalar_or_texture_painter(
+    metallic_texture = _maybe_resolve_socket_texture(
+        principled_node, "Metallic",
+        wrapper.metallic_texture,
+        colorspace_is_data=True,
+    )
+    metallic_expr = (
+        _try_expr_painter("Metallic", f"{material.name_full}_metallic_expr", "scalar")
+        if metallic_texture is None else None
+    )
+    metallic_painter = metallic_expr if metallic_expr is not None else _scalar_or_texture_painter(
         state,
         f"{material.name_full}_metallic",
         metallic,
-        texture_wrapper=_maybe_resolve_socket_texture(
-            principled_node, "Metallic",
-            wrapper.metallic_texture,
-            colorspace_is_data=True,
-        ),
+        texture_wrapper=metallic_texture,
     )
 
     # RISE_API_CreatePBRMetallicRoughnessMaterial squares roughness
@@ -2302,7 +2384,11 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         wrapper.roughness_texture,
         colorspace_is_data=True,
     )
-    roughness_painter = _scalar_or_texture_painter(
+    roughness_expr = (
+        _try_expr_painter("Roughness", f"{material.name_full}_roughness_expr", "scalar")
+        if roughness_texture is None else None
+    )
+    roughness_painter = roughness_expr if roughness_expr is not None else _scalar_or_texture_painter(
         state,
         f"{material.name_full}_roughness",
         roughness,
@@ -2315,15 +2401,20 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     # 0.5 needs to map to RISE's specular_factor=1.0.  Multiplying by 2
     # bridges the conventions exactly.
     specular = _clamp01(wrapper.specular)
-    specular_factor_painter = _scalar_or_texture_painter(
+    specular_texture = _maybe_resolve_socket_texture(
+        principled_node, "Specular IOR Level",
+        wrapper.specular_texture,
+        colorspace_is_data=True,
+    )
+    specular_expr = (
+        _try_expr_painter("Specular IOR Level", f"{material.name_full}_specular_factor_expr", "scalar", scale=2.0)
+        if specular_texture is None else None
+    )
+    specular_factor_painter = specular_expr if specular_expr is not None else _scalar_or_texture_painter(
         state,
         f"{material.name_full}_specular_factor",
         specular,
-        texture_wrapper=_maybe_resolve_socket_texture(
-            principled_node, "Specular IOR Level",
-            wrapper.specular_texture,
-            colorspace_is_data=True,
-        ),
+        texture_wrapper=specular_texture,
         scale=2.0,
     )
 
@@ -2377,19 +2468,26 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         specular_tint_texture = _maybe_resolve_socket_texture(
             principled_node, "Specular Tint", None, colorspace_is_data=False,
         )
-        is_default_white = (
-            specular_tint_texture is None
-            and abs(specular_tint_default[0] - 1.0) < 1e-4
-            and abs(specular_tint_default[1] - 1.0) < 1e-4
-            and abs(specular_tint_default[2] - 1.0) < 1e-4
+        specular_tint_expr = (
+            _try_expr_painter("Specular Tint", f"{material.name_full}_specular_tint_expr", "vec3")
+            if specular_tint_texture is None else None
         )
-        if not is_default_white:
-            specular_color_painter = _color_or_texture_painter(
-                state,
-                f"{material.name_full}_specular_tint",
-                specular_tint_default,
-                texture_wrapper=specular_tint_texture,
+        if specular_tint_expr is not None:
+            specular_color_painter = specular_tint_expr
+        else:
+            is_default_white = (
+                specular_tint_texture is None
+                and abs(specular_tint_default[0] - 1.0) < 1e-4
+                and abs(specular_tint_default[1] - 1.0) < 1e-4
+                and abs(specular_tint_default[2] - 1.0) < 1e-4
             )
+            if not is_default_white:
+                specular_color_painter = _color_or_texture_painter(
+                    state,
+                    f"{material.name_full}_specular_tint",
+                    specular_tint_default,
+                    texture_wrapper=specular_tint_texture,
+                )
 
     # Anisotropy and rotation — read sockets directly because the
     # PrincipledBSDFWrapper doesn't surface them.
@@ -2455,7 +2553,16 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         sheen_tint_texture = _maybe_resolve_socket_texture(
             principled_node, "Sheen Tint", None, colorspace_is_data=False,
         )
-        sheen_color_painter = _color_or_texture_painter(
+        sheen_tint_expr = (
+            _try_expr_painter(
+                "Sheen Tint",
+                f"{material.name_full}_sheen_color_expr",
+                "vec3",
+                scale=(sheen_weight, sheen_weight, sheen_weight),
+            )
+            if sheen_tint_texture is None else None
+        )
+        sheen_color_painter = sheen_tint_expr if sheen_tint_expr is not None else _color_or_texture_painter(
             state,
             f"{material.name_full}_sheen_color",
             sheen_tint,
@@ -2473,6 +2580,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 f"{material.name_full}_sheen_roughness",
                 sheen_roughness_value,
                 texture_wrapper=sheen_roughness_texture,
+            )
+        else:
+            sheen_roughness_texture_painter = _try_expr_painter(
+                "Sheen Roughness", f"{material.name_full}_sheen_roughness_expr", "scalar"
             )
 
     # Coat (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
@@ -2501,6 +2612,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 coat_weight_value,
                 texture_wrapper=coat_weight_texture,
             )
+        else:
+            coat_weight_texture_painter = _try_expr_painter(
+                "Coat Weight", f"{material.name_full}_coat_weight_expr", "scalar"
+            )
         if coat_weight_texture_painter is None:
             _warn_once(
                 state,
@@ -2520,19 +2635,26 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         coat_tint_texture = _maybe_resolve_socket_texture(
             principled_node, "Coat Tint", None, colorspace_is_data=False,
         )
-        is_default_white = (
-            coat_tint_texture is None
-            and abs(coat_tint_default[0] - 1.0) < 1e-4
-            and abs(coat_tint_default[1] - 1.0) < 1e-4
-            and abs(coat_tint_default[2] - 1.0) < 1e-4
+        coat_tint_expr = (
+            _try_expr_painter("Coat Tint", f"{material.name_full}_coat_tint_expr", "vec3")
+            if coat_tint_texture is None else None
         )
-        if not is_default_white:
-            coat_tint_painter = _color_or_texture_painter(
-                state,
-                f"{material.name_full}_coat_tint",
-                coat_tint_default,
-                texture_wrapper=coat_tint_texture,
+        if coat_tint_expr is not None:
+            coat_tint_painter = coat_tint_expr
+        else:
+            is_default_white = (
+                coat_tint_texture is None
+                and abs(coat_tint_default[0] - 1.0) < 1e-4
+                and abs(coat_tint_default[1] - 1.0) < 1e-4
+                and abs(coat_tint_default[2] - 1.0) < 1e-4
             )
+            if not is_default_white:
+                coat_tint_painter = _color_or_texture_painter(
+                    state,
+                    f"{material.name_full}_coat_tint",
+                    coat_tint_default,
+                    texture_wrapper=coat_tint_texture,
+                )
 
         coat_roughness_value = _clamp01(_socket_default_float(principled_node, "Coat Roughness", 0.03))
         coat_roughness_texture = _maybe_resolve_socket_texture(
@@ -2544,6 +2666,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 f"{material.name_full}_coat_roughness",
                 coat_roughness_value,
                 texture_wrapper=coat_roughness_texture,
+            )
+        else:
+            coat_roughness_texture_painter = _try_expr_painter(
+                "Coat Roughness", f"{material.name_full}_coat_roughness_expr", "scalar"
             )
 
         coat_ior_socket = _node_input(principled_node, "Coat IOR")
@@ -2756,7 +2882,77 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         )
         emission_strength_texture = None
 
-    if emission_strength > 1e-6 or emission_color_texture is not None or emission_strength_texture is not None:
+    emission_paired_expr = None
+    if emission_color_texture is None and emission_strength_texture is None:
+        ec_sock = _node_input(principled_node, "Emission Color")
+        es_sock = _node_input(principled_node, "Emission Strength")
+        paired = procedural_expr.compile_socket_product_expression(
+            ec_sock,
+            es_sock,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+        )
+        if paired is not None:
+            translated_sockets.add("Emission Color")
+            translated_sockets.add("Emission Strength")
+            if paired.uses_generated:
+                used_generated_coords = True
+            emission_paired_expr = _add_expression_painter(
+                state,
+                f"{material.name_full}_emission_expr",
+                paired.expression,
+            )
+
+    emission_color_expr = (
+        _try_expr_painter(
+            "Emission Color",
+            f"{material.name_full}_emission_expr",
+            "vec3",
+            scale=(emission_strength, emission_strength, emission_strength),
+        )
+        if (emission_paired_expr is None and emission_color_texture is None and emission_strength > 1e-6) else None
+    )
+    if emission_color_expr is not None and emission_strength_texture is not None:
+        _warn_once(
+            state,
+            f"RISE only supports one textured emission input on '{material.name_full}'. The emission strength texture is ignored.",
+        )
+        emission_strength_texture = None
+    if (
+        emission_paired_expr is None
+        and emission_color_texture is None
+        and emission_strength_texture is None
+        and emission_strength <= 1e-6
+    ):
+        # When Emission Strength is unlinked and 0, emission is disabled;
+        # suppress a spurious fallback warning if Emission Color itself is a
+        # supported procedural graph.
+        ec_sock = _node_input(principled_node, "Emission Color")
+        if procedural_expr.compile_socket_expression(ec_sock, want_type="vec3", bbox_min=bbox_min, bbox_max=bbox_max) is not None:
+            translated_sockets.add("Emission Color")
+    emission_strength_expr = (
+        _try_expr_painter(
+            "Emission Strength",
+            f"{material.name_full}_emission_str_expr",
+            "scalar",
+            scale=emission_color,
+        )
+        if (
+            emission_paired_expr is None
+            and emission_color_texture is None
+            and emission_color_expr is None
+            and emission_strength_texture is None
+        ) else None
+    )
+
+    if (
+        emission_strength > 1e-6
+        or emission_color_texture is not None
+        or emission_strength_texture is not None
+        or emission_paired_expr is not None
+        or emission_color_expr is not None
+        or emission_strength_expr is not None
+    ):
         if emission_color_texture is not None:
             emission_painter = _color_or_texture_painter(
                 state,
@@ -2765,6 +2961,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 texture_wrapper=emission_color_texture,
                 scale=(emission_strength, emission_strength, emission_strength),
             )
+        elif emission_paired_expr is not None:
+            emission_painter = emission_paired_expr
+        elif emission_color_expr is not None:
+            emission_painter = emission_color_expr
         elif emission_strength_texture is not None:
             emission_painter = _scalar_or_texture_painter(
                 state,
@@ -2773,12 +2973,16 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 texture_wrapper=emission_strength_texture,
                 scale=max(emission_color[0], emission_color[1], emission_color[2]),
             )
+        elif emission_strength_expr is not None:
+            emission_painter = emission_strength_expr
         elif max(emission_color) > 1e-6:
             emission_painter = _add_uniform_painter(
                 state,
                 f"{material.name_full}_emission",
                 tuple(emission_color[index] * emission_strength for index in range(3)),
             )
+
+    _warn_unsupported_principled_features(state, material, wrapper, translated_sockets)
 
     modifier_name = _direct_normal_modifier(material, wrapper, state)
 
@@ -3072,7 +3276,8 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         double_sided=double_sided,
         shader_name=shader_name,
     )
-    state.material_map[key] = binding
+    cache_key = (key, bbox_key) if used_generated_coords else key
+    state.material_map[cache_key] = binding
     return binding
 
 
@@ -4149,6 +4354,15 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
 
         vertex_values = array.array("f", [0.0]) * (len(mesh.vertices) * 3)
         mesh.vertices.foreach_get("co", vertex_values)
+        mesh_bbox = None
+        if len(vertex_values) >= 3:
+            xs = vertex_values[0::3]
+            ys = vertex_values[1::3]
+            zs = vertex_values[2::3]
+            mesh_bbox = (
+                (float(min(xs)), float(min(ys)), float(min(zs))),
+                (float(max(xs)), float(max(ys)), float(max(zs))),
+            )
 
         normal_values = array.array("f", [0.0]) * (len(mesh.loops) * 3)
         if len(mesh.loops):
@@ -4196,7 +4410,7 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
                 if slot_material is not None:
                     material = slot_material
 
-            binding = _material_payload(material, state)
+            binding = _material_payload(material, state, mesh_bbox=mesh_bbox)
             directions = tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info, bucket["normal_indices"], allow_parallel=bool(binding.modifier_name))
             mesh_name = _unique_name(state, "mesh", f"{eval_object.name_full}_m{material_index}")
             mesh_payload = MeshData(
@@ -4224,14 +4438,72 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
     return results
 
 
+def compute_render_region(
+    full_width: int,
+    full_height: int,
+    use_border: bool,
+    border_min_x: float,
+    border_max_x: float,
+    border_min_y: float,
+    border_max_y: float,
+) -> tuple[bool, int, int, int, int]:
+    """Convert Blender's bottom-up fractional border rect to RISE's top-down
+    inclusive pixel region ``(use_region, left, top, right, bottom)``.
+
+    Mirrors Blender's ``pipeline.cc`` (``re_init_resolution`` / ``RE_InitState``):
+      * ``border_*`` are stored in single-precision float DNA fields and
+        truncated to int after multiplying by ``winx`` / ``winy``.
+      * A full ``[0, 1] x [0, 1]`` border disables border mode.
+      * Bottom-up ``[ymin, ymax)`` maps to top-down inclusive
+        ``[full_height - ymax, full_height - 1 - ymin]``.
+    """
+    if not use_border or full_width <= 0 or full_height <= 0:
+        return (False, 0, 0, 0, 0)
+
+    bmin_x = ctypes.c_float(float(border_min_x)).value
+    bmax_x = ctypes.c_float(float(border_max_x)).value
+    bmin_y = ctypes.c_float(float(border_min_y)).value
+    bmax_y = ctypes.c_float(float(border_max_y)).value
+
+    if bmin_x == 0.0 and bmax_x == 1.0 and bmin_y == 0.0 and bmax_y == 1.0:
+        return (False, 0, 0, 0, 0)
+
+    # Match Blender C++ `int(r->border.xmin * re->winx)` where `border.*` is
+    # 32-bit float and `winx`/`winy` promote to 32-bit float before multiply.
+    fw = ctypes.c_float(float(full_width)).value
+    fh = ctypes.c_float(float(full_height)).value
+    xmin = max(0, min(full_width, int(ctypes.c_float(bmin_x * fw).value)))
+    xmax = max(0, min(full_width, int(ctypes.c_float(bmax_x * fw).value)))
+    ymin = max(0, min(full_height, int(ctypes.c_float(bmin_y * fh).value)))
+    ymax = max(0, min(full_height, int(ctypes.c_float(bmax_y * fh).value)))
+    if xmax <= xmin or ymax <= ymin:
+        return (False, 0, 0, 0, 0)
+
+    rise_left = xmin
+    rise_right = xmax - 1
+    rise_top = full_height - ymax
+    rise_bottom = full_height - 1 - ymin
+    return (True, rise_left, rise_top, rise_right, rise_bottom)
+
+
 def build_render_settings(scene) -> RenderSettingsData:
     render = scene.render
-    scale = render.resolution_percentage / 100.0
-    width = max(int(render.resolution_x * scale), 1)
-    height = max(int(render.resolution_y * scale), 1)
+    width = max((int(render.resolution_x) * int(render.resolution_percentage)) // 100, 1)
+    height = max((int(render.resolution_y) * int(render.resolution_percentage)) // 100, 1)
     pixel_aspect = float(render.pixel_aspect_x) / max(float(render.pixel_aspect_y), 1e-8)
     rise = scene.rise
     temporary_directory = bpy.app.tempdir or tempfile.gettempdir()
+
+    use_region, region_left, region_top, region_right, region_bottom = compute_render_region(
+        width,
+        height,
+        bool(getattr(render, "use_border", False)),
+        float(getattr(render, "border_min_x", 0.0)),
+        float(getattr(render, "border_max_x", 1.0)),
+        float(getattr(render, "border_min_y", 0.0)),
+        float(getattr(render, "border_max_y", 1.0)),
+    )
+    film_transparent = bool(getattr(render, "film_transparent", False))
 
     rasterizer_kind, use_path_tracing = resolve_rasterizer_selection(
         getattr(rise, "rasterizer_type", "1"), rise.use_path_tracing)
@@ -4315,6 +4587,12 @@ def build_render_settings(scene) -> RenderSettingsData:
         mlt_chains=int(getattr(rise, "mlt_chains", 0)),
         mlt_mutations_per_pixel=int(getattr(rise, "mlt_mutations_per_pixel", 0)),
         mlt_large_step_prob=float(getattr(rise, "mlt_large_step_prob", 0.0)),
+        use_region=use_region,
+        region_left=region_left,
+        region_top=region_top,
+        region_right=region_right,
+        region_bottom=region_bottom,
+        film_transparent=film_transparent,
     )
 
 

@@ -11,17 +11,24 @@ types come up.
 The ordinary material-channel classifier chooses between two paths:
 
 1. **Direct translation** ("simple" graphs). Walk supported material
-   input chains into RISE painters: constants and image textures (with
-   UV Mapping). Mix nodes follow their A input and colour filters are
-   lossy pass-throughs, and the
-   procedural Noise / Voronoi / Checker textures the classifier admits are
-   NOT translated -- the input they feed loses their contribution, with a
-   per-input warning (see the table below).
-2. **Explicit image baking** ("complex" graphs). Click **Bake Procedural
-   Materials** to run Cycles channel bakes and store PNG paths on the
-   material. An existing diffuse PNG selects the synthetic dielectric cache;
-   roughness and normal are optional. Other channels alone do not select it. This
-   is a static channel approximation, not compilation of the whole BSDF.
+   input chains into RISE painters: constants, image textures (with
+   UV Mapping), and (since ABI v19) native procedural subgraphs compiled
+   by `procedural_expr.py` into RISE `expression_painter` expressions
+   (`ShaderNodeTexVoronoi`, `ShaderNodeTexNoise`, `ShaderNodeTexWhiteNoise`,
+   3D `ShaderNodeMapping`, `ShaderNodeMix`/`MixRGB`,
+   `ShaderNodeHueSaturation`, `ShaderNodeValToRGB`, `ShaderNodeInvert`,
+   `ShaderNodeBrightContrast`, `ShaderNodeGamma`, and `Separate`/`Combine`
+   XYZ/Color) on supported Principled sockets.  For image-texture-driven
+   chains outside procedural compilation, Mix nodes still follow their A
+   input and colour filters remain lossy pass-throughs; `ShaderNodeTexChecker`
+   and any unsupported procedural socket or mode still warn per input and
+   fall back to the socket default (see the table below).
+2. **Explicit image baking** ("complex" graphs, plus optional bake of
+   procedural-texture materials). Click **Bake Procedural Materials** to
+   run Cycles channel bakes and store PNG paths on the material. An
+   existing diffuse PNG selects the synthetic dielectric cache; roughness
+   and normal are optional. Other channels alone do not select it. This is
+   a static channel approximation, not compilation of the whole BSDF.
    See the [manual workflow](#manual-material-channel-bake-workflow).
 
 Principled **Tangent is excluded** from the ordinary supported-node,
@@ -73,14 +80,17 @@ Tangent; this table is not a whitelist for its corner-direction graph.
 | `ShaderNodeRGB` | `uniformcolor_painter` | Constant colour |
 | `ShaderNodeValue` | `scalar_painter` | Constant scalar |
 | `ShaderNodeTexImage` | `png_painter` / `jpg_painter` / `exr_painter` / `tiff_painter` / `hdr_painter` | Already wired (Round 1 of the bridge) |
-| `ShaderNodeTexCoord` | UV only | Feeds an image texture's UV lookup (with Mapping).  Object / Generated / Camera coordinates are not translated (no 3D painter chains are emitted).  Most other outputs force-bake. |
-| `ShaderNodeMapping` (POINT) | `RISE_BLENDER_PAINTER_UV_TRANSFORM` wrapper | KHR_texture_transform — already implemented for 2D image textures (ABI v6) |
-| `ShaderNodeTexNoise` / `ShaderNodeTexVoronoi` / `ShaderNodeTexChecker` | not translated (warned) | The classifier admits them, so the material keeps its direct path; the input they feed loses their contribution and the exporter warns per input.  Routing them to the manual bake was tried (2026-11-14) and rejected: the bake replaces the whole material with a metallic-0 PBR built from the baked channels, turning a noise-bumped metal or noise-roughened glass opaque.  RISE has `perlin3d_painter` / `voronoi3d_painter` / `checker_painter`; translating onto them is listed under "Capabilities to extend later". |
-| `ShaderNodeValToRGB` (Color Ramp) | pass-through (currently lossy) | Texture discovery walks through the ramp to the image feeding it and ignores the stops (the ramp itself is not translated). A ramp fed by a procedural texture gets the procedural-texture warning below. |
-| `ShaderNodeMix` (Color blend) | follows one input (lossy) | Texture discovery follows the A input (`_SOCKET_MIX_NODES`), or the first linked non-factor input when A is unlinked; the factor and the other input are dropped.  `exporter._add_blend_painter` exists but nothing calls it yet. |
-| `ShaderNodeMixRGB` (legacy) | follows Color1 (lossy) | Identical to ShaderNodeMix |
-| `ShaderNodeMath` | admitted, not translated | The classifier admits Math so a material using it stays on the direct path, but no operation is folded: a socket reached only through Math reads its socket default. |
-| `ShaderNodeRGBCurve` / `ShaderNodeHueSaturation` / `ShaderNodeBrightContrast` / `ShaderNodeGamma` / `ShaderNodeInvert` | pass-through (currently lossy) | Existing bridge walks through these and ignores the filter; future work could honour them via a remap painter. |
+| `ShaderNodeTexCoord` | UV (image textures); Generated / Object / UV (procedural expressions) | Feeds an image texture's UV lookup (with Mapping), or feeds procedural `expression_painter` chains (`Generated`, `Object` without external object reference, and `UV`, with `from_instancer` off).  `Normal`, `Camera`, `Window`, and `Reflection` are not translated (`expression_painter` fails closed and warns). |
+| `ShaderNodeMapping` | `RISE_BLENDER_PAINTER_UV_TRANSFORM` (image textures, `POINT`) or affine 3D expression (`POINT` / `TEXTURE` / `VECTOR` / `NORMAL`, unlinked transform inputs) | KHR_texture_transform for 2D image textures (ABI v6); full 3D affine transform compiled into `expression_painter` for procedural subgraphs (ABI v19). |
+| `ShaderNodeTexVoronoi` / `ShaderNodeTexNoise` / `ShaderNodeTexWhiteNoise` | `expression_painter` (`osl_voronoi_*` / `osl_noise_texture*` / `osl_white_noise*`) | Compiled natively (ABI v19, `procedural_expr.py`) alongside `ShaderNodeTexCoord` (`Generated`/`Object`/`UV`), `ShaderNodeMapping`, `ShaderNodeMix`/`MixRGB`, `ShaderNodeHueSaturation`, `ShaderNodeValToRGB` (RGB `LINEAR`/`CONSTANT`), `ShaderNodeInvert`/`BrightContrast`/`Gamma`, and `Separate`/`Combine` XYZ/Color on 12 Principled sockets: `Base Color`, `Metallic`, `Roughness`, `Specular IOR Level`, `Specular Tint` (4.x RGBA), `Sheen Tint`, `Sheen Roughness`, `Coat Weight`, `Coat Tint`, `Coat Roughness`, `Emission Color`, and `Emission Strength` (including paired procedural `Emission Color` × `Emission Strength`).  Other sockets (e.g. `Alpha`, `Bump`, `Anisotropic`, `Sheen Weight`, `Coat IOR`, `IOR`, `Transmission Weight`, `Subsurface *`, `Thin Film *`) warn and fall back to defaults.  Materials remain `"simple"` so F12 renders natively without gating, while the manual **Bake Procedural Materials** operator also accepts procedural-texture materials when explicitly clicked. |
+| `ShaderNodeTexChecker` | not translated (warned; bake-eligible) | Admitted by the classifier so F12 keeps the direct path with a per-input warning, and accepted by the manual **Bake Procedural Materials** operator (`has_procedural_texture_nodes`). |
+| `ShaderNodeValToRGB` (Color Ramp) | `expression_painter` piecewise ramp (RGB `LINEAR`/`CONSTANT`); image chains pass-through (lossy) | Compiled faithfully in procedural subgraphs (`procedural_expr.py`, RGB `LINEAR`/`CONSTANT`, `Color` output).  For image-texture chains, texture discovery still walks through the ramp and ignores stops. |
+| `ShaderNodeMix` (Float / Vector / Color blend) | `osl_mix_color` / `mix` in procedural subgraphs; image chains follow one input (lossy) | Compiled faithfully in procedural subgraphs (all 19 `RGBA` blend modes + `clamp_factor`/`clamp_result`, `FLOAT`, and uniform-factor `VECTOR`).  For image-texture chains, texture discovery follows the A input (`_SOCKET_MIX_NODES`), or the first linked non-factor input when A is unlinked. |
+| `ShaderNodeMixRGB` (legacy) | `osl_mix_color` in procedural subgraphs; image chains follow `Color1` (lossy) | All 19 blend modes + `use_clamp` compiled in procedural subgraphs; image-texture discovery follows `Color1`. |
+| `ShaderNodeMath` | admitted, not translated | The classifier admits Math so a material using it stays on the direct path, but no operation is folded: a socket reached only through Math reads its socket default (and fails closed in `procedural_expr.py`). |
+| `ShaderNodeHueSaturation` / `ShaderNodeBrightContrast` / `ShaderNodeGamma` / `ShaderNodeInvert` | `expression_painter` (`osl_rgb2hsv`/`osl_hsv2rgb` / affine / `pow` / `mix`) in procedural subgraphs; image chains pass-through (lossy) | Compiled natively in procedural subgraphs (`procedural_expr.py`).  Image-texture chains still walk through them as lossy pass-throughs. |
+| `ShaderNodeSeparateXYZ` / `ShaderNodeCombineXYZ` / `ShaderNodeSeparateColor` / `ShaderNodeCombineColor` | `expression_painter` (`.x/.y/.z`, `vec3`, `osl_rgb2hsv`/`hsv2rgb`/`rgb2hsl`/`hsl2rgb`) | Compiled natively in procedural subgraphs (RGB, HSV, and HSL modes) while keeping materials `"simple"`. |
+| `ShaderNodeRGBCurve` | pass-through (currently lossy) | Image-texture discovery walks through it and ignores the curve; `procedural_expr.py` fails closed. |
 | `ShaderNodeBump` | `ReliefModifier` attached to the **object** (`IObject`) | Driven by a scalar height painter from a supported chain (`ReliefModifier` replaced the retired `BumpMap`; in RISE, ray-intersection modifiers attach to `standard_object` — via `modifier_stack` when combined — rather than to `IMaterial`) |
 | `ShaderNodeNormalMap` | `NormalMapModifier` attached to the **object** (`IObject`) | Attached to the exported `IObject` (not `IMaterial`, except Principled `Coat Normal` which lives on `CoatedMaterial`). Normal-map painters are tagged `RISE_BLENDER_COLOR_LINEAR = 0` (`Rec709RGB_Linear`), matching `GLTFSceneImporter.cpp` for bit-exact tangent-vector passthrough in RISE's working space. |
 
@@ -135,7 +145,9 @@ The explicit `RISE_OT_bake_materials` operator:
 1. Temporarily switches the scene engine to Cycles, invokes
    `bake_complex_materials_in_scene`, and restores the engine in
    `finally`. It reports per-material results.
-2. Visits complex materials on scene MESH objects, once per material.
+2. Visits complex materials and materials containing active procedural
+   texture nodes (`has_procedural_texture_nodes`, e.g. Voronoi, Noise,
+   White Noise, Checker) on scene MESH objects, once per material.
    By default it retries them regardless of cache or attempted hash.
    **Skip Already-Baked Materials**, when enabled, skips a material
    whenever `baked_paths` finds any existing channel file; this is not
@@ -213,16 +225,14 @@ cleanup and measured backend limits are documented in the Tangent section.
 These would enable more graphs to take the direct path.  Each is
 self-contained and small enough to land as one PR.
 
-- **Noise / Voronoi / Checker → `perlin3d_painter` / `voronoi3d_painter` /
-  `checker_painter`** — the painters exist; the bridge needs painter kinds
-  (and Blender's Generated/Object/UV coordinate + Mapping conventions)
-  to emit them.  Replaces today's per-input "not translated" warning.
-- **`remap_painter`** — applies a 1D piecewise-linear function to a
-  scalar source painter.  Maps Cycles `ShaderNodeMath` (Add /
-  Multiply Add / Power / etc.) without baking.
-- **`hsv_painter`** — applies a Hue/Saturation/Value remap to a
-  colour-producing painter.  Maps `ShaderNodeHueSaturation` directly
-  (currently lossy pass-through).
+- **Remaining procedural / math nodes in `procedural_expr.py`** — Noise,
+  Voronoi, White Noise, Mix, Hue/Saturation, ColorRamp (RGB linear/constant),
+  and 3D Mapping shipped in ABI v19 via `expression_painter`.  Remaining
+  gaps include `ShaderNodeTexChecker`, `ShaderNodeMath` / `VectorMath`
+  (once Cycles safe-math builtins land), `ShaderNodeTexCoord.Normal`
+  (needs object-space normal transform), and extending procedural
+  expression support to image-texture-mixed chains and additional
+  Principled sockets (`Alpha`, `Bump`, `IOR`, `Transmission Weight`, etc.).
 - **`gradient_painter`** — Cycles `ShaderNodeTexGradient` (linear,
   spherical, easing).  Removes Gradient from the force-bake list.
 - **`wave_painter`** — Cycles `ShaderNodeTexWave` (sine, saw, banded,
@@ -280,10 +290,11 @@ in the same commit.
 | Emission Color | `sRGB` |
 | Transmission Weight | `Linear` |
 
-Procedural textures are not emitted by the bridge (see the supported-node
-table), so no colour-space tag applies to them.
+Procedural `expression_painter` expressions (ABI v19) evaluate directly in
+linear Rec.709 working space, so no image colour-space decode tag applies
+to them.
 
-## Mapping node (UV transforms)
+## Mapping node (UV and 3D transforms)
 
 `ShaderNodeMapping` (vector_type=POINT) between a Texture Coordinate
 and an Image Texture is supported via the `RISE_BLENDER_PAINTER_UV_TRANSFORM`
@@ -292,11 +303,11 @@ wrapper (ABI v6, commit `30f85ea2`).  The wrapper carries
 `uv_scale_v` — exactly the KHR_texture_transform set RISE's
 `UVTransformPainter` consumes.
 
-Only image textures receive a Mapping today.  Procedural painters that
-read 3D coordinates (`perlin3d`, `voronoi3d`, ...) are not emitted by the
-bridge (see the supported-node table); translating them would also need
-Cycles' 3D Mapping (rotation, location) carried onto the painter's input
-transform.
+For procedural subgraphs compiled by `procedural_expr.py` (ABI v19),
+`ShaderNodeMapping` with unlinked Location/Rotation/Scale inputs is
+translated across all four Cycles vector types (`POINT`, `TEXTURE`,
+`VECTOR`, and `NORMAL`) directly into the `expression_painter` affine
+transform on `Generated` / `Object` / `UV` coordinates.
 
 ## Anisotropy and sheen (Principled BSDF -> `ggx_material` / `fabric_material`)
 
@@ -739,7 +750,7 @@ including normal-map decode and chart/mirror handedness. Blender's Principled
 Tangent socket is a different signal: it controls anisotropy independently of
 Normal Map and Coat Normal UV axes. Tail flag `tangent_is_shader_direction`
 (introduced in ABI v16) is 1 for the exporter's per-triangle-corner `tangent_attribute`; 0 retains the
-ABI15 global tangent convention. Native/Python ABI versions must match in lockstep (currently **ABI v18**, `RISE_BLENDER_API_VERSION = 18`).
+ABI15 global tangent convention. Native/Python ABI versions must match in lockstep (currently **ABI v19**, `RISE_BLENDER_API_VERSION = 19`).
 Corner expansion preserves normal/UV/material seams. The Indexed4 shader
 array is separate from Tangent4. Object and CSG promote it with the forward
 matrix into a canonical world `cross(N,T)` frame, while preserving the
@@ -1252,7 +1263,7 @@ at the end of the struct, so every v8 field keeps its offset).
 `bridge.py` mirrors both structs and marshals `SceneData.hair_objects`
 / `SceneData.hair_materials` into them; its `_EXPECTED_API_VERSION` is
 bumped in lockstep with `RISE_BLENDER_API_VERSION` (9 at that slice, 10
-when the texture-driven scalar slots below landed, and **v18** at HEAD), and the
+when the texture-driven scalar slots below landed, and **v19** at HEAD), and the
 existing hard-mismatch behaviour is unchanged (a stale add-on against a
 newer bridge, or the reverse, raises `BridgeError` telling you to
 rebuild — it does not attempt a partial load).

@@ -88,24 +88,27 @@ _SIMPLE_TRAVERSABLE_NODES = frozenset({
     "ShaderNodeTexImage",
     "ShaderNodeTexCoord",
     "ShaderNodeMapping",
-    # Noise / Voronoi / Checker stay "simple" although the exporter does
-    # not translate them (it resolves image textures only): the manual
-    # bake replaces the whole material with a metallic-0 PBR built from
-    # the baked channels, which would turn a noise-bumped metal or a
-    # noise-roughened glass into an opaque diffuse surface.  The exporter
-    # warns, per input, that such an input renders its socket default.
+    # Noise, Voronoi, and White Noise compile natively via `procedural_expr`
+    # into RISE `expression_painter` expressions on supported Principled
+    # sockets (and Checker stays "simple" with a per-input fallback warning
+    # so it does not trigger a lossy metallic-0 bake gate on F12).
     "ShaderNodeTexNoise",
     "ShaderNodeTexVoronoi",
+    "ShaderNodeTexWhiteNoise",
     "ShaderNodeTexChecker",
-    "ShaderNodeValToRGB",       # Color Ramp
-    "ShaderNodeMix",            # 4.x mix node
-    "ShaderNodeMixRGB",         # legacy mix node
+    "ShaderNodeValToRGB",       # Color Ramp (RGB LINEAR/CONSTANT compiled natively)
+    "ShaderNodeMix",            # 4.x mix node (FLOAT/VECTOR/RGBA compiled natively)
+    "ShaderNodeMixRGB",         # legacy mix node (compiled natively)
     "ShaderNodeMath",           # Classifier admits Math; the exporter folds no operation
     "ShaderNodeRGBCurve",       # currently lossy pass-through
-    "ShaderNodeHueSaturation",  # currently lossy pass-through
-    "ShaderNodeBrightContrast", # currently lossy pass-through
-    "ShaderNodeGamma",          # currently lossy pass-through
-    "ShaderNodeInvert",         # currently lossy pass-through
+    "ShaderNodeHueSaturation",  # compiled natively in procedural subgraphs
+    "ShaderNodeBrightContrast", # compiled natively in procedural subgraphs
+    "ShaderNodeGamma",          # compiled natively in procedural subgraphs
+    "ShaderNodeInvert",         # compiled natively in procedural subgraphs
+    "ShaderNodeSeparateXYZ",    # compiled natively in procedural subgraphs
+    "ShaderNodeCombineXYZ",     # compiled natively in procedural subgraphs
+    "ShaderNodeSeparateColor",  # compiled natively in procedural subgraphs
+    "ShaderNodeCombineColor",   # compiled natively in procedural subgraphs
     "ShaderNodeBump",
     "ShaderNodeNormalMap",
 })
@@ -827,6 +830,63 @@ def find_bakeable_proxy_object(scene, material):
     return None
 
 
+# Procedural texture nodes recognized as bake-eligible when the user
+# explicitly invokes the "Bake Procedural Materials" operator, even when
+# `classify_material` keeps the material `"simple"` so F12 can render
+# natively (e.g. Voronoi / Noise / White Noise via expression_painter)
+# without blocking on a bake gate.
+_PROCEDURAL_TEXTURE_NODES = frozenset({
+    "ShaderNodeTexNoise",
+    "ShaderNodeTexVoronoi",
+    "ShaderNodeTexWhiteNoise",
+    "ShaderNodeTexChecker",
+    "ShaderNodeTexWave",
+    "ShaderNodeTexMagic",
+    "ShaderNodeTexBrick",
+    "ShaderNodeTexGradient",
+    "ShaderNodeTexGabor",
+})
+
+
+def has_procedural_texture_nodes(material) -> bool:
+    """Return True if any active procedural texture node is reachable from the
+    material's selected Material Output (excluding the Tangent branch)."""
+    if material is None or not uses_nodes(material):
+        return False
+    output_node = find_material_output(material)
+    if output_node is None:
+        return False
+    surface_socket = output_node.inputs.get("Surface")
+    if surface_socket is None or not surface_socket.is_linked:
+        return False
+    surface_links = [l for l in surface_socket.links if not getattr(l, "is_muted", False)]
+    if not surface_links:
+        return False
+
+    stack = [surface_links[0].from_node]
+    visited: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if node is None:
+            continue
+        node_id = rna_key(node)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        is_muted = bool(getattr(node, "mute", False))
+        if not is_muted and node.bl_idname in _PROCEDURAL_TEXTURE_NODES:
+            return True
+        for socket in node.inputs:
+            if node.bl_idname == "ShaderNodeBsdfPrincipled" and socket.name == "Tangent":
+                continue
+            if socket.is_linked:
+                for link in socket.links:
+                    if not getattr(link, "is_muted", False):
+                        stack.append(link.from_node)
+                        break
+    return False
+
+
 def bake_complex_materials_in_scene(
     scene,
     *,
@@ -835,14 +895,16 @@ def bake_complex_materials_in_scene(
     report=print,
 ) -> int:
     """Walk the scene, find every object whose material classifies as
-    complex, once per material, using the first encountered MESH object.
+    complex OR contains active procedural texture nodes (e.g. Voronoi,
+    Noise, White Noise, Checker), once per material, using the first
+    encountered MESH object.
     Returns the number with any newly saved channel, not necessarily diffuse
     or a complete three-channel cache. A zero count may mean no eligible
     material, all skipped, or all attempts failed.
 
     ``only_unbaked``: when True, skip materials with any existing
     channel returned by ``baked_paths``. This does not check graph
-    freshness; False retries complex materials regardless of cache.
+    freshness; False retries eligible materials regardless of cache.
 
     The scene's render engine MUST be switched to ``CYCLES`` by the
     caller before invoking; the operator handles that.  We don't do
@@ -861,7 +923,7 @@ def bake_complex_materials_in_scene(
             if mat.name in seen:
                 continue
             seen.add(mat.name)
-            if classify_material(mat) != "complex":
+            if classify_material(mat) != "complex" and not has_procedural_texture_nodes(mat):
                 continue
             if only_unbaked and baked_paths(mat) is not None:
                 continue

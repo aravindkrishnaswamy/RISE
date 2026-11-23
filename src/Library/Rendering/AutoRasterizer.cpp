@@ -1090,6 +1090,9 @@ IRasterizer* AutoRasterizer::BuildDelegate( AutoIntegratorChoice choice ) const
 	try {
 		delegate = BuildDelegate( choice, mSamples, frameStore,
 			mOidnDenoise, mGuiding, mAdaptive );
+		if( delegate ) {
+			delegate->SetTransparentBackground( GetTransparentBackground() );
+		}
 	}
 	catch( ... ) {
 		safe_release(frameStore);
@@ -1884,6 +1887,30 @@ int AutoRasterizer::GetDenoisingOverride() const
 #else
 	return 0;
 #endif
+}
+
+void AutoRasterizer::SetTransparentBackground( bool enabled )
+{
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
+	Rasterizer::SetTransparentBackground( enabled );
+	IRasterizer* delegate = RetainDelegate();
+	try {
+		if( delegate ) delegate->SetTransparentBackground( enabled );
+	}
+	catch( ... ) {
+		safe_release(delegate);
+		throw;
+	}
+	safe_release(delegate);
+}
+
+bool AutoRasterizer::GetTransparentBackground() const
+{
+	IRasterizer* delegate = RetainDelegate();
+	const bool value = delegate ? delegate->GetTransparentBackground() :
+		Rasterizer::GetTransparentBackground();
+	safe_release(delegate);
+	return value;
 }
 
 unsigned int AutoRasterizer::PredictTimeToRasterizeScene(

@@ -229,9 +229,11 @@ RISEPel PathTracingPelRasterizer::IntegratePixelRGB(
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
 	PixelAOV* pAOV,
-	RISEPel* pDirectCompanion
+	RISEPel* pDirectCompanion,
+	bool* pPrimaryHit
 	) const
 {
+	if( pPrimaryHit ) *pPrimaryHit = false;
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return RISEPel( 0, 0, 0 );
@@ -245,10 +247,10 @@ RISEPel PathTracingPelRasterizer::IntegratePixelRGB(
 	if( pDirectCompanion ) {
 		return pIntegrator->IntegrateRayDirectIndirect(
 			rc, rast, cameraRay, pScene, *pCaster, sampler,
-			pRadianceMap, *pDirectCompanion, pAOV );
+			pRadianceMap, *pDirectCompanion, pAOV, pPrimaryHit );
 	}
 	return pIntegrator->IntegrateRay(
-		rc, rast, cameraRay, pScene, *pCaster, sampler, pRadianceMap, pAOV );
+		rc, rast, cameraRay, pScene, *pCaster, sampler, pRadianceMap, pAOV, pPrimaryHit );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -293,6 +295,8 @@ void PathTracingPelRasterizer::IntegratePixel(
 				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
 			} else if( px.alphaSum > 0 ) {
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -420,9 +424,17 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 			PixelAOV aov;
 			RISEPel directSample( 0, 0, 0 );
-			const RISEPel sampleColor = IntegratePixelRGB(
+			bool primaryHit = false;
+			const bool transparentBg = GetTransparentBackground();
+			RISEPel sampleColor = IntegratePixelRGB(
 				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
-				pAOVBuffers ? &aov : 0, captureDirect ? &directSample : nullptr );
+				pAOVBuffers ? &aov : 0, captureDirect ? &directSample : nullptr,
+				transparentBg ? &primaryHit : nullptr );
+			const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+			if( sampleAlpha == Scalar( 0.0 ) ) {
+				sampleColor = RISEPel( 0, 0, 0 );
+				directSample = RISEPel( 0, 0, 0 );
+			}
 			if( pAOVBuffers ) {
 				if( aov.valid ) {
 					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
@@ -441,12 +453,12 @@ void PathTracingPelRasterizer::IntegratePixel(
 			RISE_PROFILE_INC(nSamplesAccumulated);
 
 			if( pFilteredFilm ) {
-				pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, sampleColor, *pPixelFilter );
+				pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, sampleColor, *pPixelFilter, sampleAlpha );
 				colAccrued = colAccrued + sampleColor;
-				alphas += 1.0;
+				alphas += sampleAlpha;
 			} else {
 				colAccrued = colAccrued + sampleColor * weight;
-				alphas += weight;
+				alphas += sampleAlpha * weight;
 			}
 
 			// Welford update on luminance.  Gated on `adaptive` only:
@@ -520,6 +532,8 @@ void PathTracingPelRasterizer::IntegratePixel(
 	} else if( alphas > 0 ) {
 		colAccrued = colAccrued * (1.0 / alphas);
 		cret = RISEColor( colAccrued, alphas / weights );
+	} else {
+		cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 	}
 
 	RISE_PROFILE_INC(nPixelsResolved);

@@ -87,7 +87,8 @@ namespace RISE
 				const ICamera& camera,
 				uint32_t sampleIndex,
 				uint32_t pixelSeed,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
 			AdaptiveSamplingConfig		adaptiveConfig;

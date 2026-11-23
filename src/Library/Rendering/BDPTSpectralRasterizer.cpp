@@ -103,9 +103,11 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	const Scalar nm,
 	uint32_t sampleIndex,
 	uint32_t pixelSeed,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
+	if( pPrimaryHit ) *pPrimaryHit = false;
 	Ray cameraRay;
 	if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
 		return 0;
@@ -143,6 +145,9 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 		sampler, eyeVerts, eyeSubpathStarts, nm, nullptr, pAOV );
+	if( pPrimaryHit ) {
+		*pPrimaryHit = ( eyeVerts.size() >= 2 && !eyeVerts[1].IsInfiniteLight() );
+	}
 
 	// Debt 28: the point on the camera's entrance APERTURE that the
 	// t==1 light-tracing connections land on.  Its own sampler stream
@@ -229,9 +234,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 	uint32_t pixelSeed,
 	uint32_t mortonIndex,
 	uint32_t log2SPP,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
+	if( pPrimaryHit ) *pPrimaryHit = false;
 	// Hot-path Film cache — see IntegratePixelNM above for the
 	// rationale.  Spectral path additionally has a hero/companion
 	// inner loop and an HWSS path that hits the same splat sites,
@@ -242,6 +249,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 	const unsigned int filmH = pFilm->GetHeight();
 
 	XYZPel spectralSum( 0, 0, 0 );
+	bool anyHit = false;
 
 	if( bUseHWSS )
 	{
@@ -298,6 +306,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, &swl );
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 				sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl, ss == 0 ? pAOV : 0 );
+			if( eyeVerts.size() >= 2 && !eyeVerts[1].IsInfiniteLight() ) {
+				anyHit = true;
+			}
 
 			// Debt 28: the point on the camera's entrance APERTURE that the
 			// t==1 light-tracing connections land on.  Its own sampler stream
@@ -516,6 +527,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			spectralSum = spectralSum + swl.BundleAverage(bundleSum);
 		}
 
+		if( pPrimaryHit ) *pPrimaryHit = anyHit;
 		// Each bundle contributes its own lane mean, even when it is black.
 		return nSpectralSamples ? spectralSum * (mYNormalization / Scalar(nSpectralSamples)) : spectralSum;
 	}
@@ -539,8 +551,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			: combinedIndex;
 
 		// Extract AOV only on the first wavelength sample
+		bool sampleHit = false;
 		const Scalar nmvalue = IntegratePixelNM( rc, ptOnScreen, pScene, camera, nm,
-			sampleIndex, pixelSeed, (ss == 0) ? pAOV : 0 );
+			sampleIndex, pixelSeed, (ss == 0) ? pAOV : 0,
+			pPrimaryHit ? &sampleHit : nullptr );
+		if( sampleHit ) anyHit = true;
 
 		if( nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
@@ -551,6 +566,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 		}
 	}
 
+	if( pPrimaryHit ) *pPrimaryHit = anyHit;
 	// MC normalization: (1/N) × (b-a)/k_y.  See HWSS branch above.
 	return spectralSum * ( mYNormalization / Scalar(nSpectralSamples) );
 }
@@ -599,6 +615,8 @@ void BDPTSpectralRasterizer::IntegratePixel(
 				// px.colorSum is XYZPel; defer XYZ->ROMM RGB to here.
 				const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
 				cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -708,8 +726,15 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			// spectral sample, so pass the raw pixelSampleIndex here.
 
 			PixelAOV aov;
-			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
-				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0 );
+			bool primaryHit = false;
+			const bool transparentBg = GetTransparentBackground();
+			XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
+				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0,
+				transparentBg ? &primaryHit : nullptr );
+			const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+			if( sampleAlpha == Scalar( 0.0 ) ) {
+				sampleXYZ = XYZPel( 0, 0, 0 );
+			}
 			if( pAOVBuffers ) {
 				if( aov.valid ) {
 					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
@@ -730,11 +755,12 @@ void BDPTSpectralRasterizer::IntegratePixel(
 					ptOnScreen.x,
 					static_cast<Scalar>(height) - ptOnScreen.y,
 					sampleXYZ,
-					*pPixelFilter );
+					*pPixelFilter,
+					sampleAlpha );
 			}
 
 			colAccrued = colAccrued + sampleXYZ * weight;
-			alphas += weight;
+			alphas += sampleAlpha * weight;
 
 			// Welford update on CIE photometric luminance (XYZ.Y) of the
 			// non-splat contribution.  Gated on `adaptive` only — see
@@ -779,8 +805,8 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		}
 	}
 
-	if( pAOVBuffers && weights > 0 && !pProgFilm ) {
-		pAOVBuffers->Normalize( x, y, 1.0 / weights );
+	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
+		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 	}
 
 	if( pProgFilm ) {
@@ -807,5 +833,7 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		// Single XYZ -> ROMM RGB conversion at resolve.
 		const XYZPel avgXYZ = colAccrued * (1.0 / alphas);
 		cret = RISEColor( RISEPel( avgXYZ ), alphas / weights );
+	} else {
+		cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 	}
 }

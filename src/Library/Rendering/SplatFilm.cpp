@@ -318,8 +318,15 @@ void SplatFilm::ApplyResolved(
 			if( pixel.weight > 0 ) {
 				// Scale the accumulated splat by the total sample count and
 				// add it to (or, for Unresolve, subtract it from) the target.
+				// IRasterImage stores straight RGB + coverage alpha; when
+				// alpha is fractional (transparent-background silhouette),
+				// unpremultiply the pixel-averaged splat so premultiplied
+				// outputs do not attenuate it by alpha a second time.
 				const RISEColor existing = target.GetPEL( x, y );
-				const RISEPel splatPel = pixel.color * invSamples;
+				RISEPel splatPel = pixel.color * invSamples;
+				if( existing.a > 1e-6 && existing.a < 1.0 ) {
+					splatPel = splatPel * (1.0 / existing.a);
+				}
 				const RISEColor combined( subtract ? existing.base - splatPel : existing.base + splatPel, existing.a );
 				target.SetPEL( x, y, combined );
 			}

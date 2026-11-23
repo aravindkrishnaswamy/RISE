@@ -33,6 +33,7 @@
 #include <Interfaces/IScalarPainter.h>
 #include <Interfaces/IScalarPainterManager.h>
 #include <Interfaces/IProgressCallback.h>
+#include <Managers/GenericManager.h>
 #include <Shaders/AdvancedShaderWiring.h>
 #include <Utilities/AdaptiveSamplingConfig.h>
 #include <Utilities/Math3D/Math3D.h>
@@ -323,7 +324,11 @@ namespace
 
 		bool PremultipliedAlpha() override
 		{
-			return false;
+			// Blender's Combined render pass expects associated (premultiplied)
+			// linear RGBA.  For opaque pixels (a == 1) this is bit-identical to
+			// straight RGB; for transparent-film edges (0 < a < 1) it matches
+			// Cycles' premultiplied silhouette coverage without dark fringing.
+			return true;
 		}
 
 		int GetColorSpace() override
@@ -1024,6 +1029,73 @@ namespace
 				return false;
 			}
 			return true;
+
+		case RISE_BLENDER_PAINTER_EXPRESSION:
+			{
+				if( !painter.expression || !painter.expression[0] ) {
+					write_error( error_message, error_message_size, "Encountered an empty expression painter" );
+					return false;
+				}
+				std::vector<std::string> def_storage;
+				std::string final_expr;
+				const std::string raw( painter.expression );
+				std::size_t pos = 0;
+				while( pos <= raw.size() ) {
+					const std::size_t nl = raw.find( '\n', pos );
+					std::string line = ( nl == std::string::npos )
+						? raw.substr( pos )
+						: raw.substr( pos, nl - pos );
+					if( !line.empty() && line.back() == '\r' ) {
+						line.pop_back();
+					}
+					const std::size_t first = line.find_first_not_of( " \t" );
+					if( first != std::string::npos ) {
+						const std::string trimmed = line.substr( first );
+						if( trimmed.size() > 4 && trimmed.compare( 0, 4, "def " ) == 0 ) {
+							def_storage.push_back( trimmed.substr( 4 ) );
+						} else if( !final_expr.empty() ) {
+							write_error( error_message, error_message_size, "Expression painter contains multiple root expression lines" );
+							return false;
+						} else {
+							final_expr = trimmed;
+						}
+					}
+					if( nl == std::string::npos ) break;
+					pos = nl + 1;
+				}
+				std::vector<const char*> def_ptrs;
+				def_ptrs.reserve( def_storage.size() );
+				for( const std::string& d : def_storage ) {
+					def_ptrs.push_back( d.c_str() );
+				}
+				std::string compile_diag;
+				struct DiagSinkGuard {
+					std::string* prev;
+					explicit DiagSinkGuard( std::string& dst ) : prev( RISE::g_cstFinalizeDiagSink ) {
+						RISE::g_cstFinalizeDiagSink = &dst;
+					}
+					~DiagSinkGuard() { RISE::g_cstFinalizeDiagSink = prev; }
+				} diag_guard( compile_diag );
+				const bool ok = !final_expr.empty() &&
+					job.AddExpressionPainter(
+						painter.name,
+						final_expr.c_str(),
+						nullptr,
+						0,
+						def_ptrs.empty() ? nullptr : def_ptrs.data(),
+						static_cast<unsigned int>( def_ptrs.size() ),
+						0.0,
+						0.0 );
+				if( !ok ) {
+					std::string msg = "Failed to create an expression painter";
+					if( !compile_diag.empty() ) {
+						msg += ": " + compile_diag;
+					}
+					write_error( error_message, error_message_size, msg.c_str() );
+					return false;
+				}
+				return true;
+			}
 		}
 
 		write_error( error_message, error_message_size, "Encountered an unsupported painter type" );
@@ -3231,6 +3303,9 @@ namespace
 
 		RISE::RadianceMapConfig radiance_map_config;
 		build_radiance_map_config( scene, radiance_map_config );
+		if( settings.film_transparent != 0 ) {
+			radiance_map_config.isBackground = false;
+		}
 
 		const uint32_t pixel_samples = std::max<uint32_t>( settings.pixel_samples, 1u );
 		const uint32_t light_samples = std::max<uint32_t>( settings.light_samples, 1u );
@@ -3644,6 +3719,10 @@ extern "C" int rise_blender_render_scene(
 			return 0;
 		}
 
+		RISE::IRasterizer* active_rasterizer = job->GetRasterizer();
+		if( settings->film_transparent != 0 && active_rasterizer ) {
+			active_rasterizer->SetTransparentBackground( true );
+		}
 
 		if( !job->AddCallbackRasterizerOutput( &raster_output ) ) {
 			write_error( error_message, error_message_size, "Failed to attach the rasterizer callback output" );
@@ -3651,7 +3730,25 @@ extern "C" int rise_blender_render_scene(
 			return 0;
 		}
 
-		if( !job->Rasterize() ) {
+		bool raster_ok = false;
+		if( settings->use_region != 0 &&
+			active_rasterizer &&
+			active_rasterizer->HonorsRegion() &&
+			settings->region_left <= settings->region_right &&
+			settings->region_top <= settings->region_bottom &&
+			settings->region_right < settings->width &&
+			settings->region_bottom < settings->height )
+		{
+			raster_ok = job->RasterizeRegion(
+				settings->region_left,
+				settings->region_top,
+				settings->region_right,
+				settings->region_bottom );
+		} else {
+			raster_ok = job->Rasterize();
+		}
+
+		if( !raster_ok ) {
 			if( progress.Aborted() ) {
 				write_error( error_message, error_message_size, "RISE render canceled" );
 			} else {

@@ -73,7 +73,8 @@ namespace RISE
 				const IScene& pScene,
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				bool* pPrimaryHit = 0
 				) const;
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const override;

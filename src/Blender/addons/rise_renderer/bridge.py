@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 18
+_EXPECTED_API_VERSION = 19
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -100,6 +100,8 @@ class _Painter(ctypes.Structure):
         ("uv_rotation", ctypes.c_float),
         ("uv_scale_u", ctypes.c_float),
         ("uv_scale_v", ctypes.c_float),
+        # ABI v19 -- PAINTER_EXPRESSION; see bridge .h.
+        ("expression", ctypes.c_char_p),
     ]
 
 
@@ -365,6 +367,13 @@ class _RenderSettings(ctypes.Structure):
         ("mlt_chains", ctypes.c_uint32),
         ("mlt_mutations_per_pixel", ctypes.c_uint32),
         ("mlt_large_step_prob", ctypes.c_float),
+        # ABI v19 -- render region (top-down inclusive) and transparent film.
+        ("use_region", ctypes.c_int),
+        ("region_left", ctypes.c_uint32),
+        ("region_top", ctypes.c_uint32),
+        ("region_right", ctypes.c_uint32),
+        ("region_bottom", ctypes.c_uint32),
+        ("film_transparent", ctypes.c_int),
     ]
 
 
@@ -717,6 +726,7 @@ class _SceneHandle:
         payload.uv_rotation = float(getattr(painter, "uv_rotation", 0.0))
         payload.uv_scale_u = float(getattr(painter, "uv_scale_u", 1.0))
         payload.uv_scale_v = float(getattr(painter, "uv_scale_v", 1.0))
+        payload.expression = self._cstring(getattr(painter, "expression", None))
         return payload
 
     def _marshal_modifier(self, modifier):
@@ -995,6 +1005,12 @@ class _SceneHandle:
         payload.mlt_chains = int(getattr(settings, "mlt_chains", 0))
         payload.mlt_mutations_per_pixel = int(getattr(settings, "mlt_mutations_per_pixel", 0))
         payload.mlt_large_step_prob = float(getattr(settings, "mlt_large_step_prob", 0.0))
+        payload.use_region = int(bool(getattr(settings, "use_region", False)))
+        payload.region_left = int(getattr(settings, "region_left", 0))
+        payload.region_top = int(getattr(settings, "region_top", 0))
+        payload.region_right = int(getattr(settings, "region_right", 0))
+        payload.region_bottom = int(getattr(settings, "region_bottom", 0))
+        payload.film_transparent = int(bool(getattr(settings, "film_transparent", False)))
         return payload
 
 

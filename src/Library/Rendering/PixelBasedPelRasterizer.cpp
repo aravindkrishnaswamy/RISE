@@ -552,6 +552,8 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			} else if( px.alphaSum > 0 ) {
 				// Return cached result
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -694,7 +696,8 @@ void PixelBasedPelRasterizer::IntegratePixel(
 						// Always splat to the film, even on miss (c stays zero).
 						// Miss-samples must contribute zero radiance with proper
 						// filter weight so that edge pixels blend correctly.
-						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c, *pPixelFilter );
+						const Scalar sampleAlpha = ( GetTransparentBackground() && !bHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c, *pPixelFilter, sampleAlpha );
 						if( bHit ) {
 							colAccrued = colAccrued + c;
 							alphas += 1.0;
