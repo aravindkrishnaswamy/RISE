@@ -24,6 +24,7 @@
 #include "../src/Library/Utilities/FireProductionProjection.h"
 #include "../src/Library/Utilities/FireProductionForce.h"
 #include "../src/Library/Utilities/FireProductionTransport.h"
+#include "../src/Library/Utilities/FireFastMode.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
@@ -5052,6 +5053,84 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 	{
 		return !scoped||!computed||R216KernelAccepted(kernel);
 	}
+	// RISE_FIRE_FAST_MODE=1: exact per-step ledger of the accepted resident step (state change =
+	// source dose + boundary net inflow, per row), the safety net that replaces certification.
+	// RISE_FIRE_FAST_CONSERVATION_EVERY=<n> (default 1; 0 disables) sets the check cadence in
+	// accepted steps; one FAST_CONSERVATION line is logged every 10 checks (RISE_FIRE_FAST_CONSERVATION_LOG_EVERY)
+	// and on any failure.
+	unsigned int FastModeConservationEvery()
+	{
+		static const unsigned int every=[](){const char* value=std::getenv("RISE_FIRE_FAST_CONSERVATION_EVERY");
+			if(!value||!*value)return 1u;char* end=nullptr;const unsigned long parsed=std::strtoul(value,&end,10);
+			return end&&!*end&&parsed<=100000u?static_cast<unsigned int>(parsed):1u;}();
+		return every;
+	}
+	std::uint64_t& FastModeConservationCheckCount()
+	{
+		static std::uint64_t checks=0u;return checks;
+	}
+	bool FastModeConservationDue(const std::uint64_t acceptedSteps)
+	{
+		return RISE::FireSim::FireFastMode()&&FastModeConservationEvery()!=0u&&
+			(acceptedSteps+1u)%FastModeConservationEvery()==0u;
+	}
+	bool FastModeConservationCheck(const FireProductionProjectedHeunMetalOwnerRequest& request,
+		FireProductionProjectedHeunMetalOwnerResult& owner,const std::uint64_t stepIndex,
+		const std::vector<double>& sourcePattern,std::string& error)
+	{
+		std::vector<unsigned char> footprint;footprint.reserve(sourcePattern.size());
+		for(const double value:sourcePattern)footprint.push_back(value>0.0?1u:0u);
+		FireProductionAcceptedStageBudget::Step step;
+		if(!FireProductionAcceptedStageBudget::Reduce(request,owner,stepIndex,footprint,step,error)){
+			error="fast-mode conservation ledger unavailable: "+error;return false;}
+		// Relative closure |end - begin - source + out - in| / (|begin| + |source| + in + out).
+		auto relative=[](const long double closure,const long double scale){
+			return static_cast<double>(scale>0.0L?std::fabs(closure)/scale:std::fabs(closure));};
+		auto scaleOf=[](const FireProductionAcceptedStageBudget::Row& row){long double scale=
+			std::fabs(row.beginning)+std::fabs(row.source);
+			for(unsigned int side=0u;side<6u;++side)scale+=row.inflow[side]+row.outflow[side];return scale;};
+		// Elements C, H, O, N from species rows 1..7 (CH4, O2, N2, CO2, H2O, CO, C(s)).
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		static const double atoms[4][7]={{1,0,0,1,0,1,1},{4,0,0,0,2,0,0},{0,2,0,2,1,1,0},{0,0,2,0,0,0,0}};
+		static const double atomicMass[4]={12.011,1.008,15.999,14.007};
+		std::array<long double,4> elementClosure{},elementScale{};
+		for(std::size_t species=0u;species<7u;++species){
+			const auto* record=fuel.FindSpecies(fuel.SpeciesOrder()[species].c_str());
+			if(!record||!(record->molecularWeightKGPerKMol>0.0)){error="fast-mode conservation species record missing";return false;}
+			const FireProductionAcceptedStageBudget::Row& row=step.rows[1u+species];
+			for(unsigned int element=0u;element<4u;++element){
+				const long double fraction=atoms[element][species]*atomicMass[element]/record->molecularWeightKGPerKMol;
+				elementClosure[element]+=fraction*row.closure;elementScale[element]+=fraction*scaleOf(row);}
+		}
+		const double massRelative=relative(step.rows[9].closure,scaleOf(step.rows[9]));
+		const double energyRelative=relative(step.rows[8].closure,scaleOf(step.rows[8]));
+		// Species closures are measured against the total-mass throughput: a trace species (soot or CO
+		// early in a run) carries binary32 mixture rounding far above its own tiny scale.
+		double speciesRelative=0.0;unsigned int worstSpecies=0u;
+		for(unsigned int row=1u;row<=7u;++row){const double value=relative(step.rows[row].closure,scaleOf(step.rows[9]));
+			if(value>speciesRelative){speciesRelative=value;worstSpecies=row-1u;}}
+		std::array<double,4> elementRelative{};double worstElement=0.0;
+		for(unsigned int element=0u;element<4u;++element){
+			elementRelative[element]=relative(elementClosure[element],elementScale[element]);
+			worstElement=std::max(worstElement,elementRelative[element]);}
+		// Binary32 state rounding alone gives about 1e-7; 1e-5 flags a real leak, not noise.
+		constexpr double tolerance=1.0e-5;
+		const bool passed=massRelative<=tolerance&&energyRelative<=tolerance&&speciesRelative<=tolerance&&
+			worstElement<=tolerance&&std::isfinite(massRelative+energyRelative+speciesRelative+worstElement);
+		const std::uint64_t checks=++FastModeConservationCheckCount();
+		static const std::uint64_t logEvery=[](){const char* value=std::getenv("RISE_FIRE_FAST_CONSERVATION_LOG_EVERY");
+			const unsigned long parsed=value?std::strtoul(value,nullptr,10):10u;return parsed>0u?parsed:10u;}();
+		if(!passed||checks%logEvery==1u%logEvery)std::fprintf(stderr,"FAST_CONSERVATION step=%llu time=%.9f dt=%.9g mass_rel=%.3e "
+			"species_max_rel=%.3e (species %u) C_rel=%.3e H_rel=%.3e O_rel=%.3e N_rel=%.3e energy_rel=%.3e "
+			"mass_kg=%.9e energy_j=%.9e tolerance=%.1e %s\n",static_cast<unsigned long long>(stepIndex),
+			step.beginTime+step.dt,step.dt,massRelative,speciesRelative,worstSpecies,elementRelative[0],elementRelative[1],
+			elementRelative[2],elementRelative[3],energyRelative,static_cast<double>(step.rows[9].ending),
+			static_cast<double>(step.rows[8].ending),tolerance,passed?"ok":"FAILED");
+		if(!passed){std::ostringstream message;message<<std::setprecision(6)<<"fast-mode conservation check failed at step "
+			<<stepIndex<<": mass_rel="<<massRelative<<" species_max_rel="<<speciesRelative<<" (species "<<worstSpecies<<") element_max_rel="
+			<<worstElement<<" energy_rel="<<energyRelative<<" (tolerance "<<tolerance<<")";error=message.str();}
+		return passed;
+	}
 	struct R245PendingBudget {
 		FireProductionAcceptedStageBudget::Step step;
 		std::vector<unsigned char> flux,native,beginning;
@@ -5255,6 +5334,33 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			emissivity>1.0)return false;
 		authored.hasFloorEmissivity=true;authored.floorEmissivity=emissivity;
 		return true;
+	}
+
+	// r275 opt-in: RISE_FIRE_WORKERS=<n> (1 <= n <= hardware threads) replaces the eight CPU
+	// workers of the temporal capstone and the r273 A/B drivers. Every worker-parallel reduction
+	// is fixed-order (r61/r112), so the state is unchanged; only workerCountHistory records n.
+	// Unset or invalid keeps the default.
+	unsigned int FireRunWorkerCount(const unsigned int defaultWorkers)
+	{
+		const char* option=std::getenv("RISE_FIRE_WORKERS");
+		if(!option)return defaultWorkers;
+		char* end=nullptr;const unsigned long value=std::strtoul(option,&end,10);
+		return end!=option&&*end=='\0'&&value>=1ul&&value<=FireWorkerCapacity()?
+			static_cast<unsigned int>(value):defaultWorkers;
+	}
+
+	// r275 opt-in, UNCERTIFIED: RISE_FIRE_SOURCE_STEP_CAP_S=<s> (s > 0, "inf" allowed) replaces the
+	// r175 source-step ceiling wherever a production run applies one. r175 certified the Binary32
+	// source producer only at the 1.646 ms step measured on one sealed tier-10 beginning; it is
+	// not a formula and does not re-derive for another grid. The selector (CFL, buoyancy,
+	// diffusion, 1.1x growth), the per-step gates and the halving retries stay in force.
+	// Unset or invalid keeps the certified ceiling, so the default path is unchanged.
+	double FireProductionSourceStepCapS(const double certifiedCapS)
+	{
+		static const double option=[](){const char* text=std::getenv("RISE_FIRE_SOURCE_STEP_CAP_S");
+			if(!text)return 0.0;char* end=nullptr;const double value=std::strtod(text,&end);
+			return end!=text&&*end=='\0'&&!std::isnan(value)&&value>0.0?value:0.0;}();
+		return option>0.0?option:certifiedCapS;
 	}
 
 	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
@@ -6119,7 +6225,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			if(!(chosenStep>0.0)) {advancedOK=false;error="capstone pinned timestep is unbounded";break;}
 			double eventStep=chosenStep;
 			if(persistence.productionMetal&&persistence.maximumProductionSourceStepS>0.0)
-				eventStep=std::min(eventStep,persistence.maximumProductionSourceStepS);
+				eventStep=std::min(eventStep,
+					FireProductionSourceStepCapS(persistence.maximumProductionSourceStepS));
 			if(oracleComposition)eventStep=std::min(eventStep,persistence.maximumOracleCompositionStepS);
 			if(simulationTimeS<pilotRampEndS){
 				eventStep=std::min(eventStep,pilotCommandMaximumStepS);
@@ -6457,6 +6564,11 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 							packetBeginning.size());
 					}
 					std::vector<double> divergenceTarget;
+					// Fast mode: the projected-Heun owner derives its divergence target on the device and never
+					// reads this host target (BuildProductionProjectedHeunOwnerRequest does not carry it).
+					if(packetOK&&RISE::FireSim::FireFastMode()&&persistence.UsesProjectedHeunOwner())
+						divergenceTarget.assign(packetBeginning.size(),0.0);
+					else
 					packetOK=packetOK&&MonitoredProductionTangentDivergenceTarget3D(shape,stagedConservative,
 						stagedVelocity,sourceDelta,tangentConfig,fuel,fuel,
 						FireSimulationTransportRecord::OpenV1(),divergenceTarget,&error,
@@ -6563,7 +6675,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 									static_cast<float>(config.openBoundary.velocityToleranceMPerS),
 									projectedHeunRequest,error,persistence.portedProductionTransport?
 										&config.openBoundary:nullptr);
-								projectedHeunRequest.captureAcceptedBudgetFlux=persistence.r245AcceptedBudget||persistence.r245ObservationFixture;
+								projectedHeunRequest.captureAcceptedBudgetFlux=persistence.r245AcceptedBudget||persistence.r245ObservationFixture||
+									FastModeConservationDue(acceptedSteps);
 								attemptComputed=attemptComputed&&
 									RISE::AttemptFireProductionProjectedHeunResidentStepMetal(projectedHeunRequest,
 										production,&projectedHeunDiagnostics,&error);
@@ -7355,6 +7468,10 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 									!PrepareR245Budget(projectedHeunRequest,projectedHeunDiagnostics,acceptedSteps+1u,
 										sourcePattern,persistence.r244LateralDouble&&simulationTimeS+trialStep>=nextTemporalSnapshotS,temporalSnapshotIndex,pendingBudget,error))){
 									mandatoryEvidenceFailure=true;advancedOK=false;lastAdvanceError=error;break;}
+								if(FastModeConservationDue(acceptedSteps)&&projectedHeunRequest.captureAcceptedBudgetFlux&&
+									!FastModeConservationCheck(projectedHeunRequest,projectedHeunDiagnostics,
+										acceptedSteps+1u,sourcePattern,error)){
+									advancedOK=false;lastAdvanceError=error;break;}
 								acceptedBeginningStates=std::move(packetBeginning);
 								// Recompute the pilot ledger at the source producer's actual
 								// evaluation temperature, not the legacy binary64 override.
@@ -9116,6 +9233,39 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		std::fprintf(stderr,"PRODUCTION_FRAME_WRITE_BENCHMARK p95_ms=%.17g frame_sha256=%s\n",
 			measuredMS.back(),referenceDigest.c_str());return 0;
 	}
+
+	// r275 fast mode: two tier-6 production steps from zero in RISE_FIRE_FAST_MODE=1; every accepted
+	// step must pass the exact conservation ledger (FastModeConservationCheck).
+	int RunFastModeConservationChild()
+	{
+		if(!RISE::FireSim::FireFastMode())return 95;
+		RunPersistenceOptions options;
+		options.productionMetal=true;options.portedProductionTransport=true;
+		options.maximumProductionSourceStepS=double(float(0.0016462659696117043));
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,2u,0.0,1.0,16.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		const std::uint64_t checks=FastModeConservationCheckCount();
+		std::fprintf(stdout,"FAST_MODE_CONSERVATION_CHILD succeeded=%d accepted_steps=%zu ledger_checks=%llu error=%s\n",
+			result.succeeded?1:0,result.acceptedTimeStepHistoryS.size(),static_cast<unsigned long long>(checks),
+			result.structuredError.c_str());
+		return result.succeeded&&checks>=2u&&checks==result.acceptedTimeStepHistoryS.size()?0:96;
+	}
+#if defined(__APPLE__)
+	int RunFastModeConservationSubprocess(const std::filesystem::path& executable)
+	{
+		const pid_t child=::fork();
+		if(child<0)return -1;
+		if(child==0){
+			::setenv("RISE_FIRE_FAST_MODE","1",1);::unsetenv("RISE_FIRE_FAST_CONSERVATION_EVERY");
+			::execl(executable.c_str(),executable.c_str(),"--fire-fast-mode-conservation-child",
+				static_cast<char*>(nullptr));
+			::_exit(127);
+		}
+		int status=0;
+		while(::waitpid(child,&status,0)<0){if(errno!=EINTR)return -1;}
+		return WIFEXITED(status)?WEXITSTATUS(status):-1;
+	}
+#endif
 
 	int RunProductionBurnerLauncherIntegrationFixture()
 	{
@@ -11729,7 +11879,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			static_cast<double>(static_cast<float>(0.0016462659696117043));
 		// The capstone's CPU-side source/target reductions retain their sealed
 		// eight-worker owner; Metal still owns the resident full-grid work.
-		const unsigned int workers=8u;
+		const unsigned int workers=FireRunWorkerCount(8u);
 		RISECBOR64::Bytes buildRecord;
 		std::string buildId,executableDigest,publicationError;
 		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
@@ -11738,6 +11888,8 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		if(r246TopDouble)WriteR246WindowIdentity(receipt,launchCase,window);
 		else if(r244LateralDouble)receipt<<"domain_study r244-lateral-double-v1\n";
 		if(r245AcceptedBudget)receipt<<"accepted_stage_budget r245-v1\n";
+		// RISE_FIRE_FAST_MODE=1: uncertified arithmetic and no per-step seals; the trajectory is not reproducible.
+		if(FireSim::FireFastMode())receipt<<"fast_mode r275-uncertified-v1\n";
 		// r271 A/B: the opt-in compact viscous stencil does not change the case, and both
 		// settings share one kernel source text, so the receipt records the selection.
 		// v2 adds the compact-diagonal nu_t for heat, species and the combustion mixing
@@ -11746,6 +11898,13 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 		// r271 A/B: the opt-in FDS mixing time likewise leaves the case unchanged.
 		if(FireFDSMixingTimeSelected())receipt<<"mixing_time r271-fds-v1\n";
 		if(FireCase::InertPlumeSelected())receipt<<"inert_plume r271-v1\n";
+		// r275 opt-ins: worker count leaves the state unchanged; a source-step cap other than
+		// r175's is uncertified and changes the trajectory, so both are recorded.
+		if(workers!=8u)receipt<<"cpu_workers "<<workers<<"\n";
+		if(FireProductionSourceStepCapS(persistence.maximumProductionSourceStepS)!=
+			persistence.maximumProductionSourceStepS)receipt<<std::setprecision(17)<<
+			"uncertified_source_step_cap_s "<<
+			FireProductionSourceStepCapS(persistence.maximumProductionSourceStepS)<<"\n";
 		if(FireCase::InertPlumeSeedAmplitude()!=0.0)receipt<<"inert_seed "<<std::setprecision(17)<<FireCase::InertPlumeSeedAmplitude()<<"\n";
 		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
 			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
@@ -23137,6 +23296,8 @@ static int RunProductionPayloadMerkleFixture(bool metal)
 
 int main(int argc,char** argv)
 {
+	if(argc==2&&std::strcmp(argv[1],"--fire-fast-mode-conservation-child")==0)
+		return RunFastModeConservationChild();
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-event-step-test")==0)
 		return ProductionEventStepRegression()?0:1;
 	if(argc==2&&std::strcmp(argv[1],"--fire-r248-caller-ingress-fixture")==0)
@@ -23772,6 +23933,11 @@ int main(int argc,char** argv)
 			CapstoneHeatReleaseRateKW,false,productionSelection).structuredError==
 			"production_transport_owner_scope_conflict","production transport refuses CPU substitution");
 	}
+#if defined(__APPLE__)
+	// r275: fast mode is read once per process, so it runs in a child with RISE_FIRE_FAST_MODE=1.
+	Check(RunFastModeConservationSubprocess(std::filesystem::absolute(argv[0]))==0,
+		"r275 fast mode steps a production case and every step closes its mass, element and energy ledger");
+#endif
 	if(argc==6&&std::strcmp(argv[1],"--fire-production-momentum-replay")==0)
 		return RunProductionMomentumReplayChild(argv[2],argv[3],argv[4],argv[5]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-oracle-momentum-replay")==0)

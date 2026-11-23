@@ -26,7 +26,8 @@ int main(int argc,char** argv){
  std::cerr<<"R273_AB_BEGIN step="<<start.acceptedSteps<<" time="<<std::setprecision(17)<<start.simulationTimeS
   <<" window_s="<<window<<" tier="<<tier<<" yield="<<(yield?yield:"unset")<<" cap="<<(cap?cap:"unset")<<" sheet="<<(sheet?sheet:"unset")<<" self_absorption="<<(self?self:"unset")<<'\n';
  const auto wall=std::chrono::steady_clock::now();
- const auto r=RunMethaneFrameProbe(8u,1u,0.,tier==6.?25.156864278900095:25.091040127156969,16.,tier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,p);
+ std::cerr<<"R275_AB_OPTIONS workers="<<FireRunWorkerCount(8u)<<" source_step_cap_s="<<FireProductionSourceStepCapS(p.maximumProductionSourceStepS)<<'\n';
+ const auto r=RunMethaneFrameProbe(FireRunWorkerCount(8u),1u,0.,tier==6.?25.156864278900095:25.091040127156969,16.,tier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,p);
  std::ofstream f(out/"result.txt");f<<std::setprecision(17)<<"succeeded "<<r.succeeded<<"\nerror "<<r.structuredError
   <<"\ncheckpoint "<<checkpoint.string()<<"\nstart_step "<<start.acceptedSteps<<"\nstart_time_s "<<start.simulationTimeS<<"\nend_time_s "<<r.simulatedTimeS
   <<"\nwindow_s "<<window<<"\ntier "<<tier<<"\nyield "<<(yield?yield:"unset")<<"\ncap "<<(cap?cap:"unset")<<"\nsheet "<<(sheet?sheet:"unset")<<"\nself_absorption "<<(self?self:"unset")

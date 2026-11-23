@@ -1812,7 +1812,9 @@ int main()
 		// Sealed-class/head metadata adds one command and two private copies.
 		Count(metalSource,"CommitProjectionCommand(metadataCommand)")==1u&&
 		Count(metalSource,"CopyProjectionBuffer(metadataBlit,")==2u&&
-		Count(metalSource,"CommitProjectionCommand(")==5u+1u&&
+		// r275: plus the RISE_FIRE_FAST_MODE adaptive V-cycle check (gated below).
+		Count(metalSource,"CommitProjectionCommand(")==5u+1u+1u&&
+		Count(metalSource,"const bool adaptiveCycles=FireSim::FireFastAdaptiveVCycles()&&")==1u&&
 		Count(metalSource,"CopyProjectionBuffer(upload,burnerUpload,")==1u&&
 		Count(metalSource,"CopyProjectionBuffer(")==16u+2u+1u&&
 		Count(metalSource,"ProjectionTransferScope transferScope(")==3u&&

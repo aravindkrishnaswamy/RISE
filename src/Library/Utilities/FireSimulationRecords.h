@@ -11,6 +11,7 @@
 
 #include "FireOptics.h"
 #include "RISECBOR64.h"
+#include "FireFastMode.h"
 #include <string>
 #include <utility>
 #include <vector>

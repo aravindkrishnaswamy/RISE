@@ -1131,8 +1131,21 @@ namespace RISEFireProductionTrace
 
 	void FireProductionFrozenSourcePacketSeal::FinalizeIdentities()
 	{
-		packetContentIdentity_=SourcePacketContentIdentity(*this);
-		globalRadiationIdentity_=SourceGlobalRadiationIdentity(*this);
+		if(::RISE::FireSim::FireFastMode()){
+			// Fast mode: lineage tokens bound to the source input, not content hashes.
+			std::uint64_t content=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE fast-mode frozen source content token v1";
+			for(const unsigned char byte:domain)HashEOSByte(content,byte);
+			HashEOSUInt64(content,sourceInputIdentity_);
+			std::uint64_t radiation=content;
+			HashEOSDouble(radiation,radiationBeta_);HashEOSDouble(radiation,radiationGamma_);
+			HashEOSDouble(radiation,radiationEscapeFactor_);
+			packetContentIdentity_=content==0u?1u:content;
+			globalRadiationIdentity_=radiation==0u?1u:radiation;
+		}else{
+			packetContentIdentity_=SourcePacketContentIdentity(*this);
+			globalRadiationIdentity_=SourceGlobalRadiationIdentity(*this);
+		}
 		packetIdentity_=SourcePacketIdentity(*this);
 		sealed_=true;
 	}
@@ -1187,8 +1200,9 @@ namespace RISEFireProductionTrace
 		for(const std::vector<double>* values:diagnostic)for(const double value:*values)
 			if(!std::isfinite(value)||(value==0.0&&std::signbit(value)))return Fail(error,
 				"canonical frozen source-packet diagnostic is noncanonical");
-		if(packetContentIdentity_!=SourcePacketContentIdentity(*this)||
-			globalRadiationIdentity_!=SourceGlobalRadiationIdentity(*this)||
+		if((!::RISE::FireSim::FireFastMode()&&
+			 (packetContentIdentity_!=SourcePacketContentIdentity(*this)||
+			  globalRadiationIdentity_!=SourceGlobalRadiationIdentity(*this)))||
 			packetIdentity_!=SourcePacketIdentity(*this))return Fail(error,
 				"canonical frozen source-packet seal identity does not match its content");
 		if(error)error->clear();return true;
@@ -1214,8 +1228,9 @@ namespace RISEFireProductionTrace
 			conservativeValues.size()!=9u*cells||temperatureK.size()!=cells||
 			seal.BeginningTemperatureK().size()!=cells||
 			!SameFloatVectorBits(seal.BeginningTemperatureK(),temperatureK)||
-			seal.BeginningStateIdentity()!=CanonicalSourceBeginningStateIdentity(
-				shape,conservativeValues,temperatureK))return Fail(error,
+			(!::RISE::FireSim::FireFastMode()&&
+			 seal.BeginningStateIdentity()!=CanonicalSourceBeginningStateIdentity(
+				shape,conservativeValues,temperatureK)))return Fail(error,
 				"canonical frozen source beginning-state parent differs");
 		if(error)error->clear();return true;
 	}
@@ -2828,6 +2843,7 @@ namespace RISEFireProductionTrace
 						"scalar base divergence-target temperature lacks accepted-state authority");
 			}
 			if(role==FireProductionScalarDivergenceTargetRole::R0Base&&
+				!::RISE::FireSim::FireFastMode()&&
 				CanonicalSourceBeginningStateIdentity(shape,advectiveRequest.beginning,
 					canonicalTemperatureK)!=source.BeginningStateIdentity())return Fail(error,
 						"scalar R0 base divergence-target beginning state differs from source authority");

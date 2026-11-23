@@ -44,3 +44,40 @@ Projected 25 s movie: about 16 h of simulation plus under 1 h of rendering, agai
   `FireSequenceManifest::PreflightAllFrames` costs about 20 s once per movie.
 - Owner decisions not taken: more driver workers (8 of 16 cores used), per-step digests deferred to checkpoints,
   per-wavelength majorant (the current one is marked locked).
+
+## r275 (2026-11-22): opt-in fast mode, time step at the flow limit, worker count
+
+All three are opt-ins; with nothing set the output is byte-identical to r274 (13 steps, checkpoint per step).
+
+| Mode (quiet machine, tier 8, resume of step 13,769) | s per step | Wall s per simulated s | 25 s movie |
+|---|---:|---:|---:|
+| Certified (default) | 3.83 | 2324 | 16 h |
+| Certified, `RISE_FIRE_SOURCE_STEP_CAP_S=inf` | 3.97 | 1686 | 12 h |
+| `RISE_FIRE_FAST_MODE=1` | 1.85 | 1121 | 7.8 h |
+| Fast mode + step cap lifted | 1.93 | 818 | 5.7 h |
+| Fast mode + step cap lifted + `RISE_FIRE_WORKERS=14` | 1.73 | 736 | 5.1 h |
+
+Short samples (16–23 steps); the worker-count row is within noise of the one above in certified mode.
+
+- **`RISE_FIRE_FAST_MODE=1`** (`FireFastMode.h`). Same model and discretisation. Plain binary32 EOS inversion and
+  divergence-target terms instead of interval-certified extended precision; no per-step seals, content hashes or
+  payload digests; pressure solve stops once the unchanged validation band is met (`RISE_FIRE_FAST_FIXED_VCYCLES=1`
+  keeps the 17 cycles). Physical refusals, the checkpoint digest and file formats are kept. Safety net: the exact
+  budget ledger checked every step, tolerance 1e-5 (`RISE_FIRE_FAST_CONSERVATION_EVERY`).
+  - Against certified from the same checkpoint: scalars within 1.7e-5 of field maximum after one step, 3.4e-5 after
+    20; velocity 3e-4 (mostly the pressure-solve stop; 6e-6 with fixed cycles). Ledger closure over 304 steps: mass
+    5e-10, elements and energy below 2e-9. Means over 0.5 s (heat release, peak and centreline temperature, soot
+    flux) agree to four figures.
+  - Not guaranteed: correct rounding, error bounds, bit reproducibility, per-step provenance.
+- **`RISE_FIRE_SOURCE_STEP_CAP_S=<s|inf>`**. Replaces the 1.646 ms source-step cap; the selector's CFL, buoyancy,
+  diffusion and growth limits stay. The cap was the CFL step of one tier-10 state at which r175 tested the source
+  arithmetic; the test code is gone, so this is uncertified. 0.5 s at mean dt 2.39 ms: 210 steps against 304, no
+  retries, heat release +0.7%, peak temperature −6 K, soot flux about +1%, all inside frame-to-frame spread;
+  time error against a half-step reference falls at about second order.
+- **`RISE_FIRE_WORKERS=<n>`**. Output identical at 8–16 workers; no measurable gain in certified mode.
+- A Picard iteration cap was not added: stages 0 and 1 hold a residual of 0.4–0.6 until the open-boundary cycle is
+  detected, so a cap would accept unconverged stages.
+- Not verified: runs longer than 0.5 s in either opt-in; fast-mode refusal paths. A full 25 s fast run
+  (`tools/fire/r275/run_tier8_fast.sh`) is the check against `r273_poor_burn/tier8_y300_sa`.
+- Remaining in a fast step (about 1.9 s): CPU source build 0.75 s (packets, floor irradiance), GPU stage build 0.42 s,
+  pressure solve 0.28 s, host bookkeeping about 0.3 s.

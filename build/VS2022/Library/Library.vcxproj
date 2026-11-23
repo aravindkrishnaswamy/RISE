@@ -1149,6 +1149,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionForce.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireFastMode.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />
