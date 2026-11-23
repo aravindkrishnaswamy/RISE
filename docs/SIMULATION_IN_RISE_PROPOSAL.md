@@ -1,133 +1,126 @@
-# Simulation in RISE: a general architecture (proposal)
+# Simulation in RISE: architecture and execution plan
 
-2026-11-22. **Proposal for owner review; nothing here is built.** It supersedes the framing of
-[FIRE_SMOKE_UI_INTEGRATION_PROPOSAL.md](FIRE_SMOKE_UI_INTEGRATION_PROPOSAL.md), which treats fire alone; that note's
-survey of the existing code still stands and its phases become "fire as the first solver" here.
+2026-11-22. **Approved direction; nothing here is built yet** except the r275 pieces named under "What exists".
+Owner decisions are recorded in §2. The earlier fire-only note,
+[FIRE_SMOKE_UI_INTEGRATION_PROPOSAL.md](FIRE_SMOKE_UI_INTEGRATION_PROPOSAL.md), remains as the survey of existing
+code; its phases are absorbed here as "fire, the first solver".
 
-## The idea in one paragraph
+## 1. The idea
 
 A simulation is a **first-class scene element that produces time-indexed data**. It reads other scene elements
 (geometry, materials, motion, other simulations), advances a state through time, and publishes typed outputs
 (volumes, particles, deforming meshes, transforms) into a **cache**. Everything else in RISE consumes those outputs
-through ordinary bindings: a medium binds a volume, a geometry binds a mesh stream, an instance binds a transform
-stream. Rendering never talks to a solver; it talks to the cache. Fire is one solver behind this contract; smoke
-from an imported VDB sequence, cloth, rigid bodies, liquids or weathering are others.
+through ordinary bindings. Rendering never talks to a solver; it talks to the cache or, for live preview, to the
+solver's latest published frame through the same reader interface.
 
-## Why not just generalise the fire plan later
+## 2. Owner decisions (2026-11-22)
 
-The fire-only plan would hard-wire five things that every later simulation needs again: a scene chunk, a cache with
-staleness, a background runner with progress and cancel, playback of partial results on the timeline, and a way to
-feed scene geometry and motion into a solver. Building those once, with fire as the first client and a second,
-deliberately different solver as the proof, costs little more than building them for fire alone.
+| # | Decision | Consequence |
+|---|---|---|
+| 1 | Volumes **and geometry**; cloth and liquids matter most | Output types include fixed-topology deforming meshes (cloth), changing-topology meshes and particles (liquids), and transforms. Cloth is the second solver; a liquid solver is the third |
+| 2 | Two-way coupling must stay possible | Coupling ports and a co-stepping group are part of the contract from the first version, even though the first solvers use them one-way |
+| 3 | Live in-viewport simulation for cheap solvers is wanted | An in-process host is required, not optional; solvers declare whether they can run interactively |
+| 4 | Every solver carries a preview / predictive label with evidence | Fidelity label, validation cases and fail-closed loading are part of the contract and the manifest for all solvers |
+| 5 | Every solver has a portable CPU path; it may be marked unsupported while in development | Backends carry a status (`supported`, `experimental`, `unsupported`). Fire's CPU path starts as `unsupported` |
 
-## Five layers
+## 3. What exists (r275)
 
-### 1. Solver contract (library)
+- Fire solver: Metal, driven from `tests/FireSequenceTest.cpp` (about 5–6k lines of driver in the test file), case
+  hard-coded, options in about 97 `RISE_FIRE_*` environment variables. Certified path and opt-in fast mode.
+- `fire_medium { sequence_manifest … }` playback in the command-line renderer; sealed, content-hashed manifest.
+- Incremental partial manifest, per-frame preflight option, follow-mode rendering script
+  (`tools/fire/r275/follow_render.py`).
+- Per-frame render preparation seam (`PrepareMediaForRender`, render freeze) that swaps media between frames.
+- No library simulation API, no background-task system beyond the single render slot, no on-disk cache with
+  staleness, no fire support in the GUI apps (OpenVDB is only in the make build).
 
-One interface every solver implements. Sketch:
+## 4. Layers
+
+### 4.1 Solver contract (library)
 
 | Part | What it says |
 |---|---|
-| Describe | Parameters, as a normal chunk descriptor, so the editor, properties panel and agent schema come for free |
-| Inputs | Which scene elements it reads (colliders, emitters, materials, fields from other simulations) and at what times |
-| Outputs | Typed, named channels with units: dense or sparse grids, point sets, mesh sequences, rigid transforms |
-| Advance | Step from one output time to the next; internal substeps are the solver's business |
-| Checkpoint / restore | Opaque state blobs, so any run can stop and resume |
-| Capabilities | Backends (CPU, Metal), deterministic or not, memory and time estimate, fidelity modes (fast, certified) |
-| Evidence | What validation the solver carries, so outputs can be labelled preview or predictive as fire does today |
+| Describe | Parameters as a normal chunk descriptor (editor, properties panel and agent schema follow) |
+| Inputs | Scene elements read (colliders, emitters, materials, other simulations' outputs), sampled through the animator at solver times |
+| Outputs | Typed, named channels with units: dense and sparse grids, point sets, meshes (fixed or changing topology, with velocities), rigid transforms |
+| Advance | From one output time to the next; substeps are internal. Must also support advancing by an externally imposed macro step for co-stepping |
+| Ports | Coupling exchange at a macro-step boundary: what the solver offers (for example a velocity field, a collision surface with velocity, heat flux) and accepts (forces, impulses, boundary motion, sources). A port can be fed by a live solver or by another simulation's cached output, so one-way and two-way coupling use the same interface |
+| Checkpoint / restore | Opaque state blobs; every run can stop and resume |
+| Capabilities | Backends with status, interactive or bake-only, deterministic or not, cost and memory estimate, fidelity modes |
+| Evidence | Validation cases and what they establish; yields the `preview` or `predictive` label written into the cache |
 
 The solver knows nothing about files, UI, threads or the timeline.
 
-### 2. Host (who runs a solver)
+### 4.2 Hosts
 
-The same solver object can be run by two hosts:
+- **In-process host:** steps interactive solvers in the app as the timeline plays or scrubs; publishes frames to
+  the viewport; can record to a cache.
+- **Worker host:** the `rise-sim` executable. Loads the scene, runs one solver or a co-stepping group, writes the
+  cache, reports status, resumes from checkpoints, survives the app closing. Heavy and GPU solvers run here.
+- **Co-stepping group:** solvers that are two-way coupled run in one host with a shared macro step and a port
+  exchange per step. Exchange order and sub-iteration are the group's policy, not the solvers'.
 
-- **In-process host** for cheap solvers and interactive preview: a cloth patch or a few hundred rigid bodies can
-  step live in the viewport as the user scrubs.
-- **Worker-process host** for heavy bakes: a separate executable (`rise-sim`) that loads the scene, runs one or
-  more solvers, writes the cache and exits. It survives the app closing, resumes from checkpoints, and owns the GPU
-  without contending inside the app. Fire runs here.
+### 4.3 Cache
 
-This resolves "library or separate tool": the solver lives in the library, and the host decides where it runs.
+- **Manifest (general):** time map, frames, channels with types and units, content hashes, producer identity,
+  fidelity label and evidence, embedded physical records. Appended as frames arrive. Today's sealed fire manifests
+  stay loadable.
+- **Native frame container:** grids, point sets, meshes, transforms. No external dependency at playback. OpenVDB
+  and Alembic are import and export formats only.
+- **Key and states:** hash of solver id and version, parameters and input hashes; `missing`, `baking`, `partial`,
+  `complete`, `stale`. A stale cache still plays, marked stale.
+- **Imported data:** an external VDB or mesh sequence is a cache with a foreign producer, labelled `preview`.
 
-### 3. Cache (the only thing rendering sees)
+### 4.4 Scene binding and time
 
-A generalisation of today's fire sequence manifest:
+- **Producers:** one keyword per solver in a new `Simulation` chunk category (`fire_simulation`,
+  `cloth_simulation`, `liquid_simulation`, `simulation_cache` for imports) and `simulation_group` for coupled sets.
+- **Consumers:** existing chunks name an output instead of a file: a medium `source campfire.density`, a mesh
+  geometry `source flag.surface`, an object `transform_source debris.body[3]`.
+- **Time:** each simulation declares span and output rate; consumers may offset, scale, hold or loop. Per-frame
+  preparation generalises from media to geometry and transforms; velocity channels feed motion blur.
+- **Dependencies:** inputs form a graph; the scheduler orders bakes and staleness propagates along it.
+- **Fidelity:** a consumer may request `predictive` and fails closed if the cache is not, as `fire_medium` does.
 
-- **Manifest:** time map, list of frames, channels with types and units, content hashes, producer identity, fidelity
-  label, embedded physical records. Appended to as frames arrive.
-- **Frame containers:** a small native format for grids, points and meshes, so playback needs no extra
-  dependencies on any platform. OpenVDB and Alembic become import and export formats.
-- **Key:** hash of solver id and version, parameters, and the hashes of every input it read. States: missing,
-  baking, partial, complete, stale.
-- **Imported data is the same thing.** A VDB sequence from Houdini or Blender is a cache with a foreign producer and
-  no solver attached. The Blender bridge's temporary slice cache would move onto this.
+### 4.5 Control surfaces
 
-### 4. Scene binding and time
+- **UI:** Simulations panel (state, progress, bake / stop / resume, queue), baked ranges on the timeline, live
+  play for interactive solvers.
+- **Command line:** `rise-sim bake|resume|status <scene> [simulation]`; follow-mode rendering.
+- **Agent:** `sim_bake`, `sim_status`, `sim_wait`, `sim_cancel`.
+- **Scheduler rules:** one GPU solver at a time, a memory budget, renders allowed beside a bake.
 
-- **Producer chunks:** `simulation`-category chunks, one keyword per solver (`fire_simulation`, later
-  `cloth_simulation`, …), plus `simulation_cache` for imported sequences.
-- **Consumer bindings:** existing chunks gain a way to name a simulation output instead of a file:
-  a medium takes `source campfire.density`, a mesh geometry takes `source cloth.surface`, an object takes
-  `transform_source debris.body[3]`.
-- **Time:** every simulation declares its span and output rate; consumers may retime (offset, scale, hold, loop).
-  The renderer already has the right seam: per-frame preparation (`PrepareMediaForRender`, render freeze) swaps
-  time-varying media between frames. That generalises to "time-varying asset providers" for geometry and
-  transforms too. Sub-frame motion (velocity channels, the fire advection offset) feeds motion blur.
-- **Dependencies:** inputs form a graph. A fire that reads a moving collider depends on the animation; smoke that
-  reads a rigid-body simulation depends on that bake. The bake scheduler orders them and staleness propagates.
-- **Coupling:** one-way coupling (scene → simulation, simulation → simulation) comes from the graph. True two-way
-  coupling is a group of solvers stepped together inside one host; the contract allows it, but it is not in the
-  first build.
+## 5. Milestones
 
-### 5. Control surfaces
+Each milestone ends with tests green, a warning-free build, and a short results note in `docs/`. The solver
+contract is **frozen only after M3**; until then it may change.
 
-One implementation, three faces:
-
-- **UI:** a Simulations panel (list, state, progress, bake / stop / resume, queue), baked ranges drawn on the
-  timeline, and the timeline shown for any scene with time-varying data.
-- **Command line:** `rise-sim bake|resume|status <scene> [simulation]`, and follow-mode rendering as a flag.
-- **Agent:** `sim_bake`, `sim_status`, `sim_wait`, `sim_cancel`, mirroring the render verbs.
-
-Resource rules live in the scheduler: one GPU solver at a time, a memory budget, and whether a render may run
-alongside a bake.
-
-## What fire becomes
-
-- The stepping loop now inside `tests/FireSequenceTest.cpp` is extracted behind the solver contract. Its options
-  (soot yield, radiation closure, fast mode, step cap) become parameters instead of environment variables.
-- The fire manifest becomes the general manifest with fire's records embedded; certified mode keeps its seals.
-- `fire_medium` binds `source <simulation>.<channels>`; `sequence_manifest <path>` keeps working.
-- Follow-mode rendering, the incremental manifest and per-frame verification (all built in r275) are the first
-  pieces of layers 3 and 5.
-
-## Order of work
-
-| Step | Work | Proves |
+| # | Milestone | Acceptance |
 |---|---|---|
-| 1 | Cache: general manifest, native frame container, partial loading, staleness key. Fire sequences and imported VDB both read through it | Layer 3; the macOS app can play a fire |
-| 2 | Solver contract and worker host; fire extracted onto them, output byte-identical to today | Layers 1–2 for a heavy GPU solver |
-| 3 | A second, small CPU solver on the same contract, run in-process (candidate: rigid bodies or cloth, producing transforms or a mesh stream) | The contract is not fire-shaped; geometry outputs; live preview |
-| 4 | Scene chunks, bindings, dependency graph, retiming | Layer 4 |
-| 5 | UI panel and timeline, agent verbs, scheduler rules | Layer 5 |
+| M0 | Baseline: reference fire outputs (certified, a short tier-6 and tier-8 window) and reference renders stored outside git; inventory of the driver code to extract | Reference digests recorded; inventory note |
+| M1 | **Cache.** General manifest and native frame container (grids first); partial loading and per-frame verification as the default for `preview`; staleness key; VDB import to cache; fire sequences read through the cache; fire playback in the macOS GUI build | Existing fire scenes: voxel data bit-equal through the new reader, renders equal within noise; sealed fire manifests still load; a half-baked cache loads; GUI loads and renders a fire frame |
+| M2 | **Contract and hosts.** Solver interface, in-process host, `rise-sim` worker; fire driver extracted from the test file onto them; environment options become parameters (environment still honoured during transition) | Certified fire output byte-identical to M0 references; fast mode within its r275 tolerances; stop and resume works; the test file shrinks to tests |
+| M3 | **Cloth, the second solver.** CPU, in-process, interactive. Outputs a fixed-topology mesh stream with velocities; collides with scene geometry; validation cases with stated error | Analytic and convergence cases pass and are documented; live in the viewport at interactive rates on a modest mesh; baked cloth renders with correct motion blur; contract reviewed and frozen |
+| M4 | **Scene.** Chunk category, producer chunks, consumer bindings, dependency graph, retiming, per-frame geometry and transform providers | Scenes round-trip through the editor; stale detection and propagation tests; the timeline shows for any time-varying scene |
+| M5 | **Control surfaces.** macOS panel and timeline ranges, command line, agent verbs, scheduler; Windows panel for monitoring and playback | End-to-end bake of fire and cloth from the app and from the agent |
+| M6 | **Coupling.** Ports implemented on fire and cloth; co-stepping group host; one two-way demonstration (cloth with a small rigid-body solver, or cloth driven by and loading a flow) | A conserved quantity (momentum) balances across the port to stated tolerance; one-way from cache and two-way live give consistent results in the weak-coupling limit |
+| M7 | **Liquid, the third solver.** Portable CPU first; particles, changing-topology surface mesh and optional volume outputs; two-way with rigid bodies or cloth through the ports; validation cases | Dam-break front position against published data, hydrostatic rest, volume conservation; renders as a refractive surface |
+| M8 | **Portable CPU paths to supported.** Fire's CPU path from `unsupported` to at least `experimental`; simulation on Windows where a backend exists | Cross-platform playback of every cache type; CPU fire agrees with Metal fast mode within tolerance on a coarse case |
 
-The interface is frozen only after step 3. Two unlike solvers are the minimum to trust it.
+## 6. Rules that hold throughout
 
-## Decisions for the owner
+- The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.
+- Every solver ships with validation cases and an honest fidelity label; none is `predictive` by assertion.
+- No solver-specific code in the cache, hosts, scheduler or UI; anything fire-shaped found there is a defect.
+- New scene keywords follow the existing chunk checklist (`AGENTS.md`, `src/Library/Parsers/README.md`), including
+  the five build lists and the append-only `IJob` and `ChunkCategory` rules.
+- Bulk outputs (caches, references, movies) stay outside git.
 
-1. **Which simulations come next.** This shapes the output types and the second solver. Volumes only (smoke,
-   clouds, explosions) is a much narrower contract than volumes plus geometry (cloth, rigid bodies, liquids).
-2. **How far two-way coupling matters** (fire heating and moving objects, liquid pushing bodies). It decides
-   whether co-stepping is designed in from the start or left as an allowed extension.
-3. **Native frame format versus shipping OpenVDB and Alembic** with every app.
-4. **Interactive ambition:** bake-only, or live in-viewport simulation for cheap solvers.
-5. **Certification as a general notion:** should every solver carry a preview / predictive label and evidence, as
-   fire does, or is that fire-specific rigour?
-6. **Platforms:** playback everywhere and simulation where a backend exists, or a requirement that every solver
-   has a portable CPU path.
+## 7. Open questions to settle inside the milestones
 
-## Not known yet
-
-- Whether the interactive viewport rasterizer renders time-varying media and honours the prepare-and-freeze path.
-- How deforming geometry would enter the acceleration structures per frame, and what that costs.
-- What a render running beside a GPU bake costs each of them (the r275 follow run gives a first number).
+- Whether the interactive viewport rasterizer renders time-varying media and honours prepare-and-freeze (M1).
+- How deforming and changing-topology geometry enters the acceleration structures per frame, and the cost (M3, M7).
+- Cloth model choice: it must be defensible physically (a continuum shell or membrane model with measured material
+  parameters), not only stable (M3).
+- Liquid method and surface reconstruction (M7).
+- What a render beside a GPU bake costs each (first number from the r275 follow run).
