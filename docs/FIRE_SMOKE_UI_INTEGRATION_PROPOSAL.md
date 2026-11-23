@@ -1,6 +1,6 @@
 # Fire simulation in the scene format and UI: proposal
 
-2026-11-22. **Proposal for owner review. Nothing here is built** except follow-mode rendering (phase 0), which is
+**Superseded in scope by [SIMULATION_IN_RISE_PROPOSAL.md](SIMULATION_IN_RISE_PROPOSAL.md)** (simulation in general, fire as the first solver). 2026-11-22. **Proposal for owner review. Nothing here is built** except follow-mode rendering (phase 0), which is
 in progress separately. Sources: a read of the GUI, job, timeline, scene-format and agent code, and
 `FIRE_SMOKE_DESIGN.md` §3.9, §7.3, §8, §9.
 
