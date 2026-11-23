@@ -114,6 +114,12 @@ M0 historical references verified at both tiers; the forced make rebuild passed;
 The [M1 cache design](SIMULATION_M1_CACHE_DESIGN.md) completed independent adversarial review with no open P1/P2 findings.
 On 2026-11-23 the owner authorized deferring the Metal fast-tier and macOS GUI build checks to M1 acceptance. The [M1 verification record](SIMULATION_M1_RESULTS.md) records voxel equality on six historical frames, sealed and partial playback, render noise comparisons and remaining integration gates. M1 is open.
 
+2026-11-23: **M1 accepted.** With a Metal device present the make build is warning-free, all 419 fast tests pass, and
+the certified fire path is byte-identical to the r274 reference (five checkpoints over 25 steps). Carried forward as
+a release item, not an M1 gate: a warning-free macOS 26.2 release build of the app needs an OpenVDB build that
+targets 26.2 for the import helper. M2 design: [SIMULATION_M2_DESIGN.md](SIMULATION_M2_DESIGN.md); execution moved
+from Codex to Claude.
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.
