@@ -102,8 +102,12 @@ mode with a 2.5 ms step cap, rendered in follow mode while it ran. Reference: th
 
 - 7.3 times faster end to end, with a renderer on 8 threads running beside it the whole time.
 - Means agree within about 2% everywhere below 2.8 m; the top two layers differ by up to 5% (outflow boundary).
-- **Puffing frequency differs** (2.52 against 3.34 Hz; the capstone's reference is about 2.74 Hz, so fast is 8% low
-  and certified 22% high). Which of fast mode and the larger step moves it has not been separated.
+- **Puffing frequency is not resolved by this window** (corrected 2026-11-23). The summary values are 2.52 against
+  3.34 Hz, but the spectrum is a broad band, not a tone. From the 16 Hz frame series of heat release, the strongest
+  peak is 3.14 Hz certified and 2.54 Hz fast, each with a second peak at 62–65% of its power (2.74 and 2.84 Hz);
+  within one run the two halves of the window disagree by up to 0.3 Hz, and other quantities (hot volume, centreline
+  temperature) peak anywhere from 1 to 4.7 Hz. The two runs' puffing cannot be told apart with 14.6 s of data, so no
+  separation run for fast mode against step size was made.
 - A cap of `inf` fails a cold start (11.6 ms steps, stage validation refuses at step 10); 2.5 ms does not.
 - Follow mode: frames rendered at about 24 s each as they appeared; the 235-frame movie was complete 17 s after the
   solver's last frame. Movie: `/Volumes/SSD/RISE/movies/r275_sooty_y300_fast_follow_256x384.mov`.
