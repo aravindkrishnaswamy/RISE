@@ -551,6 +551,9 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionAdvectionUnsupported.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationCache.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.cpp" />
@@ -1156,6 +1159,11 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireFastMode.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationGrid.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationVDBGrid.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationVDBBounds.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationCache.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.h" />

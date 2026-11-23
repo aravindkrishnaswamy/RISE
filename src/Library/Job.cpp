@@ -39,6 +39,7 @@
 #include <typeinfo>
 #define _USE_MATH_DEFINES
 #include "Job.h"
+#include "SceneEditor/CancellableProgressCallback.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
 #include <fstream>
 #include <sstream>
@@ -1800,8 +1801,9 @@ void Job::EndPreparedRequest()
 
 bool Job::PreparedProgressSafe() const
 {
-	if( !pScene || !pScene->HasTimeVaryingMedia() ||
-		!pGlobalProgress.load(std::memory_order_acquire) ) return true;
+	const auto* progress = pGlobalProgress.load(std::memory_order_acquire);
+	if( !pScene || !pScene->HasTimeVaryingMedia() || !progress ||
+		dynamic_cast<const PreparedRenderProgress*>(progress) ) return true;
 	GlobalLog()->PrintEasyError("unsafe_progress_callback");
 	return false;
 }
@@ -10395,16 +10397,10 @@ bool Job::AddFireMediumBound(
 	if( !name || !name[0] || !sequenceManifest || !sequenceManifest[0] ||
 		mediaMap.find(name) != mediaMap.end() ) return false;
 	const std::string resolved = GlobalMediaPathLocator().Find(sequenceManifest).c_str();
-	RISECBOR64::Bytes bytes;
-	if( !ReadIdentityFile(resolved,bytes) ) {
-		GlobalLog()->PrintEasyError("Job::AddFireMedium:: sequence manifest is unreadable");
-		return false;
-	}
 	std::shared_ptr<Implementation::FireSequenceManifest> manifest(
 		new Implementation::FireSequenceManifest());
 	std::string error;
-	if( !manifest->LoadCanonicalEnvelope(bytes,
-		std::filesystem::path(resolved).parent_path().string(),error) ) {
+	if( !manifest->LoadPlaybackFile(resolved,error) ) {
 		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
 		return false;
 	}
@@ -10435,14 +10431,12 @@ bool Job::AddFireMediumBound(
 	}
 	if( manifestHas("chem_CH") != boundChem || manifestHas("chem_C2") != boundChem ||
 		manifestHas("chem_CO2") != boundChem ) return false;
-	// Default: hash and decode every listed frame before the first render. Follow mode (rendering a
-	// sequence while its solver is still writing it, one frame at a time) sets
-	// RISE_FIRE_SEQUENCE_PREFLIGHT=used to verify only the frames a render actually selects: each
-	// frame's whole-file SHA-256 is checked again on every LoadFrame, so a corrupt frame is still
-	// refused before it can be used; only the up-front sweep over frames never selected is skipped.
-	const char* const preflightMode = std::getenv( "RISE_FIRE_SEQUENCE_PREFLIGHT" );
-	const bool preflightUsedFramesOnly = preflightMode && std::strcmp( preflightMode, "used" ) == 0;
-	if( !preflightUsedFramesOnly && !manifest->PreflightAllFrames(error) ) {
+	// Preview verifies each payload on demand. Explicit eager preflight is useful
+	// for offline audits; a preview setting cannot relax predictive admission.
+	const char* preflight = std::getenv("RISE_FIRE_SEQUENCE_PREFLIGHT");
+	if( (m_firePredictiveRequested && !manifest->PreflightPredictive(error)) ||
+		(!m_firePredictiveRequested && preflight && std::strcmp(preflight,"all")==0 &&
+		 !manifest->PreflightAllFrames(error)) ) {
 		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: sequence preflight: %s",error.c_str());
 		return false;
 	}
@@ -10613,10 +10607,22 @@ bool Job::SetFireFidelityMode( const char* mode )
 		return false;
 	}
 	if( std::strcmp(mode, "preview") == 0 ) {
+		for( const auto& binding : fireSequenceManifests ) binding.second->ReleasePredictiveGeneration();
 		m_firePredictiveRequested = false;
 		return true;
 	}
 	if( std::strcmp(mode, "predictive") == 0 ) {
+		// Qualify all bindings before installing any new generation pins.
+		std::vector<std::pair<Implementation::FireSequenceManifest*,Implementation::FireSequenceManifest>> qualified;
+		for( const auto& binding : fireSequenceManifests ) {
+			auto& candidate = qualified.emplace_back(binding.second.get(),*binding.second).second;
+			std::string error;
+			if( !candidate.PreflightPredictive(error) ) {
+				GlobalLog()->PrintEx(eLog_Error,"Job::SetFireFidelityMode:: %s",error.c_str());
+				return false;
+			}
+		}
+		for( auto& item : qualified ) *item.first = std::move(item.second);
 		m_firePredictiveRequested = true;
 		return true;
 	}
@@ -14160,6 +14166,22 @@ bool Job::ShootShadowPhotons(
 
 namespace
 {
+	// A failed later medium or fidelity check rolls back every prior install.
+	class PreparedFireChanges
+	{
+		std::vector<std::function<void()>> undo_;
+	public:
+		~PreparedFireChanges() {
+			for( auto i=undo_.rbegin(); i!=undo_.rend(); ++i ) if( *i ) (*i)();
+		}
+		bool Prepare(Implementation::FireSequencePreparationController& controller,
+			const Implementation::FireSequenceRenderTimeSupport& support,std::string& error) {
+			undo_.emplace_back();
+			return controller.PrepareMediaForRender(support,false,error,&undo_.back());
+		}
+		void Commit() { undo_.clear(); }
+	};
+
 	class FireSequencePreparationGroup : public IRenderPreparationController
 	{
 		std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > controllers_;
@@ -14175,11 +14197,13 @@ namespace
 			if( !leases_.empty() ) { error="mutation_frozen"; return false; }
 			const Implementation::FireSequenceRenderTimeSupport fireSupport{
 				support.nominal,support.open,support.close};
+			PreparedFireChanges changes;
 			for( const auto& controller : controllers_ )
-				if( !controller->PrepareMediaForRender(fireSupport,false,error) ) return false;
+				if( !changes.Prepare(*controller,fireSupport,error) ) return false;
 			if( afterPrepare_ && !afterPrepare_(support) ) {
 				error="prepared fire fidelity publication failed"; return false;
 			}
+			changes.Commit();
 			return true;
 		}
 		bool AcquireRenderFreeze(std::string& error) override
@@ -14546,6 +14570,15 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 	const char* rasterizerKind,
 	const FireExternalRenderConfig& config )
 {
+	const Scalar t = animOptions.time_start;
+	const Implementation::FireSequenceRenderTimeSupport support{t,t,t};
+	return PrepareExternalFireAtTime(rasterizer,rasterizerKind,config,&support);
+}
+
+bool Job::PrepareExternalFireAtTime(
+	IRasterizer* rasterizer, const char* rasterizerKind, const FireExternalRenderConfig& config,
+	const Implementation::FireSequenceRenderTimeSupport* support )
+{
 	ClearFireRasterizerAuthorization(rasterizer);
 	if( pScene && !SceneHasActiveFireMedium(*pScene) ) {
 		pScene->SetFireTemporalHold(false);
@@ -14575,13 +14608,11 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
 		animOptions.invert_fields,nullptr,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
-	const Implementation::FireSequenceRenderTimeSupport sequenceSupport{
-		animOptions.time_start,animOptions.time_start,animOptions.time_start};
 	const bool prepared = PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
 		false,AutoIntegratorChoice::PT,config.oidnDenoise,
 		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
-		resolvedConfig,&sequenceSupport,true);
+		resolvedConfig,support,true);
 	if( prepared ) {
 		Implementation::Rasterizer* concrete =
 			dynamic_cast<Implementation::Rasterizer*>(rasterizer);
@@ -14616,25 +14647,42 @@ bool Job::RasterizeExternalRasterizerResolved(
 	const FireExternalRenderConfig& config,
 	const Rect* region )
 {
+	return RasterizeExternalStillAtTime(rasterizer,rasterizerKind,config,region,nullptr);
+}
+
+bool Job::RasterizeExternalRasterizerAtSceneTime(
+	IRasterizer* rasterizer, const char* rasterizerKind, const FireExternalRenderConfig& config,
+	const Rect* region, const Scalar nominalTime )
+{
+	return RasterizeExternalStillAtTime(rasterizer,rasterizerKind,config,region,&nominalTime);
+}
+
+bool Job::RasterizeExternalStillAtTime(IRasterizer* rasterizer, const char* rasterizerKind,
+	const FireExternalRenderConfig& config, const Rect* region, const Scalar* selectedTime)
+{
 	PreparedRequestGuard request(*this,true);
 	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	const Scalar nominalTime = selectedTime ? *selectedTime : animOptions.time_start;
+	if( !std::isfinite(nominalTime) ) return false;
 	FrameRenderRollback renderRollback(rasterizer ? rasterizer->GetFrameStore() : nullptr);
-	if( !rasterizer || !PrepareFireRenderForExternalRasterizerResolved(
-		rasterizer,rasterizerKind,config) ) return false;
+	// RasterizeScenePrepared supplies the actual shutter window to the group.
+	if( !rasterizer || !PrepareExternalFireAtTime(
+		rasterizer,rasterizerKind,config,nullptr) ) return false;
 	renderRollback.ArmPixelStateForFire();
 	std::string preparationError;
 	auto controllers=ActiveFireSequenceControllers(preparationError);
 	if( pScene->HasTimeVaryingMedia() && controllers.empty() ) return false;
 	FireSequencePreparationGroup preparation(std::move(controllers),
 		[this,rasterizer,rasterizerKind,config](const RenderTimeSupport&) {
-			return PrepareFireRenderForExternalRasterizerResolved(
-				rasterizer,rasterizerKind,config) && AuthorizeFireRasterizer(
+			// The group has already installed the full nominal/shutter support.
+			return PrepareExternalFireAtTime(
+				rasterizer,rasterizerKind,config,nullptr) && AuthorizeFireRasterizer(
 					rasterizer,FireRenderPreflightAuthorization::Render);
 		});
 	if( !AuthorizeFireRasterizer(
 		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
 	if( pScene->HasTimeVaryingMedia() ) rasterizer->RasterizeScenePrepared(
-		*pScene,Scalar(animOptions.time_start),preparation,region,nullptr);
+		*pScene,nominalTime,preparation,region,nullptr);
 	else rasterizer->RasterizeScene(*pScene,region,nullptr);
 	if( !FireRasterizerLastRenderCompleted(rasterizer) ) return false;
 	renderRollback.Commit();
@@ -14743,12 +14791,13 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		}
 		return true;
 	};
+	PreparedFireChanges changes;
 	if( sequenceTimeSupport ) {
 		for( const IMedium* medium : activeMedia ) {
 			const auto controller = fireSequenceControllers.find(medium);
 			if( controller == fireSequenceControllers.end() ) continue;
 			std::string error;
-			if( !controller->second->PrepareMediaForRender(*sequenceTimeSupport,false,error) ) {
+			if( !changes.Prepare(*controller->second,*sequenceTimeSupport,error) ) {
 				GlobalLog()->PrintEx(eLog_Error,"Job:: fire sequence preparation failed: %s",error.c_str());
 				return false;
 			}
@@ -14859,7 +14908,12 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			const std::shared_ptr<const Implementation::FireSequencePreparedFrame> frame =
 				sequenceController->second->PreparedFrame();
 			if( !frame ) return false;
-			item.mediaKind = "sequence_backed";
+			item.mediaKind = frame->available ? "sequence_backed" : "sequence_unavailable_v1";
+			if( !frame->available ) {
+				item.coverageDigest = frame->coverageDigest;
+				reasons.insert("frame_unavailable");
+				predictiveAllowed = false;
+			}
 			item.sequenceId = sequenceManifest->second->SequenceId();
 			item.selectedBaseFrameIndex = frame->frameIndex;
 			item.wholeFileDigest = frame->wholeFileSha256;
@@ -15027,6 +15081,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			std::vector<std::string>(recordIds.begin(),recordIds.end()),
 			fireMediaMetadata,resolvedConfig,rendererBuild,rendererBuildId);
 	}
+	changes.Commit();
 	return true;
 }
 
@@ -15035,8 +15090,20 @@ bool Job::PrepareFireRenderFidelityMetadata(
 bool Job::Rasterize(
 	)
 {
+	return RasterizeStillAtTime(nullptr);
+}
+
+bool Job::RasterizeAtSceneTime( const Scalar nominalTime )
+{
+	return RasterizeStillAtTime(&nominalTime);
+}
+
+bool Job::RasterizeStillAtTime( const Scalar* selectedTime )
+{
 	PreparedRequestGuard request(*this,true);
 	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	const Scalar nominalTime = selectedTime ? *selectedTime : animOptions.time_start;
+	if( !std::isfinite(nominalTime) ) return false;
 	if( !pRasterizer ) {
 		// GUI scene-switch debugging (2026-08-20): this was a SILENT false --
 		// no log line anywhere, so a caller with no active rasterizer (e.g. a
@@ -15102,7 +15169,7 @@ bool Job::Rasterize(
 	}
 	CallbackOutputRenderScope callbackOutputs( *this );
 	if( pScene->HasTimeVaryingMedia() ) pRasterizer->RasterizeScenePrepared(
-		*pScene,Scalar(animOptions.time_start),preparation,0,pSeq);
+		*pScene,nominalTime,preparation,0,pSeq);
 	else pRasterizer->RasterizeScene(*pScene,0,pSeq);
 	if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
 	metadataRollback.Commit();

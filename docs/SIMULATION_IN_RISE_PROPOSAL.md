@@ -107,6 +107,13 @@ contract is **frozen only after M3**; until then it may change.
 | M7 | **Liquid, the third solver.** Portable CPU first; particles, changing-topology surface mesh and optional volume outputs; two-way with rigid bodies or cloth through the ports; validation cases | Dam-break front position against published data, hydrostatic rest, volume conservation; renders as a refractive surface |
 | M8 | **Portable CPU paths to supported.** Fire's CPU path from `unsupported` to at least `experimental`; simulation on Windows where a backend exists | Cross-platform playback of every cache type; CPU fire agrees with Metal fast mode within tolerance on a coarse case |
 
+### Execution status (2026-11-22)
+
+M0 historical references verified at both tiers; the forced make rebuild passed; the fresh fast tier built 419 executables and passed 416 on a host with no visible Metal device. The full SwiftUI executable now renders legacy and native scenes through its viewport probe. The warning-free macOS 26.2 release build remains open. The [build and capture status](SIMULATION_M0_RESULTS.md) and
+[M2 driver inventory](SIMULATION_M0_DRIVER_INVENTORY.md) are recorded.
+The [M1 cache design](SIMULATION_M1_CACHE_DESIGN.md) completed independent adversarial review with no open P1/P2 findings.
+On 2026-11-23 the owner authorized deferring the Metal fast-tier and macOS GUI build checks to M1 acceptance. The [M1 verification record](SIMULATION_M1_RESULTS.md) records voxel equality on six historical frames, sealed and partial playback, render noise comparisons and remaining integration gates. M1 is open.
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.

@@ -8,6 +8,8 @@
 
 #include "pch.h"
 #include "FireSequence.h"
+#include "../Simulation/SimulationCache.h"
+#include "../Simulation/SimulationGrid.h"
 #include "FireCase.h"
 #include "FireSimulationRecords.h"
 #include "../Rendering/FrameStore.h"
@@ -23,6 +25,7 @@
 #include <sstream>
 
 #if defined(RISE_ENABLE_OPENVDB)
+#include "../Simulation/SimulationVDBGrid.h"
 #include <openvdb/openvdb.h>
 #include <openvdb/io/Stream.h>
 #endif
@@ -314,7 +317,7 @@ namespace RISE
 			bool LoadScalarGrid( const typename GridType::Ptr& grid,
 				const FireSequenceChannelDescriptor& descriptor,
 				const double temperatureMinimum, const double temperatureMaximum,
-				FireSequenceDenseChannel& output, std::string& error )
+				FireSequenceDenseChannel& output, bool dense, std::string& error )
 			{
 				const double background = static_cast<double>(grid->background());
 				if( descriptor.background.size() != 1u ||
@@ -329,7 +332,7 @@ namespace RISE
 				output.name = descriptor.name;
 				output.vectorValues = false;
 				output.dimensions = descriptor.dimensions;
-				output.values.assign(static_cast<std::size_t>(count64),background);
+				if( dense ) output.values.assign(static_cast<std::size_t>(count64),background);
 				output.minimum = background;
 				output.maximum = background;
 
@@ -348,6 +351,7 @@ namespace RISE
 						bbox.max().y() >= static_cast<int>(descriptor.dimensions[1]) ||
 						bbox.max().z() >= static_cast<int>(descriptor.dimensions[2]) ) return Fail(error,
 						"fire sequence active scalar topology exceeds the manifest dimensions");
+					if( !dense ) continue;
 					for( openvdb::CoordBBox::Iterator<true> voxel=bbox.begin(); voxel; ++voxel ) {
 						const openvdb::Coord c = *voxel;
 						const std::size_t linear = static_cast<std::size_t>(c.x())+
@@ -362,7 +366,7 @@ namespace RISE
 
 			bool LoadVectorGrid( const openvdb::Vec3fGrid::Ptr& grid,
 				const FireSequenceChannelDescriptor& descriptor,
-				FireSequenceDenseChannel& output, std::string& error )
+				FireSequenceDenseChannel& output, bool dense, std::string& error )
 			{
 				const openvdb::Vec3f background = grid->background();
 				if( descriptor.background.size() != 3u ) return Fail(error,
@@ -379,8 +383,8 @@ namespace RISE
 				output.name = descriptor.name;
 				output.vectorValues = true;
 				output.dimensions = descriptor.dimensions;
-				output.values.resize(static_cast<std::size_t>(count64)*3u);
-				for( std::size_t i=0; i<static_cast<std::size_t>(count64); ++i ) {
+				if( dense ) output.values.resize(static_cast<std::size_t>(count64)*3u);
+				if( dense ) for( std::size_t i=0; i<static_cast<std::size_t>(count64); ++i ) {
 					for( unsigned int c=0; c<3u; ++c ) output.values[3u*i+c] = background[c];
 				}
 				output.minimum = std::min({double(background[0]),double(background[1]),double(background[2])});
@@ -403,6 +407,7 @@ namespace RISE
 						bbox.max().y() >= static_cast<int>(descriptor.dimensions[1]) ||
 						bbox.max().z() >= static_cast<int>(descriptor.dimensions[2]) ) return Fail(error,
 						"fire sequence active velocity topology exceeds the manifest dimensions");
+					if( !dense ) continue;
 					for( openvdb::CoordBBox::Iterator<true> voxel=bbox.begin(); voxel; ++voxel ) {
 						const openvdb::Coord c = *voxel;
 						const std::size_t linear = static_cast<std::size_t>(c.x())+
@@ -415,6 +420,19 @@ namespace RISE
 				}
 				return true;
 			}
+			template<class Grid>
+			bool AppendNativeGrid(const Grid& grid,const FireSequenceChannelDescriptor& d,
+				std::size_t& budget,Simulation::GridFrame& frame,std::string& error)
+			{
+				const openvdb::CoordBBox bounds(openvdb::Coord(0),openvdb::Coord(
+					static_cast<int>(d.dimensions[0]-1),static_cast<int>(d.dimensions[1]-1),
+					static_cast<int>(d.dimensions[2]-1)));
+				Simulation::GridChannel channel;
+				if(!Simulation::ExtractVDBGrid(grid,d.units,&bounds,budget,channel,error)) return false;
+				frame.channels.push_back(std::move(channel));
+				return true;
+			}
+
 #endif
 		}
 
@@ -461,7 +479,8 @@ namespace RISE
 		{
 			*this = FireSequenceManifest();
 			Value root;
-			if( !RISECBOR64::DecodeCanonical(envelope,root,&error) ||
+			if( !Simulation::CanDecodeCanonicalRecord(envelope,256u*1024u*1024u) ||
+				!RISECBOR64::DecodeCanonical(envelope,root,&error) ||
 				!ExactKeys(root,{"payload","sequence_id"}) ) return Fail(error,
 				"fire sequence envelope is not canonical {payload,sequence_id}");
 			const Value* payload = root.Find("payload");
@@ -526,6 +545,7 @@ namespace RISE
 			Value decodedBuild;
 			if( !producerBuild || producerBuild->GetType() != Value::ByteString ||
 				!producerBuildId || producerBuildId->GetType() != Value::Text ||
+				!Simulation::CanDecodeCanonicalRecord(producerBuild->GetBytes(),256u*1024u*1024u) ||
 				!RISECBOR64::DecodeCanonical(producerBuild->GetBytes(),decodedBuild,&error) ||
 				decodedBuild.GetType() != Value::Map ||
 				!FrameStoreOutput::ValidateRendererBuildIdentityV1(
@@ -572,7 +592,8 @@ namespace RISE
 				const Value* id = payload->Find(fields.second);
 				Value record;
 				if( !bytes || bytes->GetType() != Value::ByteString || bytes->GetBytes().empty() ||
-					!RISECBOR64::DecodeCanonical(bytes->GetBytes(),record,&error) ||
+					!Simulation::CanDecodeCanonicalRecord(bytes->GetBytes(),256u*1024u*1024u) ||
+				!RISECBOR64::DecodeCanonical(bytes->GetBytes(),record,&error) ||
 					record.GetType() != Value::Map || !id || id->GetType() != Value::Text ||
 					id->GetText() != RISECBOR64::SHA256Hex(bytes->GetBytes()) ) return Fail(error,
 					std::string("fire sequence embedded record identity is invalid: ")+fields.first);
@@ -617,7 +638,8 @@ namespace RISE
 			if( !caseBytes || caseBytes->GetType()!=Value::ByteString ) return Fail(error,
 				"fire sequence case record is not embedded canonical bytes");
 			FireCase::RecordV1 caseRecord;
-			if( !FireCase::ValidateMethaneEnvelopeV1(caseBytes->GetBytes(),fuelRecord,caseRecord,error) ||
+			if( !Simulation::CanDecodeCanonicalRecord(caseBytes->GetBytes(),256u*1024u*1024u) ||
+				!FireCase::ValidateMethaneEnvelopeV1(caseBytes->GetBytes(),fuelRecord,caseRecord,error) ||
 				caseRecord.caseRecordId!=payload->Find("case_record_id")->GetText() ) return Fail(error,
 				"fire sequence case_record_id does not bind the embedded case record");
 			std::sort(embeddedRecordIds.begin(),embeddedRecordIds.end());
@@ -916,37 +938,41 @@ namespace RISE
 			return true;
 		}
 
-		bool FireSequenceManifest::LoadFrame( const std::int64_t frameIndex,
-			FireSequencePreparedFrame& frame, std::string& error ) const
+		bool FireSequenceManifest::ReadVDBFrame( const std::int64_t frameIndex,
+			FireSequencePreparedFrame* dense, Simulation::GridFrame* native, std::string& error ) const
 		{
-			frame = FireSequencePreparedFrame();
+
 			if( !valid_ ) return Fail(error,"fire sequence manifest is invalid");
 			const auto found = std::find_if(frames_.begin(),frames_.end(),
 				[frameIndex](const FireSequenceFrameDescriptor& item){ return item.index == frameIndex; });
 			if( found == frames_.end() ) return Fail(error,"fire sequence requested frame is absent");
 #if !defined(RISE_ENABLE_OPENVDB)
-			(void)frame;
+			(void)native; (void)dense;
 			return Fail(error,"fire_sequence_openvdb_capability_unavailable");
 #else
-			const std::filesystem::path path = std::filesystem::path(manifestDirectory_)/found->relativePath;
-			std::ifstream verifiedInput(path,std::ios::binary);
-			std::string fileDigest;
-			if( !verifiedInput || !RISECBOR64::SHA256StreamHex(verifiedInput,fileDigest) ||
-				fileDigest != found->sha256 ) {
-				return Fail(error,"fire sequence frame whole-file digest mismatch");
+			if( dense ) {
+				std::uint64_t remaining = (1024ull*1024ull*1024ull)/sizeof(double);
+				for( const auto& channel : channels_ ) {
+					const unsigned components = channel.valueType == "vec3_float32" ? 3u : 1u;
+					std::uint64_t voxels;
+					if( !CheckedVoxelCount(channel.dimensions,remaining/components,voxels) )
+						return Fail(error,"fire sequence exceeds dense frame budget");
+					remaining -= voxels*components;
+				}
 			}
-			openvdb::initialize();
+			const std::filesystem::path path = std::filesystem::path(manifestDirectory_)/found->relativePath;
 			try {
-				verifiedInput.clear();
-				verifiedInput.seekg(0,std::ios::beg);
-				if( !verifiedInput ) return Fail(error,"fire sequence verified frame stream is not seekable");
-#if OPENVDB_LIBRARY_MAJOR_VERSION_NUMBER >= 14
-				// OpenVDB 14 dropped the delayLoad flag; a stream is always read in full.
-				openvdb::io::Stream stream(verifiedInput);
-#else
-				openvdb::io::Stream stream(verifiedInput,false);
-#endif
-				openvdb::GridPtrVecPtr grids = stream.getGrids();
+				std::ifstream input(path,std::ios::binary|std::ios::ate);
+				const auto size=input.tellg();
+				if( size<=0 || size>static_cast<std::streamoff>(1024ull*1024ull*1024ull) )
+					return Fail(error,"fire sequence VDB is missing or exceeds byte budget");
+				std::string data(static_cast<std::size_t>(size),'\0');
+				input.seekg(0);
+				if( !input.read(&data[0],size) || input.peek()!=std::char_traits<char>::eof() || input.bad() ||
+					RISECBOR64::SHA256Hex(
+					reinterpret_cast<const unsigned char*>(data.data()),data.size())!=found->sha256 )
+					return Fail(error,"fire sequence frame whole-file digest mismatch");
+				const auto grids=Simulation::DecodeVDBPreimage(data);
 				std::set<std::string> fileNames;
 				std::map<std::string,openvdb::GridBase::Ptr> byName;
 				for( const openvdb::GridBase::Ptr& grid : *grids ) {
@@ -962,6 +988,8 @@ namespace RISE
 					return Fail(error,"fire sequence frame channel set differs from its manifest");
 				}
 				FireSequencePreparedFrame candidate;
+				Simulation::GridFrame nativeCandidate;
+				std::size_t nativeBudget=std::size_t(1024)*1024*1024;
 				candidate.frameIndex = frameIndex;
 				candidate.wholeFileSha256 = found->sha256;
 				for( const FireSequenceChannelDescriptor& descriptor : channels_ ) {
@@ -974,43 +1002,30 @@ namespace RISE
 					if( descriptor.valueType == "float32" ) {
 						openvdb::FloatGrid::Ptr grid = openvdb::gridPtrCast<openvdb::FloatGrid>(base);
 						loaded = grid && LoadScalarGrid<openvdb::FloatGrid>(grid,descriptor,
-							temperatureDomainMinimumK_,temperatureDomainMaximumK_,channel,error);
+							temperatureDomainMinimumK_,temperatureDomainMaximumK_,channel,dense!=nullptr,error);
+						if( loaded && native ) loaded=AppendNativeGrid(*grid,descriptor,nativeBudget,nativeCandidate,error);
 					} else if( descriptor.valueType == "vec3_float32" ) {
 						openvdb::Vec3fGrid::Ptr grid = openvdb::gridPtrCast<openvdb::Vec3fGrid>(base);
-						loaded = grid && LoadVectorGrid(grid,descriptor,channel,error);
+						loaded = grid && LoadVectorGrid(grid,descriptor,channel,dense!=nullptr,error);
+						if( loaded && native ) loaded=AppendNativeGrid(*grid,descriptor,nativeBudget,nativeCandidate,error);
 					}
 					if( !loaded ) {
 						return error.empty() ? Fail(error,
 							"fire sequence grid type differs from its manifest descriptor") : false;
 					}
-					candidate.channels.emplace(descriptor.name,std::move(channel));
+					if( dense ) candidate.channels.emplace(descriptor.name,std::move(channel));
 				}
-				// Decode and provenance must name the same immutable byte preimage.  Keeping
-				// one open descriptor prevents path replacement between the two operations;
-				// the second digest also rejects an in-place writer racing the decode.
-				verifiedInput.clear();
-				verifiedInput.seekg(0,std::ios::beg);
-				std::string postDecodeDigest;
-				if( !verifiedInput || !RISECBOR64::SHA256StreamHex(
-					verifiedInput,postDecodeDigest) || postDecodeDigest != found->sha256 ) {
-					return Fail(error,"fire sequence frame changed during verified decode");
+				if( native ) {
+					std::sort(nativeCandidate.channels.begin(),nativeCandidate.channels.end(),
+						[](const auto& lhs,const auto& rhs){return lhs.name<rhs.name;});
+					*native=std::move(nativeCandidate);
 				}
-				frame = std::move(candidate);
+				if( dense ) *dense=std::move(candidate);
 				return true;
 			} catch( const std::exception& exception ) {
 				return Fail(error,std::string("fire sequence OpenVDB load failed: ")+exception.what());
 			}
 #endif
-		}
-
-		bool FireSequenceManifest::PreflightAllFrames( std::string& error ) const
-		{
-			if( !valid_ ) return Fail(error,"fire sequence manifest is invalid");
-			for( const FireSequenceFrameDescriptor& descriptor : frames_ ) {
-				FireSequencePreparedFrame frame;
-				if( !LoadFrame(descriptor.index,frame,error) ) return false;
-			}
-			return true;
 		}
 
 		FireSequencePreparationController::RenderLease::RenderLease(
@@ -1065,6 +1080,14 @@ namespace RISE
 			const std::string& installerIdentity,
 			std::string& error )
 		{
+			if( !installer ) return Fail(error,"fire sequence has no frame installer");
+			return SetReversibleFrameInstaller([installer](const FireSequencePreparedFrame& frame,
+				std::function<void()>* rollback) { return !rollback && installer(frame); },installerIdentity,error);
+		}
+
+		bool FireSequencePreparationController::SetReversibleFrameInstaller(
+			const ReversibleInstaller& installer, const std::string& installerIdentity, std::string& error )
+		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			if( activeRenderLeases_ ) return Fail(error,"mutation_frozen");
 			if( frame_ || generation_ != 0u || !installer || !IsDigest(installerIdentity) ) return Fail(error,
@@ -1087,7 +1110,7 @@ namespace RISE
 
 		bool FireSequencePreparationController::PrepareMediaForRender(
 			const FireSequenceRenderTimeSupport& support, const bool effectiveVelocityBlur,
-			std::string& error )
+			std::string& error, std::function<void()>* rollback )
 		{
 			if( !manifest_ || !manifest_->IsValid() || !std::isfinite(support.nominalSceneTime) ||
 				!std::isfinite(support.shutterOpenSceneTime) ||
@@ -1109,7 +1132,13 @@ namespace RISE
 			if( descriptor == manifest_->Frames().end() ) return Fail(error,
 				"fire sequence selected frame is absent from prepared identity");
 			RISECBOR64::Bytes identityBytes;
-			const Value identity = Value::MapValue({
+			FireSequenceManifest fresh;
+			const FireSequenceManifest* playback=manifest_;
+			if( manifest_->IsNativeCache() ) {
+				if( !manifest_->AcquirePlaybackSnapshot(nominal.baseFrameIndex,fresh,error) ) return false;
+				playback=&fresh;
+			}
+			Value::Members identityMembers={
 				{"active_binding_identity",Value::String(activeBindingIdentity_)},
 				{"effective_velocity_blur",Value::Bool(effectiveVelocityBlur)},
 				{"frame_index",Value::Signed(nominal.baseFrameIndex)},
@@ -1120,24 +1149,42 @@ namespace RISE
 				{"sequence_id",Value::String(manifest_->SequenceId())},
 				{"shutter_close",Value::Float(support.shutterCloseSceneTime)},
 				{"shutter_open",Value::Float(support.shutterOpenSceneTime)}
-			});
+			};
+			if( playback->IsNativeCache() ) identityMembers.emplace_back("native_generation",
+				Value::String(playback->CoverageDigest()));
+			const Value identity=Value::MapValue(identityMembers);
 			if( !RISECBOR64::Encode(identity,identityBytes,&error) ) return false;
-			const std::string identityId = RISECBOR64::SHA256Hex(identityBytes);
+			std::string identityId = RISECBOR64::SHA256Hex(identityBytes);
 			{
 				std::lock_guard<std::mutex> lock(mutex_);
 				if( activeRenderLeases_ ) return Fail(error,"mutation_frozen");
 				if( frame_ && preparedInputId_ == identityId ) return true;
 			}
 			FireSequencePreparedFrame loaded;
-			if( !manifest_->LoadFrame(nominal.baseFrameIndex,loaded,error) ) return false;
+			if( !playback->LoadFrame(nominal.baseFrameIndex,loaded,error) ) return false;
 			std::shared_ptr<const FireSequencePreparedFrame> immutable(
 				new FireSequencePreparedFrame(std::move(loaded)));
 			std::lock_guard<std::mutex> lock(mutex_);
 			if( activeRenderLeases_ ) return Fail(error,"mutation_frozen");
-			if( frameInstaller_ && !frameInstaller_(*immutable) ) return Fail(error,
+			// Capture all state before the medium installs its new sampling tables.
+			// The caller holds the job preparation guard through commit or rollback.
+			std::shared_ptr<std::function<void()>> undoMedium;
+			std::function<void()> undo;
+			if( rollback ) {
+				undoMedium = std::make_shared<std::function<void()>>();
+				undo = [this,undoMedium,oldFrame=frame_,oldId=preparedInputId_]() mutable {
+					std::lock_guard<std::mutex> lock(mutex_);
+					if( *undoMedium ) (*undoMedium)();
+					frame_.swap(oldFrame);
+					preparedInputId_.swap(oldId);
+					--generation_; --majorantGeneration_; --emissionCDFGeneration_;
+				};
+			}
+			if( frameInstaller_ && !frameInstaller_(*immutable,undoMedium.get()) ) return Fail(error,
 				"fire sequence frame/majorant/emission-CDF transaction failed");
-			frame_ = immutable;
-			preparedInputId_ = identityId;
+			if( rollback ) *rollback=std::move(undo);
+			frame_.swap(immutable);
+			preparedInputId_.swap(identityId);
 			++generation_;
 			++majorantGeneration_;
 			++emissionCDFGeneration_;

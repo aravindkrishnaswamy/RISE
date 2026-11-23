@@ -127,7 +127,7 @@ OPENVDB_PREFIX ?= /opt/homebrew/opt/openvdb
 ifneq ($(wildcard $(OPENVDB_PREFIX)/include/openvdb/openvdb.h),)
 CPPFLAGS_OPENVDB = -isystem $(OPENVDB_PREFIX)/include
 DEF_OPENVDB = -DRISE_ENABLE_OPENVDB
-LDLIBS_OPENVDB = -L$(OPENVDB_PREFIX)/lib -Wl,-rpath,$(OPENVDB_PREFIX)/lib -lopenvdb -ltbb
+LDLIBS_OPENVDB = -L$(OPENVDB_PREFIX)/lib -Wl,-rpath,$(OPENVDB_PREFIX)/lib -lopenvdb -ltbb -lblosc
 endif
 
 DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) $(DEF_OIDN) $(DEF_OPENPGL) $(DEF_OPENVDB)

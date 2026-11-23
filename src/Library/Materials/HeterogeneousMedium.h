@@ -60,6 +60,7 @@
 #include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/MajorantGrid.h"
 #include <string>
+#include <functional>
 #include "../Utilities/AliasTable.h"
 #include "../Utilities/FireOptics.h"
 #include <vector>
@@ -601,8 +602,9 @@ namespace RISE
 			const Scalar intervalMin,
 			const Scalar intervalMax
 			);
+		struct FrameStorage;
 		bool InstallPreparedFireSequenceFrame(
-			const Implementation::FireSequencePreparedFrame& frame );
+			const Implementation::FireSequencePreparedFrame& frame, std::function<void()>* rollback = nullptr );
 		void InvalidateFireDerivedStructures()
 		{
 			m_fireDerivedStructuresCurrent = false;

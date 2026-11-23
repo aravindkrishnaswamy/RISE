@@ -83,6 +83,7 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// the partial image stays on screen, and Cancel still works.  The pause
 /// state resets whenever a new progress block is installed (i.e. per
 /// render).  No-op when no production render is active.
+- (void)cancelPreparedProductionRender;
 - (void)setProductionRenderPaused:(BOOL)paused;
 - (BOOL)isProductionRenderPaused;
 

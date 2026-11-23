@@ -6,6 +6,8 @@
 #endif
 
 #include "../src/Library/Utilities/FireSequence.h"
+#include "../src/Library/Utilities/FireSequenceCache.h"
+#include "../src/Library/Simulation/SimulationCache.h"
 #include "../src/Library/Utilities/FireCase.h"
 #include "../src/Library/Cameras/PinholeCamera.h"
 #include "../src/Library/Rendering/FrameStore.h"
@@ -23369,8 +23371,125 @@ static int RunProductionPayloadMerkleFixture(bool metal)
 	return 0;
 }
 
+#if defined(RISE_ENABLE_OPENVDB)
+static void CheckFireCachePlaybackContract(const std::filesystem::path& root,const std::filesystem::path& frame4,
+	const RISECBOR64::Bytes& envelope,const FireSequencePreparedFrame& loaded)
+{
+	std::string error;
+	constexpr std::size_t fixtureBudget=64u*1024u*1024u;
+	// Keep fixture imports in the test workspace when no suite-wide SSD cache is configured.
+	if(!std::getenv("RISE_SIMULATION_CACHE_DIR")){
+		const auto fixtureCache=(root/"playback-cache").string();
+		setenv("RISE_SIMULATION_CACHE_DIR",fixtureCache.c_str(),0);
+	}
+	const auto source=root/"cache-import-source.cbor";
+	const auto directory=root/"native_cache";
+	std::ofstream file(source,std::ios::binary);
+	file.write(reinterpret_cast<const char*>(envelope.data()),static_cast<std::streamsize>(envelope.size()));
+	file.close();
+	FireSequenceManifest partial;
+	FireSequencePreparedFrame prepared;
+	Check(file && ImportFireSequenceCache(source.string(),directory.string(),error,5) &&
+		partial.LoadPlaybackFile((directory/"manifest.cbor").string(),error) && !partial.IsComplete() &&
+		partial.LoadFrame(4,prepared,error) && !prepared.available && prepared.wholeFileSha256.empty() &&
+		prepared.coverageDigest.size()==64u && prepared.channels.at("carbon").maximum==0.0 &&
+		!partial.PreflightPredictive(error),"missing first native fire frame is transparent preview");
+	RISE::Simulation::CacheSnapshot before;
+	const bool oneCommitted = RISE::Simulation::CacheSnapshot::Open(directory,fixtureBudget,before,error) &&
+		before.Entries().size()==1u;
+	Check(oneCommitted,"partial import commits exactly one entry");
+	std::filesystem::path hiddenFrame;
+	if(oneCommitted){
+		hiddenFrame=directory/(before.Entries().front().digest+".frame");
+		std::filesystem::rename(hiddenFrame,directory/"hidden-frame");
+	}
+	Check(ImportFireSequenceCache(source.string(),directory.string(),error,4) &&
+		partial.AcquirePlaybackSnapshot(4,partial,error) && partial.IsComplete() &&
+		partial.LoadFrame(4,prepared,error) && prepared.available && prepared.wholeFileSha256==DigestFile(frame4) &&
+		prepared.channels.at("carbon").values==loaded.channels.at("carbon").values &&
+		prepared.channels.at("velocity").values==loaded.channels.at("velocity").values,
+		"native fire frame commits across a refresh with original ordinal, digest, values");
+	if(oneCommitted){
+		Check(!partial.LoadFrame(5,prepared,error),
+			"absent committed payload fails on selection while unrelated demand fills succeed");
+		std::filesystem::rename(directory/"hidden-frame",hiddenFrame);
+	}
+	RISE::Simulation::CacheSnapshot complete;
+	const auto interrupted=root/"interrupted_import";
+	bool staged = RISE::Simulation::CacheSnapshot::Open(directory,fixtureBudget,complete,error);
+	{
+		RISE::Simulation::CacheWriter writer;
+		staged = staged && writer.PrepareExtend(interrupted,complete.Description(),fixtureBudget,error);
+		for(const auto& entry:complete.Entries()){
+			std::shared_ptr<const RISECBOR64::Bytes> bytes;
+			staged = staged && complete.Read(entry.index,entry.output,fixtureBudget,bytes,error)==
+				RISE::Simulation::FrameStatus::Ready &&
+				writer.Append(entry.index,entry.output,entry.time,*bytes,error,entry.receipt);
+		}
+	}
+	FireSequenceManifest recovered;
+	Check(staged && ImportFireSequenceCache(source.string(),interrupted.string(),error,5) &&
+		recovered.LoadPlaybackFile((interrupted/"manifest.cbor").string(),error) && recovered.IsComplete(),
+		"retry on the last committed ordinal seals a generation interrupted before its seal");
+	// A self-consistent receipt can bind another legal frame's bytes to this ordinal.
+	// Only comparison with the original preimages distinguishes that substitution.
+	const auto forged=root/"forged_import";
+	bool forgedOK = complete.Entries().size()==2u;
+	if(forgedOK){
+		const auto& donor=complete.Entries().back();
+		std::shared_ptr<const RISECBOR64::Bytes> payload;
+		RISE::Simulation::CacheWriter writer;
+		forgedOK = complete.Read(donor.index,donor.output,fixtureBudget,payload,error)==
+			RISE::Simulation::FrameStatus::Ready &&
+			writer.PrepareExtend(forged,complete.Description(),fixtureBudget,error);
+		for(const auto& entry:complete.Entries()){
+			RISECBOR64::Value record;
+			RISECBOR64::Bytes forgedReceipt;
+			forgedOK = forgedOK && RISECBOR64::DecodeCanonical(entry.receipt,record,&error) &&
+				RISECBOR64::Encode(ReplaceMember(record,"native_frame",
+					RISECBOR64::Value::String(donor.digest)),forgedReceipt,&error) &&
+				writer.Append(entry.index,entry.output,entry.time,*payload,error,forgedReceipt);
+		}
+		forgedOK = forgedOK && writer.Seal(error);
+	}
+	SetFireCacheResolver([&](const std::string& path,const std::string& sha,std::optional<std::int64_t> ordinal,
+		std::string& directoryOut,std::string& verified,std::string& reason){
+		directoryOut=forged.string();
+		return ImportFireSequenceCache(path,directoryOut,reason,ordinal,sha,&verified);
+	});
+	FireSequenceManifest suspect;
+	Check(forgedOK && suspect.LoadPlaybackFile(source.string(),error) && suspect.IsComplete() &&
+		suspect.LoadFrame(4,prepared,error) && prepared.channels.at("carbon").maximum==2.0 &&
+		!suspect.PreflightPredictive(error) && error.find("differs from verified original")!=std::string::npos,
+		"predictive admission rejects a transplanted frame with self-consistent valid provenance");
+	SetFireCacheResolver({});
+}
+
+static int RunFireCachePlaybackContract()
+{
+	const auto root=std::filesystem::temp_directory_path()/("rise-fire-cache-contract-"+
+		std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+	if(!std::filesystem::create_directory(root)) return 1;
+	const auto frame4=root/"frame4.vdb",frame5=root/"frame5.vdb";
+	bool prepared=WriteFrame(frame4,FrameMutation{},1.0f) && WriteFrame(frame5,FrameMutation{},2.0f);
+	const auto envelope=ManifestBytes(DigestFile(frame4),DigestFile(frame5));
+	FireSequenceManifest source;
+	FireSequencePreparedFrame dense;
+	std::string error;
+	prepared = prepared && source.LoadCanonicalEnvelope(envelope,root.string(),error) && source.LoadFrame(4,dense,error);
+	if(prepared) CheckFireCachePlaybackContract(root,frame4,envelope,dense);
+	std::filesystem::remove_all(root);
+	std::fprintf(stderr,"Fire native cache contract: %s\n",prepared && failures==0 ? "PASS" : "FAIL");
+	return prepared && failures==0 ? 0 : 1;
+}
+#endif
+
 int main(int argc,char** argv)
 {
+#if defined(RISE_ENABLE_OPENVDB)
+	if(argc==2 && std::strcmp(argv[1],"--fire-cache-playback-contract")==0)
+		return RunFireCachePlaybackContract();
+#endif
 	if(argc==2&&std::strcmp(argv[1],"--fire-fast-mode-conservation-child")==0)
 		return RunFastModeConservationChild();
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-event-step-test")==0)
@@ -25182,6 +25301,8 @@ int main(int argc,char** argv)
 		loaded.channels.at("carbon").maximum == 1.0 &&
 		loaded.channels.at("temperature").minimum == 300.0,
 		"frame digest, topology, backgrounds, active values, and extrema preflight");
+
+	CheckFireCachePlaybackContract(root,frame4,envelope,loaded);
 
 	const FrameMutation::Kind badKinds[] = {
 		FrameMutation::NegativeActiveCarbon, FrameMutation::HotInactiveTemperature,

@@ -22,6 +22,7 @@
 
 namespace RISE
 {
+	namespace Simulation { class CacheSnapshot; struct GridFrame; }
 	namespace Implementation
 	{
 		bool CurrentRendererBuildIdentity(
@@ -86,11 +87,23 @@ namespace RISE
 			std::int64_t frameIndex = 0;
 			std::string wholeFileSha256;
 			std::map<std::string,FireSequenceDenseChannel> channels;
+			bool available = true;
+			std::string coverageDigest;
 		};
 
 		class FireSequenceManifest
 		{
 			bool valid_ = false;
+			std::shared_ptr<const Simulation::CacheSnapshot> native_;
+			std::string nativeDirectory_, originalManifestPath_, envelopeDigest_, qualifiedGeneration_;
+			bool needsImport_ = false;
+
+			bool ResolveImportedFrame(std::int64_t index,std::string& error);
+			bool AttachCache(const std::string& directory, std::string& error);
+			bool LoadNativeFrame(std::int64_t frameIndex, FireSequencePreparedFrame& frame,
+				std::string& error) const;
+			bool ReadVDBFrame(std::int64_t frameIndex, FireSequencePreparedFrame* dense,
+				Simulation::GridFrame* grid, std::string& error) const;
 			std::string sequenceId_;
 			std::string manifestDirectory_;
 			std::string sourceKind_;
@@ -122,6 +135,15 @@ namespace RISE
 				const RISECBOR64::Bytes& envelope,
 				const std::string& manifestDirectory,
 				std::string& error );
+			bool LoadPlaybackFile(const std::string& path, std::string& error);
+			bool IsNativeCache() const { return static_cast<bool>(native_); }
+			bool IsComplete() const;
+			bool PreflightPredictive(std::string& error);
+			void ReleasePredictiveGeneration() { qualifiedGeneration_.clear(); }
+			bool AcquirePlaybackSnapshot(std::int64_t index, FireSequenceManifest& snapshot,
+				std::string& error) const;
+			const std::string& CoverageDigest() const;
+			bool LoadSourceGrid(std::int64_t index, Simulation::GridFrame& grid, std::string& error) const;
 			bool MapSceneTime(
 				double sceneTime,
 				FireSequenceMappedTime& mapped,
@@ -204,7 +226,8 @@ namespace RISE
 			std::uint64_t activeRenderLeases_ = 0;
 			std::uint64_t majorantGeneration_ = 0;
 			std::uint64_t emissionCDFGeneration_ = 0;
-			std::function<bool(const FireSequencePreparedFrame&)> frameInstaller_;
+			using ReversibleInstaller = std::function<bool(const FireSequencePreparedFrame&,std::function<void()>*)>;
+			ReversibleInstaller frameInstaller_;
 			std::string frameInstallerIdentity_;
 			std::string activeBindingIdentity_;
 
@@ -216,13 +239,15 @@ namespace RISE
 				const std::function<bool(const FireSequencePreparedFrame&)>& installer,
 				const std::string& installerIdentity,
 				std::string& error );
+			bool SetReversibleFrameInstaller(const ReversibleInstaller& installer,
+				const std::string& installerIdentity, std::string& error);
 			bool SetActiveBindingIdentity(
 				const std::string& bindingIdentity,
 				std::string& error );
 			bool PrepareMediaForRender(
 				const FireSequenceRenderTimeSupport& support,
 				bool effectiveVelocityBlur,
-				std::string& error );
+				std::string& error, std::function<void()>* rollback = nullptr );
 			RenderLease AcquireRenderLease( std::string& error );
 			std::shared_ptr<const FireSequencePreparedFrame> PreparedFrame() const;
 			std::string PreparedInputId() const;

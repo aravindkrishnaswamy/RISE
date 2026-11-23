@@ -1232,6 +1232,7 @@ final class RenderViewModel: ObservableObject {
             // crash deep in IntegratePixel / DestroyContainers.
             if renderState == .rendering || renderState == .cancelling {
                 cancelFlag.value = true
+                bridge.cancelPreparedProductionRender()
                 renderState = .cancelling
                 let task = renderTask
                 Task { @MainActor [weak self] in
@@ -1945,6 +1946,7 @@ final class RenderViewModel: ObservableObject {
 
     func cancelRender() {
         cancelFlag.value = true
+        bridge.cancelPreparedProductionRender()
         // Cancel-while-paused: unpark the workers so the cancel lands
         // promptly (the pause gate also self-detects cancellation via
         // the progress block, but resuming here is snappier and keeps
@@ -2976,6 +2978,7 @@ final class RenderViewModel: ObservableObject {
         // Cancel any active render and wait for it to finish before reloading
         if renderState == .rendering || renderState == .cancelling {
             cancelFlag.value = true
+            bridge.cancelPreparedProductionRender()
             renderState = .cancelling
             let task = renderTask
             Task { @MainActor [weak self] in

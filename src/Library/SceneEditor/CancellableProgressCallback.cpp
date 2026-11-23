@@ -11,8 +11,32 @@
 
 #include "pch.h"
 #include "CancellableProgressCallback.h"
+#include <chrono>
+#include <thread>
 
 using namespace RISE;
+
+void PreparedRenderProgress::Reset()
+{
+	// The UI may also have replaced the entire scene/controller between polls.
+	static std::atomic<std::uint64_t> nextGeneration{2};
+	generation.store(nextGeneration.fetch_add(2, std::memory_order_relaxed));
+	paused.store(false);
+	fraction.store(0.0);
+}
+
+bool PreparedRenderProgress::IsCancelled() const
+{
+	while( paused.load() && !CancelRequested() )
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	return CancelRequested();
+}
+
+bool PreparedRenderProgress::Progress(double done, double total)
+{
+	if( total > 0 ) fraction.store(done / total);
+	return !IsCancelled();
+}
 
 CancellableProgressCallback::CancellableProgressCallback( IProgressCallback* inner )
 : mInner( inner )
@@ -32,11 +56,13 @@ void CancellableProgressCallback::SetInner( IProgressCallback* inner )
 
 void CancellableProgressCallback::RequestCancel()
 {
+	prepared.RequestCancel();
 	mCancelled.store( true, std::memory_order_release );
 }
 
 void CancellableProgressCallback::Reset()
 {
+	prepared.Reset();
 	mCancelled.store( false, std::memory_order_release );
 	mInnerCancelled.store( false, std::memory_order_release );
 }
@@ -49,7 +75,7 @@ bool CancellableProgressCallback::IsCancelRequested() const
 bool CancellableProgressCallback::WasCancellationObserved() const
 {
 	return mCancelled.load( std::memory_order_acquire )
-		|| mInnerCancelled.load( std::memory_order_acquire );
+		|| mInnerCancelled.load( std::memory_order_acquire ) || prepared.CancelRequested();
 }
 
 bool CancellableProgressCallback::Progress( const double progress, const double total )

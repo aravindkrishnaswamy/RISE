@@ -780,7 +780,7 @@ void RenderEngine::startStillRender(double sceneTime, bool regionOnly,
                 }
                 return regionOnly
                     ? job->RasterizeRegion(left, top, right, bottom)
-                    : job->Rasterize();
+                    : job->RasterizeAtSceneTime(static_cast<Scalar>(sceneTime));
             });
 
         QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {

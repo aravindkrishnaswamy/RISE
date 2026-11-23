@@ -261,6 +261,12 @@ namespace RISE
 			const std::vector<unsigned char>& resolvedConfig,
 			const Implementation::FireSequenceRenderTimeSupport* sequenceTimeSupport,
 			bool publishMetadata );
+		bool RasterizeStillAtTime(const Scalar* selectedTime);
+		bool RasterizeExternalStillAtTime(IRasterizer* rasterizer, const char* rasterizerKind,
+			const FireExternalRenderConfig& config, const Rect* region, const Scalar* selectedTime);
+		bool PrepareExternalFireAtTime( IRasterizer* rasterizer, const char* rasterizerKind,
+			const FireExternalRenderConfig& config,
+			const Implementation::FireSequenceRenderTimeSupport* support );
 		bool ResolveFireRasterizerForPreflight( IRasterizer* rasterizer ) const;
 		void ClearFireRasterizerAuthorization( IRasterizer* rasterizer ) const;
 		bool AuthorizeFireRasterizer(
@@ -539,6 +545,11 @@ namespace RISE
 			const char* rasterizerKind,
 			const FireExternalRenderConfig& config,
 			const Rect* region );
+
+		bool RasterizeAtSceneTime( Scalar nominalTime );
+		bool RasterizeExternalRasterizerAtSceneTime( IRasterizer* rasterizer,
+			const char* rasterizerKind, const FireExternalRenderConfig& config,
+			const Rect* region, Scalar nominalTime );
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

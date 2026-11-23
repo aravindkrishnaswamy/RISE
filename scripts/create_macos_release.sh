@@ -207,7 +207,6 @@ ditto "${OIDN_INSTALL}" "${OIDN_SNAPSHOT_INSTALL}"
 # Xcode records this dependency through the unnormalised
 # $(SRCROOT)/../../.. form, so every match against it has to be made on
 # the resolved path rather than the literal one.
-OIDN_SNAPSHOT_LIB="$(cd "${OIDN_SNAPSHOT_INSTALL}/lib" && pwd -P)"
 
 read_project_setting() {
 	local setting="$1"
@@ -259,6 +258,7 @@ FAILED_BUILD_LOG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}-failed-build.log"
 APP="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app"
 DSYM="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app.dSYM"
 APP_EXECUTABLE="${APP}/Contents/MacOS/RISE-GUI"
+IMPORT_EXECUTABLE="${APP}/Contents/MacOS/rise-cache-import"
 FRAMEWORKS_DIR="${APP}/Contents/Frameworks"
 DMG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}.dmg"
 DSYM_ZIP="${OUTPUT_DIR}/${ARTIFACT_BASENAME}.dSYM.zip"
@@ -285,7 +285,7 @@ set +e
 xcodebuild -project "${PROJECT}" -scheme "${SCHEME}" \
 	-configuration "${CONFIGURATION}" -destination "${DESTINATION}" \
 	-derivedDataPath "${DERIVED_DATA}" build \
-	ARCHS="${XCODE_ARCHS}" ONLY_ACTIVE_ARCH=NO \
+	ARCHS="${XCODE_ARCHS}" ONLY_ACTIVE_ARCH=NO RISE_RELEASE_PACKAGING=YES \
 	MARKETING_VERSION="${VERSION}" CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
 	GCC_PREPROCESSOR_DEFINITIONS="\$(inherited) RISE_VER_MAJOR_VERSION=${VERSION_MAJOR} RISE_VER_MINOR_VERSION=${VERSION_MINOR} RISE_VER_REVISION_VERSION=${VERSION_REVISION} RISE_VER_BUILD_VERSION=${BUILD_NUMBER}" \
 	CODE_SIGNING_ALLOWED=NO GCC_TREAT_WARNINGS_AS_ERRORS=YES \
@@ -297,6 +297,7 @@ if [ "${build_status}" -ne 0 ]; then
 	die "Opto build failed (see ${FAILED_BUILD_LOG})"
 fi
 [ -d "${APP}" ] || die "build succeeded but app bundle is missing: ${APP}"
+[ -x "${IMPORT_EXECUTABLE}" ] || die "bundled simulation importer is missing: ${IMPORT_EXECUTABLE}"
 [ -x "${APP_EXECUTABLE}" ] || die "app executable is missing: ${APP_EXECUTABLE}"
 plutil -lint "${APP}/Contents/Info.plist" >/dev/null
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")" = "${VERSION}" ] || \
@@ -314,245 +315,8 @@ for definition in \
 		die "Opto compiler commands did not receive ${definition}"
 done
 
-mkdir -p "${FRAMEWORKS_DIR}"
-
-# Each copied library is stored once by basename. Parallel arrays keep this
-# compatible with the Bash 3.2 that ships with older supported macOS hosts.
-BUNDLED_NAMES=()
-BUNDLED_SOURCES=()
-SCAN_BINARIES=("${APP_EXECUTABLE}")
-SCAN_INDEX=0
-# OIDN comes from the staged in-tree install; the rest of the third-party
-# stack still comes out of the Homebrew prefix.
-SEARCH_DIRS=("${OIDN_SNAPSHOT_INSTALL}/lib" "${FRAMEWORKS_DIR}" "/opt/homebrew/lib" "/usr/local/lib")
-if [ -n "${HOMEBREW_PREFIX}" ]; then
-	SEARCH_DIRS+=("${HOMEBREW_PREFIX}/lib")
-fi
-
-is_system_dependency() {
-	case "$1" in
-		/System/Library/*|/usr/lib/*) return 0 ;;
-		*) return 1 ;;
-	esac
-}
-
-add_search_dir() {
-	local candidate="$1" existing
-	[ -d "${candidate}" ] || return 0
-	for existing in "${SEARCH_DIRS[@]}"; do
-		[ "${existing}" = "${candidate}" ] && return 0
-	done
-	SEARCH_DIRS+=("${candidate}")
-}
-
-expand_runtime_path() {
-	local value="$1" loader="$2"
-	case "${value}" in
-		@loader_path/*) printf '%s/%s\n' "$(dirname "${loader}")" "${value#@loader_path/}" ;;
-		@executable_path/*) printf '%s/%s\n' "${APP}/Contents/MacOS" "${value#@executable_path/}" ;;
-		*) printf '%s\n' "${value}" ;;
-	esac
-}
-
-resolve_dependency() {
-	local dependency="$1" loader="$2" suffix candidate search_dir rpath
-	case "${dependency}" in
-		/*)
-			[ -f "${dependency}" ] && { printf '%s\n' "${dependency}"; return 0; }
-			;;
-		@loader_path/*|@executable_path/*)
-			candidate="$(expand_runtime_path "${dependency}" "${loader}")"
-			[ -f "${candidate}" ] && { printf '%s\n' "${candidate}"; return 0; }
-			;;
-		@rpath/*)
-			suffix="${dependency#@rpath/}"
-			while IFS= read -r rpath; do
-				[ -n "${rpath}" ] || continue
-				rpath="$(expand_runtime_path "${rpath}" "${loader}")"
-				candidate="${rpath}/${suffix}"
-				[ -f "${candidate}" ] && { printf '%s\n' "${candidate}"; return 0; }
-			done < <(otool -l "${loader}" | awk '/cmd LC_RPATH/{want=1; next} want && /path /{print $2; want=0}')
-			for search_dir in "${SEARCH_DIRS[@]}"; do
-				candidate="${search_dir}/${suffix}"
-				[ -f "${candidate}" ] && { printf '%s\n' "${candidate}"; return 0; }
-			done
-			;;
-	esac
-	return 1
-}
-
-# The "(compatibility version X, current version Y)" pair from an image's
-# own LC_ID_DYLIB -- the ABI contract a consumer was linked against.
-dylib_abi_version() {
-	otool -L "$1" | sed -n '2s/.*(\(compatibility version .*\))$/\1/p'
-}
-
-physical_path() {
-	local path="$1" link guard=0
-	while [ -L "${path}" ]; do
-		guard=$((guard + 1))
-		[ "${guard}" -le 32 ] || die "symlink chain too deep resolving $1"
-		link="$(readlink "${path}")"
-		case "${link}" in
-			/*) path="${link}" ;;
-			*) path="$(dirname "${path}")/${link}" ;;
-		esac
-	done
-	printf '%s/%s\n' "$(cd "$(dirname "${path}")" && pwd -P)" "$(basename "${path}")"
-}
-
-copy_dependency_license() {
-	local source="$1" package_root="" package_name="" license_file destination
-	local physical copied=0
-	physical="$(physical_path "${source}")"
-	if [ -n "${HOMEBREW_PREFIX}" ]; then
-		case "${source}" in
-		"${HOMEBREW_PREFIX}"/opt/*/*)
-			package_name="${source#${HOMEBREW_PREFIX}/opt/}"
-			package_name="${package_name%%/*}"
-			package_root="${HOMEBREW_PREFIX}/opt/${package_name}"
-			;;
-		"${HOMEBREW_PREFIX}"/Cellar/*/*)
-			package_name="${source#${HOMEBREW_PREFIX}/Cellar/}"
-			package_name="${package_name%%/*}"
-			package_root="${HOMEBREW_PREFIX}/opt/${package_name}"
-			;;
-		"${HOMEBREW_PREFIX}"/lib/libopenpgl*)
-			package_name="openpgl"
-			package_root="${HOMEBREW_PREFIX}/share/doc/openpgl"
-			;;
-		esac
-	fi
-	case "${physical}" in
-	"${OIDN_SNAPSHOT_LIB}"/*)
-		# Covers the OIDN dylibs and the TBB shipped alongside them; the
-		# distribution's doc/ directory carries both notices.
-		package_name="open-image-denoise"
-		package_root="${OIDN_SNAPSHOT_INSTALL}"
-		;;
-	esac
-	if [ -n "${HOMEBREW_PREFIX}" ]; then
-		# A bare prefix/lib entry is normally a symlink into the Cellar; follow
-		# it so ordinary brew installs resolve without a per-formula case arm.
-		if [ -z "${package_root}" ]; then
-			case "${physical}" in
-			"${HOMEBREW_PREFIX}"/Cellar/*/*)
-				package_name="${physical#${HOMEBREW_PREFIX}/Cellar/}"
-				package_name="${package_name%%/*}"
-				package_root="${HOMEBREW_PREFIX}/opt/${package_name}"
-				;;
-			esac
-		fi
-	fi
-	[ -n "${package_root}" ] || \
-		die "no third-party notice mapping for bundled library ${source}; extend copy_dependency_license"
-	[ -d "${package_root}" ] || \
-		die "third-party notice directory for ${package_name} is missing: ${package_root}"
-	destination="${APP}/Contents/Resources/Third-Party Licenses/${package_name}"
-	while IFS= read -r license_file; do
-		[ -f "${license_file}" ] || continue
-		mkdir -p "${destination}"
-		cp -pfL "${license_file}" "${destination}/$(basename "${license_file}")"
-		chmod 0644 "${destination}/$(basename "${license_file}")"
-		copied=$((copied + 1))
-	done < <(find -L "${package_root}" -maxdepth 5 -type f \( \
-		-iname 'LICENSE' -o -iname 'LICENSE.*' -o -iname 'COPYING' -o \
-		-iname 'COPYING.*' -o -iname 'NOTICE' -o -iname 'NOTICE.*' -o \
-		-iname 'third-party-programs*.txt' \) -print)
-	[ "${copied}" -gt 0 ] || \
-		die "no license file found under ${package_root} for bundled library ${source}"
-}
-
-add_library() {
-	local source="$1" name destination index existing_source existing_abi new_abi
-	name="$(basename "${source}")"
-	destination="${FRAMEWORKS_DIR}/${name}"
-	index=0
-	while [ "${index}" -lt "${#BUNDLED_NAMES[@]}" ]; do
-		if [ "${BUNDLED_NAMES[$index]}" = "${name}" ]; then
-			existing_source="${BUNDLED_SOURCES[$index]}"
-			[ "${source}" = "${destination}" ] && return 0
-			if [ "$(physical_path "${existing_source}")" != "$(physical_path "${source}")" ]; then
-				# Two distributions can legitimately ship the same shared
-				# runtime -- OIDN vendors its own oneTBB while openpgl links
-				# the Homebrew one. A single copy serves both consumers
-				# exactly when the ABI version pair matches, and shipping two
-				# copies of a threading runtime in one process is worse than
-				# unifying. Anything else is a genuine conflict.
-				existing_abi="$(dylib_abi_version "${existing_source}")"
-				new_abi="$(dylib_abi_version "${source}")"
-				[ -n "${existing_abi}" ] && [ "${existing_abi}" = "${new_abi}" ] || \
-					die "two external libraries share basename ${name} with different ABI versions: ${existing_source} (${existing_abi}) and ${source} (${new_abi})"
-				echo "    unified ${name} (${existing_abi}): ${source} -> already bundled from ${existing_source}"
-			fi
-			return 0
-		fi
-		index=$((index + 1))
-	done
-	cp -pL "${source}" "${destination}"
-	chmod u+w "${destination}"
-	BUNDLED_NAMES+=("${name}")
-	BUNDLED_SOURCES+=("${source}")
-	SCAN_BINARIES+=("${destination}")
-	add_search_dir "$(dirname "${source}")"
-	copy_dependency_license "${source}"
-	case "${name}" in
-		libOpenImageDenoise.*.dylib|libOpenImageDenoise.dylib)
-			local plugin
-			for plugin in "$(dirname "${source}")"/libOpenImageDenoise_core*.dylib \
-				"$(dirname "${source}")"/libOpenImageDenoise_device_*.dylib; do
-				[ -f "${plugin}" ] || continue
-				add_library "${plugin}"
-			done
-			;;
-	esac
-}
-
-echo "==> Bundling external runtime libraries"
-while [ "${SCAN_INDEX}" -lt "${#SCAN_BINARIES[@]}" ]; do
-	binary="${SCAN_BINARIES[$SCAN_INDEX]}"
-	SCAN_INDEX=$((SCAN_INDEX + 1))
-	dependency_start_line=2
-	case "${binary}" in
-		"${FRAMEWORKS_DIR}"/*) dependency_start_line=3 ;;
-	esac
-	while IFS= read -r dependency; do
-		[ -n "${dependency}" ] || continue
-		is_system_dependency "${dependency}" && continue
-		if ! resolved="$(resolve_dependency "${dependency}" "${binary}")"; then
-			die "cannot resolve dependency '${dependency}' required by ${binary}"
-		fi
-		add_library "${resolved}"
-		install_name_tool -change "${dependency}" "@rpath/$(basename "${resolved}")" "${binary}"
-	done < <(otool -L "${binary}" | sed -n "${dependency_start_line},\$s/^[[:space:]]*\\([^[:space:]]*\\).*/\\1/p")
-	case "${binary}" in
-		"${FRAMEWORKS_DIR}"/*) install_name_tool -id "@rpath/$(basename "${binary}")" "${binary}" ;;
-	esac
-done
-
-normalize_rpaths() {
-	local binary="$1" desired rpath guard=0
-	case "${binary}" in
-		"${FRAMEWORKS_DIR}"/*) desired="@loader_path" ;;
-		*) desired="@executable_path/../Frameworks" ;;
-	esac
-	while :; do
-		rpath="$(otool -l "${binary}" | awk '/cmd LC_RPATH/{want=1; next} want && /path /{print $2; exit}')"
-		[ -n "${rpath}" ] || break
-		guard=$((guard + 1))
-		[ "${guard}" -le 64 ] || die "unable to clear LC_RPATH entries from ${binary}"
-		install_name_tool -delete_rpath "${rpath}" "${binary}"
-	done
-	install_name_tool -add_rpath "${desired}" "${binary}"
-}
-
-# Never let @rpath resolve back to Homebrew or another build machine path.
-# Each image gets exactly one bundle-local runpath before the final signature.
-normalize_rpaths "${APP_EXECUTABLE}"
-for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
-	[ -f "${binary}" ] || continue
-	normalize_rpaths "${binary}"
-done
+bash "${SOURCE_ROOT}/scripts/bundle_macos_runtime.sh" "${APP}" "${OIDN_SNAPSHOT_INSTALL}" "${HOMEBREW_PREFIX}" \
+	"${APP_EXECUTABLE}" "${IMPORT_EXECUTABLE}"
 
 # Notices for third-party sources compiled directly into the executable;
 # these have no bundled dylib for copy_dependency_license to hang off.
@@ -628,13 +392,22 @@ done < "${NOTICE_MANIFEST}"
 
 expected_arches="${XCODE_ARCHS}"
 verify_architectures() {
-	local binary="$1" actual required
+	local binary="$1" actual required minimum
 	actual="$(lipo -archs "${binary}")"
 	for required in ${expected_arches}; do
 		case " ${actual} " in
 			*" ${required} "*) ;;
 			*) die "${binary} is missing required architecture ${required} (has: ${actual})" ;;
 		esac
+		minimum="$(otool -arch "${required}" -l "${binary}" | awk '
+			$1=="cmd" { version=($2=="LC_VERSION_MIN_MACOSX"); build=($2=="LC_BUILD_VERSION") }
+			(version && $1=="version") || (build && $1=="minos") { print $2 }
+		')"
+		[ -n "${minimum}" ] || die "${binary} does not declare a minimum macOS version for ${required}"
+		awk -v min="${minimum}" -v target="${DEPLOYMENT_TARGET}" 'BEGIN {
+			split(min,a,"[.]"); split(target,b,"[.]")
+			for (i=1;i<=3;++i) { if (a[i]+0<b[i]+0) exit 0; if (a[i]+0>b[i]+0) exit 1 }
+		}' || die "${binary} (${required}) needs macOS ${minimum}; target is ${DEPLOYMENT_TARGET}"
 	done
 }
 
@@ -664,7 +437,7 @@ verify_rpaths() {
 	[ "${count}" -eq 1 ] || die "${binary} must contain exactly one bundle-local LC_RPATH"
 }
 
-# The scan above starts at the main executable only. Anything else Mach-O
+# The scan above starts at both intended executables. Anything else Mach-O
 # in the bundle would ship unrelinked and unverified, so fail closed rather
 # than quietly shipping a binary still bound to this build machine.
 # `lipo -archs` succeeds on thin and universal Mach-O alike and fails on
@@ -673,7 +446,7 @@ verify_rpaths() {
 while IFS= read -r -d '' macho; do
 	lipo -archs "${macho}" >/dev/null 2>&1 || continue
 	case "${macho}" in
-		"${APP_EXECUTABLE}"|"${FRAMEWORKS_DIR}"/*.dylib) ;;
+		"${APP_EXECUTABLE}"|"${IMPORT_EXECUTABLE}"|"${FRAMEWORKS_DIR}"/*.dylib) ;;
 		*) die "unprocessed Mach-O image in the app bundle: ${macho} (extend the bundling scan)" ;;
 	esac
 done < <(find "${APP}" -type f -print0)
@@ -681,6 +454,9 @@ done < <(find "${APP}" -type f -print0)
 verify_architectures "${APP_EXECUTABLE}"
 verify_dependencies "${APP_EXECUTABLE}"
 verify_rpaths "${APP_EXECUTABLE}"
+verify_architectures "${IMPORT_EXECUTABLE}"
+verify_dependencies "${IMPORT_EXECUTABLE}"
+verify_rpaths "${IMPORT_EXECUTABLE}"
 for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
 	[ -f "${binary}" ] || continue
 	verify_architectures "${binary}"
@@ -703,12 +479,14 @@ if [ "${SIGN_IDENTITY}" = "-" ]; then
 		[ -f "${binary}" ] || continue
 		codesign --force --sign - --timestamp=none "${binary}"
 	done
+	codesign --force --sign - --timestamp=none "${IMPORT_EXECUTABLE}"
 	codesign --force --sign - --timestamp=none "${APP}"
 else
 	for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
 		[ -f "${binary}" ] || continue
 		codesign --force --sign "${SIGN_IDENTITY}" --options runtime --timestamp "${binary}"
 	done
+	codesign --force --sign "${SIGN_IDENTITY}" --options runtime --timestamp "${IMPORT_EXECUTABLE}"
 	codesign --force --sign "${SIGN_IDENTITY}" --options runtime --timestamp "${APP}"
 fi
 codesign --verify --deep --strict --verbose=2 "${APP}"

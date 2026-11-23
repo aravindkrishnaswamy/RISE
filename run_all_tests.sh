@@ -492,7 +492,13 @@ trap 'cleanup_interrupted 131' QUIT
 
 # Any other way out (set -e on an unexpected failure) must not leave tests
 # running behind a dead runner.
-trap 'kill_running; release_lock' EXIT
+trusted_fixture_root=""
+cleanup_run() {
+	kill_running
+	if [ -n "$trusted_fixture_root" ]; then rm -rf "$trusted_fixture_root"; fi
+	release_lock
+}
+trap cleanup_run EXIT
 
 # ============================================================
 # Phase 1: Build the library archive used to link tests (`make test-objs`:
@@ -711,11 +717,25 @@ launch_test() {
 	lt_path="$BIN_DIR/$lt_name"
 	lt_log="$LOG_DIR/$lt_name.log"
 	lt_tmp="${TMP_ROOT:?}/${lt_name:?}"
+	# These small image-output fixtures exercise trusted staging parents. A
+	# group-writable mount point is valid for the suite's bulk scratch but
+	# must be refused by the production writer, even below a private folder.
+	case "$lt_name" in
+		EntityTemplatesTest|FileRasterizerOutputShimTest|FrameEncoderTest|VolumeShortReadTest)
+			if [ -z "$trusted_fixture_root" ]; then
+				system_tmp=$(CDPATH= cd /tmp && pwd -P)
+				trusted_fixture_root=$(mktemp -d "$system_tmp/rise-trusted-fixtures.XXXXXXXX")
+			fi
+			lt_tmp="$trusted_fixture_root/$lt_name"
+			;;
+	esac
 	rm -rf "$lt_tmp"
 	mkdir -p "$lt_tmp"
 	(
 		TMPDIR="$lt_tmp"
-		export TMPDIR
+		# Isolate demand-imported frames just like the rest of the test fixtures.
+		RISE_SIMULATION_CACHE_DIR="${RISE_SIMULATION_CACHE_DIR:-$lt_tmp/simulation-cache}"
+		export TMPDIR RISE_SIMULATION_CACHE_DIR
 		if [ "$2" = "single" ]; then
 			RISE_OPTIONS_FILE="$SINGLE_OPTIONS"
 			export RISE_OPTIONS_FILE

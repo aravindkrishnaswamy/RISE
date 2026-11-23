@@ -854,7 +854,10 @@
 		FA83000131FF000100000011 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
 		FA83000131FF000100000012 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
 		F512000131EE000100000001 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
-		F513000131EE000100000001 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
+		2680F902B66A584FA7A84066 /* SimulationGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EB49B68CA6F35537A93E1473 /* SimulationGrid.cpp */; };
+		48596D348F03571FB23939D2 /* SimulationCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 718533EB6DF55EBA8A053630 /* SimulationCache.cpp */; };
+		740D7EAA45505DFD8CB6DD6E /* FireSequenceCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AB447AD2CE1A50C5AA8D15FA /* FireSequenceCache.cpp */; };
+		F513000131EE000100000001 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; settings = {COMPILER_FLAGS = "-O3 -ffast-math -fno-finite-math-only -funroll-loops -ffp-contract=fast -fno-lto"; }; };
 		F512000131EE000100000002 /* FireSequence.h in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
 		FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
 		FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
@@ -1568,9 +1571,17 @@
 		FD93000131FF000100000004 /* FireProductionForce.h in Headers */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000008 /* FireProductionForce.h */; };
 		FD93000131FF000100000006 /* FireProductionForceMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000009 /* FireProductionForceMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
 		F512000131EE000100000003 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
+		EFC1D500872056D88EB6D337 /* SimulationGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EB49B68CA6F35537A93E1473 /* SimulationGrid.cpp */; };
+		1D9BAC86299A5D8790275314 /* SimulationCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 718533EB6DF55EBA8A053630 /* SimulationCache.cpp */; };
+		B229F69B2DC45E9C86122F02 /* FireSequenceCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AB447AD2CE1A50C5AA8D15FA /* FireSequenceCache.cpp */; };
 		F513000131EE000100000003 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
 		F513000131EE000100000004 /* FireCase.h in Headers */ = {isa = PBXBuildFile; fileRef = F513000131EE00010000000A /* FireCase.h */; };
 		F512000131EE000100000004 /* FireSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
+		52FCEF962AD95A5983BF616B /* SimulationGrid.h in Headers */ = {isa = PBXBuildFile; fileRef = 9FC1A06BE03650CAA8659064 /* SimulationGrid.h */; };
+		0C566C1C17F753C39B95DB51 /* SimulationVDBGrid.h in Headers */ = {isa = PBXBuildFile; fileRef = 4E196878D6D85CC6BBEB2847 /* SimulationVDBGrid.h */; };
+		B777BA1CFFB75FB6939AEE2C /* SimulationVDBBounds.h in Headers */ = {isa = PBXBuildFile; fileRef = 26FB686FA911577E9CF521DF /* SimulationVDBBounds.h */; };
+		D9F373C74EDC51FD9E42A2B6 /* SimulationCache.h in Headers */ = {isa = PBXBuildFile; fileRef = 556FC8545D865F4CB529986A /* SimulationCache.h */; };
+		7058296FA738505CA7721D13 /* FireSequenceCache.h in Headers */ = {isa = PBXBuildFile; fileRef = 5FD9E95E4EA45D3CA79F72C9 /* FireSequenceCache.h */; };
 		FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
 		FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
 		F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
@@ -2965,9 +2976,17 @@
 		FD93000131FF000100000008 /* FireProductionForce.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionForce.h; sourceTree = "<group>"; };
 		FD93000131FF000100000009 /* FireProductionForceMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = FireProductionForceMac.mm; sourceTree = "<group>"; };
 		F512000131EE000100000009 /* FireSequence.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSequence.cpp; sourceTree = "<group>"; };
+		EB49B68CA6F35537A93E1473 /* SimulationGrid.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationGrid.cpp; sourceTree = "<group>"; };
+		718533EB6DF55EBA8A053630 /* SimulationCache.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationCache.cpp; sourceTree = "<group>"; };
+		AB447AD2CE1A50C5AA8D15FA /* FireSequenceCache.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSequenceCache.cpp; sourceTree = "<group>"; };
 		F513000131EE000100000009 /* FireCase.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireCase.cpp; sourceTree = "<group>"; };
 		F513000131EE00010000000A /* FireCase.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireCase.h; sourceTree = "<group>"; };
 		F512000131EE00010000000A /* FireSequence.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSequence.h; sourceTree = "<group>"; };
+		9FC1A06BE03650CAA8659064 /* SimulationGrid.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationGrid.h; sourceTree = "<group>"; };
+		4E196878D6D85CC6BBEB2847 /* SimulationVDBGrid.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationVDBGrid.h; sourceTree = "<group>"; };
+		26FB686FA911577E9CF521DF /* SimulationVDBBounds.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationVDBBounds.h; sourceTree = "<group>"; };
+		556FC8545D865F4CB529986A /* SimulationCache.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationCache.h; sourceTree = "<group>"; };
+		5FD9E95E4EA45D3CA79F72C9 /* FireSequenceCache.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSequenceCache.h; sourceTree = "<group>"; };
 		FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GaussLegendreQuadrature.cpp; sourceTree = "<group>"; };
 		FB37000131BB000100000006 /* GaussLegendreQuadrature.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GaussLegendreQuadrature.h; sourceTree = "<group>"; };
 		F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OrthonormalBasis3D.cpp; sourceTree = "<group>"; };
@@ -3585,6 +3604,7 @@
 				F27F09D5069C42900069C9E5 /* Shaders */,
 				F27F09E2069C42900069C9E5 /* TreeElementProcessor.h */,
 				F27F09E3069C42900069C9E5 /* Utilities */,
+				56493CBABAFA563E8FFE51A6 /* Simulation */,
 				F27F0A47069C42900069C9E5 /* Version.h */,
 				F27F0A48069C42900069C9E5 /* Volume */,
 			);
@@ -4523,6 +4543,19 @@
 			path = Shaders;
 			sourceTree = "<group>";
 		};
+		56493CBABAFA563E8FFE51A6 /* Simulation */ = {
+			isa = PBXGroup;
+			children = (
+				EB49B68CA6F35537A93E1473 /* SimulationGrid.cpp */,
+				718533EB6DF55EBA8A053630 /* SimulationCache.cpp */,
+				9FC1A06BE03650CAA8659064 /* SimulationGrid.h */,
+				4E196878D6D85CC6BBEB2847 /* SimulationVDBGrid.h */,
+				26FB686FA911577E9CF521DF /* SimulationVDBBounds.h */,
+				556FC8545D865F4CB529986A /* SimulationCache.h */,
+			);
+			path = Simulation;
+			sourceTree = "<group>";
+		};
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
@@ -4636,9 +4669,11 @@
 				FD93000131FF000100000008 /* FireProductionForce.h */,
 				FD93000131FF000100000009 /* FireProductionForceMac.mm */,
 				F512000131EE000100000009 /* FireSequence.cpp */,
+				AB447AD2CE1A50C5AA8D15FA /* FireSequenceCache.cpp */,
 				F513000131EE000100000009 /* FireCase.cpp */,
 				F513000131EE00010000000A /* FireCase.h */,
 				F512000131EE00010000000A /* FireSequence.h */,
+				5FD9E95E4EA45D3CA79F72C9 /* FireSequenceCache.h */,
 				FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */,
 				FB37000131BB000100000006 /* GaussLegendreQuadrature.h */,
 				F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */,
@@ -5548,6 +5583,11 @@
 				FE86000131FF000100000004 /* FireProductionSourceKernel.h in Headers */,
 				FD93000131FF000100000004 /* FireProductionForce.h in Headers */,
 				F512000131EE000100000004 /* FireSequence.h in Headers */,
+				52FCEF962AD95A5983BF616B /* SimulationGrid.h in Headers */,
+				0C566C1C17F753C39B95DB51 /* SimulationVDBGrid.h in Headers */,
+				B777BA1CFFB75FB6939AEE2C /* SimulationVDBBounds.h in Headers */,
+				D9F373C74EDC51FD9E42A2B6 /* SimulationCache.h in Headers */,
+				7058296FA738505CA7721D13 /* FireSequenceCache.h in Headers */,
 				F513000131EE000100000004 /* FireCase.h in Headers */,
 				FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */,
 				F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */,
@@ -5724,6 +5764,7 @@
 				F24B71C22F52A211008304C4 /* Sources */,
 				F24B71C32F52A211008304C4 /* Frameworks */,
 				F24B71C42F52A211008304C4 /* Resources */,
+				633BF6768D9F4BCE9AE2F46B /* Build simulation cache importer */,
 			);
 			buildRules = (
 			);
@@ -5784,6 +5825,17 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		633BF6768D9F4BCE9AE2F46B /* Build simulation cache importer */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			name = "Build simulation cache importer";
+			outputPaths = ("$(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/rise-cache-import",);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../scripts/build_macos_simulation_importer.py\"";
+		};
 		B1D000010000000000000001 /* Generate Renderer Build Identity */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -6173,6 +6225,9 @@
 				FD93000131FF000100000006 /* FireProductionForceMac.mm in Sources */,
 				FA84000131FF000100000006 /* FireProductionAdvectionMac.mm in Sources */,
 				F512000131EE000100000003 /* FireSequence.cpp in Sources */,
+				EFC1D500872056D88EB6D337 /* SimulationGrid.cpp in Sources */,
+				1D9BAC86299A5D8790275314 /* SimulationCache.cpp in Sources */,
+				B229F69B2DC45E9C86122F02 /* FireSequenceCache.cpp in Sources */,
 				F513000131EE000100000003 /* FireCase.cpp in Sources */,
 				FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */,
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
@@ -7163,6 +7218,9 @@
 				FD93000131FF000100000002 /* FireProductionForce.h in Sources */,
 				FD93000131FF000100000005 /* FireProductionForceMac.mm in Sources */,
 				F512000131EE000100000001 /* FireSequence.cpp in Sources */,
+				2680F902B66A584FA7A84066 /* SimulationGrid.cpp in Sources */,
+				48596D348F03571FB23939D2 /* SimulationCache.cpp in Sources */,
+				740D7EAA45505DFD8CB6DD6E /* FireSequenceCache.cpp in Sources */,
 				F513000131EE000100000001 /* FireCase.cpp in Sources */,
 				F512000131EE000100000002 /* FireSequence.h in Sources */,
 				FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */,

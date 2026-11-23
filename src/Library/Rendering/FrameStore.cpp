@@ -914,11 +914,52 @@ namespace
 	}
 }
 
+RISECBOR64::Value RISE::FrameStoreOutput::EncodeActiveFireMedia(const std::vector<ActiveFireMedium>& active)
+{
+	using RISECBOR64::Value;
+	Value::Values media;
+	for( const ActiveFireMedium& medium : active ) {
+		Value::Values opticalIds;
+		for( const std::string& recordId : medium.opticalRecordIds ) {
+			opticalIds.push_back(Value::String(recordId));
+		}
+		const bool unavailable = medium.mediaKind == "sequence_unavailable_v1";
+		if( unavailable || medium.mediaKind == "sequence_backed" ) {
+			media.push_back(Value::MapValue({
+				{ "binding_kind", Value::String(medium.bindingKind) },
+				{ "binding_owner", Value::String(medium.bindingOwner) },
+				{ "effective_blur_state", Value::String(medium.effectiveBlurState) },
+				{ "manager_name", Value::String(medium.managerName) },
+				{ "media_kind", Value::String(medium.mediaKind) },
+				{ "optical_record_ids", Value::ArrayValue(opticalIds) },
+				{ "physical_mapping", Value::String(medium.physicalMapping) },
+				{ "prepared_input_id", Value::String(medium.preparedInputId) },
+				{ "prepared_state_generation", Value::Unsigned(medium.preparedStateGeneration) },
+				{ "selected_base_frame_index", Value::Signed(medium.selectedBaseFrameIndex) },
+				{ "sequence_id", Value::String(medium.sequenceId) },
+				{ "source_kind", Value::String(medium.sourceKind) },
+				{ unavailable ? "coverage_digest" : "whole_file_digest",
+				  Value::String(unavailable ? medium.coverageDigest : medium.wholeFileDigest) }
+			}));
+		} else {
+			media.push_back(Value::MapValue({
+				{ "authored_config_digest", Value::String(medium.authoredConfigDigest) },
+				{ "binding_kind", Value::String(medium.bindingKind) },
+				{ "binding_owner", Value::String(medium.bindingOwner) },
+				{ "manager_name", Value::String(medium.managerName) },
+				{ "media_kind", Value::String(medium.mediaKind) },
+				{ "optical_record_ids", Value::ArrayValue(opticalIds) }
+			}));
+		}
+	}
+	return Value::ArrayValue(media);
+}
+
 bool RISE::FrameStoreOutput::IsAllowedFireRenderReasonCode(
 	const std::string& reason )
 {
 	static const char* const allowed[] = {
-		"requested_preview", "producer_unqualified", "heuristic_source",
+		"frame_unavailable", "requested_preview", "producer_unqualified", "heuristic_source",
 		"qualified_record_override", "missing_optical_record", "missing_chem_record",
 		"chem_none_unqualified", "missing_condensable_record", "missing_gas_opacity_record",
 		"missing_thermochemistry_record", "missing_aerosol_thermochemistry_record",
@@ -989,6 +1030,7 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 	std::map<std::string,std::string> authoredDigestOwners;
 	std::string previousBinding;
 	bool hasStaticAuthored = false;
+	bool hasUnavailableFrame = false;
 	for( const ActiveFireMedium& medium : metadata.activeFireMedia ) {
 		if( medium.managerName.empty() ||
 			(medium.bindingKind != "global_medium" &&
@@ -999,7 +1041,19 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			return false;
 		}
 		const bool isStatic = medium.mediaKind == "static_authored";
-		const bool isSequence = medium.mediaKind == "sequence_backed";
+		const bool unavailable = medium.mediaKind == "sequence_unavailable_v1";
+		const bool isSequence = unavailable || medium.mediaKind == "sequence_backed";
+		if( unavailable ) {
+			hasUnavailableFrame = true;
+			if( metadata.renderFidelityStatus != "preview" || !medium.wholeFileDigest.empty() ||
+				!IsSHA256Hex(medium.coverageDigest) ) {
+				error = "unavailable fire frame requires preview and coverage";
+				return false;
+			}
+		} else if( !medium.coverageDigest.empty() ) {
+			error = "unexpected coverage digest on a prepared fire frame";
+			return false;
+		}
 		if( !isStatic && !isSequence ) {
 			error = "active fire medium media_kind is outside the tagged schema";
 			return false;
@@ -1015,7 +1069,7 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			}
 		} else {
 			if( !medium.authoredConfigDigest.empty() || !IsSHA256Hex(medium.sequenceId) ||
-				!IsSHA256Hex(medium.wholeFileDigest) || !IsSHA256Hex(medium.preparedInputId) ||
+				(!unavailable && !IsSHA256Hex(medium.wholeFileDigest)) || !IsSHA256Hex(medium.preparedInputId) ||
 				medium.preparedStateGeneration == 0u ||
 				(medium.sourceKind != "rise_simulation" &&
 				 medium.sourceKind != "qualified_external" &&
@@ -1051,6 +1105,11 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			}
 			mediumRecordIds.insert(id);
 		}
+	}
+	if( hasUnavailableFrame != std::binary_search(metadata.renderReasonCodes.begin(),
+		metadata.renderReasonCodes.end(),std::string("frame_unavailable")) ) {
+		error = "frame_unavailable must match the active fire sequence coverage";
+		return false;
 	}
 	if( hasStaticAuthored && std::find(metadata.renderReasonCodes.begin(),
 		metadata.renderReasonCodes.end(),"producer_unqualified") ==

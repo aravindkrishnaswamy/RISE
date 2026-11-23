@@ -454,6 +454,13 @@ namespace RISE
 			const char* rasterizerKind,
 			const FireExternalRenderConfig& config,
 			const Rect* region ) = 0;
+
+		// The editor has already posed the scene. Carry that same nominal time into
+		// the prepared media transaction. Legacy Rasterize() uses the authored start.
+		virtual bool RasterizeAtSceneTime( Scalar nominalTime ) = 0;
+		virtual bool RasterizeExternalRasterizerAtSceneTime( IRasterizer* rasterizer,
+			const char* rasterizerKind, const FireExternalRenderConfig& config,
+			const Rect* region, Scalar nominalTime ) = 0;
 	};
 
 

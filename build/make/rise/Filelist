@@ -95,6 +95,9 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/FireProductionForce.cpp	\
 	$(PATHLIBRARY)Utilities/FireCase.cpp			\
 	$(PATHLIBRARY)Utilities/FireSequence.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationGrid.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationCache.cpp			\
+	$(PATHLIBRARY)Utilities/FireSequenceCache.cpp			\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
 	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\

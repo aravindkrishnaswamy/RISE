@@ -24,6 +24,7 @@
 #include "Interfaces/ICamera.h"
 #include "Interfaces/IFilm.h"
 #include "Utilities/RTime.h"
+#include "Utilities/FireSequenceCache.h"
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/RenderETAEstimator.h"
 #include "Utilities/Reference.h"
@@ -706,10 +707,49 @@ private:
     bool mAcquired = false;
 };
 
+// The renderer never links OpenVDB. Only the signed, bundle-relative helper
+// decodes legacy payloads; a native cache goes directly to the reader.
+static bool ResolveFireCache(const std::string& source, const std::string& digest,
+                             std::optional<std::int64_t> frame, std::string& directory,
+                             std::string& verifiedGeneration, std::string& error) {
+    @autoreleasepool {
+        if (digest.size() != 64 || digest.find_first_not_of("0123456789abcdef") != std::string::npos) {
+            error = "invalid source envelope digest";
+            return false;
+        }
+        NSBundle *bundle = NSBundle.mainBundle;
+        NSURL *helper = [bundle URLForAuxiliaryExecutable:@"rise-cache-import"];
+        if (!helper) { error = "bundled rise-cache-import executable is missing"; return false; }
+        NSFileManager *files = NSFileManager.defaultManager;
+        NSError *failure = nil;
+        NSString *override = NSProcessInfo.processInfo.environment[@"RISE_SIMULATION_CACHE_DIR"];
+        NSURL *base = nil;
+        if (override.length) {
+            base = [NSURL fileURLWithPath:override isDirectory:YES];
+        } else {
+            NSURL *cache = [files URLForDirectory:NSCachesDirectory inDomain:NSUserDomainMask
+                                 appropriateForURL:nil create:YES error:&failure];
+            if (!cache) { error = "cannot resolve the user's simulation cache"; return false; }
+            base = [cache URLByAppendingPathComponent:@"RISE/Simulation/v1" isDirectory:YES];
+        }
+        NSString *identity = [NSString stringWithUTF8String:digest.c_str()];
+        NSURL *root = [base URLByAppendingPathComponent:identity isDirectory:YES];
+        if (![files createDirectoryAtURL:root withIntermediateDirectories:YES
+                              attributes:@{NSFilePosixPermissions:@0700} error:&failure]) {
+            error = failure.localizedDescription.UTF8String;
+            return false;
+        }
+        directory = root.fileSystemRepresentation;
+        return Implementation::ResolveFireCacheWithHelper(helper.fileSystemRepresentation, directory,
+            source, digest, frame, verifiedGeneration, error);
+    }
+}
+
 // ============================================================
 // RISEBridge implementation
 // ============================================================
 @interface RISEBridge ()
+@property(atomic, copy) RISEProgressBlock progressSink;
 - (void)ensureProductionVFSCreated;
 @end
 
@@ -757,7 +797,7 @@ private:
     std::unique_ptr<ViewportFrameStoreCallbacks> _interactiveVFSCallbacks;
     BOOL _productionVFSAttachedToRasterizer;
     BlockLogPrinter* _logPrinter;
-    RISEProgressBlock _progressBlock;
+
     // Production blocks (LDR + HDR).  Fire from the production
     // rasterizer's tile/frame events through `_productionVFS`.
     RISEImageOutputBlock _imageOutputBlock;
@@ -788,6 +828,8 @@ private:
             GlobalMediaPathLocator().AddPath(mediaPath);
         }
 
+        static std::once_flag registerCacheResolver;
+        std::call_once(registerCacheResolver, [] { Implementation::SetFireCacheResolver(ResolveFireCache); });
         _job = nullptr;
         RISE_CreateJobPriv(&_job);
         _viewportController = nullptr;
@@ -988,10 +1030,10 @@ private:
         _progressCallback = nullptr;
     }
 
-    _progressBlock = [block copy];
+    self.progressSink = block;
 
-    if (_progressBlock) {
-        _progressCallback = new BlockProgressCallback(_progressBlock);
+    if (block) {
+        _progressCallback = new BlockProgressCallback(block);
         if (_job) {
             // CAS install (install-side twin of the clear above): claim
             // the slot only if it is still empty.  If an agent render
@@ -1030,7 +1072,21 @@ private:
 // resetProductionPauseState explicitly clears the gate at every render
 // start/finish, so a stale paused=true can't silently park a later
 // render's workers.
+- (void)withPreparedProgress:(void (^)(PreparedRenderProgress&))update {
+    ViewportControllerLease lease(_viewportController, _viewportControllerRequired,
+        _viewportControllerUsers, _viewportControllerMutex, _viewportControllerCV);
+    if (!lease.Controller() || !_job) return;
+    auto* coordinator = static_cast<CancellableProgressCallback*>(lease.Controller()->AgentRenderProgress());
+    auto& progress = coordinator->Prepared();
+    if (_job->GetProgress() == &progress) update(progress);
+}
+
+- (void)cancelPreparedProductionRender {
+    [self withPreparedProgress:^(PreparedRenderProgress& progress) { progress.RequestCancel(); }];
+}
+
 - (void)setProductionRenderPaused:(BOOL)paused {
+    [self withPreparedProgress:^(PreparedRenderProgress& progress) { progress.SetPaused(paused); }];
     if (_progressCallback) {
         _progressCallback->_paused.store(paused ? true : false,
                                          std::memory_order_release);
@@ -1168,6 +1224,18 @@ private:
 // path's bridge mutex.  See `PollAndEmitIfDirty` and
 // `OnTileCompleteTry` for the two paths.
 - (void)pollProductionVFS {
+    __block double fraction = -1;
+    __block std::uint64_t generation = 0;
+    [self withPreparedProgress:^(PreparedRenderProgress& progress) {
+        generation = progress.Generation();
+        fraction = progress.Fraction();
+    }];
+    RISEProgressBlock sink = self.progressSink;
+    if (fraction >= 0 && sink && !sink(fraction, 1, @"Rendering")) {
+        [self withPreparedProgress:^(PreparedRenderProgress& progress) {
+            progress.CancelGeneration(generation);
+        }];
+    }
     _productionVFSCallbacks->PollAndEmitIfDirty(_productionVFS);
 }
 - (void)pollInteractiveVFS {
@@ -1470,7 +1538,7 @@ private:
             if (IScenePriv* scene = job->GetScene()) {
                 scene->SetSceneTime(sceneTime);
             }
-            return job->Rasterize() ? YES : NO;
+            return job->RasterizeAtSceneTime(sceneTime) ? YES : NO;
         });
 }
 

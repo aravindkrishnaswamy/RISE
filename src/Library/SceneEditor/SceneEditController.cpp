@@ -3560,7 +3560,7 @@ bool SceneEditController::RequestProductionRender()
 				// path deliberately skips photon-map regeneration.
 				scene->SetSceneTime( mEditor.LastSceneTime() );
 				scene->GetObjects()->PrepareForRendering();
-				return mJob.Rasterize();
+				return scene->HasTimeVaryingMedia() ? mJob.RasterizeAtSceneTime(mEditor.LastSceneTime()) : mJob.Rasterize();
 			} );
 	}
 	catch( const std::exception& e )
@@ -10427,7 +10427,10 @@ bool SceneEditController::RunProductionRenderComposed(
 			// ExchangeProgress call, so a platform adapter's conditional
 			// clear can never "succeed" against a pointer this render has
 			// already captured as its restore value.
-			IProgressCallback* const priorProgress = job.ExchangeProgress( coordProgress );
+			IProgressCallback* progress = coordProgress;
+			if( job.GetScene() && job.GetScene()->HasTimeVaryingMedia() )
+				progress = &coordProgress->Prepared();
+			IProgressCallback* const priorProgress = job.ExchangeProgress( progress );
 
 			ProgressRestoreGuard progressGuard( job, priorProgress );
 			progressGuard.Arm();
@@ -20866,9 +20869,9 @@ void SceneEditController::DoOneRenderPass()
 	}
 	const auto t0 = std::chrono::steady_clock::now();
 	try {
-		if( !mJob.RasterizeExternalRasterizerResolved(activeRast,
+		if( !mJob.RasterizeExternalRasterizerAtSceneTime(activeRast,
 		mVariantRasterizer ? "pathtracing_pel_rasterizer" : "interactive_pel_rasterizer",
-		fireConfig,pRegion) ) {
+		fireConfig,pRegion,mEditor.LastSceneTime()) ) {
 			if( fireStore ) fireStore->SetMetadata(priorMetadata);
 			return;
 		}

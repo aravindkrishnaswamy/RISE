@@ -357,7 +357,7 @@ $(LIBRISE_A) : $(OBJLIB) $(ARCHIVE_BUILD_DEFS)
 	@rm -f $(LIBRISE_A)
 	@ar rcs $(LIBRISE_A) $(OBJLIB)
 
-rise : $(OBJLIB) $(PATHSRCS)commandconsole.o
+rise : $(OBJLIB) $(PATHSRCS)commandconsole.o | $(PATHTOOLDEST)simulation_cache_import
 	@echo Linking $(PATHDEST)rise
 	@$(CXX)	$(CPPFLAGS) -o $(PATHDEST)rise $(PATHSRCS)commandconsole.o $(OBJLIB) $(LDLIBS)
 
@@ -478,7 +478,7 @@ $(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 check-
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS)
 
-$(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
+$(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) | $(PATHTOOLDEST)simulation_cache_import
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS) $(FIREPREVIEWLIBS)
@@ -494,7 +494,7 @@ ifdef IS_MACOS_BUILD
 		echo 'calibration owner unexpectedly contains a production Metal implementation'; rm -f $@; exit 1; fi
 endif
 
-$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
+$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP) | $(PATHTOOLDEST)simulation_cache_import
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) -o $@ $(PATHTESTS)$*.o $(call TEST_ARCHIVE_FOR,$*) $(LDLIBS)
@@ -503,7 +503,7 @@ $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
 # the pattern rule above, so they do not wait on, or relink for, the test
 # library).
 ifneq ($(strip $(LTO_TESTS)),)
-$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A) $(TEST_MODE_STAMP)
+$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A) $(TEST_MODE_STAMP) | $(PATHTOOLDEST)simulation_cache_import
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS)
