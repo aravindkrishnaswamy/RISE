@@ -322,6 +322,7 @@
     <ClCompile Include="..\..\..\src\Library\Painters\PolynomialFunction2DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\GerstnerWavePainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\ExpressionPainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\ExpressionOslBuiltins.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\RampPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\MappingPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\StochasticTilePainter.cpp" />
@@ -559,6 +560,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Primes.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\OslNoise.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Profiling.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PSSMLTSampler.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RandomWalkSSS.cpp" />
@@ -910,6 +914,7 @@
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionParamSpec.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionOslBuiltins.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\RampPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MappingPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\StochasticTilePainter.h" />
@@ -1161,6 +1166,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Primes.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ProceduralNoiseCore.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\OslNoise.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ExpressionMemo.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h" />

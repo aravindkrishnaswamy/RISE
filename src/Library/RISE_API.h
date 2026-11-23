@@ -1141,8 +1141,8 @@ namespace RISE
 								const IPainter& specular,			///< [in] Specular reflectance / F0
 								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
 								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
-								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar; ignored in Schlick mode)
-								const IScalarPainter& ext,			///< [in] Extinction coefficient (physical scalar; ignored in Schlick mode)
+								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar; ignored in schlick_f0 and constant modes)
+								const IScalarPainter& ext,			///< [in] Extinction coefficient (physical scalar; ignored in schlick_f0 and constant modes)
 								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
 								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy: optional painter giving tangent-frame rotation in radians.  NULL = no rotation (default; bit-identical to pre-L8).
 								);
@@ -1284,6 +1284,20 @@ namespace RISE
 								IMaterial** ppi,					///< [out] Pointer to recieve the material
 								const IPainter& reflectance,		///< [in] Reflectance
 								const IScalarPainter& roughness		///< [in] Roughness (physical scalar)
+								);
+
+	//! Creates an Oren-Nayar material with an explicit model.
+	//! `energy_preserving` false is the classic model (what
+	//! RISE_API_CreateOrenNayarMaterial makes); true is EON, the
+	//! energy-preserving model whose `roughness` is in [0, 1] (see
+	//! OrenNayarBRDF::EONValue).  A separate function, so the existing
+	//! export keeps its signature.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateOrenNayarMaterialModel(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& reflectance,		///< [in] Reflectance
+								const IScalarPainter& roughness,	///< [in] Roughness (physical scalar)
+								const bool energy_preserving		///< [in] true: EON; false: classic
 								);
 
 	//! Creates a Schlick material.

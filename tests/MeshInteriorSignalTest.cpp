@@ -3023,7 +3023,7 @@ static void TestDL623RigorousEigenvalueBound()
 		__int128 M[3][3];
 		const auto pd = [&]( long long p ) {
 			for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) {
-				M[r][c] = ( (__int128)G[r][c] << m ) - ( r == c ? (__int128)p : 0 );
+				M[r][c] = (__int128)G[r][c] * ( (__int128)1 << m ) - ( r == c ? (__int128)p : 0 );	// G may be negative off the diagonal: shifting a negative value is UB before C++20
 			}
 			return ExactLeadingMinorsPositive( M );
 		};

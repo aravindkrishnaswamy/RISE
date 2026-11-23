@@ -211,9 +211,17 @@ namespace RISE
 					}
 					ri.vGeomNormal = fn;
 				}
-				ri.ptCoord = Point2Ops::mkPoint2(*thisTri.pCoords[0],
-					Vector2Ops::mkVector2(*thisTri.pCoords[1],*thisTri.pCoords[0])*a+
-					Vector2Ops::mkVector2(*thisTri.pCoords[2],*thisTri.pCoords[0])*b );
+				// A mesh built without texture coordinates has null coordinate
+				// pointers (MakePointerTriangle); it reads UV (0, 0), the value a
+				// dummy coordinate always gave.  The derivative block below
+				// likewise publishes no UV chart for it (edge-frame fallback).
+				if( thisTri.pCoords[0] && thisTri.pCoords[1] && thisTri.pCoords[2] ) {
+					ri.ptCoord = Point2Ops::mkPoint2(*thisTri.pCoords[0],
+						Vector2Ops::mkVector2(*thisTri.pCoords[1],*thisTri.pCoords[0])*a+
+						Vector2Ops::mkVector2(*thisTri.pCoords[2],*thisTri.pCoords[0])*b );
+				} else {
+					ri.ptCoord = Point2( 0, 0 );
+				}
 
 				// L12.D — TEXCOORD_1 interpolation.  pTexCoords1 is the
 				// secondary UV array on ITriangleMeshGeometryIndexed3,
@@ -643,9 +651,12 @@ namespace RISE
 		// arithmetic.  NO!  Pointer arithmetic does NOT work on some platforms (the SGI Origin 3800 for example)
 		// Instead resort to using array tricks.
 
-		unsigned int idx = buffer.getUInt();
-		const char* pch = (const char*)(void*)&(*ptr_polygons.begin());
-		ret = (MYOBJ)&pch[idx*sizeof(PointerTriangle)];
+		// Only the legacy (v1-v3) BSP/octree read-and-discard reaches this; those
+		// trees are never traversed.  Bounds-check rather than form a pointer
+		// into (or past) a list that refused triangles may have left short or
+		// empty (MakePointerTriangle).
+		const unsigned int idx = buffer.getUInt();
+		ret = idx < ptr_polygons.size() ? &ptr_polygons[idx] : nullptr;
 	//	unsigned int ptr = (VoidPtrToUInt( pCustom )) + (idx*sizeof(PointerTriangle));
 	//	ret = (MYOBJ)ptr;
 	}

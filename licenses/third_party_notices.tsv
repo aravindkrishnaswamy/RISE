@@ -1,0 +1,34 @@
+# Third-party notices that RISE binary distributions must carry.
+#
+# One line per file: <package> TAB <repo-relative path> TAB <distributions>.
+# <distributions> is a comma-separated subset of macos, android, windows,
+# blender, or "all".  Every packager reads this file and fails if a listed
+# file is missing:
+#   macos    scripts/create_macos_release.sh
+#   android  android/app/build.gradle.kts (the stageThirdPartyNotices task)
+#   windows  build/VS2022 RISE-CLI / RISE-GUI post-build (tools/third_party_notices.py)
+#   blender  tools/package_blender_addon.py
+# Notices for libraries that come from OUTSIDE the repository (Homebrew,
+# vcpkg, the OIDN / OpenPGL installs, the Android NDK, the libraries the
+# Blender bridge links) are found by the packager at packaging time; see
+# licenses/README.md.
+#
+# Adding ported or vendored code to the library: add its notice here.
+# tools/test_third_party_notices.py fails on some omissions (an extlib/
+# source file a build compiles, a source file with a third-party copyright
+# line, a GUI licence file); see licenses/README.md for what it cannot see.
+RISE	LICENSE.TXT	android,windows,blender
+stb	extlib/stb/LICENSE.txt	all
+cgltf	extlib/cgltf/LICENSE.txt	all
+mt19937	extlib/mt19937/LICENSE.txt	all
+Sobol-Joe-Kuo	licenses/Sobol-Joe-Kuo-LICENSE.txt	all
+Cycles	licenses/Cycles-NOTICE.txt	all
+Cycles	licenses/Apache-2.0.txt	all
+Cycles	licenses/BSD-3-Clause.txt	all
+libpng	extlib/libpng/LICENSE	android
+zlib	licenses/zlib-LICENSE.txt	android
+Unicode	licenses/Unicode-LICENSE.txt	all
+Apache-2.0	licenses/Apache-2.0.txt	android
+IBM-Plex	build/XCode/rise/RISE-GUI/Fonts/OFL-LICENSE.txt	macos
+IBM-Plex	build/VS2022/RISE-GUI/fonts/OFL-LICENSE.txt	windows
+Lucide	build/VS2022/RISE-GUI/icons/LICENSE-lucide.txt	windows

@@ -156,6 +156,19 @@
 //  `CallFunc`'s new cases are.  `CallFunc` itself gained a THIRD case,
 //  `kFnSamplePainterScalar`.
 //
+//  UPDATED 2026-11-20 -- the `osl_` builtins (ExpressionOslBuiltins.h,
+//  docs/BLENDER_PROCEDURAL_TRANSLATION_DESIGN.md §5.2(b)).  `RunAny` is
+//  the body that moved, and only by two APPENDED cases, `Compiled::kOsl`
+//  and `kOslV3`, which pop their arguments and call the out-of-line
+//  `OslBuiltins::Call`.  No existing case's text changed; `Eval(u,v)`,
+//  `Eval(ctx)`, `EvalVec3`, `CallFunc` and `CallFuncVec3` are byte-
+//  identical to the commit before (brace-matched and hash-compared), and
+//  TextureExpressionVMTest's exact-`==` checks stay green.  The two new
+//  cases are now part of RunAny's pinned text.  They read no `fw` and
+//  add no key field: an `osl_` builtin is a pure function of its
+//  arguments.  ComputeMemoWorthiness counts a call whose signature is
+//  marked expensive (every noise builtin) as worth an L2 entry.
+//
 //  ⚠ THE FIRST IMPLEMENTATION CLAIMED THE KEY NEED NOT GROW, AND IT WAS
 //  WRONG.  It said: `sample()`/`sample_scalar()` evaluate the bound painter
 //  at a SYNTHETIC hit built only from `env`'s existing u,v,P,Po,N slots,

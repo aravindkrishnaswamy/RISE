@@ -103,6 +103,9 @@ camera-side code was not touched by S1 or by anything since).
 
 ### 2.5 VCM inherits this by construction, not by a separate fix
 
+> Superseded in part by §10 (2026-11-17): true for the EYE footprint; VCM's
+> light-traced (splat) share has its own footprint stamp since 2026-11-17 (§10).
+
 `VCMIntegrator.cpp` contains zero occurrences of `txFootprint` (grep
 the symbol). VCM does not need its own copy site because it never
 builds its own eye subpath — `VCMPelRasterizer`/`VCMRasterizerBase`
@@ -113,6 +116,9 @@ the same object BDPT itself consumes. Whatever is true of vertex 1's
 and identically — there is no separate mechanism to verify.
 
 ## 3. Direct render measurement
+
+> Historical (64 spp, before DL-402).  The test now renders BDPT and VCM at
+> 1024 spp with different bands; see §10.
 
 New permanent regression test:
 `tests/BidirectionalTextureFootprintParityTest.cpp`.
@@ -175,6 +181,9 @@ PT/BDPT's, which is discussed next.
 
 ### 3.1 VCM's higher HF energy is documented noise, not a footprint gap
 
+> Superseded by §10 (2026-11-17): much of this excess was the unfiltered
+> light-traced (t == 1) share, a converged bias (mean +0.23% at 1024 spp).
+
 Re-rendering the VCM scene at 256 and 1024 samples (16x) drops the HF
 energy from 0.0318 to 0.0192 to 0.0144 — converging toward PT/BDPT's
 0.0077 as sample count rises, the signature of ordinary Monte Carlo
@@ -194,6 +203,9 @@ array BDPT does, with no VCM-specific footprint code to independently
 break — rather than a second noise-tolerant render-level HF check.
 
 ## 4. Red-proof
+
+> Historical 64-spp figures.  At the current 1024-spp settings the same
+> mutation reads BDPT mean -0.41%, HF 2.33x (§10).
 
 Temporarily inserted, immediately after `Ray currentRay = cameraRay;`
 at the top of `GenerateEyeSubpathImpl` (`BDPTIntegrator.cpp:1652`):
@@ -226,6 +238,10 @@ The mutation was reverted; `git diff` on
 empty — **no production code changed in this slice.**
 
 ## 5. The light-vertex footprint question
+
+> Amended by §10 (2026-11-17): the light vertex's OWN footprint is still zero,
+> but a t == 1 connection must shade it with the footprint of the pixel it
+> lands in.
 
 The task brief that opened this slice asked for a decision (and its
 measurement) on what a LIGHT-subpath vertex's footprint should be at a
@@ -275,14 +291,91 @@ See `tests/README.md` for the exact counters from this slice's run.
 
 ## 8. Cost
 
-None. No production code changed — there is nothing to time.
+(At closure; the DL-402 follow-up's cost is in §10.)  None. No production code changed — there is nothing to time.
 
 ## 9. Residuals
 
-None opened. The one thing that might look like a residual — "the
+(At closure; §10 lists the follow-up's residuals.)  None opened. The one thing that might look like a residual — "the
 fbm-fade discrepancy PT-vs-BDPT past the first bounce" — is not a
 BDPT/VCM/MLT-specific gap; it is PT's own pre-existing, disclosed,
 "primary-hits-only" architecture (`docs/TEXTURE_FOOTPRINT_ANALYTIC_
 DESIGN.md`, `docs/RELIEF_MODIFIER_DESIGN.md`: "Still primary-hits-only:
 no ray carries differentials after a scatter"), already true of PT
 before this slice and unaffected by it.
+
+## 10. DL-402 interaction: the light-traced share needs the pixel footprint too (2026-11-17)
+
+**This section supersedes parts of §2.5, §3.1, §5, §8 and §9 (each marked), and §3/§4's figures are the historical 64-spp ones.**
+
+`6dec90813` (DL-402, BDPT/MLT MIS uses the whole-film camera density) is
+correct MIS and moved real weight onto the light-tracing (t == 1) strategy
+on this fixture's point-lit floor.  A light vertex was never traced from the
+camera, so it carried no footprint (§5's analysis of the light walk itself
+stands), and the t == 1 share shaded the fbm UNFILTERED while every eye
+strategy MIS-combined into the same pixel shaded it filtered: the pixel
+converged to a mixture.  Measured at 1024 spp (converged; PT is noise-free
+here): BDPT mean +0.32% and HF energy 1.70x PT's.  VCM had the same defect at
+its own splat site all along -- its balance heuristic gives t == 1 a large
+share -- reading mean +0.23% and HF 1.80x at 1024 spp; so §3.1's "VCM's
+higher HF energy is documented noise" was in large part this bias.
+
+Fix: a t == 1 connection shades a copy of its SURFACE light endpoint
+stamped with the footprint of the pixel it lands in
+(`BDPTCameraUtilities::PixelFootprintThrough` -- central differences of
+`RasterizeThrough` along two tangents, the 2x2 Jacobian inverted, so no
+camera ray and no random numbers -- then
+`PathVertexEval::StampPixelFootprint` fills the world width, the object
+width and the texcoord UV Jacobian with the same formulas `Object::IntersectRay`
+uses, though not from the same inputs -- see the residuals below).
+Applied at BDPT's live t == 1 site, its per-type-cap rescale (its own stamped
+copy of the same record), the unreachable t == 0 spellings of the same connection, and
+VCM's splat (`VCMIntegrator.cpp` -- so VCM now has its own copy of this
+mechanism and §2.5's "VCM needs no separate site" no longer holds for the
+light-traced share).  After, at 1024 spp: BDPT mean 0.510207 against PT's
+0.510207, HF 1.18x; VCM mean 0.510211, HF 1.32x.  At 4096 spp the same
+renders read BDPT HF 1.042x and VCM 1.080x (means unchanged): the excess
+shrinks about 4x for 4x the samples, as the noise term of a mean absolute
+difference does (it scales with the variance), so it reads as the
+light-traced share's own noise -- PT is noise-free here, so any noise shows.
+(One render per spp, so this is a two-point fit, not a measured sd.)  MIS densities (pdfRev / pdfPred, VCM's bsdfRevPdfW) still read the
+unstamped vertex.
+
+Cost (supersedes §8): one `WithPixelFootprint` per surface t == 1 connection
+(two when a per-type bounce cap splits the light side: RescaleTypeCapSplit stamps
+its own copy)
+-- four `RasterizeThrough` calls, a 1184-byte `BDPTVertex` copy, a 2x2
+solve, a `RayIntersectionGeometric` construction and the UV solve; the
+round-1 review timed it at about 210 ns per call in an ad hoc benchmark that
+is not in the tree (consistent with the +7% below: ~25M connections x 210 ns
+~ 5 s of the 7.6 s difference).  Measured
+(review, interleaved, user CPU, n=4 per side): about +7% on this shallow
+point-lit fixture where light tracing dominates (110.6 +/- 4.0 s vs
+118.2 +/- 3.0 s for BDPT+VCM at 1024 spp).  On two deeper scenes the same
+review read +0.5% (cornellbox_bdpt_pointlight) and -0.3%
+(cornellbox_vcm_caustics) without a recorded sd, so read those as "no
+large effect", not as a measured zero.  The stamp runs whether or not any painter
+reads a footprint; a demand gate (like SurfaceSignalDemand) would remove it
+for scenes that never do.
+
+Residuals (supersedes §9's "None"):
+- a fisheye eye ray in the rim band carries no differentials, so there the
+  light-traced share is now filtered while the eye share is not;
+- the light side builds its tangent plane from the post-modifier shading
+  normal and solves the UV Jacobian in world space after the modifier,
+  while the eye side works from the pre-modifier hit, so footprints differ
+  slightly on bump- or normal-mapped surfaces;
+- only SURFACE endpoints are stamped: a light-root endpoint (BDPT's (1,1)
+  strategy, VCM's `LIGHT`-type splat) still shades an emitter painter
+  unfiltered while the eye strategy's s=0 hit on it is filtered -- the same
+  mixture, for footprint-reading EMISSION painters only;
+- a light point within a few probe steps of the raster guard band can fail
+  a probe, and that connection is then shaded unstamped;
+- the stamp reaches only BSDF / painter evaluation of the rebuilt record:
+  modifiers are not re-run there, so a footprint-reading relief / bump step
+  on the light-traced share still sees no footprint.
+
+`BidirectionalTextureFootprintParityTest` therefore compares CONVERGED
+quantities: BDPT and VCM at 1024 spp, mean within 0.1%, HF within 25%
+(BDPT) / 50% (VCM).  The BDPT checks fail on the pre-fix build (+0.32%,
+1.70x) and on DL-14's own eye-footprint mutation (-0.41%, 2.33x); the VCM
+mean check fails with VCM's stamp reverted (+0.23%).

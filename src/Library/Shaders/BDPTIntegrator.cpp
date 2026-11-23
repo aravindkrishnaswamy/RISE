@@ -4594,7 +4594,9 @@ ConnectAndEvaluateImplCore(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				BDPTVertex footprinted;
+				const BDPTVertex& shadeEnd = PathVertexEval::WithPixelFootprint( camera, apertureSample_t0, lightEnd, footprinted );
+				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( shadeEnd, wiAtLight, dirToCam, tag );
 			}
 		}
 
@@ -4703,7 +4705,9 @@ ConnectAndEvaluateImplCore(
 		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial && s >= 2 ) {
 			Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
 			wiAtLight = Vector3Ops::Normalize( wiAtLight );
-			fLightNM = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+			BDPTVertex footprinted;
+			const BDPTVertex& shadeEnd = PathVertexEval::WithPixelFootprint( camera, apertureSample_t0, lightEnd, footprinted );
+			fLightNM = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( shadeEnd, wiAtLight, dirToCam, tag );
 		}
 
 		const Scalar distSq = dist * dist;
@@ -5278,7 +5282,11 @@ ConnectAndEvaluateImplCore(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				// DL-14 / DL-402: shade with the footprint of the pixel this
+				// splat lands in (PathVertexEval::StampPixelFootprint).
+				BDPTVertex footprinted;
+				const BDPTVertex& shadeEnd = PathVertexEval::WithPixelFootprint( camera, apertureSample, lightEnd, footprinted );
+				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( shadeEnd, wiAtLight, dirToCam, tag );
 			}
 		} else if( lightEnd.type == BDPTVertex::LIGHT ) {
 			// s == 1: the light source directly connects to the camera.
@@ -5847,17 +5855,23 @@ bool RescaleTypeCapSplit(
 	if( s < 2 || t < 1 ) {
 		return false;
 	}
-	const BDPTVertex& lightEnd = lightVerts[s - 1];
+	const BDPTVertex* pLightEnd = &lightVerts[s - 1];
+	BDPTVertex footprinted;
 	const Vector3 wiL = Vector3Ops::Normalize(
-		Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position ) );
+		Vector3Ops::mkVector3( lightVerts[s - 2].position, pLightEnd->position ) );
 	Vector3 woL, wiE, woE;
 	if( t == 1 ) {
-		const Point3 camPos = BDPTCameraUtilities::SampleAperture( camera, cameraLensSample ).point;
-		woL = Vector3Ops::Normalize( Vector3Ops::mkVector3( camPos, lightEnd.position ) );
+		const BDPTCameraUtilities::ApertureSample ap = BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
+		woL = Vector3Ops::Normalize( Vector3Ops::mkVector3( ap.point, pLightEnd->position ) );
+		// The same record the t == 1 contribution was shaded with (DL-14);
+		// only the light-side split reads it.
+		if( plan.splitLight ) {
+			pLightEnd = &PathVertexEval::WithPixelFootprint( camera, ap, *pLightEnd, footprinted );
+		}
 	} else {
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 		const Vector3 dConnect = Vector3Ops::Normalize(
-			Vector3Ops::mkVector3( lightEnd.position, eyeEnd.position ) );
+			Vector3Ops::mkVector3( pLightEnd->position, eyeEnd.position ) );
 		woL = -dConnect;
 		wiE = dConnect;
 		woE = Vector3Ops::Normalize( Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position ) );
@@ -5865,10 +5879,10 @@ bool RescaleTypeCapSplit(
 	V fl[5], fe[5];
 	V denom = TrOne<Tag>();
 	if( plan.splitLight ) {
-		if( !PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( lightEnd, wiL, woL, tag, fl ) ) {
+		if( !PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( *pLightEnd, wiL, woL, tag, fl ) ) {
 			return false;
 		}
-		denom = denom * PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiL, woL, tag );
+		denom = denom * PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( *pLightEnd, wiL, woL, tag );
 	}
 	if( plan.splitEye ) {
 		if( t < 2 || !PathValueOps::EvalAreaBSDFByTypeAtVertex<Tag>( eyeVerts[t - 1], wiE, woE, tag, fe ) ) {

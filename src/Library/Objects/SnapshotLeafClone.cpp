@@ -107,7 +107,7 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 		return NewClone( mat, new IsotropicPhongMaterial( m->GetRd(), m->GetRs(), m->GetExponent() ) );
 	}
 	if( const OrenNayarMaterial* m = dynamic_cast<const OrenNayarMaterial*>( mat ) ) {
-		return NewClone( mat, new OrenNayarMaterial( m->GetReflectance(), m->GetRoughness() ) );
+		return NewClone( mat, new OrenNayarMaterial( m->GetReflectance(), m->GetRoughness(), m->IsEnergyPreserving() ) );
 	}
 	if( const SchlickMaterial* m = dynamic_cast<const SchlickMaterial*>( mat ) ) {
 		return NewClone( mat, new SchlickMaterial(

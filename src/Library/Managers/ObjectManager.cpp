@@ -66,6 +66,7 @@
 #include <typeinfo>	// LogDistanceRefusal names the refusing geometry's kind
 #include <cstdint>
 #include <vector>
+#include <unordered_map>
 #include <algorithm>
 
 using namespace RISE;
@@ -157,46 +158,6 @@ bool ObjectHasClearTransmissionMemo(const IObject& object, std::unordered_map<co
     }
     return false;
 }
-bool ObjectHasRejectedTransmissiveCaster(const IObject& object, std::unordered_map<const CSGObject*, bool>& clearTransMemo)
-{
-    const IMaterial* material = object.GetMaterial();
-    if(material && !AuditedMaterialGraph(*material)) return true;
-    const ISPF* spf = material ? material->GetSPF() : nullptr;
-    const bool nativeClear = dynamic_cast<const DielectricSPF*>(spf)
-        || dynamic_cast<const PerfectRefractorSPF*>(spf);
-    const bool transmissive = material && (nativeClear
-        || (material->CouldLightPassThrough() || material->HasDeltaPassThrough()));
-    if(transmissive && (!SMSDomainReplay::PotentialCaster(*material)
-        || object.GetInteriorMedium() || !object.GetGeometry()
-        || !object.GetGeometry()->CanBeAreaLight())) return true;
-    // A partial HG interface has no supported delta-limit query. Its
-    // scattering declaration must certify independence before a value can
-    // establish eligibility for the whole interface.
-    if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(material))
-        if(dielectric->GetHG() && !dielectric->GetScattering().IsPositionIndependent()) return true;
-    // A CSG hit can inherit a clear operand's material while the container
-    // itself has no material. Its complete surface has no uniform-sampling
-    // API, so even individually supported operands cannot give the required
-    // positive proposal mass for that effective caster.
-    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmissionMemo(object, clearTransMemo)) return true;
-    return false;
-}
-// Native mesh intersections may orient their geometric normal to authored
-// shading normals before recording the ray-facing flip. Opposing corners
-// therefore cannot certify winding-derived medium membership. Mesh finalization
-// and mutation own the audit; preparation reads it without copying triangles.
-bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
-{
-    const IGeometry* geometry=object.GetGeometry();
-    if(!geometry || !object.GetMaterial() || !SMSDomainReplay::PotentialCaster(*object.GetMaterial())) return false;
-    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
-        return mesh->HasUncertainSMSNormalOrientation();
-    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
-        return mesh->HasUncertainSMSNormalOrientation();
-    if(const auto* mesh=dynamic_cast<const DisplacedGeometry*>(geometry))
-        return mesh->HasUncertainSMSNormalOrientation();
-    return false;
-}
 // DL-382: a clear transmissive surface whose geometry is neither certified
 // closed nor certified open (a non-planar open mesh, a slab authored as one
 // open mesh, a mesh with stray boundary edges) is crossed by the IOR-stack
@@ -281,6 +242,129 @@ bool ObjectWrapsCompositeImpl(const IObject& object, std::unordered_set<const CS
         return (csg->GetOperandA() && ObjectWrapsCompositeImpl(*csg->GetOperandA(), visited))
             || (csg->GetOperandB() && ObjectWrapsCompositeImpl(*csg->GetOperandB(), visited));
     }
+    return false;
+}
+
+// The material-derived half of PrepareForRendering's per-object SMS / DL-382
+// census, split by what can change after construction.
+//
+// MEMOIZED (ObjectManager::PrepareCensus): the material's TYPE GRAPH --
+// wrapper composition, the exact audited types, the SPF's type, the
+// luminaire unwrapping DL-382 reads.  No setter replaces a wrapper's
+// sub-material or a material's type, so these are fixed for the life of the
+// material object (the memo pins it).
+//
+// READ LIVE every preparation (the *Live helpers below): everything that
+// depends on a painter or a construction-time flag a setter can rebuild.
+// The editor's in-place material edits (MaterialIntrospection::SetSlot)
+// replace a dielectric / refractor / polished index or scattering painter
+// (PotentialCaster reads the index painter's position independence; the
+// partial-HG check reads the scattering painter's) and a weave's gap
+// (WeaveMaterial::SetGap rebuilds HasDeltaPassThrough) without changing the
+// material pointer.  Those reads are two virtual calls for every material;
+// for a dielectric / refractor / polished caster, one virtual
+// position-independence query on the index painter at each of the up to
+// three predicates that ask (the caster's exact type is memoized, so no RTTI
+// is repeated; a reflector reads no painter); and for a dielectric the HG
+// check's GetHG() and scattering-painter query.
+//
+// Geometry and object state -- an SDF's CanBeAreaLight follows its keyframed
+// parameters, mesh certification follows UpdateVertices, the interior medium
+// and visibility are per object -- are read live by the predicates below.
+struct MaterialCensus
+{
+    bool wrapsComposite = false;
+    bool notAudited = false;            // !AuditedMaterialGraph
+    bool nativeClear = false;           // DielectricSPF / PerfectRefractorSPF
+    SMSDomainReplay::CasterKind casterKind = SMSDomainReplay::NotCaster;  // PotentialCaster's exact-type gate
+    const PerfectRefractorMaterial* refractor = nullptr;  // set for casterKind == Refractor
+    const PolishedMaterial* polished = nullptr;           // set for casterKind == Polished
+    bool clearTransmissive = false;     // IsClearTransmissiveMaterial (DL-382)
+    const DielectricMaterial* dielectric = nullptr;
+};
+MaterialCensus CensusOfMaterial(const IMaterial* material)
+{
+    MaterialCensus c;
+    if(!material) return c;
+    c.wrapsComposite = WrapsComposite(material);
+    c.notAudited = !AuditedMaterialGraph(*material);
+    const ISPF* spf = material->GetSPF();
+    c.nativeClear = dynamic_cast<const DielectricSPF*>(spf)
+        || dynamic_cast<const PerfectRefractorSPF*>(spf);
+    c.dielectric = dynamic_cast<const DielectricMaterial*>(material);
+    // SMSDomainReplay::PotentialCaster's exact-type gate; only the index
+    // painter's position independence is read live (PotentialCasterLive).
+    c.casterKind = SMSDomainReplay::PotentialCasterKind(*material);
+    if(c.casterKind == SMSDomainReplay::Refractor)
+        c.refractor = dynamic_cast<const PerfectRefractorMaterial*>(material);
+    else if(c.casterKind == SMSDomainReplay::Polished)
+        c.polished = dynamic_cast<const PolishedMaterial*>(material);
+    bool broadProof = false;
+    c.clearTransmissive = IsClearTransmissiveMaterial(material, broadProof);
+    return c;
+}
+bool TransmissiveLive(const IMaterial* material, const MaterialCensus& census)
+{
+    return material && (census.nativeClear
+        || material->CouldLightPassThrough() || material->HasDeltaPassThrough());
+}
+bool PotentialCasterLive(const IMaterial* material, const MaterialCensus& census)
+{
+    // SMSDomainReplay::PotentialCaster with the type gate and the casts read
+    // from the memo: only the index painter, which SetIOR can replace in
+    // place, is queried live.
+    if(!material) return false;
+    switch(census.casterKind) {
+    case SMSDomainReplay::Reflector:  return true;
+    case SMSDomainReplay::Dielectric: return census.dielectric && census.dielectric->GetIOR().IsPositionIndependent();
+    case SMSDomainReplay::Refractor:  return census.refractor && census.refractor->GetIOR().IsPositionIndependent();
+    case SMSDomainReplay::Polished:   return census.polished && census.polished->GetIOR().IsPositionIndependent();
+    default:                          return false;
+    }
+}
+// A partial HG interface has no supported delta-limit query. Its scattering
+// declaration must certify independence before a value can establish
+// eligibility for the whole interface.
+bool HGPositionDependentLive(const MaterialCensus& census)
+{
+    return census.dielectric && census.dielectric->GetHG()
+        && !census.dielectric->GetScattering().IsPositionIndependent();
+}
+// `census` is CensusOfMaterial(object.GetMaterial()); `isCSG` is whether the
+// object is a CSGObject; `clearTransMemo` is shared across one preparation so
+// a CSG DAG with shared operands is walked once.
+bool RejectedTransmissiveCaster(const IObject& object, const MaterialCensus& census, bool isCSG,
+    std::unordered_map<const CSGObject*, bool>& clearTransMemo)
+{
+    if(census.notAudited) return true;
+    const IMaterial* material = object.GetMaterial();
+    const IGeometry* geometry = object.GetGeometry();
+    if(TransmissiveLive(material, census) && (!PotentialCasterLive(material, census)
+        || object.GetInteriorMedium() || !geometry
+        || !geometry->CanBeAreaLight())) return true;
+    if(HGPositionDependentLive(census)) return true;
+    // A CSG hit can inherit a clear operand's material while the container
+    // itself has no material. Its complete surface has no uniform-sampling
+    // API, so even individually supported operands cannot give the required
+    // positive proposal mass for that effective caster.
+    if(isCSG && ObjectHasClearTransmissionMemo(object, clearTransMemo)) return true;
+    return false;
+}
+// Native mesh intersections may orient their geometric normal to authored
+// shading normals before recording the ray-facing flip. Opposing corners
+// therefore cannot certify winding-derived medium membership. Mesh finalization
+// and mutation own the audit; preparation reads it (live) without copying
+// triangles.
+bool UncertainSMSNormalOrientation(const IObject& object, const MaterialCensus& census)
+{
+    const IGeometry* geometry=object.GetGeometry();
+    if(!geometry || !PotentialCasterLive(object.GetMaterial(), census)) return false;
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const DisplacedGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
     return false;
 }
 
@@ -801,6 +885,128 @@ void ObjectManager::DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const
 }
 
 
+
+//! PrepareForRendering's per-object census memo (see ObjectManager.h).
+//! `entries` is parallel to `items` in iteration (name) order after each
+//! RefreshPrepareCensus.  An entry pins the material its facts were computed
+//! for with a reference, so an object that swaps materials can never be
+//! matched against a recycled address; objects are not pinned -- RemoveItem
+//! and Shutdown drop the whole memo, so a cached object pointer always names
+//! a live item.
+struct ObjectManager::PrepareCensus
+{
+	struct Entry
+	{
+		const IObjectPriv*	object = nullptr;
+		const IMaterial*	material = nullptr;	///< addref'd
+		const Object*		asObject = nullptr;	///< dynamic_cast<const Object*>( object )
+		bool				isCSG = false;
+		bool				factsValid = false;
+		MaterialCensus		facts;
+
+		Entry() = default;
+		Entry( const Entry& ) = delete;
+		Entry& operator=( const Entry& ) = delete;
+		Entry( Entry&& o ) noexcept
+			: object( o.object ), material( o.material ), asObject( o.asObject ),
+			  isCSG( o.isCSG ), factsValid( o.factsValid ), facts( o.facts )
+		{
+			o.object = nullptr;
+			o.material = nullptr;
+			o.factsValid = false;
+		}
+		Entry& operator=( Entry&& o ) noexcept
+		{
+			if( this != &o ) {
+				if( material ) material->release();
+				object = o.object; material = o.material; asObject = o.asObject;
+				isCSG = o.isCSG; factsValid = o.factsValid; facts = o.facts;
+				o.object = nullptr; o.material = nullptr; o.factsValid = false;
+			}
+			return *this;
+		}
+		~Entry() { if( material ) material->release(); }
+	};
+	std::vector<Entry> entries;
+};
+
+void ObjectManager::RefreshPrepareCensus() const
+{
+	if( !prepareCensus ) {
+		prepareCensus.reset( new PrepareCensus() );
+	}
+	std::vector<PrepareCensus::Entry>& old = prepareCensus->entries;
+	// Steady state: the same objects in the same order.  Update in place --
+	// only a re-pointed material is re-censused -- with no reallocation.
+	if( old.size() == items.size() ) {
+		bool inPlace = true;
+		std::size_t k = 0;
+		for( const auto& item : items ) {
+			if( old[k++].object != item.second.first ) { inPlace = false; break; }
+		}
+		if( inPlace ) {
+			k = 0;
+			for( const auto& item : items ) {
+				PrepareCensus::Entry& e = old[k++];
+				const IMaterial* material = item.second.first ? item.second.first->GetMaterial() : nullptr;
+				if( !e.factsValid || e.material != material ) {
+					if( material ) material->addref();
+					if( e.material ) e.material->release();
+					e.material = material;
+					e.facts = CensusOfMaterial( material );
+					e.factsValid = true;
+				}
+			}
+			return;
+		}
+	}
+	std::vector<PrepareCensus::Entry> fresh;
+	fresh.reserve( items.size() );
+	// Steady state (a non-structural edit): every item is at the position it
+	// held last time, so matching is one pointer compare per object.  Only an
+	// added item (the memo is dropped on removal) falls back to the index.
+	std::unordered_map<const IObjectPriv*, std::size_t> index;
+	bool indexed = false;
+	std::size_t pos = 0;
+	for( const auto& item : items ) {
+		const IObjectPriv* object = item.second.first;
+		PrepareCensus::Entry* prev = nullptr;
+		if( pos < old.size() && old[pos].object == object ) {
+			prev = &old[pos];
+		} else if( object ) {
+			if( !indexed ) {
+				for( std::size_t k = 0; k < old.size(); ++k ) {
+					if( old[k].object ) index.emplace( old[k].object, k );
+				}
+				indexed = true;
+			}
+			const auto found = index.find( object );
+			if( found != index.end() && old[found->second].object == object ) {
+				prev = &old[found->second];
+			}
+		}
+		++pos;
+
+		PrepareCensus::Entry e;
+		if( prev ) {
+			e = std::move( *prev );
+		} else {
+			e.object = object;
+			e.asObject = dynamic_cast<const Object*>( object );
+			e.isCSG = dynamic_cast<const CSGObject*>( object ) != nullptr;
+		}
+		const IMaterial* material = object ? object->GetMaterial() : nullptr;
+		if( !e.factsValid || e.material != material ) {
+			if( material ) material->addref();
+			if( e.material ) e.material->release();
+			e.material = material;
+			e.facts = CensusOfMaterial( material );
+			e.factsValid = true;
+		}
+		fresh.push_back( std::move( e ) );
+	}
+	old.swap( fresh );	// `fresh` now holds the stale entries; their destructors release
+}
 
 ObjectManager::ObjectManager(
 			const bool bUseBSPtree_,
@@ -2243,6 +2449,7 @@ bool ObjectManager::GetObjectProvenance( const char* entry, const char** outInst
 
 void ObjectManager::Shutdown()
 {
+	if( prepareCensus ) prepareCensus->entries.clear();
 	parentByName.clear();
 	provenanceByName.clear();
 	danglingParentWarned.clear();
@@ -2305,6 +2512,10 @@ bool ObjectManager::RemoveItem( const char* szName )
 {
 	const bool ok = GenericManager<IObjectPriv>::RemoveItem( szName );
 	if( !ok || !szName ) return ok;
+	// The census memo keys on object pointers it does not pin; drop it so a
+	// later object allocated at the removed one's address cannot inherit its
+	// cached type facts.
+	if( prepareCensus ) prepareCensus->entries.clear();
 
 	const String gone( szName );
 	parentByName.erase( gone );
@@ -2665,26 +2876,32 @@ void ObjectManager::PrepareForRendering() const
 	// picking paths) reach PrepareForRendering before RayCaster::AttachScene's
 	// realize pass, and this is the funnel they share.  Idempotent.
 	RealizeAllObjects();
+	// The per-object census memo, parallel to `items` (see ObjectManager.h);
+	// the loops below walk `census` in lockstep with `items`.
+	RefreshPrepareCensus();
+	const std::vector<PrepareCensus::Entry>& census = prepareCensus->entries;
 	// DL-448: retire world-area sampling entries that no longer describe
 	// an object's pose (once per frame, no render in flight; each object
 	// frees the PREVIOUS frame's retirees only).
-	{
-		GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
-		for( i=items.begin(), e=items.end(); i!=e; ++i ) {
-			if( const Object* o = dynamic_cast<const Object*>( i->second.first ) ) {
-				o->PruneWorldAreaSampling();
-			}
+	for( const PrepareCensus::Entry& entry : census ) {
+		if( entry.asObject ) {
+			entry.asObject->PruneWorldAreaSampling();
 		}
 	}
 
     // One decision per preparation, including hidden CSG operands. No probes
-    // or IOR history can certify their absence under DL-407.
+    // or IOR history can certify their absence under DL-407.  A CSG object's
+    // answer depends on its operands' materials, so it is never memoized.
     smsHasComposite = false;
     smsFirstCompositeObject.clear();
     {
+        // CSG roots are walked with one visited set shared across the scene,
+        // so a DAG that shares operands is walked once (master's memo).
         std::unordered_set<const CSGObject*> compositeVisited;
+        std::size_t k = 0;
         for(const auto& item : items) {
-            if(ObjectWrapsCompositeImpl(*item.second.first, compositeVisited)) {
+            const PrepareCensus::Entry& entry = census[k++];
+            if(entry.isCSG ? ObjectWrapsCompositeImpl(*item.second.first, compositeVisited) : entry.facts.wrapsComposite) {
                 smsHasComposite = true;
                 smsFirstCompositeObject = item.first.c_str();
                 break;
@@ -2705,16 +2922,18 @@ void ObjectManager::PrepareForRendering() const
     smsRejectedTransmissiveCaster = false;
     smsUncertainNormalOrientation = false;
     if(!smsHasComposite) {
+        std::size_t k = 0;
         std::unordered_map<const CSGObject*, bool> clearTransMemo;
         for(const auto& item : items) {
+            const PrepareCensus::Entry& entry = census[k++];
             const IObject* object = item.second.first;
-            if(object->IsWorldVisible() && ObjectHasUncertainSMSNormalOrientation(*object))
+            if(!object->IsWorldVisible()) continue;
+            if(UncertainSMSNormalOrientation(*object, entry.facts))
                 smsUncertainNormalOrientation = true;
-            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object, clearTransMemo))
+            if(RejectedTransmissiveCaster(*object, entry.facts, entry.isCSG, clearTransMemo))
                 smsRejectedTransmissiveCaster = true;
-            if(object->IsWorldVisible() && object->GetGeometry()
-                && object->GetGeometry()->CanBeAreaLight() && object->GetMaterial()
-                && SMSDomainReplay::PotentialCaster(*object->GetMaterial()))
+            if(PotentialCasterLive(object->GetMaterial(), entry.facts)
+                && object->GetGeometry() && object->GetGeometry()->CanBeAreaLight())
                 smsExtendedCasters.push_back(object);
         }
     }
@@ -2737,8 +2956,13 @@ void ObjectManager::PrepareForRendering() const
         unsigned int n[5] = { 0, 0, 0, 0, 0 };
         std::string first[5];
         std::string key;
+        std::size_t k = 0;
         for(const auto& item : items) {
+            const PrepareCensus::Entry& entry = census[k++];
             if(!item.second.first->IsWorldVisible()) continue;
+            // A non-CSG object whose material is not clear-transmissive is
+            // kind 0 by ObjectUncertifiedOpenTransmissiveMesh's first test.
+            if(!entry.isCSG && !entry.facts.clearTransmissive) continue;
             const int kind = ObjectUncertifiedOpenTransmissiveMesh(*item.second.first);
             if(kind == 0) continue;
             if(first[kind].empty()) first[kind] = item.first.c_str();

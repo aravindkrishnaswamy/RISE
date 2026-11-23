@@ -1362,6 +1362,26 @@ static void RunAdoptionPolishScanTest()
 		       "only TWO OR MORE param lines disarm the note (review-round P2-2)" );
 	}
 	{
+		// An `osl_` builtin's integer-literal slots (dims, fractal type,
+		// normalize) refuse a param, so they must not count toward the
+		// gate.  This body has six distinct literals counting those slots
+		// (5 0 3 1 2 0.5) and five without them (5 0 2 0.5 1): it would fire
+		// at kParamErosionLiteralGate == 6 only if the slots counted.
+		const std::string docOsl =
+			"RISE ASCII SCENE 7\n"
+			"expression_painter\n{\n\tname pnt_osl_noise\n"
+			"\texpr osl_noise_texture(P*5, 0, 3, 1, 2, 0.5, 2, 0, 1, 0, 1)\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docOsl ), "DESIGN_PARAM_METADATA_EROSION" ),
+		       "ITEM 1: an osl_ call's integer-literal slots are not counted as promotable literals" );
+		// The same literals outside a literal slot still count.
+		const std::string docOslOuter =
+			"RISE ASCII SCENE 7\n"
+			"expression_painter\n{\n\tname pnt_osl_noise\n"
+			"\texpr osl_noise_texture(P*5, 0, 3, 1, 2, 0.5, 2, 0, 1, 0, 1) * 7 + 8\n}\n";
+		Check( hasCode( AgentSession::ValidateText( docOslOuter ), "DESIGN_PARAM_METADATA_EROSION" ),
+		       "ITEM 1: literals outside an osl_ literal slot still count (5 0 2 0.5 1 7 8 reaches the gate)" );
+	}
+	{
 		// Bounded-list formatting: more than 3 eroded chunks lists 3 +
 		// "and N more".
 		std::string docManyEroded = "RISE ASCII SCENE 7\n";

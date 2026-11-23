@@ -1030,6 +1030,14 @@ namespace RISE
 		//!                  the historical constant `(1-max(F0))` split or diffuse
 		//!                  recycling; multiscatter uses the closed-form Schlick
 		//!                  hemispherical average.
+		//!   "thinfilm"   — air / oxide-film / metal thin-film interference; ior
+		//!                  and ext are the substrate n,k; film_ior and
+		//!                  film_thickness are required.
+		//!   "constant"   — `specular` at every angle, no Fresnel term (Cycles'
+		//!                  Glossy BSDF); ior and ext are unused; multiscatter
+		//!                  uses `specular` as the per-bounce reflectance, and the
+		//!                  diffuse lobe is attenuated by (1 - specular) on entry
+		//!                  and on exit.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddGGXMaterial(
 			const char* name,											///< [in] Name of the material
@@ -1037,9 +1045,9 @@ namespace RISE
 			const char* specular,										///< [in] Specular reflectance / F0
 			const char* alphaX,											///< [in] Roughness in tangent u direction
 			const char* alphaY,											///< [in] Roughness in tangent v direction
-			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode; SUBSTRATE n in thinfilm mode)
-			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode; SUBSTRATE k in thinfilm mode)
-			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", or "thinfilm"
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 and constant modes; SUBSTRATE n in thinfilm mode)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 and constant modes; SUBSTRATE k in thinfilm mode)
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", "thinfilm", or "constant" (rs at every angle, no Fresnel term)
 			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy: tangent-frame rotation painter (radians) or scalar string.  "none" = no rotation (default; bit-identical to pre-L8).  When set, the GGX BSDF samples the painter at each shading point and rotates the (u, v) basis around w by the painter-evaluated angle before applying αx / αy.
 			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; eFresnelThinFilmConductor only.  "none" = no film painter.  REQUIRED in thinfilm mode.
 			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; eFresnelThinFilmConductor only.  "none" = transparent film (k = 0).
@@ -1058,11 +1066,11 @@ namespace RISE
 			const char* specular,										///< [in] Specular reflectance / F0
 			const char* alphaX,											///< [in] Roughness in tangent u direction
 			const char* alphaY,											///< [in] Roughness in tangent v direction
-			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode)
-			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 and constant modes)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 and constant modes)
 			const char* emissive,										///< [in] Optional emissive painter; "none" / NULL = no emitter
 			const double emissive_scale,								///< [in] Multiplier on emissive radiance
-			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", or "thinfilm"
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", "thinfilm", or "constant" (rs at every angle, no Fresnel term)
 			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy.  See AddGGXMaterial.
 			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; thinfilm mode only.  See AddGGXMaterial.
 			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; thinfilm mode only.  See AddGGXMaterial.
@@ -4866,6 +4874,22 @@ namespace RISE
 			(void)channel_reaction;(void)channel_chem_ch;(void)channel_chem_c2;
 			(void)channel_chem_co2;(void)channel_velocity;(void)chem_model_none;
 			return AddFireMedium(name,sequence_manifest);
+		}
+
+		//! Adds an Oren-Nayar material with an explicit model: "classic"
+		//! (what AddOrenNayarMaterial makes) or "energy_preserving" (EON;
+		//! `roughness` in [0, 1]).  The default forwards "classic" (or an
+		//! empty model) to AddOrenNayarMaterial and refuses anything else.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddOrenNayarMaterialModel(
+			const char* name, const char* reflectance,
+			const char* roughness, const char* model )
+		{
+			const std::string m = model ? model : "";
+			if( m.empty() || m == "classic" ) {
+				return AddOrenNayarMaterial( name, reflectance, roughness );
+			}
+			return false;
 		}
 
 	};

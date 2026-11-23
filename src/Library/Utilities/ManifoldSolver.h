@@ -221,6 +221,12 @@ namespace RISE
             // Static potential, not a sampled zero-lobe classification. A
             // supported patch must retain proposal mass even if probes miss it.
             static bool PotentialCaster(const IMaterial&);
+            // PotentialCaster's exact-type gate alone (fixed for the life of
+            // the material object).  PotentialCaster(m) is
+            // PotentialCasterKind(m) == Reflector, or a Dielectric / Refractor
+            // / Polished kind whose index painter IsPositionIndependent().
+            enum CasterKind { NotCaster = 0, Reflector, Dielectric, Refractor, Polished };
+            static CasterKind PotentialCasterKind(const IMaterial&);
             // Neutral refusal for unrecognized providers, composites and spatial IOR.
             static bool Query(const IMaterial&, const RayIntersectionGeometric&,
                               const IORStack&, SMSQueryDomain, SMSNativeMaterialQuery&);

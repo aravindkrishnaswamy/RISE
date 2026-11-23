@@ -3867,6 +3867,20 @@ int main() {
 	printf("\t\tconst Scalar denom = 1.0 - F_avg * (1.0 - Eavg);\n");
 	printf("\t\tif( denom < 1e-10 ) return 0.0;\n");
 	printf("\t\treturn F_avg * F_avg * Eavg / denom;\n");
+	printf("\t}\n\n");
+
+	printf("\t/// RGB overload: the Scalar guard per channel.  The generic form only\n");
+	printf("\t/// checks the largest channel's denominator, so one channel with\n");
+	printf("\t/// F_avg above 1/(1 - E_avg) (a colour authored well above 1) returned\n");
+	printf("\t/// a negative F_ms while another channel's positive denominator kept the\n");
+	printf("\t/// guard from firing.  Every caller (GGX, Cook-Torrance, coated) gets the\n");
+	printf("\t/// same value as before whenever each channel's F_avg is at most 1.\n");
+	printf("\ttemplate<>\n");
+	printf("\tinline RISEPel ComputeFms<RISEPel>( const RISEPel& F_avg, const Scalar Eavg )\n");
+	printf("\t{\n");
+	printf("\t\treturn RISEPel( ComputeFms<Scalar>( F_avg[0], Eavg ),\n");
+	printf("\t\t                ComputeFms<Scalar>( F_avg[1], Eavg ),\n");
+	printf("\t\t                ComputeFms<Scalar>( F_avg[2], Eavg ) );\n");
 	printf("\t}\n");
 
 	printf("}\n}\n\n");

@@ -30020,6 +30020,20 @@ namespace MicrofacetEnergyLUT
 		if( denom < 1e-10 ) return 0.0;
 		return F_avg * F_avg * Eavg / denom;
 	}
+
+	/// RGB overload: the Scalar guard per channel.  The generic form only
+	/// checks the largest channel's denominator, so one channel with
+	/// F_avg above 1/(1 - E_avg) (a colour authored well above 1) returned
+	/// a negative F_ms while another channel's positive denominator kept the
+	/// guard from firing.  Every caller (GGX, Cook-Torrance, coated) gets the
+	/// same value as before whenever each channel's F_avg is at most 1.
+	template<>
+	inline RISEPel ComputeFms<RISEPel>( const RISEPel& F_avg, const Scalar Eavg )
+	{
+		return RISEPel( ComputeFms<Scalar>( F_avg[0], Eavg ),
+		                ComputeFms<Scalar>( F_avg[1], Eavg ),
+		                ComputeFms<Scalar>( F_avg[2], Eavg ) );
+	}
 }
 }
 
