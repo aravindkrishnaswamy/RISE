@@ -699,7 +699,9 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	out.capabilities.deterministic=!fast_;
 	out.capabilities.resumable=true;
 	out.capabilities.externalMacroStep=false;
-	out.capabilities.fidelityModes={"certified","fast"};
+	out.capabilities.modes={"certified","fast"};
+	out.capabilities.earnableFidelity={"preview"};
+	out.capabilities.fidelityLimit="no computed, digest-bound validation case exists for a fire configuration yet";
 	// The sealed fire sequences are preview_only; no computed, digest-bound
 	// validation case exists for a fire configuration yet.
 	out.evidence.fidelity="preview";
@@ -929,7 +931,8 @@ bool FireSolver::Advance(const AdvanceRequest& request,IFrameSink& sink,IPortExc
 	result=AdvanceResult();
 	if (phase_==Phase::Finished) { result.status=AdvanceResult::Status::Finished; result.position=PositionLocked(); return true; }
 	if (phase_!=Phase::Ready && phase_!=Phase::Parked) return Fail(error,"Advance needs Start or Restore (or follows a failure)");
-	stop_.store(false);
+	// RequestStop is sticky: a request made between calls stops this one; it
+	// is cleared only where an Advance returns Stopped (below).
 	auto failed=[&](const std::string& message) { phase_=Phase::Failed; return Fail(error,message); };
 	if (phase_==Phase::Ready) {
 		phase_=Phase::Running;
@@ -959,6 +962,7 @@ bool FireSolver::Advance(const AdvanceRequest& request,IFrameSink& sink,IPortExc
 		}
 		if (phase_==Phase::Parked) {
 			if (!parkedFrame_) {
+				stop_.store(false); // the stop request is consumed here
 				result.status=AdvanceResult::Status::Stopped;
 				result.position=PositionLocked();
 				return true;

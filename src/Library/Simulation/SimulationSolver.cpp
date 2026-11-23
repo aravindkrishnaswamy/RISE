@@ -52,9 +52,27 @@ std::string EvidenceDigest(const std::string& id,const V& configuration,double e
 	return RISECBOR64::SHA256Hex(encoded);
 }
 
+std::string ScopedEvidenceDigest(const std::string& caseDigest,const EvidenceConditions& conditions,
+	const std::string& scope)
+{
+	if (conditions.empty() && scope.empty()) return caseDigest;
+	V::Members map;
+	for (const auto& c : conditions) {
+		V::Values values;
+		for (const auto& v : c.second) values.push_back(V::String(v));
+		map.emplace_back(c.first,V::ArrayValue(values));
+	}
+	Bytes encoded;
+	if (!DigestValid(caseDigest) || !ValidEvidenceConditions(conditions) ||
+		!RISECBOR64::Encode(V::ArrayValue({V::String("rise.simulation.evidence.scope.v1"),V::String(caseDigest),
+			V::MapValue(map),V::String(scope)}),encoded,nullptr)) return std::string();
+	return RISECBOR64::SHA256Hex(encoded);
+}
+
 std::string EffectiveFidelity(const Evidence& evidence)
 {
-	if (evidence.fidelity!="predictive" || evidence.cases.empty()) return "preview";
+	if (evidence.fidelity!="predictive" || evidence.cases.empty() || evidence.scope.empty() ||
+		!RISECBOR64::IsUTF8NFC(evidence.scope) || !ValidEvidenceConditions(evidence.conditions)) return "preview";
 	for (const auto& c : evidence.cases)
 		if (!c.passed || !std::isfinite(c.error) || !std::isfinite(c.tolerance) || c.tolerance<0 ||
 			!(c.error<=c.tolerance) || !DigestValid(c.digest) || c.id.empty()) return "preview";
@@ -67,7 +85,8 @@ bool ValidSideOutputName(const std::string& name)
 		return false;
 	// Cache-owned and worker-owned names (SimulationCache.cpp, SimulationWorker.cpp).
 	if (name=="manifest.cbor" || name=="writer.lock" || name.rfind("rise-sim.",0)==0) return false;
-	return name.size()<6 || name.compare(name.size()-6,6,".frame")!=0;
+	return (name.size()<6 || name.compare(name.size()-6,6,".frame")!=0) &&
+		(name.size()<7 || name.compare(name.size()-7,7,".static")!=0);
 }
 
 bool PortsCompatible(const PortDeclaration& offer,const PortDeclaration& accept,std::string& error)
@@ -77,7 +96,57 @@ bool PortsCompatible(const PortDeclaration& offer,const PortDeclaration& accept,
 	if (offer.quantity!=accept.quantity || offer.units!=accept.units)
 		return Fail(error,"port quantities or units differ: "+offer.quantity+" ["+offer.units+"] vs "+
 			accept.quantity+" ["+accept.units+"]");
+	if (offer.channels.size()!=accept.channels.size())
+		return Fail(error,"port channel lists differ (a port adapter must convert them)");
+	for (std::size_t i=0;i<offer.channels.size();++i) {
+		const auto& a=offer.channels[i];
+		const auto& b=accept.channels[i];
+		if (a.name!=b.name || a.quantity!=b.quantity || a.units!=b.units || a.components!=b.components)
+			return Fail(error,"port channel "+a.name+" ["+a.units+"] differs from "+b.name+" ["+b.units+"]");
+	}
+	if (!offer.domain.empty() && !accept.domain.empty() && offer.domain!=accept.domain)
+		return Fail(error,"port domains differ (a port adapter must resample)");
 	return true;
+}
+
+bool ISceneInputs::SampleTransform(const std::string& name,double,RigidTransform&,std::string& error) const
+{
+	return Fail(error,"no transform input named "+name);
+}
+
+bool ISceneInputs::ResolveStatic(const std::string& digest,std::size_t,std::shared_ptr<const Bytes>&,std::string& error) const
+{
+	return Fail(error,"no static payload "+digest+" among the scene inputs");
+}
+
+const ISceneInputs& EmptySceneInputs()
+{
+	static const NoSceneInputs empty;
+	return empty;
+}
+
+bool IFrameSink::PublishStatic(const std::string&,std::shared_ptr<const Bytes>,std::string&,std::string& error)
+{
+	return Fail(error,"this frame sink does not take static payloads");
+}
+
+bool IPortExchange::OfferStatic(const std::string&,std::shared_ptr<const Bytes>,std::string&)
+{
+	return true;
+}
+
+PortStatus IPortExchange::ResolveStatic(const std::string& digest,std::size_t,std::shared_ptr<const Bytes>&,
+	std::string& error)
+{
+	error="static payload not offered: "+digest;
+	return PortStatus::Unavailable;
+}
+
+StaticPayloadResolver IPortExchange::Resolver()
+{
+	return [this](const std::string& digest,std::size_t budget,std::shared_ptr<const Bytes>& bytes,std::string& error) {
+		return ResolveStatic(digest,budget,bytes,error)==PortStatus::Ready;
+	};
 }
 
 bool NoSceneInputs::Identity(const std::string& name,std::string&,std::string& error) const
@@ -143,6 +212,27 @@ bool PortRelay::Offer(const std::string& port,double time,std::shared_ptr<const 
 	return true;
 }
 
+bool PortRelay::OfferStatic(const std::string&,std::shared_ptr<const Bytes> payload,std::string& error)
+{
+	if (!payload) return Fail(error,"invalid static payload offer");
+	const auto digest=RISECBOR64::SHA256Hex(*payload);
+	for (const auto& s : statics_) if (s.first==digest) return true;
+	statics_.emplace_back(digest,std::move(payload));
+	return true;
+}
+
+PortStatus PortRelay::ResolveStatic(const std::string& digest,std::size_t budget,std::shared_ptr<const Bytes>& payload,
+	std::string& error)
+{
+	for (const auto& s : statics_) if (s.first==digest) {
+		if (s.second->size()>budget) { error="static payload exceeds the budget"; return PortStatus::Failed; }
+		payload=s.second;
+		return PortStatus::Ready;
+	}
+	error="static payload not offered: "+digest;
+	return PortStatus::Unavailable;
+}
+
 PortStatus PortRelay::Accept(const std::string& port,double time,std::shared_ptr<const Bytes>& encoded,std::string& error)
 {
 	std::string source=port;
@@ -171,6 +261,15 @@ void CachedPortFeed::Bind(const std::string& accepted,const std::string& output)
 bool CachedPortFeed::Offer(const std::string&,double,std::shared_ptr<const Bytes>,std::string&)
 {
 	return true;
+}
+
+PortStatus CachedPortFeed::ResolveStatic(const std::string& digest,std::size_t budget,
+	std::shared_ptr<const Bytes>& payload,std::string& error)
+{
+	if (!snapshot_) { error="no snapshot"; return PortStatus::Unbound; }
+	const auto status=snapshot_->ReadStatic(digest,std::min(budget,budget_),payload,error);
+	if (status==FrameStatus::Ready) return PortStatus::Ready;
+	return status==FrameStatus::Unavailable ? PortStatus::Unavailable : PortStatus::Failed;
 }
 
 PortStatus CachedPortFeed::Accept(const std::string& port,double time,std::shared_ptr<const Bytes>& encoded,

@@ -35,6 +35,8 @@
 #include "pch.h"
 #include "SceneEditController.h"
 #include "../Geometry/SimulatedMeshGeometry.h"   // SceneBindsSimulatedMesh (simulation M3b)
+#include "LiveSimulation.h"                       // simulation M3c: playback clock, live simulations
+#include "../Simulation/SimulationTimeline.h"
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
 #include <map>                            // source-traceability reverse: cached keyword -> Category map
@@ -91,6 +93,9 @@
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/MediaPathLocator.h"
+#include <cmath>          // simulation M3c
+#include <filesystem>     // simulation M3c: live recording path
+#include <limits>         // simulation M3c
 #include <algorithm>      // Model-B F2 slice S2a: std::min for WaitForRenderJob's bounded wait_until slices
 #include <chrono>
 #include <cstdio>
@@ -431,6 +436,39 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 	// one-time-per-thread initialization a submitted `fn` might rely on
 	// runs exactly once for the life of this controller.
 	mAgentRenderThread = std::thread( &SceneEditController::AgentRenderWorkerLoop_, this );
+
+	// Simulation M3c: the playback clock (its thread starts on first Play).
+	// Each displayed frame goes through the ordinary scrub path.
+	Implementation::PlaybackClock::Hooks hooks;
+	hooks.begin = [this]() { return OnTimeScrubBegin(); };
+	hooks.apply = [this]( double t ) { return OnTimeScrub( t ); };
+	hooks.end = [this]() { OnTimeScrubEnd(); };
+	hooks.completedPasses = [this]() { return mCompletedPasses.load( std::memory_order_acquire ); };
+	hooks.liveLimit = [this]( double& limit, bool& finished ) {
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		bool any = false;
+		finished = true;
+		for( const auto& live : mLiveSims ) {
+			double t = 0;
+			bool done = false;
+			if( !live->Latest( t, done ) ) continue;
+			limit = any ? std::min( limit, t ) : t;
+			finished = finished && done;
+			any = true;
+		}
+		return any;
+	};
+	hooks.livePlay = [this]( bool play ) {
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		for( const auto& live : mLiveSims ) {
+			std::string error;
+			if( !play ) live->Pause();
+			else if( !live->Play( error ) )
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditController: live simulation `%s` did not play: %s",
+					live->GeometryName().c_str(), error.c_str() );
+		}
+	};
+	mPlayback.reset( new Implementation::PlaybackClock( std::move( hooks ) ) );
 }
 
 // Re-point the editor at the Job's CURRENT scene + managers.  Called at construction AND after every whole-scene
@@ -1573,6 +1611,10 @@ void SceneEditController::Stop()
 		// Destroy consumes it; public Stop is already complete and stays a no-op.
 		return;
 	}
+	// Simulation M3c: stop the playback clock and every live simulation
+	// (solver threads joined, baked caches rebound) while the render loop
+	// can still park.
+	ShutdownSimulation_();
 	// Close direct caller registration before any terminal teardown. A
 	// caller that entered earlier is already counted even if it is still
 	// waiting for render admission; a caller arriving later refuses before
@@ -3122,6 +3164,11 @@ void SceneEditController::OnPointerUp( const Point2& px )
 
 bool SceneEditController::OnTimeScrubBegin()
 {
+	// Simulation M3c: a scrub that is not the playback clock's own (the user
+	// grabbing the timeline, or a shell's own play loop) stops playback
+	// first, closing its composite.  Before any lock: Pause waits for the
+	// clock's frame in flight.
+	if( mPlayback && mPlayback->Playing() && !mPlayback->OnClockThread() ) mPlayback->Pause();
 	// P1: close any composite a PRIOR scrub left open (a missing OnTimeScrubEnd or a
 	// repeated Begin) before opening a new one -- otherwise scrubs NEST and one stays
 	// open forever (permanent IsCompositeOpen block + the open group defeats history
@@ -3150,6 +3197,12 @@ bool SceneEditController::OnTimeScrubBegin()
 bool SceneEditController::OnTimeScrub( Scalar t )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;  // render-owns-scene guard
+	// Simulation M3c: with a live simulation attached, time cannot pass its
+	// latest published frame (clamped; LastSceneTime reports the result).
+	// Held to the end, so a live restart cannot rebind between the clamp and
+	// the install below (lock order: mLiveMutex before admission and mMutex).
+	std::unique_lock<std::mutex> liveLk( mLiveMutex );
+	t = ClampToLiveFrames_( t );
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	// Check before mMutex so a queued or running coordinated render never
 	// turns a UI scrub callback into a render-duration wait.  Holding the
@@ -3230,6 +3283,16 @@ bool SceneEditController::OnTimeScrub( Scalar t )
 	edit.op = SceneEdit::SetSceneTime;
 	edit.s  = t;
 	const bool ok = mEditor.Apply( edit );
+	if( ok ) {
+		// Simulation M3c: install each simulated mesh's frame for this time
+		// here, under the park (no reader is running).  The pass's own
+		// prepared-render install then finds it in place (a no-op).
+		unsigned int meshes = 0;
+		std::string installError;
+		if( !Implementation::InstallSimulatedMeshesAtTime( mJob, mEditor.LastSceneTime(), meshes, installError ) )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditController::OnTimeScrub: simulated mesh frame refused: %s",
+				installError.c_str() );
+	}
 	if( !ok && reopenedScrub ) {
 		mEditor.EndComposite();
 		mScrubOpenedComposite = false;
@@ -7051,8 +7114,36 @@ bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEn
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
+	return TimelineRangeLocked_( timeStart, timeEnd, numFrames );
+}
+
+bool SceneEditController::TimelineRangeLocked_( double& timeStart, double& timeEnd,
+                                                unsigned int& numFrames ) const
+{
 	bool doFields = false, invertFields = false;
-	return mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields );
+	if( !mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields ) ) return false;
+	// Simulation M3c: a scene that declares no animation but has simulation
+	// assets gets the span of their frames (time maps only; no I/O).
+	const IScene* scene = mJob.GetScene();
+	double s = 0, e = 0;
+	unsigned int n = 0;
+	if( !scene || !scene->GetAnimator() ||
+		scene->GetAnimator()->GetActiveAnimationOptions( s, e, n, doFields, invertFields ) ) return true;
+	std::vector<Simulation::TimelineRange> ranges;
+	mJob.DescribeTimeVaryingAssets( ranges, false );
+	if( ranges.empty() ) return true;
+	double start = ranges[0].start, end = ranges[0].end, interval = 0;
+	for( const Simulation::TimelineRange& r : ranges ) {
+		start = std::min( start, r.start );
+		end = std::max( end, r.end );
+		if( r.interval > 0 && ( interval == 0 || r.interval < interval ) ) interval = r.interval;
+	}
+	if( !std::isfinite( start ) || !std::isfinite( end ) || !( end > start ) || !( interval > 0 ) ) return true;
+	timeStart = start;
+	timeEnd = end;
+	const double frames = std::floor( ( end - start ) / interval + 0.5 ) + 1.0;
+	numFrames = frames > 1.0 && frames < 1e7 ? static_cast<unsigned int>( frames ) : 2u;
+	return true;
 }
 
 bool SceneEditController::GetHasAnimation( bool& hasAnimation ) const
@@ -7064,6 +7155,11 @@ bool SceneEditController::GetHasAnimation( bool& hasAnimation ) const
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
 	hasAnimation = mJob.AreThereAnyKeyframedObjects();
+	// Simulation M3c: simulation assets are time-varying content too.
+	if( !hasAnimation ) {
+		const IScene* scene = mJob.GetScene();
+		hasAnimation = scene && ( scene->HasTimeVaryingMedia() || Implementation::SceneBindsSimulatedMesh( *scene ) );
+	}
 	return true;
 }
 
@@ -12283,6 +12379,7 @@ void SceneEditController::RenderLoop()
 			// the shared token immediately afterward.
 			passWasCancelled = mCancelProgress.IsCancelRequested();
 		}
+		if( !passWasCancelled ) mCompletedPasses.fetch_add( 1, std::memory_order_acq_rel );   // simulation M3c
 		// mRendering is now false.  Shared companion callbacks may safely
 		// re-enter setters that use the ordinary cancel-and-park discipline.
 		DrainSharedDirectPublishes_();
@@ -21008,5 +21105,326 @@ void SceneEditController::DoOneRenderPass()
 		{
 			mPreviewScale.store( next, std::memory_order_release );
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Simulation M3c: playback clock, baked ranges, live simulation.  See
+// LiveSimulation.h and docs/SIMULATION_M3C_RESULTS.md for the threading model.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	bool LiveFail( std::string& error, const std::string& message )
+	{
+		error = message;
+		return false;
+	}
+}
+
+std::uint64_t SceneEditController::GetCompletedPassCount() const
+{
+	return mCompletedPasses.load( std::memory_order_acquire );
+}
+
+double SceneEditController::ClampToLiveFrames_( const double t ) const
+{
+	// The caller holds mLiveMutex.
+	bool any = false;
+	double limit = 0;
+	for( const auto& live : mLiveSims ) {
+		double latest = 0;
+		bool finished = false;
+		if( !live->Latest( latest, finished ) ) continue;
+		limit = any ? std::min( limit, latest ) : latest;
+		any = true;
+	}
+	return any && t > limit ? limit : t;
+}
+
+bool SceneEditController::ShowTimeNow_( const double t )	// PlaybackSeek
+{
+	if( mPlayback->Playing() && mPlayback->Seek( t ) ) return true;
+	if( !OnTimeScrubBegin() ) return false;
+	const bool ok = OnTimeScrub( t );
+	OnTimeScrubEnd();
+	return ok;
+}
+
+bool SceneEditController::PlaybackPlayRange( const double start, const double end, const double fps, const bool loop )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
+	double from = mEditor.LastSceneTime();
+	if( !( from >= start ) || from >= end - 0.5 / std::max( fps, 1e-3 ) ) from = start;
+	std::string error;
+	if( !mPlayback->Play( start, end, from, fps, loop, error ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::PlaybackPlay: %s", error.c_str() );
+		return false;
+	}
+	return true;
+}
+
+bool SceneEditController::PlaybackPlay( double fps, const bool loop )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
+	double start = 0, end = 0;
+	unsigned int frames = 0;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( !TimelineRangeLocked_( start, end, frames ) ) return false;
+	}
+	if( !( fps > 0 ) ) fps = frames > 1 && end > start ? double( frames - 1 ) / ( end - start ) : 30.0;
+	return PlaybackPlayRange( start, end, fps, loop );
+}
+
+bool SceneEditController::PlaybackPause()
+{
+	mPlayback->Pause();
+	return true;
+}
+
+bool SceneEditController::PlaybackSeek( const double t )
+{
+	if( !std::isfinite( t ) ) return false;
+	return ShowTimeNow_( t );
+}
+
+bool SceneEditController::GetPlaybackStatus( Implementation::PlaybackStatus& status ) const
+{
+	status = mPlayback->GetStatus();
+	return true;
+}
+
+bool SceneEditController::GetTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges ) const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+	mJob.DescribeTimeVaryingAssets( ranges, true );
+	return true;
+}
+
+bool SceneEditController::RebindParked_( Implementation::LiveSimulation& live,
+	std::unique_ptr<Simulation::MeshCacheSource>& source, const double installTime,
+	const bool force, std::string& error )
+{
+	// Cancel, park, mutate, kick -- the time-scrub protocol.  `force` (teardown
+	// and detach) parks even behind an agent render and skips the check that
+	// the scene still holds the geometry: the baked cache goes back either way.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( !force && ( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) )
+		return LiveFail( error, "a production or agent render owns the scene" );
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+	Implementation::SimulatedMeshGeometry& mesh = live.Geometry();
+	if( !force ) {
+		IGeometryManager* geometries = mJob.GetGeometries();
+		if( !geometries || geometries->GetItem( live.GeometryName().c_str() ) != &mesh )
+			return LiveFail( error, "geometry `" + live.GeometryName() + "` is no longer in the scene" );
+	}
+	if( !mesh.RebindSource( source, error ) ) return false;
+	if( std::isfinite( installTime ) ) {
+		// Move scene time with the frame in the same park, so no pass renders
+		// the new source at a time it has not published (a restart starts
+		// over at its first frame; an attach cannot show past its latest).
+		if( installTime != mEditor.LastSceneTime() ) {
+			SceneEdit edit;
+			edit.op = SceneEdit::SetSceneTime;
+			edit.s  = installTime;
+			if( mEditor.Apply( edit ) ) InvalidateAllSceneCameraNamedPanesLocked_();
+		}
+		unsigned int meshes = 0;
+		std::string installError;
+		if( !Implementation::InstallSimulatedMeshesAtTime( mJob, mEditor.LastSceneTime(), meshes, installError ) )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditController: simulated mesh frame refused after rebinding `%s`: %s",
+				live.GeometryName().c_str(), installError.c_str() );
+	}
+	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+	mEditPending.store( true, std::memory_order_release );
+	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::LiveSimulationAttach( const std::string& geometry, const std::string& solverId,
+	const std::vector<unsigned char>& parameters, std::string& error )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return LiveFail( error, "a production or agent render owns the scene" );
+	std::lock_guard<std::mutex> opLk( mLiveOpMutex );
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		for( const auto& live : mLiveSims )
+			if( live->GeometryName() == geometry ) return LiveFail( error, "`" + geometry + "` already has a live simulation" );
+	}
+	Implementation::SimulatedMeshGeometry* mesh = nullptr;
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		IGeometryManager* geometries = mJob.GetGeometries();
+		mesh = geometries ?
+			dynamic_cast<Implementation::SimulatedMeshGeometry*>( geometries->GetItem( geometry.c_str() ) ) : nullptr;
+		if( mesh ) mesh->addref();
+	}
+	if( !mesh ) return LiveFail( error, "no simulated_mesh_geometry named `" + geometry + "`" );
+	// Configure, start and step the first frame here, off every scene lock.
+	std::unique_ptr<Implementation::LiveSimulation> live =
+		Implementation::LiveSimulation::Create( geometry, *mesh, solverId, parameters, error );
+	mesh->release();
+	if( !live ) return false;
+	double latest = 0;
+	bool finished = false;
+	live->Latest( latest, finished );
+	const double now = mEditor.LastSceneTime();
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		std::unique_ptr<Simulation::MeshCacheSource> source = live->TakeBindSource();
+		if( !RebindParked_( *live, source, std::min( now, latest ), false, error ) ) return false;
+		live->KeepOriginalSource( std::move( source ) );
+		mLiveSims.push_back( std::move( live ) );
+		if( mPlayback->Playing() ) {
+			std::string playError;
+			if( !mLiveSims.back()->Play( playError ) )
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditController: live simulation `%s` did not play: %s",
+					geometry.c_str(), playError.c_str() );
+		}
+	}
+	if( now > latest && mPlayback->Playing() ) mPlayback->Seek( latest );
+	return true;
+}
+
+bool SceneEditController::LiveSimulationDetach( const std::string& geometry, std::string& error )
+{
+	std::lock_guard<std::mutex> opLk( mLiveOpMutex );
+	std::unique_ptr<Implementation::LiveSimulation> live;
+	std::unique_ptr<Simulation::MeshCacheSource> source;
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		auto it = std::find_if( mLiveSims.begin(), mLiveSims.end(),
+			[&]( const std::unique_ptr<Implementation::LiveSimulation>& l ) { return l->GeometryName() == geometry; } );
+		if( it == mLiveSims.end() ) return LiveFail( error, "`" + geometry + "` has no live simulation" );
+		( *it )->Pause();
+		std::string ignored;
+		( *it )->WaitIdle( ignored );
+		source = ( *it )->TakeOriginalSource();
+		if( !RebindParked_( **it, source, mEditor.LastSceneTime(), true, error ) ) {
+			( *it )->KeepOriginalSource( std::move( source ) );
+			return false;
+		}
+		live = std::move( *it );
+		mLiveSims.erase( it );
+	}
+	source.reset();		// the live source (its feed reads "gone" once the run is destroyed)
+	live.reset();		// joins the solver thread
+	return true;
+}
+
+bool SceneEditController::RestartLive_( const std::string& geometry, const std::vector<unsigned char>* parameters,
+	const std::string* record, std::string& error )
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) )
+		return LiveFail( error, "a production or agent render owns the scene" );
+	std::lock_guard<std::mutex> opLk( mLiveOpMutex );
+	Implementation::LiveSimulation* live = nullptr;
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		for( const auto& l : mLiveSims ) if( l->GeometryName() == geometry ) live = l.get();
+	}
+	// Sessions leave mLiveSims only under mLiveOpMutex, which this holds.
+	if( !live ) return LiveFail( error, "`" + geometry + "` has no live simulation" );
+	const bool playing = mPlayback->Playing();
+	live->Pause();
+	std::string ignored;
+	live->WaitIdle( ignored );
+	const std::filesystem::path recordPath = record ? std::filesystem::path( *record ) : std::filesystem::path();
+	const auto resume = [&]() {
+		std::string playError;
+		if( playing && !live->Play( playError ) )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditController: live simulation `%s` did not resume: %s",
+				geometry.c_str(), playError.c_str() );
+	};
+	if( !live->PrepareRestart( parameters, record ? &recordPath : nullptr, error ) ) { resume(); return false; }
+	std::unique_ptr<Simulation::MeshCacheSource> source = live->TakeBindSource();
+	const double first = Simulation::MeshFrameSceneTime( *source, source->Description().firstIndex );
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		if( !RebindParked_( *live, source, first, false, error ) ) {
+			live->AbortRestart();
+			resume();
+			return false;
+		}
+		live->CommitRestart();	// the previous run's host goes (idle: joins at once)
+	}
+	source.reset();
+	if( playing ) mPlayback->Seek( first );
+	resume();
+	return true;
+}
+
+bool SceneEditController::LiveSimulationReset( const std::string& geometry, std::string& error )
+{
+	return RestartLive_( geometry, nullptr, nullptr, error );
+}
+
+bool SceneEditController::LiveSimulationSetParameters( const std::string& geometry,
+	const std::vector<unsigned char>& parameters, std::string& error )
+{
+	return RestartLive_( geometry, &parameters, nullptr, error );
+}
+
+bool SceneEditController::LiveSimulationRecord( const std::string& geometry, const std::string& cacheDirectory,
+	std::string& error )
+{
+	if( cacheDirectory.empty() ) return LiveFail( error, "recording needs a cache directory" );
+	return RestartLive_( geometry, nullptr, &cacheDirectory, error );
+}
+
+bool SceneEditController::GetLiveSimulationStatus( const std::string& geometry,
+	Implementation::LiveSimulationStatus& status ) const
+{
+	// Non-blocking (a UI poll): a scrub holds mLiveMutex through its park.
+	std::unique_lock<std::mutex> liveLk( mLiveMutex, std::try_to_lock );
+	if( !liveLk.owns_lock() ) return false;
+	for( const auto& live : mLiveSims ) {
+		if( live->GeometryName() != geometry ) continue;
+		status = live->GetStatus();
+		return true;
+	}
+	return false;
+}
+
+unsigned int SceneEditController::LiveSimulationCount() const
+{
+	std::lock_guard<std::mutex> liveLk( mLiveMutex );
+	return static_cast<unsigned int>( mLiveSims.size() );
+}
+
+void SceneEditController::ShutdownSimulation_()
+{
+	// The clock first (its frame in flight finishes; its composite closes),
+	// then every live run: solver paused and joined, baked cache rebound
+	// under the park, host destroyed.  Nothing reads a publication after it.
+	if( mPlayback ) mPlayback->Shutdown();
+	std::lock_guard<std::mutex> opLk( mLiveOpMutex );
+	std::vector<std::unique_ptr<Implementation::LiveSimulation> > all;
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		all.swap( mLiveSims );
+	}
+	for( auto& live : all ) {
+		live->Pause();
+		std::string error;
+		live->WaitIdle( error );
+		std::unique_ptr<Simulation::MeshCacheSource> source = live->TakeOriginalSource();
+		if( source && !RebindParked_( *live, source, std::numeric_limits<double>::quiet_NaN(), true, error ) )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditController: `%s` kept its live source at shutdown: %s",
+				live->GeometryName().c_str(), error.c_str() );
+		source.reset();
+		live.reset();
 	}
 }

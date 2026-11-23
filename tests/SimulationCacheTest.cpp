@@ -4,6 +4,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <cstdlib>
 
 namespace {
 using namespace RISE::Simulation;
@@ -348,6 +349,132 @@ void RoundTrip(const fs::path& root)
 	Check(writer.Begin(root/"empty",empty,"",false,budget,error)&&writer.Seal(error),"empty authored sequence",error);
 }
 
+
+// Evidence conditions and scope round-trip through a format v2 manifest.
+void EvidenceManifest(const fs::path& root)
+{
+	std::string error;
+	auto d=Description();
+	d.evidenceConditions={{"contact",{"barrier","none"}},{"mode",{"bake"}}};
+	d.evidenceScope="what the label covers";
+	{
+		CacheWriter writer;
+		Check(writer.Begin(root/"scoped",d,"",false,budget,error) && writer.Append(-2,"fields",0,{1,2,3},error),
+			"write a scoped description",error);
+	}
+	CacheSnapshot s;
+	Check(CacheSnapshot::Open(root/"scoped",budget,s,error) && s.Description().evidenceConditions==d.evidenceConditions &&
+		s.Description().evidenceScope==d.evidenceScope && s.Statics().empty(),"conditions and scope round-trip",error);
+	{
+		CacheWriter resume;
+		Check(resume.Begin(root/"scoped",d,s.Digest(),true,budget,error),"resume compares the scoped description",error);
+	}
+	auto changed=d;
+	changed.evidenceScope="another scope";
+	CacheWriter refused;
+	Check(!refused.Begin(root/"scoped",changed,s.Digest(),true,budget,error),"a different scope is a different description");
+	auto bad=d;
+	bad.evidenceConditions={{"mode",{"bake"}},{"contact",{"none"}}};
+	Check(!ValidateCacheDescription(bad,error),"unsorted conditions refused");
+	bad.evidenceConditions={{"mode",{}}};
+	Check(!ValidateCacheDescription(bad,error),"a condition without values refused");
+}
+
+#ifndef _WIN32
+fs::perms Mode(const fs::path& p) { return fs::symlink_status(p).permissions(); }
+bool OwnerOnly(const fs::path& p)
+{
+	return (Mode(p)&(fs::perms::group_all|fs::perms::others_all))==fs::perms::none;
+}
+
+// Location policy: group/world-writable ancestors refused unless below a
+// trusted root; created directories owner-only; symlinks cannot redirect.
+void LocationPolicy(const fs::path& root)
+{
+	std::string error;
+	const auto base=root/"location";
+	fs::create_directories(base);
+	fs::permissions(base,fs::perms::owner_all,fs::perm_options::replace);
+	auto d=Description(); d.fidelity="preview"; d.evidence.clear();
+	const auto shared=base/"shared";
+	fs::create_directory(shared);
+	fs::permissions(shared,fs::perms::owner_all|fs::perms::group_all|fs::perms::others_read|fs::perms::others_exec,
+		fs::perm_options::replace);
+	::unsetenv(TrustedCacheRootsEnvironment);
+	ClearTrustedCacheRoots();
+	{
+		CacheWriter w;
+		Check(w.Begin(base/"a"/"b"/"cache",d,"",false,budget,error),"a private chain is accepted",error);
+		Check(OwnerOnly(base/"a") && OwnerOnly(base/"a"/"b") && OwnerOnly(base/"a"/"b"/"cache"),
+			"every directory the writer creates is owner-only");
+	}
+	{
+		CacheWriter w;
+		Check(!w.Begin(shared/"c",d,"",false,budget,error) && error.find("ancestor")!=std::string::npos &&
+			!fs::exists(shared/"c"),"a group-writable ancestor is refused before anything is created",error);
+		Check(!CheckCacheLocation(shared/"c",false,error),"CheckCacheLocation reports the refusal");
+	}
+	fs::create_directory(base/"loose");
+	fs::permissions(base/"loose",fs::perms::owner_all|fs::perms::group_all,fs::perm_options::replace);
+	{
+		CacheWriter w;
+		Check(!w.Begin(base/"loose",d,"",false,budget,error),"a group-writable cache directory is refused");
+	}
+	// Trusted root from the environment: the check stops at the root.
+	::setenv(TrustedCacheRootsEnvironment,("relative/ignored:"+shared.string()+":/no/such/dir").c_str(),1);
+	Check(TrustedCacheRoots().size()==1,"only existing absolute entries are trusted");
+	{
+		CacheWriter w;
+		Check(w.Begin(shared/"c",d,"",false,budget,error) && OwnerOnly(shared/"c"),
+			"below a trusted root the cache is accepted and created owner-only",error);
+	}
+	fs::create_directory(shared/"inner");
+	fs::permissions(shared/"inner",fs::perms::owner_all|fs::perms::group_all,fs::perm_options::replace);
+	{
+		CacheWriter w;
+		Check(!w.Begin(shared/"inner"/"c",d,"",false,budget,error),"a group-writable directory below the trusted root is still refused");
+		CacheWriter self;
+		Check(!self.Begin(shared,d,"",false,budget,error),"the trusted root itself is not an owner-only cache directory");
+	}
+	// Symlinks cannot redirect a trusted location.
+	fs::create_directory(base/"private");
+	fs::permissions(base/"private",fs::perms::owner_all,fs::perm_options::replace);
+	fs::create_directory_symlink(base/"private",shared/"link");
+	{
+		CacheWriter w;
+		Check(!w.Begin(shared/"link",d,"",false,budget,error),"a cache directory that is a symlink is refused");
+	}
+	const auto outside=base/"outside";
+	fs::create_directory(outside);
+	fs::permissions(outside,fs::perms::owner_all|fs::perms::group_all,fs::perm_options::replace);
+	fs::create_directory_symlink(outside,shared/"out");
+	{
+		CacheWriter w;
+		Check(!w.Begin(shared/"out"/"c",d,"",false,budget,error) && !fs::exists(outside/"c"),
+			"a symlink inside the trusted root to an untrusted directory is checked at its target and refused",error);
+	}
+	fs::create_directory_symlink(shared,base/"via");
+	::setenv(TrustedCacheRootsEnvironment,base.string().c_str(),1);
+	{
+		CacheWriter w;
+		Check(!w.Begin(base/"via"/"d",d,"",false,budget,error),
+			"trusting a parent does not trust a group-writable directory below it (reached through a symlink)",error);
+	}
+	// The API, the same rules.
+	::unsetenv(TrustedCacheRootsEnvironment);
+	Check(!AddTrustedCacheRoot("relative/root",error),"a relative trusted root is refused");
+	Check(AddTrustedCacheRoot(shared,error) && TrustedCacheRoots().size()==1,"trust a root through the API",error);
+	{
+		CacheWriter w;
+		Check(w.Begin(shared/"api",d,"",false,budget,error) && OwnerOnly(shared/"api"),"the API root is honoured",error);
+	}
+	ClearTrustedCacheRoots();
+	{
+		CacheWriter w;
+		Check(!w.Begin(shared/"api2",d,"",false,budget,error),"clearing the API roots restores the refusal");
+	}
+}
+#endif
 } // namespace
 
 int main()
@@ -369,6 +496,10 @@ int main()
 		}
 #endif
 		RoundTrip(root);
+		EvidenceManifest(root);
+#ifndef _WIN32
+		LocationPolicy(root);
+#endif
 		LimitsAndAdmission(root);
 		ConcurrentDemand(root);
 #ifndef _WIN32

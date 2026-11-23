@@ -9,7 +9,8 @@
 # Bulk outputs stay outside git:
 #   cache    ~/.cache/rise/simulation-m3b/cloth_drape   (private, mode 700: the cache
 #            writer refuses a directory with group-writable ancestors, such as a
-#            shared volume, so the bake cannot live under the checkout on /Volumes/SSD)
+#            shared volume, unless RISE_SIMULATION_TRUSTED_ROOTS names a root above it;
+#            docs/SIMULATION_SOLVER_CONTRACT.md "Cache location policy")
 #   renders  rendered/simulation_m3b/                   (gitignored)
 # A finished bake is reused; an interrupted one is resumed.  REBAKE=1 bakes afresh
 # (rise-sim --force).  Builds needed: bin/rise and bin/tools/rise_sim.

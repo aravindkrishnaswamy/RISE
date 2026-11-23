@@ -339,7 +339,16 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationField.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationTimeline.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\BuiltinSolvers.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationSolver.cpp">
@@ -994,6 +1003,9 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditController.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\LiveSimulation.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.cpp">
@@ -1704,7 +1716,16 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationMesh.h">
       <Filter>Simulation</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationField.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTimeline.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\BuiltinSolvers.h">
       <Filter>Simulation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationSolver.h">
@@ -2680,6 +2701,9 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditController.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\LiveSimulation.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.h">

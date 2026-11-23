@@ -223,9 +223,27 @@ const char* LinearSolverName(LinearSolver s)
 	return "mg_pcg";
 }
 
+namespace {
+// The track's map from time t0 to time t1: x -> R1 R0^T (x - c0) + c1.
+V3 TrackMap(const TransformTrack& track, const V3& x, double t0, double t1)
+{
+	double r0[9], c0[3], r1[9], c1[3];
+	track.At(t0, r0, c0);
+	track.At(t1, r1, c1);
+	const double d[3] = {x[0] - c0[0], x[1] - c0[1], x[2] - c0[2]};
+	double local[3];
+	for (int i = 0; i < 3; ++i) local[i] = r0[i]*d[0] + r0[3 + i]*d[1] + r0[6 + i]*d[2]; // R0^T d
+	V3 out;
+	for (int i = 0; i < 3; ++i) out[i] = r1[3*i]*local[0] + r1[3*i + 1]*local[1] + r1[3*i + 2]*local[2] + c1[i];
+	return out;
+}
+constexpr double TrackDifference = 1e-6; // s, half the central-difference span
+}
+
 V3 Motion::Position(const V3& rest, double t) const
 {
 	switch (type) {
+	case Type::Track: return track ? TrackMap(*track, rest, 0.0, t) : rest;
 	case Type::Fixed: return rest;
 	case Type::Translate: return Add(rest, Mul(vector, t));
 	case Type::Oscillate: return Add(rest, Mul(vector, std::sin(2*Pi*frequency*t)));
@@ -242,6 +260,11 @@ V3 Motion::Position(const V3& rest, double t) const
 V3 Motion::Velocity(const V3& rest, double t) const
 {
 	switch (type) {
+	case Type::Track: {
+		if (!track) return {{0, 0, 0}};
+		const V3 a = TrackMap(*track, rest, 0.0, t - TrackDifference), b = TrackMap(*track, rest, 0.0, t + TrackDifference);
+		return Mul(Sub(b, a), 1/(2*TrackDifference));
+	}
 	case Type::Fixed: return {{0, 0, 0}};
 	case Type::Translate: return vector;
 	case Type::Oscillate: return Mul(vector, 2*Pi*frequency*std::cos(2*Pi*frequency*t));
@@ -256,6 +279,7 @@ V3 Motion::Velocity(const V3& rest, double t) const
 V3 Motion::Advance(const V3& x, double t0, double t1) const
 {
 	switch (type) {
+	case Type::Track: return track ? TrackMap(*track, x, t0, t1) : x;
 	case Type::Fixed: return x;
 	case Type::Translate: return Add(x, Mul(vector, t1 - t0));
 	case Type::Oscillate:

@@ -4950,6 +4950,99 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_GetHasAnimation(
 		SceneEditController* p, bool* outHasAnimation );
 
+	// ---- Simulation M3c: viewport playback, baked ranges, live simulation ----
+	// (docs/SIMULATION_M3C_RESULTS.md).  GetHasAnimation above also reports
+	// true for scenes whose only time-varying content is simulation assets
+	// (simulated meshes, fire media); GetAnimationOptions then takes the range
+	// from their caches' time maps when the scene declares no animation.  All
+	// of these return false on a null controller; string outputs are
+	// NUL-terminated and truncated to the buffer; every out pointer may be null.
+
+	//! Registers the solvers shipped in the library (cloth.shell, and
+	//! fire.methane, which is not interactive) with the process-wide solver
+	//! registry.  Idempotent; call once before LiveSimulationAttach.
+	bool RISE_API_RegisterBuiltinSolvers( char* errorBuf, unsigned int errorBufLen );
+
+	//! Time-varying assets (for drawing baked ranges).  The count and each
+	//! index read a fresh snapshot: re-read the count when an index fails.
+	//! `outKind`: 0 simulated mesh, 1 fire medium.  `outState`: 0 complete,
+	//! 1 partial, 2 baking (a writer holds the cache), 3 live (in memory).
+	//! `outPredictive`: the cache's fidelity label is predictive.  Times are
+	//! scene seconds: first and last frame of the cache's support, and the end
+	//! of the run of frames present from the first (`outAvailableEnd`).
+	//! Non-blocking like GetAnimationOptions (false while contended).
+	bool RISE_API_SceneEditController_GetTimeVaryingAssetCount(
+		SceneEditController* p, unsigned int* outCount );
+	bool RISE_API_SceneEditController_GetTimeVaryingAsset(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen,
+		int* outKind, int* outState, bool* outPredictive,
+		double* outStart, double* outEnd, double* outAvailableEnd, double* outInterval,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal );
+
+	//! Library playback clock: plays scene time through the time-scrub path on
+	//! a controller thread at `fps` frames per wall-clock second (<= 0: the
+	//! timeline's frame spacing), over the timeline range (PlaybackPlayRange:
+	//! the given one), from the current scene time.  Coalesces frames when the
+	//! viewport renders slower than the clock (counted as dropped).  Starts
+	//! attached live simulations and never runs ahead of their latest frame.
+	//! A shell's own OnTimeScrubBegin (a manual scrub) pauses it.
+	bool RISE_API_SceneEditController_PlaybackPlay( SceneEditController* p, double fps, bool loop );
+	bool RISE_API_SceneEditController_PlaybackPlayRange(
+		SceneEditController* p, double timeStart, double timeEnd, double fps, bool loop );
+	bool RISE_API_SceneEditController_PlaybackPause( SceneEditController* p );
+	//! While playing, moves the clock; while paused, one scrub.  Clamped to the
+	//! latest live frame when a live simulation is attached.
+	bool RISE_API_SceneEditController_PlaybackSeek( SceneEditController* p, double t );
+	bool RISE_API_SceneEditController_GetPlaybackStatus(
+		SceneEditController* p, bool* outPlaying, bool* outLive, bool* outWaitingForSolver,
+		double* outTime, double* outTimeStart, double* outTimeEnd, double* outFps,
+		unsigned long long* outFramesShown, unsigned long long* outFramesDropped,
+		unsigned long long* outSolverWaits, unsigned long long* outPassesCompleted,
+		double* outWallSeconds );
+
+	//! Attach an in-process simulation to the simulated_mesh_geometry
+	//! `geometryName`: a registered interactive solver and its parameters
+	//! (`parameters`: a JSON object or canonical CBOR map, `parametersLen`
+	//! bytes).  Blocks while the solver configures and publishes its first
+	//! frame (up to about a second for cloth.shell's evidence on first use).
+	//! The published topology must equal the bound mesh's.  PlaybackPlay then
+	//! steps it; scrubbing backwards reads published frames, scrubbing past
+	//! the latest one clamps to it (read LastSceneTime).  API-only: the
+	//! scene-file binding is M4.
+	bool RISE_API_SceneEditController_LiveSimulationAttach(
+		SceneEditController* p, const char* geometryName, const char* solverId,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! Stops and joins the solver and rebinds the baked cache.
+	bool RISE_API_SceneEditController_LiveSimulationDetach(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen );
+	//! Restart from the initial state (published frames dropped), showing frame 0.
+	bool RISE_API_SceneEditController_LiveSimulationReset(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen );
+	//! New parameters (a new cache key); restarts.
+	bool RISE_API_SceneEditController_LiveSimulationSetParameters(
+		SceneEditController* p, const char* geometryName,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! Restart while also recording every frame to a new epoch of the disk
+	//! cache at `cacheDirectory` (sealed when the run finishes; the writer
+	//! refuses a directory with group-writable ancestors).
+	bool RISE_API_SceneEditController_LiveSimulationRecord(
+		SceneEditController* p, const char* geometryName, const char* cacheDirectory,
+		char* errorBuf, unsigned int errorBufLen );
+	//! False when `geometryName` has no live simulation, or while a scrub holds
+	//! the live state (non-blocking: keep the last value and poll again).
+	//! `outLatestFrame`: the last frame of the run published from the first.
+	bool RISE_API_SceneEditController_GetLiveSimulationStatus(
+		SceneEditController* p, const char* geometryName,
+		bool* outPlaying, bool* outFinished, bool* outFailed,
+		long long* outLatestFrame, double* outLatestSceneTime,
+		double* outFirstSceneTime, double* outLastSceneTime,
+		unsigned long long* outFramesPublished, unsigned long long* outFramesTotal,
+		double* outSimulatedTime );
+	unsigned int RISE_API_SceneEditController_LiveSimulationCount( SceneEditController* p );
+
 	//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of a
 	//! named painter -- see PainterPreview.h (src/Library/SceneEditor) for
 	//! the domain / display-encode / scalar-normalization contract this

@@ -66,13 +66,20 @@ SimulatedMeshGeometry* SimulatedMeshGeometry::Create( const std::string& cacheRo
 		else g->ComputeNormals( positions, normals );
 		g->AddNormals( normals );
 	}
+	// mesh.v2 UV set (fixed with the topology) as per-vertex texture coordinates.
+	const bool uvs = s.HasUVs();
+	if( uvs ) {
+		TexCoordsListType coords( s.VertexCount() );
+		for( std::size_t i = 0; i < coords.size(); ++i ) coords[i] = Point2( s.BindUVs()[2*i], s.BindUVs()[2*i+1] );
+		g->AddTexCoords( coords );
+	}
 	const std::vector<std::uint32_t>& indices = s.Indices();
 	for( std::size_t t = 0; t + 2 < indices.size(); t += 3 ) {
 		IndexedTriangle tri;
 		for( int k = 0; k < 3; ++k ) {
 			tri.iVertices[k] = indices[t + k];
 			tri.iNormals[k] = indices[t + k];
-			tri.iCoords[k] = 0;
+			tri.iCoords[k] = uvs ? indices[t + k] : 0;
 		}
 		g->AddIndexedTriangle( tri );
 	}
@@ -182,6 +189,58 @@ bool SimulatedMeshGeometry::Install( State& next, std::string& error )
 }
 
 bool SimulatedMeshGeometry::PrepareAssetForRender( const RenderTimeSupport& support,
+	std::string& error, std::function<void()>* rollback )
+{
+	// Simulation M3c fast path: the viewport prepares every progressive pass.
+	// A frame installed for exactly this support from exactly this immutable
+	// generation (a sealed disk cache, or one live publication) is already in
+	// place, so the pass skips the payload read and decode.
+	{
+		std::lock_guard<std::mutex> lock( m_freezeMutex );
+		if( m_leases ) { error = "mutation_frozen"; return false; }
+	}
+	std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> cheap = m_source->CheapSnapshot();
+	if( cheap && cheap == m_preparedSnapshot && support.nominal == m_preparedSupport.nominal &&
+		support.open == m_preparedSupport.open && support.close == m_preparedSupport.close ) return true;
+	m_preparedSnapshot.reset();
+	if( !PrepareFrame( support, error, rollback ) ) return false;
+	if( rollback ) {
+		// Whatever the rollback restores, the prepared-frame memo no longer holds.
+		std::function<void()> inner = std::move( *rollback );
+		*rollback = [this, inner]() {
+			if( inner ) inner();
+			m_preparedSnapshot.reset();
+		};
+	}
+	if( cheap ) {
+		m_preparedSnapshot = std::move( cheap );
+		m_preparedSupport = support;
+	}
+	return true;
+}
+
+bool SimulatedMeshGeometry::RebindSource( std::unique_ptr<Simulation::MeshCacheSource>& source, std::string& error )
+{
+	{
+		std::lock_guard<std::mutex> lock( m_freezeMutex );
+		if( m_leases ) { error = "mutation_frozen"; return false; }
+	}
+	if( !source ) { error = "simulated mesh rebind needs a source"; return false; }
+	if( source->VertexCount() != m_source->VertexCount() || source->Indices() != m_source->Indices() ) {
+		error = "simulated mesh rebind refused: the new source's topology differs from the bound mesh "
+			"(changing topology needs a reload; M7)";
+		return false;
+	}
+	m_source.swap( source );
+	// The next prepare installs from the new source whatever its identity.
+	m_preparedSnapshot.reset();
+	m_identity = "rebind|" + std::to_string( m_installedFrame );
+	m_lastWarnedMissing = std::numeric_limits<std::int64_t>::min();
+	++m_generation;
+	return true;
+}
+
+bool SimulatedMeshGeometry::PrepareFrame( const RenderTimeSupport& support,
 	std::string& error, std::function<void()>* rollback )
 {
 	{
@@ -386,10 +445,12 @@ void SimulatedMeshGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 	}
 	// The interpolating twin of TriangleMeshGeometryIndexed's element test
 	// (TriangleMeshGeometryIndexedSpecializations.h).  A simulated mesh has
-	// no texture coordinates, colours, tangents or shader directions, so the
-	// hit record is the indexed mesh's for that case: UV (0, 0), the
-	// barycentric edge-frame derivatives, no texture chart.  No mailbox: the
-	// BVH references every triangle from exactly one leaf.
+	// no colours, tangents or shader directions, and texture coordinates only
+	// from a mesh.v2 UV set, so the hit record is the indexed mesh's for that
+	// case: with UVs the interpolated coordinate and the UV-Jacobian
+	// derivatives (texture chart valid), else UV (0, 0) and the barycentric
+	// edge-frame derivatives.  No mailbox: the BVH references every triangle
+	// from exactly one leaf.
 	const Point3* base = pPoints.data();
 	const std::size_t i0 = static_cast<std::size_t>( elem->pVertices[0] - base );
 	const std::size_t i1 = static_cast<std::size_t>( elem->pVertices[1] - base );
@@ -435,7 +496,10 @@ void SimulatedMeshGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 		if( Vector3Ops::Dot( fn, ri.vNormal ) < 0 ) fn = Vector3( -fn.x, -fn.y, -fn.z );
 		ri.vGeomNormal = fn;
 	}
-	ri.ptCoord = Point2( 0, 0 );
+	const bool chart = elem->pCoords[0] && elem->pCoords[1] && elem->pCoords[2];
+	ri.ptCoord = chart ? Point2Ops::mkPoint2( *elem->pCoords[0],
+		Vector2Ops::mkVector2( *elem->pCoords[1], *elem->pCoords[0] ) * a +
+		Vector2Ops::mkVector2( *elem->pCoords[2], *elem->pCoords[0] ) * b ) : Point2( 0, 0 );
 	ri.ptCoord1 = ri.ptCoord;
 	ri.bHasTexCoord1 = false;
 	ri.bHasVertexColor = false;
@@ -443,10 +507,26 @@ void SimulatedMeshGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 	ri.bHasShaderDirection = false;
 	ri.bHasNormalMapFrame = false;
 
-	// Barycentric edge-frame derivatives, projected on the shading tangent
-	// plane, exactly as the indexed mesh does without a UV chart.
+	// Derivatives in the UV chart when there is one (the inverted UV
+	// Jacobian of the interpolated triangle), else barycentric edge-frame
+	// derivatives, projected on the shading tangent plane, exactly as the
+	// indexed mesh does.
 	const Vector3 shadingNormal = Vector3Ops::Normalize( ri.vNormal );
+	Scalar duA = 0, duB = 0, dvA = 0, dvB = 0, uvDet = 0;
+	if( chart ) {
+		duA = elem->pCoords[1]->x - elem->pCoords[0]->x;
+		duB = elem->pCoords[2]->x - elem->pCoords[0]->x;
+		dvA = elem->pCoords[1]->y - elem->pCoords[0]->y;
+		dvB = elem->pCoords[2]->y - elem->pCoords[0]->y;
+		uvDet = duA * dvB - duB * dvA;
+	}
+	const bool jacobian = chart && fabs( uvDet ) > NEARZERO;
+	const Scalar invDet = jacobian ? 1.0 / uvDet : 0.0;
 	Vector3 dpdu = vEdgeA, dpdv = vEdgeB;
+	if( jacobian ) {
+		dpdu = ( vEdgeA * dvB - vEdgeB * dvA ) * invDet;
+		dpdv = ( vEdgeB * duA - vEdgeA * duB ) * invDet;
+	}
 	{
 		const Scalar du = Vector3Ops::Dot( dpdu, shadingNormal );
 		const Scalar dv = Vector3Ops::Dot( dpdv, shadingNormal );
@@ -455,8 +535,10 @@ void SimulatedMeshGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 	}
 	Vector3 dndu( 0, 0, 0 ), dndv( 0, 0, 0 );
 	if( smooth ) {
-		const Vector3 dA = n1 - n0;
-		const Vector3 dB = n2 - n0;
+		const Vector3 eA = n1 - n0;
+		const Vector3 eB = n2 - n0;
+		const Vector3 dA = jacobian ? ( eA * dvB - eB * dvA ) * invDet : eA;
+		const Vector3 dB = jacobian ? ( eB * duA - eA * duB ) * invDet : eB;
 		const Scalar nrawLen = Vector3Ops::Magnitude( ri.vNormal );
 		const Scalar invLen = ( nrawLen > NEARZERO ) ? 1.0 / nrawLen : 0.0;
 		const Scalar du = Vector3Ops::Dot( shadingNormal, dA );
@@ -466,7 +548,7 @@ void SimulatedMeshGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 	}
 	ri.derivatives.dsdu = 1.0; ri.derivatives.dsdv = 0.0;
 	ri.derivatives.dtdu = 0.0; ri.derivatives.dtdv = 1.0;
-	ri.derivatives.texChartValid = false;
+	ri.derivatives.texChartValid = jacobian;
 	if( Vector3Ops::Dot( Vector3Ops::Cross( dpdu, dpdv ), shadingNormal ) < 0.0 ) {
 		dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
 		dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );

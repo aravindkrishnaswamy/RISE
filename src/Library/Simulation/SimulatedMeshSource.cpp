@@ -45,12 +45,9 @@ const CacheOutput* FindOutput( const CacheDescription& d, const std::string& nam
 	return nullptr;
 }
 
-const CacheEntry* FindEntry( const IReadOnlyCacheSnapshot& snapshot, const std::int64_t index, const std::string& output )
+bool MeshType( const std::string& type )
 {
-	const auto& entries = snapshot.Entries();
-	const auto it = std::find_if( entries.begin(), entries.end(),
-		[&]( const CacheEntry& e ) { return e.index == index && e.output == output; } );
-	return it == entries.end() ? nullptr : &*it;
+	return type == "mesh.v1" || type == "mesh.v2";
 }
 
 //! The parts of a description a reader binds to: a partial cache may grow,
@@ -73,17 +70,39 @@ bool SameBinding( const CacheDescription& a, const CacheDescription& b )
 bool MeshCacheSource::Open( const std::filesystem::path& root, const MeshSourceOptions& options,
 	std::unique_ptr<MeshCacheSource>& out, std::string& error )
 {
+	return OpenImpl( root, nullptr, options, out, error );
+}
+
+bool MeshCacheSource::OpenLive( const SnapshotProvider& provider, const MeshSourceOptions& options,
+	std::unique_ptr<MeshCacheSource>& out, std::string& error )
+{
+	if( !provider ) return Fail( error, "simulated mesh live binding needs a snapshot provider" );
+	if( options.predictive ) return Fail( error, "a live simulated mesh binding is preview only" );
+	return OpenImpl( std::filesystem::path(), &provider, options, out, error );
+}
+
+bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const SnapshotProvider* provider,
+	const MeshSourceOptions& options, std::unique_ptr<MeshCacheSource>& out, std::string& error )
+{
 	if( !std::isfinite( options.timeOffset ) || !std::isfinite( options.timeScale ) || options.timeScale == 0.0 )
 		return Fail( error, "simulated mesh time offset/scale must be finite and the scale nonzero" );
 	std::unique_ptr<MeshCacheSource> source( new MeshCacheSource() );
 	source->options_ = options;
 	source->root_ = root;
-	if( !CacheSnapshot::Open( root, kManifestBudget, source->bound_, error ) ) return false;
-	const CacheDescription& d = source->bound_.Description();
+	if( provider ) {
+		source->provider_ = *provider;
+		source->bound_ = source->provider_();
+		if( !source->bound_ ) return Fail( error, "simulated mesh live publication has no snapshot" );
+	} else {
+		auto disk = std::make_shared<CacheSnapshot>();
+		if( !CacheSnapshot::Open( root, kManifestBudget, *disk, error ) ) return false;
+		source->bound_ = std::move( disk );
+	}
+	const CacheDescription& d = source->bound_->Description();
 	const CacheOutput* output = FindOutput( d, options.output );
 	if( !output ) return Fail( error, "simulation cache has no output named `" + options.output + "`" );
-	if( output->type != "mesh.v1" )
-		return Fail( error, "simulation cache output `" + options.output + "` is " + output->type + ", not mesh.v1" );
+	if( !MeshType( output->type ) )
+		return Fail( error, "simulation cache output `" + options.output + "` is " + output->type + ", not mesh.v1 or mesh.v2" );
 	if( d.count == 0 || !( d.interval > 0.0 ) || !std::isfinite( d.interval ) )
 		return Fail( error, "simulation cache has no frame support" );
 	source->end_ = options.end == MeshEndPolicy::Cache ?
@@ -94,19 +113,19 @@ bool MeshCacheSource::Open( const std::filesystem::path& root, const MeshSourceO
 		// predictive whose every frame of this output is present, verifies
 		// against its manifest digest and decodes to one topology.
 		std::uint64_t present = 0;
-		for( const CacheEntry& e : source->bound_.Entries() ) if( e.output == options.output ) ++present;
+		for( const CacheEntry& e : source->bound_->Entries() ) if( e.output == options.output ) ++present;
 		if( present != d.count )
 			return Fail( error, "predictive simulated mesh requires every frame of the output" );
 		MeshCacheSource* self = source.get();
 		IReadOnlyCacheSnapshot::Qualification q;
 		q.snapshot = [&options]( const IReadOnlyCacheSnapshot& s, std::string& e ) {
 			const CacheOutput* o = FindOutput( s.Description(), options.output );
-			return ( o && o->type == "mesh.v1" ) || Fail( e, "predictive cache output is not mesh.v1" );
+			return ( o && MeshType( o->type ) ) || Fail( e, "predictive cache output is not a mesh" );
 		};
 		q.frame = [self, &options]( const CacheEntry& entry, const Bytes& bytes, std::string& e ) {
 			if( entry.output != options.output ) return true;
 			MeshFrame frame;
-			if( !DecodeMesh( bytes, options.frameBudget, frame, e ) ) return false;
+			if( !DecodeMesh( bytes, options.frameBudget, self->bound_->Resolver(), frame, e ) ) return false;
 			MeshTopology topology;
 			if( !PeekMeshTopology( bytes, topology, e ) ) return false;
 			if( self->topology_.empty() ) {
@@ -117,7 +136,7 @@ bool MeshCacheSource::Open( const std::filesystem::path& root, const MeshSourceO
 				return Fail( e, "predictive simulated mesh frames do not share one topology" );
 			return self->CheckFrame( frame, e );
 		};
-		if( !source->bound_.PreflightPredictive( d.key, q, options.frameBudget, error ) )
+		if( !source->bound_->PreflightPredictive( d.key, q, options.frameBudget, error ) )
 			return Fail( error, "predictive simulated mesh refused: " + error );
 		source->topology_.clear();
 		source->vertices_ = 0;
@@ -125,13 +144,13 @@ bool MeshCacheSource::Open( const std::filesystem::path& root, const MeshSourceO
 
 	// The bind frame: the first frame of the output present in the cache.
 	const CacheEntry* first = nullptr;
-	for( const CacheEntry& e : source->bound_.Entries() ) {
+	for( const CacheEntry& e : source->bound_->Entries() ) {
 		if( e.output == options.output && ( !first || e.index < first->index ) ) first = &e;
 	}
 	if( !first ) return Fail( error, "simulation cache has no frame of output `" + options.output + "` yet" );
 	MeshFrame frame;
 	std::string digest;
-	const FrameStatus status = source->ReadFrame( source->bound_, first->index, frame, digest, error );
+	const FrameStatus status = source->ReadFrame( *source->bound_, first->index, frame, digest, error );
 	if( status != FrameStatus::Ready ) return Fail( error, "simulated mesh bind frame refused: " + error );
 	if( frame.indices.empty() || frame.positions.empty() )
 		return Fail( error, "simulated mesh needs a nonempty fixed-topology surface" );
@@ -142,6 +161,15 @@ bool MeshCacheSource::Open( const std::filesystem::path& root, const MeshSourceO
 	source->hasNormals_ = !frame.normals.empty();
 	ToDoubles( frame.positions, source->bindPositions_ );
 	ToDoubles( frame.normals, source->bindNormals_ );
+	// mesh.v2 texture coordinates: the named UV set, or the first one.
+	for( const MeshUVSet& uv : frame.uvSets ) {
+		if( !options.uvSet.empty() && uv.name != options.uvSet ) continue;
+		ToDoubles( uv.values, source->bindUVs_ );
+		source->uvSetName_ = uv.name;
+		break;
+	}
+	if( !options.uvSet.empty() && source->uvSetName_.empty() )
+		return Fail( error, "simulated mesh has no UV set named `" + options.uvSet + "`" );
 	source->bindIndex_ = first->index;
 	out = std::move( source );
 	return true;
@@ -157,7 +185,7 @@ bool MeshCacheSource::CheckFrame( const MeshFrame& frame, std::string& error ) c
 	return true;
 }
 
-FrameStatus MeshCacheSource::ReadFrame( const CacheSnapshot& snapshot, const std::int64_t index,
+FrameStatus MeshCacheSource::ReadFrame( const IReadOnlyCacheSnapshot& snapshot, const std::int64_t index,
 	MeshFrame& frame, std::string& digest, std::string& error ) const
 {
 	std::shared_ptr<const Bytes> bytes;
@@ -172,34 +200,70 @@ FrameStatus MeshCacheSource::ReadFrame( const CacheSnapshot& snapshot, const std
 		return FrameStatus::Unsupported;
 	}
 	MeshFrame decoded;
-	if( !DecodeMesh( *bytes, options_.frameBudget, decoded, error ) ) return FrameStatus::Corrupt;
-	const CacheEntry* entry = FindEntry( snapshot, index, options_.output );
-	digest = entry ? entry->digest : std::string();
+	// mesh.v2 static topology resolves through the same snapshot (verified,
+	// budgeted) once, then from the memo: a static payload never changes.
+	const StaticPayloadResolver resolve = [&]( const std::string& d, const std::size_t budget,
+		std::shared_ptr<const Bytes>& b, std::string& e ) {
+		{
+			std::lock_guard<std::mutex> hold( staticMutex_ );
+			for( const auto& s : statics_ ) if( s.first == d ) {
+				if( s.second->size() > budget ) return Fail( e, "simulated mesh static payload exceeds the frame budget" );
+				b = s.second;
+				return true;
+			}
+		}
+		if( snapshot.ReadStatic( d, budget, b, e ) != FrameStatus::Ready ) return false;
+		std::lock_guard<std::mutex> hold( staticMutex_ );
+		if( statics_.size() < 4 ) statics_.emplace_back( d, b );
+		return true;
+	};
+	if( !DecodeMesh( *bytes, options_.frameBudget, resolve, decoded, error ) ) return FrameStatus::Corrupt;
+	CacheEntry entry;
+	digest = snapshot.FindEntry( index, options_.output, entry ) ? entry.digest : std::string();
 	frame = std::move( decoded );
 	return FrameStatus::Ready;
 }
 
-bool MeshCacheSource::Snapshot( CacheSnapshot& snapshot, std::string& error ) const
+bool MeshCacheSource::Snapshot( std::shared_ptr<const IReadOnlyCacheSnapshot>& snapshot, std::string& error ) const
 {
+	// Simulation M3c: a live binding reads the publication's current
+	// generation (immutable; frames only ever accumulate in it).
+	if( provider_ ) {
+		std::shared_ptr<const IReadOnlyCacheSnapshot> current = provider_();
+		if( !current ) return Fail( error, "simulated mesh live publication is gone" );
+		if( !SameBinding( current->Description(), bound_->Description() ) )
+			return Fail( error, "simulated mesh live publication was reconfigured; rebind it" );
+		snapshot = std::move( current );
+		return true;
+	}
 	// A sealed (or predictive-qualified) generation is immutable: keep it.  A
 	// partial cache may have grown since the last frame (follow mode), so it is
 	// re-read, and must still be the cache this binding opened.
-	if( bound_.Complete() || options_.predictive ) {
+	if( bound_->Complete() || options_.predictive ) {
 		snapshot = bound_;
 		return true;
 	}
-	CacheSnapshot fresh;
-	if( !CacheSnapshot::Open( root_, kManifestBudget, fresh, error ) ) return false;
-	if( !SameBinding( fresh.Description(), bound_.Description() ) )
+	auto fresh = std::make_shared<CacheSnapshot>();
+	if( !CacheSnapshot::Open( root_, kManifestBudget, *fresh, error ) ) return false;
+	if( !SameBinding( fresh->Description(), bound_->Description() ) )
 		return Fail( error, "simulation cache was replaced since the scene loaded; reload the scene" );
 	snapshot = std::move( fresh );
 	return true;
 }
 
+std::shared_ptr<const IReadOnlyCacheSnapshot> MeshCacheSource::CheapSnapshot() const
+{
+	if( provider_ ) {
+		std::shared_ptr<const IReadOnlyCacheSnapshot> current = provider_();
+		return current && SameBinding( current->Description(), bound_->Description() ) ? current : nullptr;
+	}
+	return bound_->Complete() || options_.predictive ? bound_ : nullptr;
+}
+
 bool MeshCacheSource::MapTime( const double sceneTime, const double deltaScene, std::int64_t& index,
 	double& simOffset, bool& held, std::string& error ) const
 {
-	const CacheDescription& d = bound_.Description();
+	const CacheDescription& d = bound_->Description();
 	if( !std::isfinite( sceneTime ) || !std::isfinite( deltaScene ) )
 		return Fail( error, "simulated mesh cannot map an invalid scene time" );
 	const double rate = d.timeScale * options_.timeScale;	// d(sim time)/d(scene time)
@@ -250,7 +314,7 @@ bool MeshCacheSource::Sample( const double nominal, const double open, const dou
 {
 	if( !std::isfinite( nominal ) || !std::isfinite( open ) || !std::isfinite( close ) || open > close )
 		return Fail( error, "simulated mesh render time support is invalid" );
-	CacheSnapshot snapshot;
+	std::shared_ptr<const IReadOnlyCacheSnapshot> snapshot;
 	if( !Snapshot( snapshot, error ) ) return false;
 	std::int64_t index = 0, keyIndex = 0;
 	double dNominal = 0.0, dOpen = 0.0, dClose = 0.0;
@@ -264,9 +328,9 @@ bool MeshCacheSource::Sample( const double nominal, const double open, const dou
 	sample.held = held;
 	MeshFrame frame;
 	std::string digest;
-	const FrameStatus status = ReadFrame( snapshot, index, frame, digest, error );
+	const FrameStatus status = ReadFrame( *snapshot, index, frame, digest, error );
 	if( status == FrameStatus::Unavailable ) {
-		if( snapshot.Complete() ) return Fail( error, "simulated mesh frame is missing from a complete cache" );
+		if( snapshot->Complete() ) return Fail( error, "simulated mesh frame is missing from a complete cache" );
 		error.clear();
 		sample.state = MeshFrameSample::State::Missing;
 		sample.identity = "missing|" + std::to_string( index );
@@ -288,15 +352,15 @@ bool MeshCacheSource::Sample( const double nominal, const double open, const dou
 		} else {
 			// No velocities in the payload: central difference of the adjacent
 			// frames (one-sided at the ends, zero when neither neighbour exists).
-			const CacheDescription& d = snapshot.Description();
+			const CacheDescription& d = snapshot->Description();
 			std::vector<double> prev, next;
 			std::string prevDigest, nextDigest, ignored;
 			MeshFrame neighbour;
 			if( index > d.firstIndex &&
-				ReadFrame( snapshot, index - 1, neighbour, prevDigest, ignored ) == FrameStatus::Ready &&
+				ReadFrame( *snapshot, index - 1, neighbour, prevDigest, ignored ) == FrameStatus::Ready &&
 				CheckFrame( neighbour, ignored ) ) ToDoubles( neighbour.positions, prev );
 			if( index + 1 < d.firstIndex + static_cast<std::int64_t>( d.count ) &&
-				ReadFrame( snapshot, index + 1, neighbour, nextDigest, ignored ) == FrameStatus::Ready &&
+				ReadFrame( *snapshot, index + 1, neighbour, nextDigest, ignored ) == FrameStatus::Ready &&
 				CheckFrame( neighbour, ignored ) ) ToDoubles( neighbour.positions, next );
 			velocity.assign( sample.nominal.size(), 0.0 );
 			const std::vector<double>& a = prev.empty() ? sample.nominal : prev;

@@ -42,6 +42,12 @@ struct WorkerStatus {
 };
 bool ReadWorkerStatus(const std::filesystem::path& cache, WorkerStatus& status, std::string& error);
 
+// Solver parameters as `rise-sim bake` reads them: a JSON object (integral
+// numbers become integers) or a canonical CBOR map. Also used by the
+// in-process host's callers (the live viewport, M3c).
+bool ParseSolverParameters(const Bytes& bytes, std::size_t budget, RISECBOR64::Value& parameters,
+	std::string& error);
+
 int WorkerMain(const std::vector<std::string>& arguments, std::ostream& out, std::ostream& err);
 int WorkerMain(int argc, char** argv); // arguments after argv[0]; std::cout / std::cerr
 

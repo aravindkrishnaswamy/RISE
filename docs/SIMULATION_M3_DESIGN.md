@@ -96,6 +96,11 @@ pose time, and emissive meshes tested without blur (unsupported under blur). Res
 - The in-process host steps the cloth on its own thread and offers the latest frame; the viewport takes it at the
   next park. Playback follows the timeline clock; scrubbing backwards reads recorded frames.
 
+**Built in M3c (2026-11-23):** as above. The frame installs in the scrub's own park; the viewport renders the
+nominal pose (stills have no sample time). A library playback clock coalesces frames to the viewport's pace and
+never runs ahead of a live solver. Scrubbing past the solver clamps. The live attachment is API-only until M4.
+Results, threading model, measurements and the C API for M5: [SIMULATION_M3C_RESULTS.md](SIMULATION_M3C_RESULTS.md).
+
 ## 7. Order and acceptance
 
 | Step | Work | Check |

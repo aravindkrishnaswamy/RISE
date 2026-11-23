@@ -2,7 +2,10 @@
 // solvers registered: bake/resume/status for grid and mesh solvers, frames
 // identical to the in-process host, stop/resume byte-identical to an
 // uninterrupted bake, SIGINT stop at a safe point, SIGKILL and a crash cut
-// between payload and manifest leaving the previous generation readable.
+// between payload and manifest leaving the previous generation readable;
+// static payloads written once; status end time = the last output's time.
+// `--checkpoint-memory [MB]` (not run by default) measures the worker's peak
+// memory around a checkpoint of a large opaque solver state.
 #include "../src/Library/Simulation/SimulationWorker.h"
 #include "../src/Library/Simulation/SimulationHost.h"
 #include "SimulationReferenceSolvers.h"
@@ -14,6 +17,7 @@
 #include <sstream>
 #ifndef _WIN32
 #include <csignal>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -57,7 +61,8 @@ std::map<std::string, Bytes> Sealed(const fs::path& dir)
 	std::error_code ec;
 	for (const auto& e : fs::directory_iterator(dir, ec)) {
 		const auto name = e.path().filename().string();
-		if (name == "manifest.cbor" || (name.size() > 6 && name.compare(name.size()-6, 6, ".frame") == 0))
+		if (name == "manifest.cbor" || (name.size() > 6 && name.compare(name.size()-6, 6, ".frame") == 0) ||
+			(name.size() > 7 && name.compare(name.size()-7, 7, ".static") == 0))
 			files[name] = ReadAll(e.path());
 	}
 	return files;
@@ -91,9 +96,15 @@ void Conformance(const fs::path& root, const char* id, const std::string& json, 
 		std::string("worker seals a predictive cache for ") + id, error);
 	Check(!fs::exists(reference/"rise-sim.checkpoint"), "finished bake removes its checkpoint");
 	WorkerStatus status;
+	const auto& dd = disk.Description();
 	Check(ReadWorkerStatus(reference, status, error) && status.state == "finished" &&
-		status.framesWritten == disk.Description().count && status.framesTotal == status.framesWritten,
-		"status record reports finished", error);
+		status.framesWritten == dd.count && status.framesTotal == status.framesWritten &&
+		status.endTime == dd.startTime + static_cast<double>(dd.count - 1)*dd.interval &&
+		status.simulatedTime == status.endTime, "status record reports finished at the last output's time", error);
+	std::size_t statics = 0;
+	for (const auto& e : fs::directory_iterator(reference)) if (e.path().extension() == ".static") ++statics;
+	Check(statics == disk.Statics().size() && (std::string(id) != "test.membrane" || statics == 1),
+		"a fixed-topology bake stores its topology once as a static payload");
 	Check(Worker({"status", reference.string()}, &log) == WorkerFinished && log.find("cache: complete") != std::string::npos &&
 		log.find("worker: finished") != std::string::npos, "status command", log);
 
@@ -279,6 +290,86 @@ void Signals(const fs::path& root, const fs::path& reference)
 		"resume after SIGKILL replays from the last checkpoint and equals the uninterrupted bake", log);
 }
 #endif
+
+// ---------------------------------------------------------------- checkpoint memory (opt-in)
+
+// An opaque state of `megabytes`, two outputs; Checkpoint hands over one copy.
+class BallastSolver final : public ISimulationSolver {
+public:
+	bool Configure(const V& parameters, const ISceneInputs&, SolverDescription& d, std::string& error) override {
+		const V* mb = parameters.Find("megabytes");
+		if (!mb || mb->GetType() != V::UnsignedInteger) return Fail(error, "megabytes");
+		size_ = static_cast<std::size_t>(mb->GetIntegerArgument()) << 20;
+		d = SolverDescription{};
+		d.solverId = "test.ballast"; d.version = "1";
+		d.effectiveParameters = parameters;
+		d.cache.count = 2; d.cache.interval = 1;
+		d.cache.outputs = {{"field", "grid.v1", {{"x", "1", "f32"}}}};
+		d.capabilities.deterministic = d.capabilities.resumable = true;
+		return true;
+	}
+	bool Start(std::string&) override {
+		state_.assign(size_, 0);
+		for (std::size_t i = 0; i < state_.size(); i += 4096) state_[i] = static_cast<std::uint8_t>(i >> 12);
+		next_ = 0;
+		return true;
+	}
+	bool Restore(const Bytes& b, std::string&) override { state_ = b; next_ = 1; return true; }
+	bool Advance(const AdvanceRequest&, IFrameSink& sink, IPortExchange*, IProgress*, AdvanceResult& r, std::string& error) override {
+		if (!sink.Publish(next_, "field", static_cast<double>(next_), std::make_shared<const Bytes>(Bytes{1}), {}, error)) return false;
+		++next_;
+		r.status = next_ == 2 ? AdvanceResult::Status::Finished : AdvanceResult::Status::Advanced;
+		r.position = Position();
+		return true;
+	}
+	bool Checkpoint(Bytes& state, std::string&) override { state = state_; return true; }
+	SolverPosition Position() const override { return {static_cast<double>(next_), next_, next_ == 2}; }
+	void RequestStop() override {}
+private:
+	std::size_t size_ = 0;
+	Bytes state_;
+	std::int64_t next_ = 0;
+};
+
+#ifndef _WIN32
+// Peak resident set of a child running the worker (macOS: bytes; Linux: KiB).
+double ChildPeakMB(const std::vector<std::string>& args)
+{
+	std::cout.flush();
+	const pid_t child = ::fork();
+	if (child == 0) {
+		std::ostringstream out, err;
+		_exit(WorkerMain(args, out, err));
+	}
+	int status = 0;
+	struct rusage usage{};
+	if (::wait4(child, &status, 0, &usage) != child) return -1;
+#ifdef __APPLE__
+	return static_cast<double>(usage.ru_maxrss)/(1 << 20);
+#else
+	return static_cast<double>(usage.ru_maxrss)/1024;
+#endif
+}
+
+void CheckpointMemory(const fs::path& root, unsigned megabytes)
+{
+	std::string error;
+	RegisterSolver("test.ballast", []{ return std::unique_ptr<ISimulationSolver>(new BallastSolver); }, error);
+	const auto params = root/"ballast.json";
+	WriteText(params, "{\"megabytes\": " + std::to_string(megabytes) + "}");
+	const double plain = ChildPeakMB({"bake", "test.ballast", params.string(), (root/"ballast-plain").string(),
+		"--checkpoint-seconds", "1000000", "--budget-mb", "4096"});
+	const double checkpointed = ChildPeakMB({"bake", "test.ballast", params.string(), (root/"ballast-checkpoint").string(),
+		"--stop-after-frames", "1", "--budget-mb", "4096"});
+	std::error_code ec;
+	const auto file = fs::file_size(root/"ballast-checkpoint"/"rise-sim.checkpoint", ec);
+	std::cout << "checkpoint memory: state " << megabytes << " MB; peak RSS without a checkpoint " << plain
+		<< " MB, with one " << checkpointed << " MB (difference " << checkpointed - plain << " MB; the solver's own "
+		"checkpoint copy is " << megabytes << " MB); checkpoint file " << static_cast<double>(file)/(1 << 20) << " MB\n";
+	Check(plain > 0 && checkpointed > 0 && checkpointed - plain < 1.25*megabytes,
+		"the worker's checkpoint write path holds no extra full copy of the state");
+}
+#endif
 // Same probe as SimulationCacheTest: some Windows volumes cannot flush a
 // directory, and the cache writer then refuses durable publication.
 bool DiskPublicationAvailable(const fs::path& root)
@@ -300,13 +391,23 @@ bool DiskPublicationAvailable(const fs::path& root)
 }
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
 	RegisterReferenceSolvers();
 	const fs::path root = RISE::TestSupport::ScratchRunDir("rise_sim_worker_", "suite");
 	try {
 		fs::create_directories(root);
 		if (!DiskPublicationAvailable(root)) { fs::remove_all(root); return 0; }
+#ifndef _WIN32
+		if (argc > 1 && std::string(argv[1]) == "--checkpoint-memory") {
+			CheckpointMemory(root, argc > 2 ? static_cast<unsigned>(std::stoul(argv[2])) : 110u);
+			std::error_code ignored;
+			fs::remove_all(root, ignored);
+			return failures ? 1 : 0;
+		}
+#else
+		(void)argc; (void)argv;
+#endif
 		Conformance(root, "test.advection_diffusion", "{\"frames\": 12, \"cells\": 24}", root/"grid-reference");
 		Conformance(root, "test.membrane", "{}", root/"mesh-reference");
 		StopResume(root, root/"mesh-reference");

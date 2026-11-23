@@ -556,6 +556,8 @@ namespace RISE
 		bool RasterizeExternalRasterizerAtSceneTime( IRasterizer* rasterizer,
 			const char* rasterizerKind, const FireExternalRenderConfig& config,
 			const Rect* region, Scalar nominalTime );
+		bool DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
+			bool availability );
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

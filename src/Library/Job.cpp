@@ -49,6 +49,7 @@
 #include "Utilities/FiniteMath.h"
 #include "Utilities/RISECBOR64.h"
 #include "Utilities/FireSequence.h"
+#include "Simulation/SimulationTimeline.h"
 #include "Utilities/FireSimulationRecords.h"
 #include "Version.h"
 #include "Utilities/Transformable.h"
@@ -10651,6 +10652,72 @@ bool Job::HasTimeVaryingAssets()
 	return pScene && (pScene->HasTimeVaryingMedia() || !ActiveTimeVaryingAssets().empty());
 }
 
+// Simulation M3c: the timeline's view of the time-varying assets.
+bool Job::DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
+	const bool availability )
+{
+	ranges.clear();
+	if( !pScene || !pGeomManager ) return false;
+	// Simulated meshes some object renders, by geometry name.
+	std::set<const IGeometry*> bound;
+	struct Objects : public IEnumCallback<IObject>
+	{
+		std::set<const IGeometry*>& geometries;
+		explicit Objects( std::set<const IGeometry*>& target ) : geometries(target) {}
+		bool operator()( const IObject& object ) override
+		{
+			if( object.GetGeometry() ) geometries.insert(object.GetGeometry());
+			return true;
+		}
+	} objects(bound);
+	if( pScene->GetObjects() ) pScene->GetObjects()->EnumerateObjects(objects);
+	struct Names : public IEnumCallback<const char*>
+	{
+		std::vector<std::string> names;
+		bool operator()( const char* const& name ) override { names.push_back(name); return true; }
+	} names;
+	pGeomManager->EnumerateItemNames(names);
+	bool ok = true;
+	for( const std::string& name : names.names ) {
+		const Implementation::SimulatedMeshGeometry* mesh =
+			dynamic_cast<const Implementation::SimulatedMeshGeometry*>(pGeomManager->GetItem(name.c_str()));
+		if( !mesh || !bound.count(mesh) ) continue;
+		Simulation::TimelineRange range;
+		std::string error;
+		if( !Simulation::DescribeMeshSource(mesh->Source(),availability,range,error) ) {
+			GlobalLog()->PrintEx(eLog_Warning,"Job::DescribeTimeVaryingAssets:: `%s`: %s",name.c_str(),error.c_str());
+			ok = false;
+			continue;
+		}
+		range.name = name;
+		ranges.push_back(std::move(range));
+	}
+	// Fire media bound to a sequence.  Their frames are the manifest's; a
+	// native cache that is still growing reports partial.
+	for( const auto& binding : fireSequenceManifests ) {
+		const Implementation::FireSequenceManifest& m = *binding.second;
+		if( !m.IsValid() || m.Frames().empty() ) continue;
+		const Implementation::FireSequenceTimeMap& map = m.TimeMap();
+		if( !(map.sceneToSimulationScale != 0.0) || !(map.frameStepSeconds > 0.0) ) continue;
+		Simulation::TimelineRange range;
+		range.kind = Simulation::TimelineRange::FireMedium;
+		for( const auto& named : mediaMap ) if( named.second == binding.first ) { range.name = named.first.c_str(); break; }
+		const double step = map.frameStepSeconds/map.sceneToSimulationScale;
+		const double a = map.sceneTimeOrigin;
+		const double b = map.sceneTimeOrigin + double(m.Frames().size()-1)*step;
+		range.start = std::min(a,b);
+		range.end = std::max(a,b);
+		range.availableEnd = range.end;
+		range.interval = std::fabs(step);
+		range.framesAvailable = range.framesTotal = m.Frames().size();
+		range.state = m.IsComplete() ? Simulation::TimelineRange::Complete : Simulation::TimelineRange::Partial;
+		range.fidelity = m.SourceQualification() == "predictive_qualified" ? "predictive" : "preview";
+		range.availabilityKnown = true;
+		ranges.push_back(std::move(range));
+	}
+	return ok;
+}
+
 bool Job::AddSimulatedMeshGeometry(
 	const char* name, const char* cache, const char* output,
 	const double time_offset, const double time_scale,
@@ -14326,6 +14393,7 @@ namespace
 		std::function<bool(const RenderTimeSupport&)> afterPrepare_;
 		std::vector<ITimeVaryingAssetProvider*> assets_;
 		std::vector<ITimeVaryingAssetProvider*> frozenAssets_;
+		bool assetsAtNominal_ = false;
 		bool Frozen() const { return !leases_.empty() || !frozenAssets_.empty(); }
 	public:
 		FireSequencePreparationGroup(
@@ -14334,6 +14402,11 @@ namespace
 			std::vector<ITimeVaryingAssetProvider*> assets = {} )
 			: controllers_(std::move(controllers)), afterPrepare_(std::move(afterPrepare)),
 			  assets_(std::move(assets)) {}
+		//! Simulation M3c: a still rendered through RasterizeScene (the
+		//! editor's viewport) gives no ray a sample time, so deformation keys
+		//! would only widen the mesh's boxes: assets install at the nominal
+		//! time.  Fire media keep the full shutter support.
+		void InstallAssetsAtNominal() { assetsAtNominal_ = true; }
 		bool PrepareMediaForRender(const RenderTimeSupport& support,std::string& error) override
 		{
 			if( Frozen() ) { error="mutation_frozen"; return false; }
@@ -14342,8 +14415,10 @@ namespace
 			PreparedFireChanges changes;
 			for( const auto& controller : controllers_ )
 				if( !changes.Prepare(*controller,fireSupport,error) ) return false;
+			const RenderTimeSupport assetSupport = assetsAtNominal_ ?
+				RenderTimeSupport{support.nominal,support.nominal,support.nominal} : support;
 			for( ITimeVaryingAssetProvider* asset : assets_ )
-				if( !changes.PrepareAsset(*asset,support,error) ) return false;
+				if( !changes.PrepareAsset(*asset,assetSupport,error) ) return false;
 			if( afterPrepare_ && !afterPrepare_(support) ) {
 				error="prepared fire fidelity publication failed"; return false;
 			}
@@ -14834,6 +14909,7 @@ bool Job::RasterizeExternalStillAtTime(IRasterizer* rasterizer, const char* rast
 				rasterizer,rasterizerKind,config,nullptr) && AuthorizeFireRasterizer(
 					rasterizer,FireRenderPreflightAuthorization::Render);
 		},ActiveTimeVaryingAssets());
+	preparation.InstallAssetsAtNominal();
 	if( !AuthorizeFireRasterizer(
 		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
 	if( HasTimeVaryingAssets() ) rasterizer->RasterizeScenePrepared(

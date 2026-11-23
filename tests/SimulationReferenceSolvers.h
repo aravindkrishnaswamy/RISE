@@ -6,11 +6,15 @@
 //                             square; publishes grid.v1; evidence: a single
 //                             Fourier mode against its exact solution.
 //   test.membrane             fixed-boundary square membrane, rho u_tt = T lap u + p,
-//                             on a fixed-topology triangle mesh; publishes mesh.v1
-//                             with velocities and normals; evidence: measured
-//                             fundamental frequency against (c/2) sqrt(2)/a.
+//                             on a fixed-topology triangle mesh; publishes mesh.v2
+//                             with velocities, normals, a static topology with
+//                             material UVs, and a displacement attribute;
+//                             evidence: measured fundamental frequency against
+//                             (c/2) sqrt(2)/a.
 //
-// Both honour an externally imposed macro step, offer one port and accept one.
+// Both honour an externally imposed macro step, offer one port and accept one,
+// accept at the start of each macro step and offer at its end, support
+// rollback (SaveState/RestoreState) and honour sticky stop requests.
 #ifndef RISE_TESTS_SIMULATION_REFERENCE_SOLVERS_H
 #define RISE_TESTS_SIMULATION_REFERENCE_SOLVERS_H
 
@@ -24,6 +28,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <thread>
 
 namespace RISE { namespace Simulation { namespace Reference {
@@ -141,15 +146,19 @@ private:
 
 // Shared time stepping: output index i lives at time start + i*interval. A
 // segment runs from the current time to the next output time (or to an
-// imposed macro end) in N equal substeps; inputs are accepted once at the
-// start of each segment. Stops land between substeps, and the segment state is
-// part of the checkpoint, so a resumed run repeats the uninterrupted substeps.
+// imposed macro end) in N equal substeps. Inputs are accepted at the start of
+// each step -- each segment when free-running, once per imposed macro step --
+// and held over it; the state is offered at the end of each step. Stops land
+// between substeps, and the segment state is part of the checkpoint, so a
+// resumed run repeats the uninterrupted substeps.
 class SteppedSolver : public ISimulationSolver {
 public:
 	bool Start(std::string& error) override {
 		if (!configured_) return Fail(error, "configure first");
 		t_ = start_; next_ = 0; finished_ = count_ == 0; segN_ = segJ_ = 0; segStart_ = segTarget_ = start_;
+		held_ = false; heldFor_ = 0;
 		Initialize();
+		staticsSent_ = false;
 		started_ = true;
 		return true;
 	}
@@ -158,35 +167,49 @@ public:
 
 	bool Advance(const AdvanceRequest& request, IFrameSink& sink, IPortExchange* ports, IProgress* progress,
 		AdvanceResult& result, std::string& error) override {
-		stop_ = false;
 		result = AdvanceResult{};
 		if (!started_) return Fail(error, "start or restore first");
 		const bool macro = request.mode == AdvanceRequest::Mode::MacroStep;
 		if (macro && (!std::isfinite(request.macroEnd) || request.macroEnd < t_)) return Fail(error, "macro end lies in the past");
-		const double end = start_ + static_cast<double>(count_)*interval_;
+		const double end = start_ + static_cast<double>(count_ ? count_-1 : 0)*interval_; // the last output
+		if (!macro) held_ = false;
+		bool offered = false;
 		for (;;) {
 			while (!finished_ && t_ == OutputTime(next_)) {
 				std::uint64_t published = 0;
 				if (!PublishOutputs(next_, t_, sink, ports, published, error)) return false;
+				offered = true;
 				result.framesPublished += published;
 				if (static_cast<std::uint64_t>(++next_) == count_) finished_ = true;
 				if (pace_ > 0) std::this_thread::sleep_for(std::chrono::milliseconds(pace_));
 				if (!macro) return Done(result, AdvanceResult::Status::Advanced);
 			}
 			if (finished_) return Done(result, AdvanceResult::Status::Finished);
-			if (macro && t_ == request.macroEnd && segN_ == 0) return Done(result, AdvanceResult::Status::Advanced);
+			if (macro && t_ == request.macroEnd && segN_ == 0) {
+				// The end of the macro step: offer the state stamped with its time.
+				if (!offered && ports && !OfferState(t_, ports, error)) return false;
+				return Done(result, AdvanceResult::Status::Advanced);
+			}
 			if (segN_ == 0) {
 				segStart_ = t_;
 				segTarget_ = macro ? std::min(OutputTime(next_), request.macroEnd) : OutputTime(next_);
 				const double nominal = interval_/static_cast<double>(substeps_);
 				segN_ = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::ceil((segTarget_-segStart_)/nominal*(1-1e-12))));
 				segJ_ = 0;
-				if (!AcceptInputs(segStart_, ports, error)) return false;
+				// Free-running: every segment is a step. Imposed: one read per macro step.
+				if (!macro || !held_ || heldFor_ != request.macroEnd) {
+					if (!AcceptInputs(segStart_, ports, error)) return false;
+					held_ = macro;
+					heldFor_ = request.macroEnd;
+				}
 			} else if (macro && segTarget_ > request.macroEnd) return Fail(error, "macro end inside an interrupted segment");
+			offered = false;
 			while (segJ_ < segN_) {
-				if (stop_.load() || (progress && !progress->Report(t_, end, std::string()))) {
+				if (stop_.load()) {
+					stop_ = false; // consumed
 					return Done(result, AdvanceResult::Status::Stopped);
 				}
+				if (progress && !progress->Report(t_, end, std::string())) return Done(result, AdvanceResult::Status::Stopped);
 				const double tn = segJ_+1 == segN_ ? segTarget_ :
 					segStart_ + (segTarget_-segStart_)*static_cast<double>(segJ_+1)/static_cast<double>(segN_);
 				Substep(tn - t_);
@@ -201,7 +224,8 @@ public:
 		if (!started_) return Fail(error, "nothing to checkpoint");
 		V::Members m{{"format", V::String(StateFormat())}, {"t", V::Float(t_)}, {"next", V::Signed(next_)},
 			{"finished", V::Bool(finished_)}, {"segStart", V::Float(segStart_)}, {"segTarget", V::Float(segTarget_)},
-			{"segN", V::Unsigned(segN_)}, {"segJ", V::Unsigned(segJ_)}};
+			{"segN", V::Unsigned(segN_)}, {"segJ", V::Unsigned(segJ_)}, {"held", V::Bool(held_)},
+			{"heldFor", V::Float(heldFor_)}};
 		SaveFields(m);
 		return RISECBOR64::Encode(V::MapValue(m), state, &error);
 	}
@@ -212,16 +236,48 @@ public:
 		if (!CanDecodeCanonicalRecord(state, CodecBudget) || !RISECBOR64::DecodeCanonical(state, v, &error) ||
 			v.GetType() != V::Map) return Fail(error, "invalid solver state");
 		const V *format = v.Find("format"), *t = v.Find("t"), *next = v.Find("next"), *fin = v.Find("finished"),
-			*s0 = v.Find("segStart"), *s1 = v.Find("segTarget"), *n = v.Find("segN"), *j = v.Find("segJ");
+			*s0 = v.Find("segStart"), *s1 = v.Find("segTarget"), *n = v.Find("segN"), *j = v.Find("segJ"),
+			*held = v.Find("held"), *heldFor = v.Find("heldFor");
 		if (!format || format->GetType() != V::Text || format->GetText() != StateFormat() || !t || t->GetType() != V::Float64 ||
 			!next || next->GetType() != V::UnsignedInteger || !fin || fin->GetType() != V::Boolean ||
 			!s0 || s0->GetType() != V::Float64 || !s1 || s1->GetType() != V::Float64 ||
 			!n || n->GetType() != V::UnsignedInteger || !j || j->GetType() != V::UnsignedInteger ||
-			next->GetIntegerArgument() > count_ || j->GetIntegerArgument() > n->GetIntegerArgument())
+			next->GetIntegerArgument() > count_ || j->GetIntegerArgument() > n->GetIntegerArgument() ||
+			!held || held->GetType() != V::Boolean || !heldFor || heldFor->GetType() != V::Float64)
 			return Fail(error, "invalid solver state fields");
 		if (!LoadFields(v, error)) return false;
 		t_ = t->GetFloat(); next_ = static_cast<std::int64_t>(next->GetIntegerArgument()); finished_ = fin->GetBoolean();
 		segStart_ = s0->GetFloat(); segTarget_ = s1->GetFloat(); segN_ = n->GetIntegerArgument(); segJ_ = j->GetIntegerArgument();
+		held_ = held->GetBoolean(); heldFor_ = heldFor->GetFloat();
+		staticsSent_ = false;
+		started_ = true;
+		return true;
+	}
+
+	// Rollback: an in-memory copy of everything Checkpoint stores.
+	struct State final : SolverStateToken {
+		const void* owner = nullptr;
+		double t = 0, segStart = 0, segTarget = 0, heldFor = 0;
+		std::int64_t next = 0;
+		std::uint64_t segN = 0, segJ = 0;
+		bool finished = false, held = false;
+		std::vector<std::vector<double>> fields;
+	};
+	bool SaveState(std::shared_ptr<const SolverStateToken>& token, std::string& error) override {
+		if (!started_) return Fail(error, "nothing to save");
+		auto s = std::make_shared<State>();
+		s->owner = this; s->t = t_; s->segStart = segStart_; s->segTarget = segTarget_; s->heldFor = heldFor_;
+		s->next = next_; s->segN = segN_; s->segJ = segJ_; s->finished = finished_; s->held = held_;
+		CopyFields(s->fields);
+		token = std::move(s);
+		return true;
+	}
+	bool RestoreState(const SolverStateToken& token, std::string& error) override {
+		const auto* s = dynamic_cast<const State*>(&token);
+		if (!s || s->owner != this || !configured_) return Fail(error, "state token belongs to another solver");
+		t_ = s->t; segStart_ = s->segStart; segTarget_ = s->segTarget; heldFor_ = s->heldFor;
+		next_ = s->next; segN_ = s->segN; segJ_ = s->segJ; finished_ = s->finished; held_ = s->held;
+		SetFields(s->fields);
 		started_ = true;
 		return true;
 	}
@@ -235,9 +291,9 @@ protected:
 		substeps_ = p.Count("substeps", substeps_, 1, 100000);
 		pace_ = static_cast<unsigned>(p.Count("pace_ms", 0, 0, 10000, false));
 	}
-	void Describe(SolverDescription& d, const std::string& id) const {
+	void Describe(SolverDescription& d, const std::string& id, const char* version) const {
 		d.solverId = id;
-		d.version = "1";
+		d.version = version;
 		d.cache.firstIndex = 0;
 		d.cache.count = count_;
 		d.cache.startTime = start_;
@@ -245,7 +301,9 @@ protected:
 		d.capabilities.backends = {{"cpu", BackendStatus::Supported, true, "reference implementation"}};
 		d.capabilities.interactive = d.capabilities.deterministic = d.capabilities.resumable = true;
 		d.capabilities.externalMacroStep = true;
-		d.capabilities.fidelityModes = {"preview", "predictive"};
+		d.capabilities.rollback = true;
+		d.capabilities.threadCountInvariant = true; // single-threaded
+		d.capabilities.earnableFidelity = {"preview", "predictive"};
 	}
 	virtual const char* StateFormat() const = 0;
 	virtual void Initialize() = 0;
@@ -253,10 +311,14 @@ protected:
 	virtual bool PublishOutputs(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports,
 		std::uint64_t& published, std::string& error) = 0;
 	virtual bool AcceptInputs(double time, IPortExchange* ports, std::string& error) = 0;
+	virtual bool OfferState(double time, IPortExchange* ports, std::string& error) = 0;
 	virtual void SaveFields(V::Members& m) const = 0;
 	virtual bool LoadFields(const V& state, std::string& error) = 0;
+	virtual void CopyFields(std::vector<std::vector<double>>& fields) const = 0;
+	virtual void SetFields(const std::vector<std::vector<double>>& fields) = 0;
 
 	bool configured_ = false;
+	bool staticsSent_ = false; // static payloads published to the sink in this run
 	std::uint64_t count_ = 16, substeps_ = 10;
 	double start_ = 0, interval_ = 0.05;
 	unsigned pace_ = 0;
@@ -267,8 +329,8 @@ private:
 		r.position = Position();
 		return true;
 	}
-	bool started_ = false, finished_ = false;
-	double t_ = 0, segStart_ = 0, segTarget_ = 0;
+	bool started_ = false, finished_ = false, held_ = false;
+	double t_ = 0, segStart_ = 0, segTarget_ = 0, heldFor_ = 0;
 	std::int64_t next_ = 0;
 	std::uint64_t segN_ = 0, segJ_ = 0;
 	std::atomic<bool> stop_{false};
@@ -283,7 +345,7 @@ public:
 	bool Configure(const V& parameters, const ISceneInputs&, SolverDescription& d, std::string& error) override {
 		count_ = 16; interval_ = 0.05; substeps_ = 10;
 		Params p(parameters, error);
-		n_ = static_cast<std::size_t>(p.Count("cells", 32, 4, 1024));
+		n_ = static_cast<std::size_t>(p.Count("cells", 32, 4, 4096));
 		length_ = p.Real("length", 1.0);
 		vx_ = p.Real("velocity_x", 0.5); vy_ = p.Real("velocity_y", 0.25);
 		diffusivity_ = p.Real("diffusivity", 0.01);
@@ -302,13 +364,17 @@ public:
 		if (diffusivity_*dt/(h*h) > 0.2 || (std::fabs(vx_)+std::fabs(vy_))*dt/h > 0.5)
 			return Fail(error, "time step violates the explicit stability limit");
 		configured_ = true;
-		Describe(candidate, Id);
+		Describe(candidate, Id, "1");
 		candidate.cache.outputs = {{"field", "grid.v1", {{quantity_, units_, "f32"}}}};
 		candidate.ports = {
-			{"field", quantity_, units_, "grid.v1", true, "field"},
-			{"source", quantity_ + " rate", units_ + "/s", "grid.v1", false, ""}};
+			{"field", quantity_, units_, "grid.v1", true, "field", {{quantity_, quantity_, units_, 1}}, ""},
+			{"source", quantity_ + " rate", units_ + "/s", "grid.v1", false, "",
+				{{quantity_ + " rate", quantity_ + " rate", units_ + "/s", 1}}, ""}};
 		candidate.evidence.fidelity = fidelity;
 		candidate.evidence.cases.push_back(FourierCase(candidate.effectiveParameters));
+		candidate.evidence.conditions = {{"boundary", {"periodic"}}, {"source", {"none", "port"}}};
+		candidate.evidence.scope = "RK4 with central differences on a periodic square: one Fourier mode against its "
+			"exact solution at the configured resolution and step.";
 		d = std::move(candidate);
 		return true;
 	}
@@ -371,8 +437,7 @@ private:
 		Rate(tmp, k4);
 		for (std::size_t q = 0; q < u_.size(); ++q) u_[q] += dt/6*(k1[q]+2*k2[q]+2*k3[q]+k4[q]);
 	}
-	bool PublishOutputs(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports,
-		std::uint64_t& published, std::string& error) override {
+	GridFrame Frame() const {
 		const double h = Cell();
 		GridFrame frame;
 		GridChannel c;
@@ -386,13 +451,22 @@ private:
 		for (double x : u_) b.values.push_back(F32(x));
 		c.blocks.push_back(std::move(b));
 		frame.channels.push_back(std::move(c));
+		return frame;
+	}
+	bool PublishOutputs(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports,
+		std::uint64_t& published, std::string& error) override {
 		auto bytes = std::make_shared<Bytes>();
-		if (!EncodeGrid(frame, CodecBudget, *bytes, error)) return false;
+		if (!EncodeGrid(Frame(), CodecBudget, *bytes, error)) return false;
 		std::shared_ptr<const Bytes> payload = std::move(bytes);
 		if (!sink.Publish(index, "field", time, payload, {}, error)) return false;
 		if (ports && !ports->Offer("field", time, payload, error)) return false;
 		published = 1;
 		return true;
+	}
+	bool OfferState(double time, IPortExchange* ports, std::string& error) override {
+		auto bytes = std::make_shared<Bytes>();
+		if (!EncodeGrid(Frame(), CodecBudget, *bytes, error)) return false;
+		return ports->Offer("field", time, std::move(bytes), error);
 	}
 	bool AcceptInputs(double time, IPortExchange* ports, std::string& error) override {
 		if (!ports) return true;
@@ -421,6 +495,8 @@ private:
 		u_.swap(u); source_.swap(src);
 		return true;
 	}
+	void CopyFields(std::vector<std::vector<double>>& f) const override { f = {u_, source_}; }
+	void SetFields(const std::vector<std::vector<double>>& f) override { u_ = f[0]; source_ = f[1]; }
 
 	std::size_t n_ = 32;
 	double length_ = 1, vx_ = 0, vy_ = 0, diffusivity_ = 0, amplitude_ = 1, tolerance_ = 0;
@@ -453,13 +529,18 @@ public:
 		const double h = size_/static_cast<double>(n_-1), dt = interval_/static_cast<double>(substeps_);
 		if (WaveSpeed()*dt/h > 0.5) return Fail(error, "time step violates the CFL limit");
 		configured_ = true;
-		Describe(candidate, Id);
-		candidate.cache.outputs = {{"surface", "mesh.v1", {{"normal","1","f32x3"},{"position","m","f32x3"},{"velocity","m/s","f32x3"}}}};
+		Describe(candidate, Id, "2"); // 2: mesh.v2 output (static topology, UVs, displacement attribute)
+		candidate.cache.outputs = {{"surface", "mesh.v2", {{"displacement","m","f32"},{"material","m","f32x2"},
+			{"normal","1","f32x3"},{"position","m","f32x3"},{"velocity","m/s","f32x3"}}}};
 		candidate.ports = {
-			{"surface", "surface", "m", "mesh.v1", true, "surface"},
-			{"load", "pressure", "Pa", "grid.v1", false, ""}};
+			{"surface", "surface", "m", "mesh.v2", true, "surface", {{"normal","normal","1",3},{"position","position","m",3},
+				{"velocity","velocity","m/s",3}}, ""},
+			{"load", "pressure", "Pa", "grid.v1", false, "", {{"pressure","pressure","Pa",1}}, ""}};
 		candidate.evidence.fidelity = fidelity;
 		candidate.evidence.cases.push_back(FrequencyCase(candidate.effectiveParameters));
+		candidate.evidence.conditions = {{"boundary", {"fixed"}}, {"load", {"none", "port"}}};
+		candidate.evidence.scope = "Velocity Verlet on a structured square membrane with fixed edges: the measured "
+			"fundamental frequency against (c/2) sqrt(2)/a.";
 		d = std::move(candidate);
 		return true;
 	}
@@ -513,11 +594,13 @@ private:
 		Acceleration(a);
 		for (std::size_t q = 0; q < u_.size(); ++q) v_[q] += .5*dt*a[q];
 	}
-	bool PublishOutputs(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports,
-		std::uint64_t& published, std::string& error) override {
+	// mesh.v2: connectivity and the material UVs in one static payload.
+	bool Encode(Bytes& frame, Bytes& fixed, std::string& digest, std::string& error) const {
 		const double h = size_/static_cast<double>(n_-1);
 		MeshFrame m;
 		m.velocityUnits = "m/s";
+		MeshUVSet uv{"material", "m", {}};
+		MeshAttribute displacement{"displacement", "m", 1, {}};
 		for (std::size_t j = 0; j < n_; ++j) for (std::size_t i = 0; i < n_; ++i) {
 			const std::size_t q = i+n_*j;
 			m.positions.insert(m.positions.end(), {F32(Coordinate(i)), F32(Coordinate(j)), F32(u_[q])});
@@ -526,16 +609,40 @@ private:
 			const double gy = (u_[i+n_*std::min(j+1,n_-1)] - u_[i+n_*(j?j-1:0)])/(h*static_cast<double>(std::min(j+1,n_-1)-(j?j-1:0)));
 			const double len = std::sqrt(gx*gx+gy*gy+1);
 			m.normals.insert(m.normals.end(), {F32(-gx/len), F32(-gy/len), F32(1/len)});
+			uv.values.insert(uv.values.end(), {F32(Coordinate(i)), F32(Coordinate(j))});
+			displacement.values.push_back(F32(u_[q]));
 		}
 		for (std::size_t j = 0; j+1 < n_; ++j) for (std::size_t i = 0; i+1 < n_; ++i) {
 			const auto a = static_cast<std::uint32_t>(i+n_*j), b = a+1, c = static_cast<std::uint32_t>(a+n_), e = c+1;
 			m.indices.insert(m.indices.end(), {a, b, e, a, e, c});
 		}
+		m.uvSets.push_back(std::move(uv));
+		m.attributes.push_back(std::move(displacement));
+		MeshStaticLayout layout;
+		layout.topology = true;
+		layout.staticUVSets = {"material"};
+		return EncodeMeshV2(m, layout, CodecBudget, frame, fixed, digest, error);
+	}
+	bool OfferState(double time, IPortExchange* ports, std::string& error) override {
 		auto bytes = std::make_shared<Bytes>();
-		if (!EncodeMesh(m, CodecBudget, *bytes, error)) return false;
+		auto fixed = std::make_shared<Bytes>();
+		std::string digest;
+		if (!Encode(*bytes, *fixed, digest, error) || !ports->OfferStatic(MeshTopologyStaticType, fixed, error)) return false;
+		return ports->Offer("surface", time, std::move(bytes), error);
+	}
+	bool PublishOutputs(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports,
+		std::uint64_t& published, std::string& error) override {
+		auto bytes = std::make_shared<Bytes>();
+		auto fixed = std::make_shared<Bytes>();
+		std::string digest, declared;
+		if (!Encode(*bytes, *fixed, digest, error)) return false;
+		// The static topology goes to the sink once per run, before the first frame.
+		if (!staticsSent_ && !sink.PublishStatic(MeshTopologyStaticType, fixed, declared, error)) return false;
+		staticsSent_ = true;
 		std::shared_ptr<const Bytes> payload = std::move(bytes);
 		if (!sink.Publish(index, "surface", time, payload, {}, error)) return false;
-		if (ports && !ports->Offer("surface", time, payload, error)) return false;
+		if (ports && (!ports->OfferStatic(MeshTopologyStaticType, fixed, error) ||
+			!ports->Offer("surface", time, payload, error))) return false;
 		published = 1;
 		return true;
 	}
@@ -587,6 +694,8 @@ private:
 		u_.swap(u); v_.swap(v); load_.swap(load);
 		return true;
 	}
+	void CopyFields(std::vector<std::vector<double>>& f) const override { f = {u_, v_, load_}; }
+	void SetFields(const std::vector<std::vector<double>>& f) override { u_ = f[0]; v_ = f[1]; load_ = f[2]; }
 
 	std::size_t n_ = 17;
 	double size_ = 1, tension_ = 100, density_ = 1, amplitude_ = 0.01, tolerance_ = 0;

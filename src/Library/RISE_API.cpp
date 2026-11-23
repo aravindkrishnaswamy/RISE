@@ -11003,6 +11003,8 @@ namespace RISE
 #include "RISE_API.h"
 #include "SceneEditor/SceneEditController.h"
 #include "SceneEditor/MaterialPreview.h"
+#include "SceneEditor/LiveSimulation.h"           // simulation M3c
+#include "Simulation/BuiltinSolvers.h"            // simulation M3c
 #include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
 #include "Utilities/Transformable.h"
 
@@ -12150,6 +12152,216 @@ namespace RISE
 		if( !p->GetHasAnimation( hasAnimation ) ) return false;
 		*outHasAnimation = hasAnimation;
 		return true;
+	}
+
+	// ---- Simulation M3c ----
+
+	namespace
+	{
+		void M3cCopyText( const std::string& text, char* buf, unsigned int len )
+		{
+			if( !buf || len == 0 ) return;
+			const std::size_t n = std::min<std::size_t>( text.size(), len - 1 );
+			std::memcpy( buf, text.data(), n );
+			buf[n] = '\0';
+		}
+		template <typename T> void M3cSet( T* out, const T& value ) { if( out ) *out = value; }
+		std::vector<unsigned char> M3cBytes( const unsigned char* data, unsigned int len )
+		{
+			return data && len ? std::vector<unsigned char>( data, data + len ) : std::vector<unsigned char>();
+		}
+		//! Runs `fn`; an exception becomes false with its message (the ABI is bool).
+		template <typename F> bool M3cGuard( char* errorBuf, unsigned int errorBufLen, F fn )
+		{
+			std::string error;
+			bool ok = false;
+			try { ok = fn( error ); }
+			catch( const std::exception& e ) { error = e.what(); ok = false; }
+			catch( ... ) { error = "unknown exception"; ok = false; }
+			M3cCopyText( ok ? std::string() : error, errorBuf, errorBufLen );
+			return ok;
+		}
+	}
+
+	bool RISE_API_RegisterBuiltinSolvers( char* errorBuf, unsigned int errorBufLen )
+	{
+		return M3cGuard( errorBuf, errorBufLen, []( std::string& error ) {
+			return Simulation::RegisterBuiltinSolvers( error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetTimeVaryingAssetCount(
+		SceneEditController* p, unsigned int* outCount )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::TimelineRange> ranges;
+			if( !p->GetTimeVaryingAssets( ranges ) ) return false;
+			M3cSet( outCount, static_cast<unsigned int>( ranges.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetTimeVaryingAsset(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen,
+		int* outKind, int* outState, bool* outPredictive,
+		double* outStart, double* outEnd, double* outAvailableEnd, double* outInterval,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::TimelineRange> ranges;
+			if( !p->GetTimeVaryingAssets( ranges ) || index >= ranges.size() ) return false;
+			const Simulation::TimelineRange& r = ranges[index];
+			M3cCopyText( r.name, nameBuf, nameBufLen );
+			M3cSet( outKind, static_cast<int>( r.kind ) );
+			M3cSet( outState, static_cast<int>( r.state ) );
+			M3cSet( outPredictive, r.fidelity == "predictive" );
+			M3cSet( outStart, r.start );
+			M3cSet( outEnd, r.end );
+			M3cSet( outAvailableEnd, r.availableEnd );
+			M3cSet( outInterval, r.interval );
+			M3cSet( outFramesAvailable, static_cast<unsigned long long>( r.framesAvailable ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( r.framesTotal ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackPlay( SceneEditController* p, double fps, bool loop )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) { return p->PlaybackPlay( fps, loop ); } );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackPlayRange(
+		SceneEditController* p, double timeStart, double timeEnd, double fps, bool loop )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			return p->PlaybackPlayRange( timeStart, timeEnd, fps, loop );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackPause( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) { return p->PlaybackPause(); } );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackSeek( SceneEditController* p, double t )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) { return p->PlaybackSeek( t ); } );
+	}
+
+	bool RISE_API_SceneEditController_GetPlaybackStatus(
+		SceneEditController* p, bool* outPlaying, bool* outLive, bool* outWaitingForSolver,
+		double* outTime, double* outTimeStart, double* outTimeEnd, double* outFps,
+		unsigned long long* outFramesShown, unsigned long long* outFramesDropped,
+		unsigned long long* outSolverWaits, unsigned long long* outPassesCompleted,
+		double* outWallSeconds )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Implementation::PlaybackStatus s;
+			if( !p->GetPlaybackStatus( s ) ) return false;
+			M3cSet( outPlaying, s.playing );
+			M3cSet( outLive, s.live );
+			M3cSet( outWaitingForSolver, s.waitingForSolver );
+			M3cSet( outTime, s.time );
+			M3cSet( outTimeStart, s.start );
+			M3cSet( outTimeEnd, s.end );
+			M3cSet( outFps, s.fps );
+			M3cSet( outFramesShown, static_cast<unsigned long long>( s.framesShown ) );
+			M3cSet( outFramesDropped, static_cast<unsigned long long>( s.framesDropped ) );
+			M3cSet( outSolverWaits, static_cast<unsigned long long>( s.solverWaits ) );
+			M3cSet( outPassesCompleted, static_cast<unsigned long long>( s.passesCompleted ) );
+			M3cSet( outWallSeconds, s.wallSeconds );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationAttach(
+		SceneEditController* p, const char* geometryName, const char* solverId,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName || !solverId ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationAttach( geometryName, solverId, M3cBytes( parameters, parametersLen ), error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationDetach(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationDetach( geometryName, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationReset(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationReset( geometryName, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationSetParameters(
+		SceneEditController* p, const char* geometryName,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationSetParameters( geometryName, M3cBytes( parameters, parametersLen ), error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationRecord(
+		SceneEditController* p, const char* geometryName, const char* cacheDirectory,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName || !cacheDirectory ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationRecord( geometryName, cacheDirectory, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetLiveSimulationStatus(
+		SceneEditController* p, const char* geometryName,
+		bool* outPlaying, bool* outFinished, bool* outFailed,
+		long long* outLatestFrame, double* outLatestSceneTime,
+		double* outFirstSceneTime, double* outLastSceneTime,
+		unsigned long long* outFramesPublished, unsigned long long* outFramesTotal,
+		double* outSimulatedTime )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Implementation::LiveSimulationStatus s;
+			if( !p->GetLiveSimulationStatus( geometryName, s ) ) return false;
+			M3cSet( outPlaying, s.playing );
+			M3cSet( outFinished, s.finished );
+			M3cSet( outFailed, s.failed );
+			M3cSet( outLatestFrame, static_cast<long long>( s.latestFrame ) );
+			M3cSet( outLatestSceneTime, s.latestSceneTime );
+			M3cSet( outFirstSceneTime, s.firstSceneTime );
+			M3cSet( outLastSceneTime, s.lastSceneTime );
+			M3cSet( outFramesPublished, static_cast<unsigned long long>( s.framesPublished ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( s.framesTotal ) );
+			M3cSet( outSimulatedTime, s.simulatedTime );
+			return true;
+		} );
+	}
+
+	unsigned int RISE_API_SceneEditController_LiveSimulationCount( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		try { return p->LiveSimulationCount(); } catch( ... ) { return 0; }
 	}
 
 	bool RISE_API_SceneEditController_PainterPreview(

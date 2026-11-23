@@ -103,10 +103,13 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Simulation/SimulationGrid.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationCache.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationMesh.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationField.cpp			\
 	$(PATHLIBRARY)Simulation/SimulatedMeshSource.cpp		\
 	$(PATHLIBRARY)Simulation/SimulationSolver.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationHost.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationWorker.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationTimeline.cpp		\
+	$(PATHLIBRARY)Simulation/BuiltinSolvers.cpp			\
 	$(PATHLIBRARY)Simulation/Cloth/ClothMaterial.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothLinearAlgebra.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothModel.cpp		\
@@ -518,6 +521,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/CancellableProgressCallback.cpp		\
 	$(PATHLIBRARY)SceneEditor/SceneEditor.cpp						\
 	$(PATHLIBRARY)SceneEditor/SceneEditController.cpp				\
+	$(PATHLIBRARY)SceneEditor/LiveSimulation.cpp				\
 	$(PATHLIBRARY)SceneEditor/CameraIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/ObjectIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/LightIntrospection.cpp				\

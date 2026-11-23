@@ -596,6 +596,97 @@ namespace
 	}
 
 	//////////////////////////////////////////////////////////////////
+	//! mesh.v2: the fixture's frames over one static topology record that
+	//! also carries a UV set "st" = ((x+1)/2, (y+0.75)/1.5) of the rest sheet.
+	bool WriteCacheV2( const fs::path& root, const Fixture& fx, const unsigned salt )
+	{
+		std::error_code ec;
+		fs::remove_all( root, ec );
+		CacheDescription d = Describe( fx, salt );
+		d.outputs = { { "surface", "mesh.v2", { { "position", "m", "f32x3" }, { "st", "1", "f32x2" }, { "velocity", "m/s", "f32x3" } } } };
+		CacheWriter writer;
+		std::string error;
+		if( !writer.Begin( root, d, "", false, kBudget, error ) ) { std::printf( "  v2 Begin: %s\n", error.c_str() ); return false; }
+		MeshUVSet uv{ "st", "1", {} };
+		for( int j = 0; j < fx.ny; ++j ) for( int i = 0; i < fx.nx; ++i ) {
+			double x, y; fx.Rest( i, j, x, y );
+			uv.values.push_back( Bits( ( x + 1.0 ) / 2.0 ) );
+			uv.values.push_back( Bits( ( y + 0.75 ) / 1.5 ) );
+		}
+		MeshStaticLayout layout;
+		layout.topology = true;
+		layout.staticUVSets = { "st" };
+		for( int k = 0; k < fx.count; ++k ) {
+			MeshFrame f = fx.Frame( k );
+			f.uvSets.push_back( uv );
+			Bytes frame, fixed;
+			std::string digest, declared;
+			if( !EncodeMeshV2( f, layout, kBudget, frame, fixed, digest, error ) ||
+				( k == 0 && !writer.AppendStatic( MeshTopologyStaticType, fixed, declared, error ) ) ||
+				!writer.Append( k, "surface", fx.start + k * fx.dt, frame, error ) ) {
+				std::printf( "  v2 frame %d: %s\n", k, error.c_str() );
+				return false;
+			}
+		}
+		return writer.Seal( error );
+	}
+
+	void TestMeshV2( const fs::path& scratch )
+	{
+		std::printf( "V: mesh.v2 with a static topology and UVs\n" );
+		Fixture fx;
+		const fs::path root = scratch / "v2";
+		Check( WriteCacheV2( root, fx, 41 ), "V write mesh.v2 cache" );
+		std::string error;
+		SimulatedMeshGeometry* g = Bind( root, SimulatedMeshGeometry::Options(), error );
+		Check( g != nullptr, "V bind a mesh.v2 cache", error );
+		if( !g ) return;
+		const MeshFrame f0 = fx.Frame( 0 );
+		TriangleMeshGeometryIndexed* s0 = Static( Doubles( f0.positions ), Doubles( f0.normals ), f0.indices, true, false );
+		Compare c = CompareHits( *g, *s0 );
+		Check( c.hitsA > 500 && c.hitMismatch == 0 && c.rangeNotEqual == 0 && c.normalNotEqual == 0,
+			"V mesh.v2 bind frame bit-equal to a static mesh", Describe( c ) );
+		s0->release();
+		// Frame 0 sits at rest in x and y, so the UV of a hit is a known linear map of it.
+		int checked = 0, wrong = 0, chartless = 0;
+		for( const Ray& ray : Rays() ) {
+			RayIntersectionGeometric ri( ray, nullRasterizerState );
+			g->IntersectRay( ri, true, true, false );
+			if( !ri.bHit ) continue;
+			const Point3 p = ray.PointAtLength( ri.range );
+			const double u = ( p.x + 1.0 ) / 2.0, v = ( p.y + 0.75 ) / 1.5;
+			if( std::fabs( ri.ptCoord.x - u ) > 1e-5 || std::fabs( ri.ptCoord.y - v ) > 1e-5 ) ++wrong;
+			if( !ri.derivatives.texChartValid ) ++chartless;
+			++checked;
+		}
+		Check( checked > 500 && wrong == 0 && chartless == 0, "V the UV set is the texture coordinate of every hit",
+			std::to_string( wrong ) + " of " + std::to_string( checked ) + " wrong, " + std::to_string( chartless ) + " without a chart" );
+		// A later frame installs over the same static topology; blurred hits keep a UV chart.
+		const double t2 = fx.start + 2 * fx.dt, E = 0.25;
+		Check( g->PrepareAssetForRender( RenderTimeSupport{ t2, t2 - 0.5 * E, t2 + 0.5 * E }, error, nullptr ) &&
+			g->InstalledFrame() == 2 && g->BlurActive(), "V install a blurred mesh.v2 frame", error );
+		int blurred = 0, blurredChart = 0, inside = 0;
+		{
+			SampleTimeScope at( t2 + 0.1 * E );
+			for( const Ray& ray : Rays() ) {
+				RayIntersectionGeometric ri( ray, nullRasterizerState );
+				g->IntersectRay( ri, true, true, false );
+				if( !ri.bHit ) continue;
+				++blurred;
+				if( ri.derivatives.texChartValid ) ++blurredChart;
+				if( ri.ptCoord.x >= -1e-9 && ri.ptCoord.x <= 1 + 1e-9 && ri.ptCoord.y >= -1e-9 && ri.ptCoord.y <= 1 + 1e-9 ) ++inside;
+			}
+		}
+		Check( blurred > 300 && blurredChart == blurred && inside == blurred, "V blurred hits interpolate the UVs with a valid chart" );
+		g->release();
+		// A missing static payload fails the bind closed.
+		for( const auto& e : fs::directory_iterator( root ) ) if( e.path().extension() == ".static" ) fs::remove( e.path() );
+		SimulatedMeshGeometry* broken = Bind( root, SimulatedMeshGeometry::Options(), error );
+		Check( broken == nullptr, "V a missing static topology fails the bind", error );
+		if( broken ) broken->release();
+	}
+
+	//////////////////////////////////////////////////////////////////
 	std::string SceneText( const fs::path& cache, const std::string& extra, const double exposure )
 	{
 		char cam[256];
@@ -773,6 +864,7 @@ int main( int argc, char** argv )
 		TestFailures( scratch );
 		TestFreezeAndRollback( scratch );
 		TestJob( scratch );
+		TestMeshV2( scratch );
 	}
 	fs::remove_all( RISE::TestSupport::ScratchTestRoot( "rise_simulated_mesh_" ), ec );
 	std::printf( "\n%d passed, %d failed\n", passes, failures );

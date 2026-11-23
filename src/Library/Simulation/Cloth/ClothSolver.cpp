@@ -9,7 +9,7 @@
 #include "pch.h"
 #include "ClothSolver.h"
 #include "ClothValidation.h"
-#include "../SimulationGrid.h"
+#include "../SimulationField.h"
 #include "../SimulationMesh.h"
 
 #include <algorithm>
@@ -31,8 +31,10 @@ using V = RISECBOR64::Value;
 using namespace Cloth;
 
 constexpr std::size_t CodecBudget = std::size_t(256) << 20;
-constexpr const char* SolverVersion = "m3a.2";
-constexpr const char* StateFormat = "cloth.shell.state.v1";
+// m3a.3: mesh.v2 output (static topology with material UVs), field.v1
+// surface_load, held port values per macro step in the state.
+constexpr const char* SolverVersion = "m3a.3";
+constexpr const char* StateFormat = "cloth.shell.state.v2";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";
 
@@ -165,12 +167,69 @@ bool ParseMaterial(const V* v, Material& m, std::string& error)
 	return true;
 }
 
-bool ParseMotion(const V* v, Motion& motion, V& effective, std::string& error)
+// A rigid motion sampled from the scene inputs (ISceneInputs::SampleTransform)
+// at any time the model asks for, cached for the last time asked. A sampling
+// failure is latched and fails the step that hit it.
+class SceneTrack final : public TransformTrack {
+public:
+	SceneTrack(const ISceneInputs& inputs, std::string name) : inputs_(inputs), name_(std::move(name)) {}
+	void At(double t, double rotation[9], double translation[3]) const override {
+		std::lock_guard<std::mutex> hold(mutex_);
+		if (!cached_ || t != time_) {
+			RigidTransform m;
+			std::string error;
+			if (!inputs_.SampleTransform(name_, t, m, error)) {
+				if (error_.empty()) error_ = "scene transform " + name_ + " at t=" + std::to_string(t) + ": " + error;
+				m = RigidTransform{};
+			}
+			transform_ = m;
+			time_ = t;
+			cached_ = true;
+		}
+		std::copy(transform_.rotation.begin(), transform_.rotation.end(), rotation);
+		std::copy(transform_.translation.begin(), transform_.translation.end(), translation);
+	}
+	std::string Error() const { std::lock_guard<std::mutex> hold(mutex_); return error_; }
+private:
+	const ISceneInputs& inputs_;
+	const std::string name_;
+	mutable std::mutex mutex_;
+	mutable bool cached_ = false;
+	mutable double time_ = 0;
+	mutable RigidTransform transform_;
+	mutable std::string error_;
+};
+
+// Scene inputs a configuration reads: names in first-use order (the key
+// order) and the transform tracks to check after each step.
+struct SceneUse {
+	const ISceneInputs* inputs = nullptr;
+	std::vector<std::string> names;
+	std::vector<std::shared_ptr<const SceneTrack>> tracks;
+	void Name(const std::string& n) { if (std::find(names.begin(), names.end(), n) == names.end()) names.push_back(n); }
+};
+
+bool ParseMotion(const V* v, Motion& motion, V& effective, SceneUse& scene, std::string& error)
 {
 	if (!v) { motion = Motion{}; effective = V::MapValue({{"type", V::String("fixed")}}); return true; }
 	Reader r(*v, "pin motion", error);
-	const std::string type = r.Text("type", "fixed", {"fixed", "translate", "rotate", "oscillate"});
-	if (type == "translate") { motion.type = Motion::Type::Translate; motion.vector = r.Vector("velocity", {{0, 0, 0}}); }
+	const std::string type = r.Text("type", "fixed", {"fixed", "translate", "rotate", "oscillate", "scene_transform"});
+	if (type == "scene_transform") {
+		// A named rigid motion from the scene; its identity enters the key
+		// through SolverDescription::inputs.
+		const std::string input = r.Text("input", "-", {}, false);
+		RigidTransform probe;
+		std::string hash;
+		if (input == "-") return r.Bad("a scene_transform motion names its scene input (input)");
+		if (!scene.inputs || !scene.inputs->Identity(input, hash, error) || !scene.inputs->SampleTransform(input, 0.0, probe, error))
+			return Fail(error, "motion scene input " + input + ": " + error);
+		r.out.emplace_back("input", V::String(input));
+		motion.type = Motion::Type::Track;
+		auto track = std::make_shared<SceneTrack>(*scene.inputs, input);
+		scene.tracks.push_back(track);
+		motion.track = track;
+		scene.Name(input);
+	} else if (type == "translate") { motion.type = Motion::Type::Translate; motion.vector = r.Vector("velocity", {{0, 0, 0}}); }
 	else if (type == "oscillate") {
 		motion.type = Motion::Type::Oscillate;
 		motion.vector = r.Vector("amplitude", {{0, 0, 0}});
@@ -192,7 +251,8 @@ bool ParseMotion(const V* v, Motion& motion, V& effective, std::string& error)
 	return true;
 }
 
-bool ParsePins(const V* v, const SheetSpec& sheet, std::vector<PinGroup>& pins, V& effective, std::string& error)
+bool ParsePins(const V* v, const SheetSpec& sheet, std::vector<PinGroup>& pins, V& effective, SceneUse& scene,
+	std::string& error)
 {
 	V::Values out;
 	pins.clear();
@@ -203,7 +263,7 @@ bool ParsePins(const V* v, const SheetSpec& sheet, std::vector<PinGroup>& pins, 
 		const std::uint64_t depth = r.Count("depth", 1, 1, 1000);
 		V motionValue;
 		PinGroup group;
-		if (!ParseMotion(r.Raw("motion"), group.motion, motionValue, error)) return false;
+		if (!ParseMotion(r.Raw("motion"), group.motion, motionValue, scene, error)) return false;
 		r.out.emplace_back("motion", motionValue);
 		if (!r.Finish()) return false;
 		const std::uint32_t nu = sheet.verticesU, nv = sheet.verticesV;
@@ -253,7 +313,7 @@ bool Numbers(const V* v, std::vector<double>& out)
 }
 
 bool ParseColliders(const V* v, const ISceneInputs& inputs, std::vector<Collider>& colliders,
-	std::vector<MeshCollider>& meshes, V& effective, std::string& error)
+	std::vector<MeshCollider>& meshes, V& effective, SceneUse& scene, std::string& error)
 {
 	V::Values out;
 	colliders.clear();
@@ -294,7 +354,8 @@ bool ParseColliders(const V* v, const ISceneInputs& inputs, std::vector<Collider
 			c.b = r.Vector("max", {{0.5, 0.5, 0.5}});
 			if (!(c.a[0] < c.b[0] && c.a[1] < c.b[1] && c.a[2] < c.b[2])) r.Bad("box min must be below max");
 		} else {
-			// A triangle mesh: inline arrays, or a scene input (mesh.v1) sampled at time 0.
+			// A triangle mesh: inline arrays, or a scene input (mesh.v1 or
+			// mesh.v2, its static topology through the inputs) sampled at time 0.
 			MeshCollider mesh;
 			const std::string input = r.Text("scene_input", "-", {}, false);
 			if (input != "-") {
@@ -303,8 +364,11 @@ bool ParseColliders(const V* v, const ISceneInputs& inputs, std::vector<Collider
 				MeshFrame frame;
 				if (!inputs.Identity(input, hash, error) || !inputs.Sample(input, 0.0, bytes, codec, error) || !bytes)
 					return Fail(error, "collider scene input " + input + ": " + error);
-				if (codec != "mesh.v1" || !DecodeMesh(*bytes, CodecBudget, frame, error))
-					return Fail(error, "collider scene input " + input + " is not a mesh.v1 frame: " + error);
+				const StaticPayloadResolver resolve = [&inputs](const std::string& digest, std::size_t budget,
+					std::shared_ptr<const Bytes>& fixed, std::string& why) { return inputs.ResolveStatic(digest, budget, fixed, why); };
+				if ((codec != "mesh.v1" && codec != "mesh.v2") || !DecodeMesh(*bytes, CodecBudget, resolve, frame, error))
+					return Fail(error, "collider scene input " + input + " is not a mesh frame: " + error);
+				scene.Name(input);
 				for (std::uint32_t bits : frame.positions) mesh.vertices.push_back(FromF32(bits));
 				mesh.triangles = frame.indices;
 				r.out.emplace_back("scene_input", V::String(input));
@@ -328,7 +392,7 @@ bool ParseColliders(const V* v, const ISceneInputs& inputs, std::vector<Collider
 				r.out.emplace_back("triangles", V::ArrayValue(ts));
 			}
 			V motionValue;
-			if (!ParseMotion(r.Raw("motion"), mesh.motion, motionValue, error)) return false;
+			if (!ParseMotion(r.Raw("motion"), mesh.motion, motionValue, scene, error)) return false;
 			r.out.emplace_back("motion", motionValue);
 			if (!r.Finish()) return false;
 			meshes.push_back(std::move(mesh));
@@ -568,6 +632,19 @@ std::vector<EvidenceCase> Evidence(const EvidenceKey& k)
 
 // ------------------------------------------------------------------ solver
 
+// Everything that determines later payloads (checkpoint and rollback).
+struct ClothState {
+	double t = 0, segStart = 0, segTarget = 0, heldFor = 0, hPrev = 0, time = 0;
+	std::uint64_t next = 0, segN = 0, segJ = 0;
+	bool finished = false, held = false, havePrev = false;
+	std::vector<double> x, v, xPrev, vPrev, pressure, traction;
+};
+
+struct ClothToken final : SolverStateToken {
+	const void* owner = nullptr;
+	ClothState state;
+};
+
 class ClothSolver final : public ISimulationSolver {
 public:
 	bool Configure(const V& parameters, const ISceneInputs&, SolverDescription& d, std::string& error) override;
@@ -578,6 +655,8 @@ public:
 	bool Checkpoint(Bytes& state, std::string& error) override;
 	SolverPosition Position() const override { return {t_, next_, finished_}; }
 	void RequestStop() override { stop_ = true; }
+	bool SaveState(std::shared_ptr<const SolverStateToken>& token, std::string& error) override;
+	bool RestoreState(const SolverStateToken& token, std::string& error) override;
 
 private:
 	double OutputTime(std::int64_t i) const { return static_cast<double>(i)*interval_; }
@@ -586,8 +665,13 @@ private:
 		r.position = Position();
 		return true;
 	}
+	bool Encode(Bytes& frame, Bytes& fixed, std::string& error);
 	bool Publish(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports, std::string& error);
+	bool OfferState(double time, IPortExchange& ports, std::string& error);
 	bool AcceptLoads(double time, IPortExchange* ports, std::string& error);
+	ClothState Capture() const;
+	bool Apply(ClothState&& state, std::string& error);
+	bool TrackFailure(std::string& error) const;
 
 	bool configured_ = false, started_ = false, finished_ = false;
 	SheetSpec sheet_;
@@ -599,9 +683,14 @@ private:
 	unsigned paceMs_ = 0, threads_ = 1;
 	ClothSystem system_;
 	std::vector<std::uint32_t> indices_;
-	double t_ = 0, segStart_ = 0, segTarget_ = 0;
+	std::vector<std::uint32_t> materialUV_;   // rest (u, v) per vertex, m, binary32
+	std::string topology_;                    // topology digest: the surface_load domain
+	std::vector<std::shared_ptr<const SceneTrack>> tracks_;
+	double t_ = 0, segStart_ = 0, segTarget_ = 0, heldFor_ = 0;
 	std::int64_t next_ = 0;
 	std::uint64_t segN_ = 0, segJ_ = 0;
+	bool held_ = false;                       // port values read for the macro step ending at heldFor_
+	bool staticSent_ = false;                 // topology published to the sink in this run
 	StepStats stats_;
 	std::atomic<bool> stop_{false};
 };
@@ -648,9 +737,11 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	const std::uint64_t substeps = p.Count("substeps", interactive ? 2 : 8, 1, 100000);
 	model.gravity = p.Vector("gravity", {{0, -9.81, 0}});
 	V pinsValue, collidersValue;
-	if (!ParsePins(p.Raw("pins"), sheet, model.pins, pinsValue, error)) return false;
+	SceneUse scene;
+	scene.inputs = &inputs;
+	if (!ParsePins(p.Raw("pins"), sheet, model.pins, pinsValue, scene, error)) return false;
 	p.out.emplace_back("pins", pinsValue);
-	if (!ParseColliders(p.Raw("colliders"), inputs, model.colliders, model.meshColliders, collidersValue, error)) return false;
+	if (!ParseColliders(p.Raw("colliders"), inputs, model.colliders, model.meshColliders, collidersValue, scene, error)) return false;
 	p.out.emplace_back("colliders", collidersValue);
 	const std::string contact = p.Text("contact", interactive ? "penalty" : "barrier", {"barrier", "penalty"});
 	model.contact = contact == "barrier" ? ContactModel::Barrier : ContactModel::Penalty;
@@ -706,6 +797,14 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	count_ = frames; substeps_ = substeps; interval_ = 1/rate; paceMs_ = pace; threads_ = threads;
 	indices_.clear();
 	for (const auto& t : built.triangles) indices_.insert(indices_.end(), {t.v[0], t.v[1], t.v[2]});
+	// Material coordinates: the vertex's rest position on the sheet, metres.
+	materialUV_.clear();
+	for (std::uint32_t j = 0; j < sheet.verticesV; ++j) for (std::uint32_t i = 0; i < sheet.verticesU; ++i) {
+		materialUV_.push_back(F32(sheet.sizeU*static_cast<double>(i)/static_cast<double>(sheet.verticesU - 1)));
+		materialUV_.push_back(F32(sheet.sizeV*static_cast<double>(j)/static_cast<double>(sheet.verticesV - 1)));
+	}
+	topology_ = MeshTopologyDigest(built.Vertices(), indices_);
+	tracks_ = scene.tracks;
 	configured_ = true;
 
 	candidate.solverId = ClothSolverId;
@@ -714,19 +813,25 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	candidate.cache.count = count_;
 	candidate.cache.startTime = 0;
 	candidate.cache.interval = interval_;
-	candidate.cache.outputs = {{"surface", "mesh.v1", {{"normal", "1", "f32x3"}, {"position", "m", "f32x3"}, {"velocity", "m/s", "f32x3"}}}};
+	candidate.cache.outputs = {{"surface", "mesh.v2", {{"material", "m", "f32x2"}, {"normal", "1", "f32x3"},
+		{"position", "m", "f32x3"}, {"velocity", "m/s", "f32x3"}}}};
+	candidate.inputs = scene.names;
 	Bytes records;
 	if (!RISECBOR64::Encode(V::MapValue({{"format", V::String("cloth.material.v1")}, {"material", MaterialToValue(model.material)},
 		{"units", MaterialUnits()}, {"damping", V::String("calibrated, not measured")}}), records, &error)) return false;
 	candidate.cache.physicalRecords = records;
 	candidate.ports = {
-		{StatePort, "surface", "m", "mesh.v1", true, "surface"},
-		{LoadPort, "surface load", "Pa", "grid.v1", false, ""}};
+		{StatePort, "surface", "m", "mesh.v2", true, "surface",
+			{{"normal", "normal", "1", 3}, {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""},
+		{LoadPort, "surface load", "Pa", "field.v1", false, "",
+			{{"pressure", "pressure", "Pa", 1}, {"traction", "traction", "Pa", 3}}, topology_}};
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true,
 		"portable C++17; `threads` (default min(4, cores)) does not change results"}};
 	caps.interactive = caps.deterministic = caps.resumable = caps.externalMacroStep = true;
-	caps.fidelityModes = {"preview", "predictive"};
+	caps.rollback = true;
+	caps.threadCountInvariant = true; // ClothParallel.h: bitwise the same for any thread count
+	caps.modes = {"bake", "interactive"};
 	const std::uint64_t n = built.Vertices();
 	// About a dozen 3-vectors of doubles per vertex (state, history, Newton work)
 	// plus three block matrices (pattern, damping, Hessian) of ~13 3x3 blocks per row.
@@ -734,9 +839,54 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	// predictive needs bake mode, no air drag, and contact (if any) by barrier
 	// without self-collision; the contact cases then join the evidence.
 	const bool barrierContact = model.contact == ContactModel::Barrier && anyContact;
-	const bool predictiveConditions = !interactive && model.dragCoefficient == 0 &&
+	const bool sceneMotion = !scene.tracks.empty();
+	const bool predictiveConditions = !interactive && model.dragCoefficient == 0 && !sceneMotion &&
 		(!anyContact || (barrierContact && !model.barrier.selfCollision));
 	candidate.evidence.fidelity = predictiveConditions ? "predictive" : "preview";
+	caps.earnableFidelity = predictiveConditions ? std::vector<std::string>{"preview", "predictive"} :
+		std::vector<std::string>{"preview"};
+	if (!predictiveConditions)
+		caps.fidelityLimit = interactive ? "interactive mode accepts truncated Newton iterates" :
+			model.dragCoefficient > 0 ? "air drag is explicit and unvalidated" :
+			sceneMotion ? "motion sampled from the scene is not covered by the validation cases" :
+			model.contact == ContactModel::Penalty ? "penalty contact has no collision detection" :
+			"self-collision is not validated";
+	// What the label covers (docs/SIMULATION_M3A_RESULTS.md section 5), as
+	// conditions and one sentence; both are bound into the evidence digests.
+	{
+		std::vector<std::string> colliders;
+		if (!model.colliders.empty()) colliders.push_back("analytic");
+		bool movingMesh = false, staticMesh = false;
+		for (const auto& m : model.meshColliders) (m.motion.Moving() ? movingMesh : staticMesh) = true;
+		if (movingMesh) colliders.push_back("mesh-rigid-moving");
+		if (staticMesh) colliders.push_back("mesh-static");
+		if (colliders.empty()) colliders.push_back("none");
+		std::sort(colliders.begin(), colliders.end());
+		std::vector<std::string> pins{"none"};
+		for (const auto& g : model.pins) if (!g.vertices.empty()) pins = {"present"};
+		const char* bending = sheet.bending == BendingModel::Lines ? "lines" : "hinges";
+		candidate.evidence.conditions = {
+			{"bending", {bending}},
+			{"colliders", colliders},
+			{"contact", {!anyContact ? "none" : model.contact == ContactModel::Barrier ? "barrier" : "penalty"}},
+			{"drag", {model.dragCoefficient > 0 ? "quadratic" : "none"}},
+			{"integrator", {integrator}},
+			{"material", {model.material.name}},
+			{"mesh", {"structured-sheet"}},
+			{"mode", {mode}},
+			{"motion", {sceneMotion ? "scene-transform" : "prescribed"}},
+			{"self_collision", {model.barrier.selfCollision && barrierContact ? "true" : "false"}},
+			{"triangulation", {sheet.triangulation == Triangulation::Alternating ? "alternating" : "consistent"}}};
+		std::string scope = std::string("The cloth model (structured sheet, ") + bending + " bending, the material record " +
+			model.material.name + ") integrated by " + integrator + " in " + mode + " mode";
+		if (barrierContact) scope += ", with barrier contact and lagged smoothed friction against analytic shapes and "
+			"static or rigidly moving mesh colliders at contact parameters whose own cases pass";
+		scope += ": certified on canonical problems (force balance, an analytic drape, analytic friction, an "
+			"intersection-free tumble, no energy gain); it does not bound the error of a given bake and does not "
+			"cover self-collision, air drag, imported irregular meshes, measured fabric behaviour, deforming "
+			"colliders or motion sampled from the scene.";
+		candidate.evidence.scope = scope;
+	}
 	EvidenceKey key{model.material, sheet.triangulation, sheet.bending, scheme_};
 	key.contact = barrierContact;
 	key.barrier = model.barrier;
@@ -768,12 +918,25 @@ bool ClothSolver::Start(std::string& error)
 	system_.portPressure.clear();
 	system_.portTraction.clear();
 	t_ = 0; next_ = 0; finished_ = count_ == 0; segN_ = segJ_ = 0; segStart_ = segTarget_ = 0;
+	held_ = false; heldFor_ = 0;
+	staticSent_ = false;
 	stats_ = StepStats{};
 	started_ = true;
+	return TrackFailure(error);
+}
+
+bool ClothSolver::TrackFailure(std::string& error) const
+{
+	for (const auto& t : tracks_) {
+		const std::string why = t->Error();
+		if (!why.empty()) return Fail(error, why);
+	}
 	return true;
 }
 
-bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports, std::string& error)
+// mesh.v2: positions, velocities and normals per frame; the connectivity and
+// the material UVs in one static topology payload.
+bool ClothSolver::Encode(Bytes& frame, Bytes& fixed, std::string& error)
 {
 	const std::uint32_t n = system_.Vertices();
 	MeshFrame m;
@@ -789,18 +952,42 @@ bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPo
 		m.normals.push_back(F32(normals[k]));
 	}
 	m.indices = indices_;
+	m.uvSets.push_back({"material", "m", materialUV_});
+	MeshStaticLayout layout;
+	layout.topology = true;
+	layout.staticUVSets = {"material"};
+	std::string digest;
+	return EncodeMeshV2(m, layout, CodecBudget, frame, fixed, digest, error);
+}
+
+bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports, std::string& error)
+{
 	auto bytes = std::make_shared<Bytes>();
-	if (!EncodeMesh(m, CodecBudget, *bytes, error)) return false;
+	auto fixed = std::make_shared<Bytes>();
+	std::string declared;
+	if (!Encode(*bytes, *fixed, error)) return false;
+	// The static topology goes to the sink once per run, before the first frame.
+	if (!staticSent_ && !sink.PublishStatic(MeshTopologyStaticType, fixed, declared, error)) return false;
+	staticSent_ = true;
 	std::shared_ptr<const Bytes> payload = std::move(bytes);
 	if (!sink.Publish(index, "surface", time, payload, {}, error)) return false;
-	if (ports && !ports->Offer(StatePort, time, payload, error)) return false;
+	if (ports && (!ports->OfferStatic(MeshTopologyStaticType, fixed, error) || !ports->Offer(StatePort, time, payload, error)))
+		return false;
 	return true;
 }
 
-// surface_load: grid.v1 on the vertex lattice (dimensions nu x nv x 1, origin
-// 0); channel "pressure" (1 component, Pa, on the front face) and/or
-// "traction" (3 components, Pa, world frame).  Cells without a block take
-// the channel background.
+bool ClothSolver::OfferState(double time, IPortExchange& ports, std::string& error)
+{
+	auto bytes = std::make_shared<Bytes>();
+	auto fixed = std::make_shared<Bytes>();
+	if (!Encode(*bytes, *fixed, error)) return false;
+	return ports.OfferStatic(MeshTopologyStaticType, fixed, error) && ports.Offer(StatePort, time, std::move(bytes), error);
+}
+
+// surface_load: field.v1 over the sheet's vertices (domain: the sheet's
+// topology digest, count: its vertex count); channel "pressure" (1
+// component, Pa, on the front face) and/or "traction" (3 components, Pa,
+// world frame). An absent channel is zero.
 bool ClothSolver::AcceptLoads(double time, IPortExchange* ports, std::string& error)
 {
 	if (!ports) return true;
@@ -812,32 +999,20 @@ bool ClothSolver::AcceptLoads(double time, IPortExchange* ports, std::string& er
 		return true;
 	}
 	if (status != PortStatus::Ready) return false;
-	GridFrame g;
-	if (!DecodeGrid(*bytes, CodecBudget, g, error)) return false;
-	const std::uint32_t nu = sheet_.verticesU, nv = sheet_.verticesV;
+	FieldFrame f;
+	if (!DecodeField(*bytes, CodecBudget, f, error)) return false;
+	const std::uint32_t n = system_.Vertices();
+	if (f.domain != topology_ || f.count != n)
+		return Fail(error, "surface_load must be a field.v1 over the sheet's vertices (domain: its topology digest)");
 	std::vector<double> pressure, traction;
-	for (const auto& c : g.channels) {
+	for (const auto& c : f.channels) {
 		const bool isPressure = c.name == "pressure" && c.components == 1;
 		const bool isTraction = c.name == "traction" && c.components == 3;
-		if (!isPressure && !isTraction) return Fail(error, "surface_load channels are pressure (1 component) and traction (3)");
-		if (c.dimensions[0] != nu || c.dimensions[1] != nv || c.dimensions[2] != 1 || c.origin[0] != 0 || c.origin[1] != 0 ||
-			c.origin[2] != 0 || c.units != "Pa")
-			return Fail(error, "surface_load must cover the sheet's vertex lattice in Pa");
+		if ((!isPressure && !isTraction) || c.units != "Pa")
+			return Fail(error, "surface_load channels are pressure (1 component, Pa) and traction (3, Pa)");
 		std::vector<double>& target = isPressure ? pressure : traction;
-		const unsigned comps = c.components;
-		target.assign(static_cast<std::size_t>(nu)*nv*comps, 0.0);
-		for (std::uint32_t j = 0; j < nv; ++j) for (std::uint32_t i = 0; i < nu; ++i) {
-			const std::size_t q = i + static_cast<std::size_t>(nu)*j;
-			for (unsigned k = 0; k < comps; ++k) target[comps*q + k] = FromF32(c.background[k]);
-			for (const auto& b : c.blocks) {
-				const std::int64_t li = static_cast<std::int64_t>(i) - b.origin[0], lj = static_cast<std::int64_t>(j) - b.origin[1];
-				if (li < 0 || lj < 0 || b.origin[2] > 0 || li >= b.dimensions[0] || lj >= b.dimensions[1] ||
-					-b.origin[2] >= static_cast<std::int64_t>(b.dimensions[2])) continue;
-				const std::size_t cell = b.constant ? 0 :
-					static_cast<std::size_t>(li + b.dimensions[0]*(lj + static_cast<std::int64_t>(b.dimensions[1])*(-b.origin[2])));
-				for (unsigned k = 0; k < comps; ++k) target[comps*q + k] = FromF32(b.values[comps*cell + k]);
-			}
-		}
+		target.resize(c.values.size());
+		for (std::size_t k = 0; k < c.values.size(); ++k) target[k] = FromF32(c.values[k]);
 	}
 	system_.portPressure.swap(pressure);
 	system_.portTraction.swap(traction);
@@ -847,32 +1022,48 @@ bool ClothSolver::AcceptLoads(double time, IPortExchange* ports, std::string& er
 bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPortExchange* ports, IProgress* progress,
 	AdvanceResult& result, std::string& error)
 {
-	stop_ = false;
 	result = AdvanceResult{};
 	if (!started_) return Fail(error, "start or restore first");
 	const bool macro = request.mode == AdvanceRequest::Mode::MacroStep;
 	if (macro && (!std::isfinite(request.macroEnd) || request.macroEnd < t_)) return Fail(error, "macro end lies in the past");
-	const double end = static_cast<double>(count_)*interval_; // as the reference solvers report it
+	const double end = static_cast<double>(count_ ? count_ - 1 : 0)*interval_; // the last output
+	if (!macro) held_ = false;
+	bool offered = false;
 	for (;;) {
 		while (!finished_ && t_ == OutputTime(next_)) {
 			if (!Publish(next_, t_, sink, ports, error)) return false;
+			offered = true;
 			++result.framesPublished;
 			if (static_cast<std::uint64_t>(++next_) == count_) finished_ = true;
 			if (paceMs_ > 0) std::this_thread::sleep_for(std::chrono::milliseconds(paceMs_));
 			if (!macro) return Done(result, AdvanceResult::Status::Advanced);
 		}
 		if (finished_) return Done(result, AdvanceResult::Status::Finished);
-		if (macro && t_ == request.macroEnd && segN_ == 0) return Done(result, AdvanceResult::Status::Advanced);
+		if (macro && t_ == request.macroEnd && segN_ == 0) {
+			// The end of the macro step: offer the state stamped with its time.
+			if (!offered && ports && !OfferState(t_, *ports, error)) return false;
+			return Done(result, AdvanceResult::Status::Advanced);
+		}
 		if (segN_ == 0) {
 			segStart_ = t_;
 			segTarget_ = macro ? std::min(OutputTime(next_), request.macroEnd) : OutputTime(next_);
 			const double nominal = interval_/static_cast<double>(substeps_);
 			segN_ = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::ceil((segTarget_ - segStart_)/nominal*(1 - 1e-12))));
 			segJ_ = 0;
-			if (!AcceptLoads(segStart_, ports, error)) return false;
+			// Free-running, each segment is a step; under an imposed macro step the
+			// port values are read once, at its start, and held over all of it.
+			if (!macro || !held_ || heldFor_ != request.macroEnd) {
+				if (!AcceptLoads(segStart_, ports, error)) return false;
+				held_ = macro;
+				heldFor_ = request.macroEnd;
+			}
 		} else if (macro && segTarget_ > request.macroEnd) return Fail(error, "macro end inside an interrupted segment");
+		offered = false;
 		while (segJ_ < segN_) {
-			if (stop_.load()) return Done(result, AdvanceResult::Status::Stopped);
+			if (stop_.load()) {
+				stop_ = false; // a stop request is cleared only when consumed
+				return Done(result, AdvanceResult::Status::Stopped);
+			}
 			if (progress) {
 				std::ostringstream detail;
 				detail << "newton " << stats_.newtonIterations << ", cg " << stats_.cgIterations << ", direct "
@@ -881,7 +1072,7 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 			}
 			const double tn = segJ_ + 1 == segN_ ? segTarget_ :
 				segStart_ + (segTarget_ - segStart_)*static_cast<double>(segJ_ + 1)/static_cast<double>(segN_);
-			if (!system_.Step(tn - t_, scheme_, newton_, stats_, error)) return false;
+			if (!system_.Step(tn - t_, scheme_, newton_, stats_, error) || !TrackFailure(error)) return false;
 			system_.time = tn;
 			t_ = tn;
 			++segJ_;
@@ -890,12 +1081,50 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 	}
 }
 
+ClothState ClothSolver::Capture() const
+{
+	ClothState c;
+	c.t = t_; c.segStart = segStart_; c.segTarget = segTarget_; c.heldFor = heldFor_;
+	c.hPrev = system_.hPrev; c.time = system_.time;
+	c.next = static_cast<std::uint64_t>(next_); c.segN = segN_; c.segJ = segJ_;
+	c.finished = finished_; c.held = held_; c.havePrev = system_.havePrev;
+	c.x = system_.x; c.v = system_.v; c.xPrev = system_.xPrev; c.vPrev = system_.vPrev;
+	c.pressure = system_.portPressure; c.traction = system_.portTraction;
+	return c;
+}
+
+// A fresh system from the configuration with the captured state, exactly as
+// a restored checkpoint (so a rollback repeats an uninterrupted run).
+bool ClothSolver::Apply(ClothState&& c, std::string& error)
+{
+	if (c.next > count_ || c.segJ > c.segN) return Fail(error, "invalid cloth solver state fields");
+	Sheet sheet;
+	ClothSystem system;
+	if (!BuildSheet(sheet_, model_.material, sheet, error) || !system.Initialize(sheet, model_, error)) return false;
+	system.SetThreads(threads_);
+	const std::size_t dofs = 3*static_cast<std::size_t>(sheet.Vertices());
+	if (c.x.size() != dofs || c.v.size() != dofs || (!c.xPrev.empty() && c.xPrev.size() != dofs) ||
+		(!c.vPrev.empty() && c.vPrev.size() != dofs) || (!c.pressure.empty() && c.pressure.size() != dofs/3) ||
+		(!c.traction.empty() && c.traction.size() != dofs) || (c.havePrev && (c.xPrev.empty() || c.vPrev.empty())))
+		return Fail(error, "cloth solver state does not match the configured sheet");
+	system.x.swap(c.x); system.v.swap(c.v); system.xPrev.swap(c.xPrev); system.vPrev.swap(c.vPrev);
+	system.hPrev = c.hPrev; system.havePrev = c.havePrev; system.time = c.time;
+	system.portPressure.swap(c.pressure); system.portTraction.swap(c.traction);
+	system_ = std::move(system);
+	t_ = c.t; next_ = static_cast<std::int64_t>(c.next); finished_ = c.finished;
+	segStart_ = c.segStart; segTarget_ = c.segTarget; segN_ = c.segN; segJ_ = c.segJ;
+	held_ = c.held; heldFor_ = c.heldFor;
+	stats_ = StepStats{};
+	started_ = true;
+	return true;
+}
+
 bool ClothSolver::Checkpoint(Bytes& state, std::string& error)
 {
 	if (!started_) return Fail(error, "nothing to checkpoint");
 	V::Members m{{"format", V::String(StateFormat)}, {"t", V::Float(t_)}, {"next", V::Unsigned(static_cast<std::uint64_t>(next_))},
 		{"finished", V::Bool(finished_)}, {"segStart", V::Float(segStart_)}, {"segTarget", V::Float(segTarget_)},
-		{"segN", V::Unsigned(segN_)}, {"segJ", V::Unsigned(segJ_)},
+		{"segN", V::Unsigned(segN_)}, {"segJ", V::Unsigned(segJ_)}, {"held", V::Bool(held_)}, {"heldFor", V::Float(heldFor_)},
 		{"x", V::BytesValue(PackDoubles(system_.x))}, {"v", V::BytesValue(PackDoubles(system_.v))},
 		{"xPrev", V::BytesValue(PackDoubles(system_.xPrev))}, {"vPrev", V::BytesValue(PackDoubles(system_.vPrev))},
 		{"hPrev", V::Float(system_.hPrev)}, {"havePrev", V::Bool(system_.havePrev)}, {"time", V::Float(system_.time)},
@@ -914,33 +1143,38 @@ bool ClothSolver::Restore(const Bytes& state, std::string& error)
 	auto count = [&](const char* k, std::uint64_t& x) { const V* f = v.Find(k); if (!f || f->GetType() != V::UnsignedInteger) return false; x = f->GetIntegerArgument(); return true; };
 	auto flag = [&](const char* k, bool& x) { const V* f = v.Find(k); if (!f || f->GetType() != V::Boolean) return false; x = f->GetBoolean(); return true; };
 	const V* format = v.Find("format");
-	double t = 0, s0 = 0, s1 = 0, hPrev = 0, time = 0;
-	std::uint64_t next = 0, n = 0, j = 0;
-	bool fin = false, havePrev = false;
-	if (!format || format->GetType() != V::Text || format->GetText() != StateFormat || !real("t", t) || !count("next", next) ||
-		!flag("finished", fin) || !real("segStart", s0) || !real("segTarget", s1) || !count("segN", n) || !count("segJ", j) ||
-		!real("hPrev", hPrev) || !flag("havePrev", havePrev) || !real("time", time) || next > count_ || j > n)
+	ClothState c;
+	if (!format || format->GetType() != V::Text || format->GetText() != StateFormat || !real("t", c.t) || !count("next", c.next) ||
+		!flag("finished", c.finished) || !real("segStart", c.segStart) || !real("segTarget", c.segTarget) ||
+		!count("segN", c.segN) || !count("segJ", c.segJ) || !flag("held", c.held) || !real("heldFor", c.heldFor) ||
+		!real("hPrev", c.hPrev) || !flag("havePrev", c.havePrev) || !real("time", c.time))
 		return Fail(error, "invalid cloth solver state fields");
-	Sheet sheet;
-	ClothSystem system;
-	if (!BuildSheet(sheet_, model_.material, sheet, error) || !system.Initialize(sheet, model_, error)) return false;
-	system.SetThreads(threads_);
-	const std::size_t dofs = 3*static_cast<std::size_t>(sheet.Vertices());
-	std::vector<double> x, vel, xp, vp, pressure, traction;
-	if (!UnpackDoubles(v.Find("x"), dofs, x, false) || !UnpackDoubles(v.Find("v"), dofs, vel, false) ||
-		!UnpackDoubles(v.Find("xPrev"), dofs, xp, true) || !UnpackDoubles(v.Find("vPrev"), dofs, vp, true) ||
-		!UnpackDoubles(v.Find("pressure"), dofs/3, pressure, true) || !UnpackDoubles(v.Find("traction"), dofs, traction, true) ||
-		(havePrev && (xp.empty() || vp.empty())))
+	const std::size_t dofs = 3*static_cast<std::size_t>(sheet_.verticesU)*sheet_.verticesV;
+	if (!UnpackDoubles(v.Find("x"), dofs, c.x, false) || !UnpackDoubles(v.Find("v"), dofs, c.v, false) ||
+		!UnpackDoubles(v.Find("xPrev"), dofs, c.xPrev, true) || !UnpackDoubles(v.Find("vPrev"), dofs, c.vPrev, true) ||
+		!UnpackDoubles(v.Find("pressure"), dofs/3, c.pressure, true) || !UnpackDoubles(v.Find("traction"), dofs, c.traction, true))
 		return Fail(error, "cloth solver state does not match the configured sheet");
-	system.x.swap(x); system.v.swap(vel); system.xPrev.swap(xp); system.vPrev.swap(vp);
-	system.hPrev = hPrev; system.havePrev = havePrev; system.time = time;
-	system.portPressure.swap(pressure); system.portTraction.swap(traction);
-	system_ = std::move(system);
-	t_ = t; next_ = static_cast<std::int64_t>(next); finished_ = fin;
-	segStart_ = s0; segTarget_ = s1; segN_ = n; segJ_ = j;
-	stats_ = StepStats{};
-	started_ = true;
+	if (!Apply(std::move(c), error)) return false;
+	staticSent_ = false;
 	return true;
+}
+
+bool ClothSolver::SaveState(std::shared_ptr<const SolverStateToken>& token, std::string& error)
+{
+	if (!started_) return Fail(error, "nothing to save");
+	auto t = std::make_shared<ClothToken>();
+	t->owner = this;
+	t->state = Capture();
+	token = std::move(t);
+	return true;
+}
+
+bool ClothSolver::RestoreState(const SolverStateToken& token, std::string& error)
+{
+	const auto* t = dynamic_cast<const ClothToken*>(&token);
+	if (!t || t->owner != this || !configured_) return Fail(error, "state token belongs to another solver");
+	ClothState copy = t->state;
+	return Apply(std::move(copy), error);
 }
 } // namespace
 

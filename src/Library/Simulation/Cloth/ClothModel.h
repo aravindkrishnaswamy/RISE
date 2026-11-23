@@ -135,14 +135,29 @@ struct Sheet {
 };
 bool BuildSheet(const SheetSpec& spec, const Material& material, Sheet& sheet, std::string& error);
 
+//! A rigid motion sampled from outside the model (the scene, through the
+//! solver contract's ISceneInputs::SampleTransform). At never fails: a source
+//! error is latched by the implementation and reported by the solver after
+//! the step, which then fails.
+class TransformTrack {
+public:
+	virtual ~TransformTrack() = default;
+	//! The rigid map x -> R x + c at time t (R row-major, proper orthonormal).
+	virtual void At(double t, double rotation[9], double translation[3]) const = 0;
+};
+
 struct Motion {
-	enum class Type { Fixed, Translate, Rotate, Oscillate };
+	enum class Type { Fixed, Translate, Rotate, Oscillate, Track };
 	Type type = Type::Fixed;
 	V3 vector{{0, 0, 0}};   // Translate: velocity (m/s); Oscillate: amplitude (m)
 	V3 center{{0, 0, 0}};   // Rotate: point on the axis
 	V3 axis{{0, 1, 0}};     // Rotate: unit axis
 	double rate = 0;        // Rotate: rad/s
 	double frequency = 0;   // Oscillate: Hz
+	//! Track: rest positions (time 0) move by the track's map at t composed
+	//! with the inverse of its map at time 0; velocities by a central
+	//! difference over 2 microseconds.
+	std::shared_ptr<const TransformTrack> track;
 	V3 Position(const V3& rest, double t) const;
 	V3 Velocity(const V3& rest, double t) const;
 	//! The rigid map from time t0 to t1 applied to a point x (where a point

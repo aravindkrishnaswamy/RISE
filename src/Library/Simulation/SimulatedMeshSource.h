@@ -10,7 +10,9 @@
 #include "SimulationMesh.h"
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -38,6 +40,7 @@ struct MeshSourceOptions
 	MeshMissingPolicy missing = MeshMissingPolicy::Hold;
 	bool predictive = false;	//!< request predictive fidelity: refuse anything less, fail closed
 	std::size_t frameBudget = std::size_t( 512 ) * 1024 * 1024;	//!< per payload read and per decode
+	std::string uvSet;			//!< mesh.v2 UV set used as texture coordinates; empty = the first by name
 };
 
 //! One render frame's worth of mesh data, ready to install.  Positions are
@@ -59,23 +62,49 @@ struct MeshFrameSample
 class MeshCacheSource
 {
 public:
-	//! Opens the cache, checks the output is mesh.v1 with a nonempty fixed
+	//! Simulation M3c: the current generation of an in-memory publication (an
+	//! InProcessHost's MemoryPublisher), called on the render thread at each
+	//! frame.  Thread-safe; returns null once the publication is gone.
+	using SnapshotProvider = std::function<std::shared_ptr<const IReadOnlyCacheSnapshot>()>;
+
+	//! Opens the cache, checks the output is mesh.v1 or mesh.v2 with a nonempty fixed
 	//! topology, applies the predictive admission (complete, predictive label,
 	//! every frame decodes to the same topology) when requested, and decodes
 	//! the bind frame (the first frame present).  Fails closed.
 	static bool Open( const std::filesystem::path& root, const MeshSourceOptions& options,
+		std::unique_ptr<MeshCacheSource>& out, std::string& error );
+	//! Simulation M3c: binds to an in-memory publication instead of a disk
+	//! cache (the live viewport).  The same checks as Open, minus predictive
+	//! admission (a live binding is always preview).  Each Sample reads the
+	//! provider's current generation, which must keep the bound identity.
+	static bool OpenLive( const SnapshotProvider& provider, const MeshSourceOptions& options,
 		std::unique_ptr<MeshCacheSource>& out, std::string& error );
 
 	std::uint32_t VertexCount() const { return vertices_; }
 	const std::vector<std::uint32_t>& Indices() const { return indices_; }
 	const std::string& TopologyDigest() const { return topology_; }
 	const MeshSourceOptions& Options() const { return options_; }
-	const CacheDescription& Description() const { return bound_.Description(); }
+	const CacheDescription& Description() const { return bound_->Description(); }
+	bool Live() const { return static_cast<bool>( provider_ ); }
+	const std::filesystem::path& Root() const { return root_; }		//!< empty when live
+	//! The generation Sample would read now (re-read for a partial disk cache).
+	bool CurrentSnapshot( std::shared_ptr<const IReadOnlyCacheSnapshot>& snapshot, std::string& error ) const
+	{
+		return Snapshot( snapshot, error );
+	}
+	//! That generation when getting it costs no I/O (a sealed or predictive
+	//! disk binding, or a live one); null for a partial disk cache.
+	std::shared_ptr<const IReadOnlyCacheSnapshot> CheapSnapshot() const;
 	bool PayloadHasNormals() const { return hasNormals_; }
 	//! Positions / normals of the bind frame (3 per vertex).
 	const std::vector<double>& BindPositions() const { return bindPositions_; }
 	const std::vector<double>& BindNormals() const { return bindNormals_; }
 	std::int64_t BindIndex() const { return bindIndex_; }
+	//! mesh.v2: the bind frame's UV set chosen by MeshSourceOptions::uvSet
+	//! (2 per vertex, as stored; texture coordinates do not follow later frames).
+	bool HasUVs() const { return !bindUVs_.empty(); }
+	const std::vector<double>& BindUVs() const { return bindUVs_; }
+	const std::string& UVSetName() const { return uvSetName_; }
 
 	//! Maps a scene time to the cache: the nearest frame, the simulation-time
 	//! offset from it, and whether a hold clamp applied.  `deltaScene` is added
@@ -96,20 +125,27 @@ public:
 
 private:
 	MeshCacheSource() = default;
-	bool Snapshot( CacheSnapshot& snapshot, std::string& error ) const;
-	FrameStatus ReadFrame( const CacheSnapshot& snapshot, std::int64_t index,
+	static bool OpenImpl( const std::filesystem::path& root, const SnapshotProvider* provider,
+		const MeshSourceOptions& options, std::unique_ptr<MeshCacheSource>& out, std::string& error );
+	bool Snapshot( std::shared_ptr<const IReadOnlyCacheSnapshot>& snapshot, std::string& error ) const;
+	FrameStatus ReadFrame( const IReadOnlyCacheSnapshot& snapshot, std::int64_t index,
 		MeshFrame& frame, std::string& digest, std::string& error ) const;
 	bool CheckFrame( const MeshFrame& frame, std::string& error ) const;
 
 	MeshSourceOptions options_;
 	std::filesystem::path root_;
-	CacheSnapshot bound_;			//!< the snapshot opened (and, if predictive, qualified) at bind
+	SnapshotProvider provider_;		//!< live binding (M3c); empty for a disk cache
+	std::shared_ptr<const IReadOnlyCacheSnapshot> bound_;	//!< the snapshot opened (and, if predictive, qualified) at bind
 	MeshEndPolicy end_ = MeshEndPolicy::Error;
 	std::uint32_t vertices_ = 0;
 	std::vector<std::uint32_t> indices_;
 	std::string topology_;
 	bool hasNormals_ = false;
-	std::vector<double> bindPositions_, bindNormals_;
+	std::vector<double> bindPositions_, bindNormals_, bindUVs_;
+	std::string uvSetName_;
+	//! mesh.v2 static payloads already read and verified (immutable, by digest).
+	mutable std::mutex staticMutex_;
+	mutable std::vector<std::pair<std::string, std::shared_ptr<const Bytes>>> statics_;
 	std::int64_t bindIndex_ = 0;
 };
 

@@ -4,9 +4,12 @@
 // stop/checkpoint/restore byte-identical in-process and through the worker;
 // in-process and worker hosts publish identical frames; imposed macro steps on
 // the output grid equal free stepping; a constant pressure through the
-// surface_load port equals the same pressure as a parameter.
+// surface_load port (field.v1 on the sheet's vertices) equals the same
+// pressure as a parameter; mesh.v2 output with a static topology and
+// material UVs; sticky stops; rollback equal to a re-run; pins and colliders
+// driven by scene transforms; evidence conditions and scope.
 #include "../src/Library/Simulation/Cloth/ClothSolver.h"
-#include "../src/Library/Simulation/SimulationGrid.h"
+#include "../src/Library/Simulation/SimulationField.h"
 #include "../src/Library/Simulation/SimulationHost.h"
 #include "../src/Library/Simulation/SimulationMesh.h"
 #include "../src/Library/Simulation/SimulationWorker.h"
@@ -72,8 +75,22 @@ std::map<std::pair<std::int64_t,std::string>,std::string> Digests(const IReadOnl
 class CountingSink final : public IFrameSink {
 public:
 	std::vector<std::pair<std::int64_t,std::shared_ptr<const Bytes>>> frames;
+	std::map<std::string,std::shared_ptr<const Bytes>> statics;
 	bool Publish(std::int64_t index, const std::string&, double, std::shared_ptr<const Bytes> payload,
 		const Bytes&, std::string&) override { frames.emplace_back(index, std::move(payload)); return true; }
+	bool PublishStatic(const std::string&, std::shared_ptr<const Bytes> payload, std::string& digest, std::string&) override {
+		digest = RISE::RISECBOR64::SHA256Hex(*payload);
+		statics[digest] = std::move(payload);
+		return true;
+	}
+	StaticPayloadResolver Resolver() const {
+		return [this](const std::string& d, std::size_t, std::shared_ptr<const Bytes>& b, std::string& e) {
+			const auto it = statics.find(d);
+			if (it == statics.end()) { e = "unpublished static"; return false; }
+			b = it->second;
+			return true;
+		};
+	}
 };
 
 class StopAfter final : public IProgress {
@@ -141,18 +158,27 @@ void Description()
 	const double t0 = Seconds();
 	Check(solver->Configure(Map(Small()), inputs, d, error), "cloth configures", error);
 	const double first = Seconds() - t0;
-	Check(d.solverId == ClothSolverId && !d.version.empty() && d.cache.outputs.size() == 1 &&
-		d.cache.outputs[0].name == "surface" && d.cache.outputs[0].type == "mesh.v1" && d.cache.count == 10,
-		"cloth describes one mesh.v1 output");
+	Check(d.solverId == ClothSolverId && d.version == "m3a.3" && d.cache.outputs.size() == 1 &&
+		d.cache.outputs[0].name == "surface" && d.cache.outputs[0].type == "mesh.v2" && d.cache.count == 10,
+		"cloth describes one mesh.v2 output (version m3a.3)");
 	const PortDeclaration* offer = nullptr; const PortDeclaration* accept = nullptr;
 	for (const auto& p : d.ports) (p.offers ? offer : accept) = &p;
+	std::vector<std::uint32_t> indices;
 	Check(d.ports.size() == 2 && offer && accept && offer->name == "surface_state" && offer->output == "surface" &&
-		offer->codec == "mesh.v1" && accept->name == "surface_load" && accept->codec == "grid.v1" && accept->units == "Pa",
-		"cloth offers surface_state and accepts surface_load");
+		offer->codec == "mesh.v2" && accept->name == "surface_load" && accept->codec == "field.v1" && accept->units == "Pa" &&
+		accept->channels.size() == 2 && accept->channels[0].name == "pressure" && accept->channels[1].components == 3 &&
+		accept->domain.size() == 64 && accept->output.empty(),
+		"cloth offers surface_state and accepts a live-only field.v1 surface_load on its own vertices");
 	const auto& c = d.capabilities;
-	Check(c.deterministic && c.resumable && c.externalMacroStep && c.interactive && c.backends.size() == 1 &&
-		c.backends[0].name == "cpu" && c.backends[0].status == BackendStatus::Supported && c.backends[0].available,
+	Check(c.deterministic && c.resumable && c.externalMacroStep && c.interactive && c.rollback && c.threadCountInvariant &&
+		c.backends.size() == 1 && c.backends[0].name == "cpu" && c.backends[0].status == BackendStatus::Supported &&
+		c.backends[0].available && c.modes == std::vector<std::string>{"bake", "interactive"} &&
+		c.earnableFidelity == std::vector<std::string>{"preview", "predictive"} && c.fidelityLimit.empty(),
 		"cloth capabilities");
+	bool bakeCondition = false;
+	for (const auto& k : d.evidence.conditions) bakeCondition = bakeCondition || (k.first == "mode" && k.second == std::vector<std::string>{"bake"});
+	Check(bakeCondition && !d.evidence.scope.empty() && ValidEvidenceConditions(d.evidence.conditions),
+		"cloth states the conditions and scope of its label");
 	std::printf("evidence (bake, cotton, alternating, lines, bdf2), first Configure %.2f s:\n", first);
 	bool all = !d.evidence.cases.empty();
 	for (const auto& e : d.evidence.cases) {
@@ -182,8 +208,9 @@ void Description()
 	// bake-mode barrier contact earns predictive from its own evidence cases.
 	SolverDescription interactive, contact, barrier, self, interactiveContact, hinges, midpoint;
 	Check(other->Configure(With(Small(), "mode", V::String("interactive")), inputs, interactive, error) &&
-		interactive.evidence.fidelity == "preview" && EffectiveFidelity(interactive.evidence) == "preview",
-		"interactive mode is preview", error);
+		interactive.evidence.fidelity == "preview" && EffectiveFidelity(interactive.evidence) == "preview" &&
+		interactive.capabilities.earnableFidelity == std::vector<std::string>{"preview"} &&
+		!interactive.capabilities.fidelityLimit.empty(), "interactive mode is preview and says why", error);
 	const V sphere = V::ArrayValue({Map({{"type", V::String("sphere")}, {"center", Vec(0, 0, 0)}, {"radius", V::Float(0.1)}})});
 	Check(other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "contact", V::String("penalty")), inputs, contact, error) &&
 		EffectiveFidelity(contact.evidence) == "preview", "penalty contact is preview", error);
@@ -216,7 +243,8 @@ void Description()
 		{"scene_input", V::String("cube")}})})), cube, scene, error), "scene-input mesh collider configures", error);
 	const V* list = scene.effectiveParameters.Find("colliders");
 	Check(list && list->GetArray().size() == 1 && list->GetArray()[0].Find("identity") &&
-		list->GetArray()[0].Find("identity")->GetText() == "cube-identity", "the scene input's identity enters the parameters");
+		list->GetArray()[0].Find("identity")->GetText() == "cube-identity" && scene.inputs == std::vector<std::string>{"cube"},
+		"the scene input's identity enters the parameters and the input is listed");
 	Check(other->Configure(With(Small(), "bending_model", V::String("hinges")), inputs, hinges, error) &&
 		hinges.evidence.fidelity == "predictive" && EffectiveFidelity(hinges.evidence) == "preview",
 		"the hinge bending model fails its evidence and is preview", error);
@@ -252,7 +280,8 @@ void Frames()
 	for (std::size_t k = 0; k < sink.frames.size(); ++k) {
 		MeshFrame m;
 		MeshTopology t;
-		if (!DecodeMesh(*sink.frames[k].second, budget, m, error) || !PeekMeshTopology(*sink.frames[k].second, t, error)) { fixed = false; break; }
+		if (!DecodeMesh(*sink.frames[k].second, budget, sink.Resolver(), m, error) ||
+			!PeekMeshTopology(*sink.frames[k].second, t, error)) { fixed = false; break; }
 		if (k == 0) { digest = t.digest; first = m; }
 		fixed = fixed && t.digest == digest && t.vertices == 81 && t.triangles == 128 && m.velocities.size() == 243 && m.normals.size() == 243;
 		for (std::size_t q = 0; q < m.velocities.size(); ++q) moving = moving || F(m.velocities[q]) != 0;
@@ -265,7 +294,11 @@ void Frames()
 			clear = clear && d > 0.1 + 0.002; // barrier: outside the 2 mm offset
 		}
 	}
-	Check(fixed && moving, "fixed-topology stream with velocities and normals");
+	Check(fixed && moving && sink.statics.size() == 1, "fixed-topology stream with velocities and normals over one static topology");
+	Check(first.uvSets.size() == 1 && first.uvSets[0].name == "material" && first.uvSets[0].units == "m" &&
+		F(first.uvSets[0].values[0]) == 0 && F(first.uvSets[0].values[1]) == 0 &&
+		std::fabs(F(first.uvSets[0].values[2*80]) - 0.4) < 1e-7 && std::fabs(F(first.uvSets[0].values[2*80 + 1]) - 0.4) < 1e-7,
+		"the material coordinates are published as the UV set `material` in metres");
 	Check(pinned, "pinned corners stay put");
 	Check(clear && nearest < 0.1 + 0.002 + 0.001, "barrier contact keeps the sheet outside the sphere's offset (and touches it)",
 		std::to_string(nearest));
@@ -280,8 +313,8 @@ void Frames()
 	Check(mover->Configure(V::MapValue(p), inputs, dm, error) && mover->Start(error), "moving pins start", error);
 	while (!mover->Position().finished && mover->Advance(AdvanceRequest{}, moved, nullptr, nullptr, r, error)) {}
 	MeshFrame m0, m9;
-	Check(DecodeMesh(*moved.frames.front().second, budget, m0, error) && DecodeMesh(*moved.frames.back().second, budget, m9, error),
-		"decode moving frames", error);
+	Check(DecodeMesh(*moved.frames.front().second, budget, moved.Resolver(), m0, error) &&
+		DecodeMesh(*moved.frames.back().second, budget, moved.Resolver(), m9, error), "decode moving frames", error);
 	const double shift = F(m9.positions[0]) - F(m0.positions[0]);
 	Check(std::fabs(shift - 0.3*9/30.0) < 1e-6 && std::fabs(F(m9.velocities[0]) - 0.3) < 1e-6, "translating pins follow their motion",
 		std::to_string(shift));
@@ -375,33 +408,28 @@ void MacroSteps()
 		MeshFrame mx, my;
 		if (a->Read(a->Entries()[i].index, "surface", budget, x, error) != FrameStatus::Ready ||
 			b->Read(b->Entries()[i].index, "surface", budget, y, error) != FrameStatus::Ready ||
-			!DecodeMesh(*x, budget, mx, error) || !DecodeMesh(*y, budget, my, error)) { worst = 1; break; }
+			!DecodeMesh(*x, budget, a->Resolver(), mx, error) || !DecodeMesh(*y, budget, b->Resolver(), my, error)) { worst = 1; break; }
 		for (std::size_t q = 0; q < mx.positions.size(); ++q) worst = std::max(worst, std::fabs(F(mx.positions[q]) - F(my.positions[q])));
 	}
 	std::printf("half-interval macro steps vs free stepping: max position difference %.3e m\n", worst);
 	Check(half.Position().finished && worst < 1e-6, "half-interval macro steps agree with free stepping", std::to_string(worst));
 }
 
-// One payload for every Accept: a constant pressure over the vertex lattice.
+// One payload for every Accept: a constant pressure on the sheet's vertices
+// (field.v1 over the topology digest of a nu x nv sheet).
 class ConstantLoad final : public IPortExchange {
 public:
-	ConstantLoad(std::uint32_t nu, std::uint32_t nv, float pressure) {
-		GridFrame g;
-		GridChannel c;
-		c.name = "pressure"; c.units = "Pa"; c.components = 1;
-		c.dimensions = {nu, nv, 1};
-		GridBlock b;
-		b.dimensions = c.dimensions;
-		b.constant = true;
-		b.active = {1};
+	ConstantLoad(const std::string& domain, std::uint32_t count, float pressure) { Set(domain, count, pressure); }
+	void Set(const std::string& domain, std::uint32_t count, float pressure) {
+		FieldFrame f;
+		f.domain = domain;
+		f.count = count;
 		std::uint32_t bits;
 		std::memcpy(&bits, &pressure, 4);
-		b.values = {bits};
-		c.blocks.push_back(b);
-		g.channels.push_back(c);
+		f.channels.push_back({"pressure", "Pa", 1, std::vector<std::uint32_t>(count, bits)});
 		auto bytes = std::make_shared<Bytes>();
 		std::string error;
-		ok = EncodeGrid(g, budget, *bytes, error);
+		ok = EncodeField(f, budget, *bytes, error);
 		payload = std::move(bytes);
 	}
 	bool Offer(const std::string& port, double, std::shared_ptr<const Bytes> encoded, std::string&) override {
@@ -414,19 +442,35 @@ public:
 		encoded = payload;
 		return PortStatus::Ready;
 	}
+	bool OfferStatic(const std::string&, std::shared_ptr<const Bytes> bytes, std::string&) override {
+		statics[RISE::RISECBOR64::SHA256Hex(*bytes)] = std::move(bytes);
+		return true;
+	}
 	bool ok = false;
 	int accepts = 0;
 	std::shared_ptr<const Bytes> payload;
 	std::vector<std::shared_ptr<const Bytes>> offers;
+	std::map<std::string,std::shared_ptr<const Bytes>> statics;
 };
+
+std::string LoadDomain(const V& params)
+{
+	auto solver = Make();
+	SolverDescription d;
+	std::string error;
+	solver->Configure(params, EmptySceneInputs(), d, error);
+	for (const auto& p : d.ports) if (!p.offers) return p.domain;
+	return {};
+}
 
 void PortFeed()
 {
 	std::string error;
 	NoSceneInputs inputs;
 	InProcessHost viaPort(Make()), viaParameter(Make()), none(Make());
-	ConstantLoad load(9, 9, 2.5f);
-	Check(load.ok, "encode the load grid");
+	const std::string domain = LoadDomain(Map(Small()));
+	ConstantLoad load(domain, 81, 2.5f);
+	Check(load.ok && domain.size() == 64, "encode the load field");
 	viaPort.SetPorts(&load);
 	Check(viaPort.Configure(Map(Small()), inputs, error) && viaPort.Start(error) && viaPort.StepToIndex(100, error),
 		"pressure through the port", error);
@@ -442,12 +486,158 @@ void PortFeed()
 		std::shared_ptr<const Bytes> b;
 		offered = snapshot->Read(static_cast<std::int64_t>(i), "surface", budget, b, error) == FrameStatus::Ready && *b == *load.offers[i];
 	}
-	Check(offered, "surface_state offers the published surface payloads");
-	// A load on the wrong lattice is refused.
-	InProcessHost wrong(Make());
-	ConstantLoad bad(5, 5, 1.0f);
+	Check(offered && load.statics.size() == 1 && snapshot->Statics().size() == 1 &&
+		load.statics.begin()->first == snapshot->Statics()[0].digest,
+		"surface_state offers the published surface payloads and their static topology");
+	// A load over another index space is refused.
+	InProcessHost wrong(Make()), shorter(Make());
+	ConstantLoad bad(std::string(64, 'a'), 81, 1.0f), few(domain, 25, 1.0f);
 	wrong.SetPorts(&bad);
-	Check(wrong.Configure(Map(Small()), inputs, error) && wrong.Start(error) && !wrong.StepToIndex(100, error), "load on the wrong lattice refused");
+	shorter.SetPorts(&few);
+	Check(wrong.Configure(Map(Small()), inputs, error) && wrong.Start(error) && !wrong.StepToIndex(100, error) &&
+		error.find("domain") != std::string::npos, "a load on another domain is refused", error);
+	Check(shorter.Configure(Map(Small()), inputs, error) && shorter.Start(error) && !shorter.StepToIndex(100, error),
+		"a load with the wrong element count is refused");
+}
+
+
+// A stop requested between Advance calls stops the next one, then clears.
+void StickyStop()
+{
+	std::string error;
+	auto solver = Make();
+	SolverDescription d;
+	CountingSink sink;
+	AdvanceResult r;
+	Check(solver->Configure(Map(Small()), EmptySceneInputs(), d, error) && solver->Start(error) &&
+		solver->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, error), "sticky-stop sheet", error);
+	solver->RequestStop();
+	Check(solver->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, error) && r.status == AdvanceResult::Status::Stopped &&
+		sink.frames.size() == 1, "a stop requested between calls stops the next Advance");
+	Check(solver->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, error) && r.status == AdvanceResult::Status::Advanced &&
+		sink.frames.size() == 2, "the consumed request is cleared");
+}
+
+// Rollback: a repeated macro step equals the first; with a new load it equals
+// a re-run of the step from a checkpoint with that load.
+void Rollback()
+{
+	std::string error;
+	const V params = Map(Small());
+	const std::string domain = LoadDomain(params);
+	auto solver = Make(), rerun = Make();
+	SolverDescription d, d2;
+	ConstantLoad load(domain, 81, 1.0f), other(domain, 81, 6.0f);
+	CountingSink sink, first, second, third, reference;
+	AdvanceResult r;
+	Check(solver->Configure(params, EmptySceneInputs(), d, error) && solver->Start(error), "rollback sheet", error);
+	const double dt = d.cache.interval;
+	std::shared_ptr<const SolverStateToken> token;
+	Bytes checkpoint;
+	bool ok = solver->Advance({AdvanceRequest::Mode::MacroStep, 1.5*dt}, sink, &load, nullptr, r, error) &&
+		solver->SaveState(token, error) && solver->Checkpoint(checkpoint, error) &&
+		solver->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, first, &load, nullptr, r, error) &&
+		solver->RestoreState(*token, error) &&
+		solver->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, second, &load, nullptr, r, error);
+	bool same = ok && first.frames.size() == 2 && second.frames.size() == 2;
+	for (std::size_t i = 0; same && i < 2; ++i) same = *first.frames[i].second == *second.frames[i].second;
+	Check(same, "a rolled-back cloth macro step repeats byte for byte", error);
+	ok = solver->RestoreState(*token, error) &&
+		solver->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, third, &other, nullptr, r, error) &&
+		rerun->Configure(params, EmptySceneInputs(), d2, error) && rerun->Restore(checkpoint, error) &&
+		rerun->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, reference, &other, nullptr, r, error);
+	same = ok && third.frames.size() == 2 && reference.frames.size() == 2;
+	for (std::size_t i = 0; same && i < 2; ++i) same = *third.frames[i].second == *reference.frames[i].second;
+	Check(same && *third.frames[1].second != *first.frames[1].second,
+		"a repeated step with a new load equals a re-run from the checkpoint with that load", error);
+}
+
+// Scene inputs with one rigid motion "rig": a translation at `velocity`,
+// optionally failing after `failAfter` seconds.
+class RigInput final : public ISceneInputs {
+public:
+	explicit RigInput(double velocity, const std::string& identity = "rig-identity", double failAfter = 1e9)
+		: velocity_(velocity), identity_(identity), failAfter_(failAfter) {}
+	bool Identity(const std::string& name, std::string& hash, std::string& error) const override {
+		if (name != "rig") { error = "no such input"; return false; }
+		hash = RISE::RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(identity_.data()), identity_.size());
+		return true;
+	}
+	bool Sample(const std::string&, double, std::shared_ptr<const Bytes>&, std::string&, std::string& error) const override {
+		error = "no payload inputs";
+		return false;
+	}
+	bool SampleTransform(const std::string& name, double time, RigidTransform& m, std::string& error) const override {
+		if (name != "rig") { error = "no such transform"; return false; }
+		if (time > failAfter_) { error = "rig track ends"; return false; }
+		m = RigidTransform{};
+		m.translation = {{velocity_*time, 0, 0}};
+		return true;
+	}
+private:
+	double velocity_;
+	std::string identity_;
+	double failAfter_;
+};
+
+// Pins driven by a scene transform follow it like the same parametric motion.
+void SceneTransforms()
+{
+	std::string error;
+	V::Members base = Small();
+	base.erase(std::remove_if(base.begin(), base.end(), [](const auto& m){ return m.first == "pins"; }), base.end());
+	V::Members tracked = base, parametric = base;
+	tracked.emplace_back("pins", V::ArrayValue({Map({{"select", V::String("v0")}, {"motion", Map({{"type", V::String("scene_transform")},
+		{"input", V::String("rig")}})}})}));
+	parametric.emplace_back("pins", V::ArrayValue({Map({{"select", V::String("v0")}, {"motion", Map({{"type", V::String("translate")},
+		{"velocity", Vec(0.3, 0, 0)}})}})}));
+	RigInput rig(0.3);
+	auto a = Make(), b = Make();
+	SolverDescription da, db;
+	CountingSink sa, sb;
+	AdvanceResult r;
+	Check(a->Configure(V::MapValue(tracked), rig, da, error) && a->Start(error), "scene-transform pins configure", error);
+	Check(b->Configure(V::MapValue(parametric), EmptySceneInputs(), db, error) && b->Start(error), "parametric pins", error);
+	while (!a->Position().finished && a->Advance(AdvanceRequest{}, sa, nullptr, nullptr, r, error)) {}
+	while (!b->Position().finished && b->Advance(AdvanceRequest{}, sb, nullptr, nullptr, r, error)) {}
+	double worst = 0;
+	for (std::size_t k = 0; k < sa.frames.size() && k < sb.frames.size(); ++k) {
+		MeshFrame x, y;
+		if (!DecodeMesh(*sa.frames[k].second, budget, sa.Resolver(), x, error) ||
+			!DecodeMesh(*sb.frames[k].second, budget, sb.Resolver(), y, error)) { worst = 1; break; }
+		for (std::size_t q = 0; q < x.positions.size(); ++q) worst = std::max(worst, std::fabs(F(x.positions[q]) - F(y.positions[q])));
+	}
+	std::printf("scene-transform pins vs the same parametric motion: max position difference %.3e m\n", worst);
+	Check(sa.frames.size() == 10 && worst < 1e-5, "pins follow a scene transform like the same parametric motion");
+	Check(da.inputs == std::vector<std::string>{"rig"} && EffectiveFidelity(da.evidence) == "preview" &&
+		!da.capabilities.fidelityLimit.empty(), "a scene-transform input is listed, keyed and preview");
+	SolverDescription other;
+	auto c = Make();
+	RigInput moved(0.3, "another-identity");
+	Check(PrepareCacheDescription(da, rig, "", error) && c->Configure(V::MapValue(tracked), moved, other, error) &&
+		PrepareCacheDescription(other, moved, "", error) && other.cache.key != da.cache.key,
+		"the transform input's identity enters the cache key", error);
+	auto failing = Make();
+	RigInput broken(0.3, "rig-identity", 0.1);
+	SolverDescription df;
+	CountingSink sf;
+	bool failed = false;
+	Check(failing->Configure(V::MapValue(tracked), broken, df, error) && failing->Start(error), "failing track configures", error);
+	while (!failing->Position().finished) {
+		if (!failing->Advance(AdvanceRequest{}, sf, nullptr, nullptr, r, error)) { failed = true; break; }
+	}
+	Check(failed && error.find("rig track ends") != std::string::npos, "a transform sampling failure fails the step", error);
+	// A mesh collider moved by a scene transform configures (rigid motion).
+	V::Members collider = Small();
+	V cube = CubeCollider(false);
+	V::Members m = cube.GetArray()[0].GetMap();
+	m.emplace_back("motion", Map({{"type", V::String("scene_transform")}, {"input", V::String("rig")}}));
+	collider.emplace_back("colliders", V::ArrayValue({V::MapValue(m)}));
+	SolverDescription dc;
+	auto e = Make();
+	Check(e->Configure(V::MapValue(collider), rig, dc, error) && dc.inputs == std::vector<std::string>{"rig"},
+		"a mesh collider follows a scene transform", error);
+	Check(!e->Configure(V::MapValue(collider), EmptySceneInputs(), dc, error), "a missing transform input is refused");
 }
 
 void InteractiveMode()
@@ -484,7 +674,8 @@ std::map<std::string, Bytes> Sealed(const fs::path& dir)
 	std::error_code ec;
 	for (const auto& e : fs::directory_iterator(dir, ec)) {
 		const auto name = e.path().filename().string();
-		if (name == "manifest.cbor" || (name.size() > 6 && name.compare(name.size()-6, 6, ".frame") == 0)) files[name] = ReadAll(e.path());
+		if (name == "manifest.cbor" || (name.size() > 6 && name.compare(name.size()-6, 6, ".frame") == 0) ||
+			(name.size() > 7 && name.compare(name.size()-7, 7, ".static") == 0)) files[name] = ReadAll(e.path());
 	}
 	return files;
 }
@@ -559,6 +750,9 @@ int main()
 		Threads();
 		MacroSteps();
 		PortFeed();
+		StickyStop();
+		Rollback();
+		SceneTransforms();
 		InteractiveMode();
 		fs::create_directories(root);
 		if (DiskPublicationAvailable(root)) WorkerHost(root);

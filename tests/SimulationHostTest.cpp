@@ -1,11 +1,17 @@
 // Solver contract and in-process host: conformance of both reference solvers,
-// stop/checkpoint/restore equal to an uninterrupted run, immutable snapshots
-// while the worker thread steps, external macro steps, one-way port feed from
-// a cached output equal to the live feed, and evidence-driven fidelity.
+// stop/checkpoint/restore equal to an uninterrupted run, sticky stop requests,
+// rollback equal to a re-run, immutable snapshots while the worker thread
+// steps, snapshot sharing (a long run's publish cost stays flat), restore
+// discarding later frames, static payloads in memory, external macro steps
+// (accept at the start, offer at the end), one-way port feed from a cached
+// output equal to the live feed, port compatibility, side outputs in
+// process, and evidence-driven fidelity with conditions bound into digests.
 #include "../src/Library/Simulation/SimulationHost.h"
 #include "SimulationReferenceSolvers.h"
 #include "TestTempDir.h"
 
+#include <chrono>
+#include <fstream>
 #include <iostream>
 #include <map>
 
@@ -55,8 +61,23 @@ std::map<std::pair<std::int64_t,std::string>,std::string> RunToEnd(const char* i
 class CountingSink final : public IFrameSink {
 public:
 	std::vector<std::pair<std::int64_t,std::shared_ptr<const Bytes>>> frames;
+	std::map<std::string,std::shared_ptr<const Bytes>> statics;
 	bool Publish(std::int64_t index, const std::string&, double, std::shared_ptr<const Bytes> payload,
 		const Bytes&, std::string&) override { frames.emplace_back(index, std::move(payload)); return true; }
+	bool PublishStatic(const std::string&, std::shared_ptr<const Bytes> payload, std::string& digest,
+		std::string&) override {
+		digest = RISE::RISECBOR64::SHA256Hex(*payload);
+		statics[digest] = std::move(payload);
+		return true;
+	}
+	StaticPayloadResolver Resolver() const {
+		return [this](const std::string& d, std::size_t, std::shared_ptr<const Bytes>& b, std::string& e) {
+			const auto it = statics.find(d);
+			if (it == statics.end()) { e = "unpublished static"; return false; }
+			b = it->second;
+			return true;
+		};
+	}
 };
 
 class StopAfter final : public IProgress {
@@ -128,8 +149,10 @@ void Conformance(const char* id, const V& params)
 	Check(first->Advance(AdvanceRequest{}, head, nullptr, &stopper, r, error) &&
 		r.status == AdvanceResult::Status::Stopped && head.frames.size() == 2, name + " stops mid-segment via progress");
 	first->RequestStop();
-	Check(first->Advance(AdvanceRequest{}, head, nullptr, nullptr, r, error) && head.frames.size() == 3,
-		name + " a stop request made between calls is cleared by the next Advance");
+	Check(first->Advance(AdvanceRequest{}, head, nullptr, nullptr, r, error) && r.status == AdvanceResult::Status::Stopped &&
+		head.frames.size() == 2, name + " a stop request made between calls is honoured by the next Advance (sticky)");
+	Check(first->Advance(AdvanceRequest{}, head, nullptr, nullptr, r, error) && r.status == AdvanceResult::Status::Advanced &&
+		head.frames.size() == 3, name + " the consumed stop request is cleared");
 	StopAfter stopper2(5);
 	Check(first->Advance(AdvanceRequest{}, head, nullptr, &stopper2, r, error) &&
 		r.status == AdvanceResult::Status::Stopped, name + " stops again mid-segment");
@@ -187,12 +210,14 @@ void MeshFrames()
 	for (const auto& f : sink.frames) {
 		MeshFrame m;
 		MeshTopology t;
-		if (!DecodeMesh(*f.second, budget, m, error) || !PeekMeshTopology(*f.second, t, error)) { fixed = false; break; }
+		if (!DecodeMesh(*f.second, budget, sink.Resolver(), m, error) || !PeekMeshTopology(*f.second, t, error)) { fixed = false; break; }
 		if (digest.empty()) digest = t.digest;
-		fixed = fixed && t.digest == digest && !m.velocities.empty() && !m.normals.empty();
+		fixed = fixed && t.digest == digest && !t.reference.empty() && !m.velocities.empty() && !m.normals.empty() &&
+			m.uvSets.size() == 1 && m.uvSets[0].name == "material" && m.attributes.size() == 1;
 		for (std::size_t q = 2; q < m.velocities.size(); q += 3) moving = moving || FromF32(m.velocities[q]) != 0;
 	}
-	Check(fixed && moving && sink.frames.size() == d.cache.count, "membrane publishes a fixed-topology stream with velocities");
+	Check(fixed && moving && sink.frames.size() == d.cache.count && sink.statics.size() == 1,
+		"membrane publishes a mesh.v2 stream over one static topology, with velocities, UVs and an attribute", error);
 }
 
 void MacroSteps()
@@ -224,7 +249,7 @@ void MacroSteps()
 		if (a->Entries()[i].time != b->Entries()[i].time ||
 			a->Read(a->Entries()[i].index, "surface", budget, x, error) != FrameStatus::Ready ||
 			b->Read(b->Entries()[i].index, "surface", budget, y, error) != FrameStatus::Ready ||
-			!DecodeMesh(*x, budget, mx, error) || !DecodeMesh(*y, budget, my, error)) { worst = 1; break; }
+			!DecodeMesh(*x, budget, a->Resolver(), mx, error) || !DecodeMesh(*y, budget, b->Resolver(), my, error)) { worst = 1; break; }
 		for (std::size_t q = 2; q < mx.positions.size(); q += 3)
 			worst = std::max(worst, std::fabs(FromF32(mx.positions[q]) - FromF32(my.positions[q])));
 	}
@@ -351,11 +376,19 @@ void Fidelity(const fs::path& root)
 
 	Evidence forged;
 	forged.fidelity = "predictive";
+	forged.scope = "a test scope";
 	EvidenceCase c{"x", "", std::string(64, 'a'), 0.5, 0.1, true};
 	forged.cases = {c};
 	Check(EffectiveFidelity(forged) == "preview", "a case asserting pass with error above tolerance is preview");
 	forged.cases[0].error = 0.05;
 	Check(EffectiveFidelity(forged) == "predictive", "consistent passing evidence is predictive");
+	forged.scope.clear();
+	Check(EffectiveFidelity(forged) == "preview", "predictive needs a stated scope");
+	forged.scope = "a test scope";
+	forged.conditions = {{"mode", {"bake"}}, {"contact", {"none"}}};
+	Check(EffectiveFidelity(forged) == "preview", "unsorted evidence conditions are invalid and preview");
+	forged.conditions = {{"contact", {"none"}}, {"mode", {"bake"}}};
+	Check(EffectiveFidelity(forged) == "predictive", "valid conditions keep predictive");
 	forged.cases[0].digest = "nope";
 	Check(EffectiveFidelity(forged) == "preview", "evidence without a digest is preview");
 	forged.cases.clear();
@@ -378,6 +411,20 @@ void PortFeeds(const fs::path& root)
 	PortDeclaration wrong = *offer;
 	wrong.units = "kPa";
 	Check(!PortsCompatible(wrong, *accept, error), "unit mismatch refused");
+	wrong = *offer;
+	wrong.channels[0].components = 3;
+	Check(!PortsCompatible(wrong, *accept, error), "channel component mismatch refused (an adapter's job)");
+	wrong = *offer;
+	wrong.channels[0].units = "kPa";
+	Check(!PortsCompatible(wrong, *accept, error), "channel unit mismatch refused");
+	wrong = *offer;
+	PortDeclaration domained = *accept;
+	wrong.domain = std::string(64, 'a');
+	domained.domain = std::string(64, 'b');
+	Check(!PortsCompatible(wrong, domained, error), "different index-space domains refused");
+	domained.domain.clear();
+	Check(PortsCompatible(wrong, domained, error), "an unstated domain is decided per payload", error);
+	Check(FindPortAdapter(wrong, *accept) == nullptr, "no port adapter is registered for an unknown pair");
 
 	// Live, one way: the grid steps first, the membrane follows with macro ends at the grid's output times.
 	PortRelay relay;
@@ -413,6 +460,335 @@ void PortFeeds(const fs::path& root)
 	Check(live.size() == 24 && live == cached, "one-way feed from a cached output equals the live feed byte for byte");
 	Check(live != Digests(*uncoupled.Snapshot()), "the load actually changes the membrane");
 	Check(Digests(*disk) == Digests(*liveGrid.Snapshot()), "offering solver's live frames equal its cached frames");
+}
+
+
+// An exchange that feeds one payload to every accepted port and records the
+// times of accepts and offers.
+class RecordingFeed final : public IPortExchange {
+public:
+	std::shared_ptr<const Bytes> payload;
+	std::vector<double> accepts;
+	std::vector<std::pair<std::string,double>> offers;
+	std::map<std::string,std::shared_ptr<const Bytes>> statics;
+	bool Offer(const std::string& port, double time, std::shared_ptr<const Bytes>, std::string&) override {
+		offers.emplace_back(port, time);
+		return true;
+	}
+	PortStatus Accept(const std::string&, double time, std::shared_ptr<const Bytes>& encoded, std::string&) override {
+		accepts.push_back(time);
+		if (!payload) return PortStatus::Unavailable;
+		encoded = payload;
+		return PortStatus::Ready;
+	}
+	bool OfferStatic(const std::string&, std::shared_ptr<const Bytes> bytes, std::string&) override {
+		statics[RISE::RISECBOR64::SHA256Hex(*bytes)] = std::move(bytes);
+		return true;
+	}
+};
+
+// A constant scalar grid of n x n cells (cell size 1/(n-1)... any lattice the
+// reference solvers accept): a pressure or source value.
+std::shared_ptr<const Bytes> ConstantGrid(std::uint32_t n, float value, double cell)
+{
+	GridFrame g;
+	GridChannel c;
+	c.name = "pressure"; c.units = "Pa";
+	c.dimensions = {n, n, 1};
+	c.indexToWorld = {cell,0,0,0, 0,cell,0,0, 0,0,cell,0, 0,0,0,1};
+	GridBlock b;
+	b.dimensions = c.dimensions;
+	b.active.assign((n*n+7)/8, 0xff);
+	if ((n*n)%8) b.active.back() = static_cast<std::uint8_t>((1u << ((n*n)%8)) - 1);
+	b.values.assign(n*n, F32(value));
+	c.blocks.push_back(b);
+	g.channels.push_back(c);
+	auto bytes = std::make_shared<Bytes>();
+	std::string error;
+	EncodeGrid(g, budget, *bytes, error);
+	return bytes;
+}
+
+// Accept at the start of each macro step (held over it), offer at its end.
+void PortTiming()
+{
+	std::string error;
+	auto solver = Make(MembraneSolver::Id);
+	SolverDescription d;
+	Check(solver->Configure(Map({}), EmptySceneInputs(), d, error) && solver->Start(error), "timing membrane", error);
+	RecordingFeed feed;
+	feed.payload = ConstantGrid(17, 0.5f, 1.0/16);
+	CountingSink sink;
+	AdvanceResult r;
+	const double dt = d.cache.interval;
+	// Macro steps of 1.5 output intervals: each spans an output time.
+	std::vector<double> ends;
+	for (int k = 1; k <= 4; ++k) ends.push_back(1.5*dt*k);
+	double begin = 0;
+	bool ok = true;
+	for (double e : ends) {
+		const auto before = feed.accepts.size();
+		ok = ok && solver->Advance({AdvanceRequest::Mode::MacroStep, e}, sink, &feed, nullptr, r, error);
+		ok = ok && feed.accepts.size() == before + 1 && feed.accepts.back() == begin;
+		ok = ok && !feed.offers.empty() && feed.offers.back().second == e;
+		begin = e;
+	}
+	Check(ok, "one accept per macro step at its start; the last offer of each step is stamped with its end", error);
+	std::size_t outputOffers = 0;
+	for (const auto& o : feed.offers) {
+		const double k = o.second/dt;
+		if (std::fabs(k - std::round(k)) < 1e-9) ++outputOffers;
+	}
+	Check(outputOffers == sink.frames.size() && feed.statics.size() == 1,
+		"offers also go out at every output time, with the static topology offered first");
+	// Free-running: every segment is a step and reads its own value.
+	auto free = Make(MembraneSolver::Id);
+	RecordingFeed freeFeed;
+	CountingSink freeSink;
+	Check(free->Configure(Map({}), EmptySceneInputs(), d, error) && free->Start(error) &&
+		free->Advance(AdvanceRequest{}, freeSink, &freeFeed, nullptr, r, error) &&
+		free->Advance(AdvanceRequest{}, freeSink, &freeFeed, nullptr, r, error) &&
+		freeFeed.accepts == std::vector<double>{0.0}, "free-running reads once per output interval", error);
+}
+
+// Rollback: a repeated macro step equals the first attempt, and with new port
+// values equals a re-run of that step from a checkpoint.
+void Rollback(const char* id, const V& params, std::shared_ptr<const Bytes> a, std::shared_ptr<const Bytes> b)
+{
+	const std::string name(id);
+	std::string error;
+	auto solver = Make(id), rerun = Make(id);
+	SolverDescription d, d2;
+	CountingSink sink;
+	AdvanceResult r;
+	RecordingFeed feed;
+	feed.payload = a;
+	Check(solver->Configure(params, EmptySceneInputs(), d, error) && d.capabilities.rollback && solver->Start(error),
+		name + " rollback solver", error);
+	const double dt = d.cache.interval;
+	bool ok = solver->Advance({AdvanceRequest::Mode::MacroStep, 1.5*dt}, sink, &feed, nullptr, r, error);
+	std::shared_ptr<const SolverStateToken> token;
+	Bytes checkpoint;
+	ok = ok && solver->SaveState(token, error) && solver->Checkpoint(checkpoint, error);
+	const auto at = solver->Position();
+	CountingSink first, second, third, reference;
+	ok = ok && solver->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, first, &feed, nullptr, r, error);
+	const auto after = solver->Position();
+	ok = ok && solver->RestoreState(*token, error) && solver->Position().time == at.time &&
+		solver->Position().nextIndex == at.nextIndex;
+	ok = ok && solver->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, second, &feed, nullptr, r, error);
+	Check(ok && solver->Position().time == after.time && first.frames.size() == 2 && second.frames.size() == 2 &&
+		*first.frames[0].second == *second.frames[0].second && *first.frames[1].second == *second.frames[1].second,
+		name + " a rolled-back macro step repeats byte for byte", error);
+	// New port values for the repeated step: equal to a re-run from the checkpoint with those values.
+	feed.payload = b;
+	RecordingFeed other;
+	other.payload = b;
+	ok = solver->RestoreState(*token, error) &&
+		solver->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, third, &feed, nullptr, r, error) &&
+		rerun->Configure(params, EmptySceneInputs(), d2, error) && rerun->Restore(checkpoint, error) &&
+		rerun->Advance({AdvanceRequest::Mode::MacroStep, 3.5*dt}, reference, &other, nullptr, r, error);
+	bool same = ok && third.frames.size() == reference.frames.size() && !third.frames.empty();
+	for (std::size_t i = 0; same && i < third.frames.size(); ++i) same = *third.frames[i].second == *reference.frames[i].second;
+	Check(same && *third.frames[0].second != *first.frames[0].second,
+		name + " a repeated step re-reads its ports and equals a re-run with the new values", error);
+	auto stranger = Make(id);
+	SolverDescription d3;
+	Check(stranger->Configure(params, EmptySceneInputs(), d3, error) && !stranger->RestoreState(*token, error),
+		name + " a token from another instance is refused");
+}
+
+// Pause/Play cycles: a stop that misses the step in progress is consumed
+// by the host, never by a later caller step.
+void PauseCycles()
+{
+	std::string error;
+	const auto reference = RunToEnd(MembraneSolver::Id, Map({}));
+	InProcessHost host(Make(MembraneSolver::Id));
+	Check(host.Configure(Map({{"pace_ms", V::Unsigned(1)}}), EmptySceneInputs(), error) && host.Start(error), "cycling host", error);
+	bool ok = true;
+	for (int k = 0; k < 12 && ok && !host.Position().finished; ++k) {
+		ok = host.Play(error);
+		std::this_thread::sleep_for(std::chrono::microseconds(300 + 200*k));
+		host.Pause();
+		ok = ok && host.WaitIdle(error);
+		AdvanceResult r;
+		if (ok && !host.Position().finished) ok = host.Step(AdvanceRequest{}, r, error) && r.status != AdvanceResult::Status::Stopped;
+	}
+	Check(ok && host.StepToIndex(1000, error) && Digests(*host.Snapshot()) == reference,
+		"pause/play/step cycles never leak a stop into a later step and keep the frames", error);
+}
+
+// Restoring a checkpoint discards the frames published after it.
+void RestoreDiscards()
+{
+	std::string error;
+	const V params = Map({{"frames", V::Unsigned(12)}});
+	const auto reference = RunToEnd(MembraneSolver::Id, params);
+	InProcessHost host(Make(MembraneSolver::Id));
+	InProcessHost::Checkpoint checkpoint;
+	Check(host.Configure(params, EmptySceneInputs(), error) && host.Start(error) && host.StepToIndex(4, error) &&
+		host.SaveCheckpoint(checkpoint, error) && host.StepToIndex(9, error), "run past a checkpoint", error);
+	const auto before = host.Snapshot();
+	Check(host.RestoreCheckpoint(checkpoint, error), "restore", error);
+	const auto after = host.Snapshot();
+	std::shared_ptr<const Bytes> b;
+	Check(before->Entries().size() == 10 && after->Entries().size() == 5 &&
+		after->Read(7, "surface", budget, b, error) == FrameStatus::Unavailable &&
+		after->Read(4, "surface", budget, b, error) == FrameStatus::Ready && after->Statics().size() == 1,
+		"frames after the checkpoint leave later snapshots; earlier ones and the statics stay");
+	Check(before->Entries().size() == 10, "a snapshot taken before the restore is unchanged");
+	Check(host.StepToIndex(100, error) && Digests(*host.Snapshot()) == reference, "the replay republishes the same frames", error);
+}
+
+// A long interactive run: publishing stays O(log n), snapshots stay immutable.
+void SnapshotSharing()
+{
+	CacheDescription d;
+	d.key = std::string(64, '7'); d.epoch = std::string(64, '8'); d.producer = "sharing"; d.producerVersion = "1";
+	const std::int64_t n = 60000;
+	d.count = n + 10;
+	d.outputs = {{"field", "grid.v1", {{"x", "1", "f32"}}}};
+	MemoryPublisher publisher;
+	publisher.Reset(d);
+	auto payload = std::make_shared<const Bytes>(Bytes{1, 2, 3});
+	std::string error;
+	const std::int64_t window = 3000;
+	double early = 0, late = 0;
+	std::shared_ptr<const MemoryCacheSnapshot> held;
+	bool ok = true;
+	for (std::int64_t i = 0; i < n && ok; ++i) {
+		const auto t0 = std::chrono::steady_clock::now();
+		ok = publisher.Publish(i, "field", static_cast<double>(i), payload, {}, error);
+		const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		if (i < window) early += s;
+		if (i >= n - window) late += s;
+		if (i == n/2) held = publisher.Current();
+	}
+	std::cout << "publish cost: first " << window << " frames " << early*1e6/window << " us/frame, last " << window
+		<< " frames " << late*1e6/window << " us/frame at " << n << " entries\n";
+	Check(ok && late < 4*early + 2e-6*window, "a long run's publish cost stays flat (shared snapshot storage)", error);
+	const auto current = publisher.Current();
+	CacheEntry e;
+	std::shared_ptr<const Bytes> b;
+	Check(held->Count() == static_cast<std::size_t>(n/2 + 1) && current->Count() == static_cast<std::size_t>(n) &&
+		held->Read(n/2 + 5, "field", budget, b, error) == FrameStatus::Unavailable &&
+		current->FindEntry(n - 1, "field", e) && e.time == static_cast<double>(n - 1) &&
+		held->Entries().size() == static_cast<std::size_t>(n/2 + 1), "held snapshots keep their own entries");
+	// Replacement and an out-of-order insert leave earlier generations alone.
+	auto other = std::make_shared<const Bytes>(Bytes{9});
+	Check(publisher.Publish(100, "field", 100, other, {}, error) && publisher.Current()->Read(100, "field", budget, b, error) ==
+		FrameStatus::Ready && *b == *other && current->Read(100, "field", budget, b, error) == FrameStatus::Ready &&
+		*b == *payload, "a republished frame replaces it in later generations only", error);
+	publisher.DiscardFrom(n - 5);
+	Check(publisher.Current()->Count() == static_cast<std::size_t>(n - 5) && current->Count() == static_cast<std::size_t>(n),
+		"discarding a tail leaves earlier generations alone");
+	Check(publisher.Publish(n + 2, "field", 1, payload, {}, error) && publisher.Publish(n - 3, "field", 1, payload, {}, error) &&
+		publisher.Current()->FindEntry(n + 2, "field", e) && publisher.Current()->FindEntry(n - 3, "field", e) &&
+		publisher.Current()->Entries().size() == static_cast<std::size_t>(n - 3), "out-of-order publication keeps the order", error);
+}
+
+// Static payloads in memory: required before a referencing frame.
+void StaticsInMemory()
+{
+	std::string error;
+	InProcessHost host(Make(MembraneSolver::Id));
+	Check(host.Configure(Map({{"frames", V::Unsigned(3)}}), EmptySceneInputs(), error) && host.Start(error) &&
+		host.StepToIndex(10, error), "membrane in memory", error);
+	const auto s = host.Snapshot();
+	std::shared_ptr<const Bytes> frame;
+	MeshFrame m;
+	Check(s->Statics().size() == 1 && s->Read(2, "surface", budget, frame, error) == FrameStatus::Ready &&
+		DecodeMesh(*frame, budget, s->Resolver(), m, error) && m.uvSets.size() == 1, "in-memory frames resolve their statics", error);
+	MemoryPublisher bare;
+	bare.Reset(host.Description().cache);
+	Check(!bare.Publish(0, "surface", 0, frame, {}, error) && error.find("unpublished static") != std::string::npos,
+		"a frame referencing an unpublished static payload is refused");
+}
+
+// Evidence conditions and scope: recorded and bound into the evidence digests.
+void EvidenceScope(const fs::path& root)
+{
+	std::string error;
+	auto solver = Make(MembraneSolver::Id);
+	SolverDescription d;
+	Check(solver->Configure(Map({}), EmptySceneInputs(), d, error) && PrepareCacheDescription(d, EmptySceneInputs(), "", error),
+		"membrane description", error);
+	const auto& c = d.cache;
+	Check(c.evidenceConditions == d.evidence.conditions && c.evidenceScope == d.evidence.scope && c.evidence.size() == 1 &&
+		c.evidence[0] == ScopedEvidenceDigest(d.evidence.cases[0].digest, c.evidenceConditions, c.evidenceScope) &&
+		c.evidence[0] != d.evidence.cases[0].digest && c.fidelity == "predictive",
+		"the cache records conditions and scope and binds them into the evidence digest");
+	auto other = d.evidence.conditions;
+	other[0].second = {"free"};
+	Check(ScopedEvidenceDigest(d.evidence.cases[0].digest, other, c.evidenceScope) != c.evidence[0] &&
+		ScopedEvidenceDigest(d.evidence.cases[0].digest, c.evidenceConditions, "another scope") != c.evidence[0] &&
+		ScopedEvidenceDigest(d.evidence.cases[0].digest, {}, "") == d.evidence.cases[0].digest,
+		"changing the conditions or the scope changes the digest");
+	InProcessHost host(Make(MembraneSolver::Id));
+	CacheSnapshot disk;
+	Check(host.Configure(Map({{"frames", V::Unsigned(2)}}), EmptySceneInputs(), error) && host.Record(root/"scoped", budget, error) &&
+		host.Start(error) && host.StepToIndex(10, error) && CacheSnapshot::Open(root/"scoped", budget, disk, error) &&
+		disk.Description().evidenceConditions == host.Description().evidence.conditions &&
+		disk.Description().evidenceScope == host.Description().evidence.scope && disk.Statics().size() == 1,
+		"the manifest carries the evidence scope and the static topology", error);
+}
+
+// A minimal solver that needs a side-output directory.
+class SideOutputSolver final : public ISimulationSolver {
+public:
+	bool Configure(const V&, const ISceneInputs&, SolverDescription& d, std::string&) override {
+		d = SolverDescription{};
+		d.solverId = "test.side_output"; d.version = "1";
+		d.effectiveParameters = V::MapValue({});
+		d.cache.count = 2; d.cache.interval = 1;
+		d.cache.outputs = {{"field", "grid.v1", {{"x", "1", "f32"}}}};
+		d.sideOutput = "exports";
+		return true;
+	}
+	bool SetSideOutputDirectory(const fs::path& directory, std::string&) override { dir_ = directory; return true; }
+	bool Start(std::string& error) override {
+		if (dir_.empty()) return Fail(error, "needs a side output directory");
+		next_ = 0;
+		return true;
+	}
+	bool Restore(const Bytes&, std::string& error) override { return Fail(error, "no"); }
+	bool Advance(const AdvanceRequest&, IFrameSink& sink, IPortExchange*, IProgress*, AdvanceResult& r, std::string& error) override {
+		std::ofstream(dir_/("frame" + std::to_string(next_))) << next_;
+		if (!sink.Publish(next_, "field", static_cast<double>(next_), std::make_shared<const Bytes>(Bytes{1}), {}, error)) return false;
+		++next_;
+		r.status = next_ == 2 ? AdvanceResult::Status::Finished : AdvanceResult::Status::Advanced;
+		r.position = Position();
+		return true;
+	}
+	bool Checkpoint(Bytes&, std::string& error) override { return Fail(error, "no"); }
+	SolverPosition Position() const override { return {static_cast<double>(next_), next_, next_ == 2}; }
+	void RequestStop() override {}
+private:
+	fs::path dir_;
+	std::int64_t next_ = 0;
+};
+
+void SideOutputs(const fs::path& root)
+{
+	std::string error;
+	InProcessHost none(std::unique_ptr<ISimulationSolver>(new SideOutputSolver));
+	Check(none.Configure(Map({}), EmptySceneInputs(), error) && !none.Start(error), "a side-output solver refuses to start without one");
+	InProcessHost chosen(std::unique_ptr<ISimulationSolver>(new SideOutputSolver));
+	const auto dir = root/"side"/"chosen";
+	Check(chosen.Configure(Map({}), EmptySceneInputs(), error) && chosen.SetSideOutputDirectory(dir, error) &&
+		chosen.Start(error) && chosen.StepToIndex(5, error) && fs::exists(dir/"frame1"), "an explicit side-output directory", error);
+#ifndef _WIN32
+	Check((fs::status(dir).permissions() & (fs::perms::group_all | fs::perms::others_all)) == fs::perms::none,
+		"the side-output directory is owner-only");
+#endif
+	InProcessHost recorded(std::unique_ptr<ISimulationSolver>(new SideOutputSolver));
+	Check(recorded.Configure(Map({}), EmptySceneInputs(), error) && recorded.Record(root/"side"/"cache", budget, error) &&
+		recorded.Start(error) && recorded.StepToIndex(5, error) && fs::exists(root/"side"/"cache"/"exports"/"frame0"),
+		"a recording host gives the solver <cache>/<sideOutput>", error);
+	InProcessHost plain(Make(MembraneSolver::Id));
+	Check(plain.Configure(Map({}), EmptySceneInputs(), error) && !plain.SetSideOutputDirectory(dir, error),
+		"a solver without a side output refuses one");
 }
 
 void Registry()
@@ -459,10 +835,37 @@ int main()
 		MacroSteps();
 		WorkerThreadAndSnapshots();
 		InMemoryCheckpoint();
+		PortTiming();
+		Rollback(MembraneSolver::Id, Map({}), ConstantGrid(17, 0.5f, 1.0/16), ConstantGrid(17, -2.0f, 1.0/16));
+		{
+			auto source = [](float v) {
+				GridFrame g;
+				GridChannel c;
+				c.name = "concentration rate"; c.units = "1/s";
+				c.dimensions = {32, 32, 1};
+				GridBlock b;
+				b.dimensions = c.dimensions;
+				b.active.assign(128, 0xff);
+				b.values.assign(1024, F32(v));
+				c.blocks.push_back(b);
+				g.channels.push_back(c);
+				auto bytes = std::make_shared<Bytes>();
+				std::string error;
+				EncodeGrid(g, budget, *bytes, error);
+				return std::shared_ptr<const Bytes>(std::move(bytes));
+			};
+			Rollback(AdvectionDiffusionSolver::Id, Map({}), source(0.25f), source(-1.0f));
+		}
+		PauseCycles();
+		RestoreDiscards();
+		SnapshotSharing();
+		StaticsInMemory();
 		if (DiskPublicationAvailable(root)) {
 			Recording(root);
 			Fidelity(root);
 			PortFeeds(root);
+			EvidenceScope(root);
+			SideOutputs(root);
 		}
 	} catch (const std::exception& e) {
 		++failures;

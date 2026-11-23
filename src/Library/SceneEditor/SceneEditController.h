@@ -43,6 +43,7 @@
 #include <exception>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -51,6 +52,16 @@
 
 namespace RISE
 {
+	namespace Implementation
+	{
+		// Simulation M3c (LiveSimulation.h).
+		class PlaybackClock;
+		class LiveSimulation;
+		struct PlaybackStatus;
+		struct LiveSimulationStatus;
+	}
+	namespace Simulation { class MeshCacheSource; }
+
 	//! Desktop viewport sinks intentionally display ordinary render output as
 	//! opaque, even when a no-hit pixel carries coverage alpha 0.  A negative
 	//! alpha is reserved solely for the Last Render "no completed image yet"
@@ -3707,6 +3718,61 @@ namespace RISE
 		//! the scene or another editor operation holds the commit mutex; the
 		//! caller should retain its last successful snapshot and try again.
 		bool GetHasAnimation( bool& hasAnimation ) const;
+
+		// ---- Simulation M3c: playback, baked ranges, live simulation ----
+		// (LiveSimulation.h; docs/SIMULATION_M3C_RESULTS.md).  GetHasAnimation
+		// also reports true for a scene whose only time-varying content is
+		// simulation assets (simulated meshes, fire media), and
+		// GetAnimationOptions then takes its range from their time maps when
+		// the scene declares no animation.
+
+		//! Play scene time on a controller thread through the time-scrub
+		//! path at `fps` frames per second of wall time (<= 0: the
+		//! timeline's own frame spacing), over the timeline's range, from
+		//! the current scene time (from the start when at the end).  Opens
+		//! one scrub composite until it stops.  Starts attached live
+		//! simulations; the clock never runs ahead of their latest frame.
+		bool PlaybackPlay( double fps, bool loop );
+		bool PlaybackPlayRange( double start, double end, double fps, bool loop );
+		bool PlaybackPause();				//!< also pauses live solvers
+		//! Move the playhead: while playing, the clock jumps there; while
+		//! paused, one scrub (clamped to the latest live frame).
+		bool PlaybackSeek( double t );
+		bool GetPlaybackStatus( Implementation::PlaybackStatus& status ) const;
+		//! Every time-varying asset's frames and how much is baked (reads a
+		//! partial cache's manifest).  Same non-blocking contract as
+		//! GetAnimationOptions.
+		bool GetTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges ) const;
+
+		//! Attach an in-process simulation to the simulated_mesh_geometry
+		//! `geometry`: registered solver `solverId` (interactive), parameters
+		//! a JSON object or canonical CBOR map.  Configures and steps the first
+		//! frame on the calling thread, then binds the geometry to the host's
+		//! in-memory publication under the render park.  Topology must equal
+		//! the bound mesh's.  Scrubbing past the latest published frame clamps
+		//! to it.  Scene-file binding is M4: this is the API-only path.
+		bool LiveSimulationAttach( const std::string& geometry, const std::string& solverId,
+			const std::vector<unsigned char>& parameters, std::string& error );
+		//! Stop the solver (joined) and rebind the geometry's baked cache.
+		bool LiveSimulationDetach( const std::string& geometry, std::string& error );
+		//! Restart from the initial state (published frames are dropped) and
+		//! show its first frame.
+		bool LiveSimulationReset( const std::string& geometry, std::string& error );
+		//! New parameters: a new cache key; restarts.
+		bool LiveSimulationSetParameters( const std::string& geometry,
+			const std::vector<unsigned char>& parameters, std::string& error );
+		//! Restart, also recording every frame to a new epoch of the disk
+		//! cache at `cacheDirectory` (sealed when the run finishes).
+		bool LiveSimulationRecord( const std::string& geometry, const std::string& cacheDirectory,
+			std::string& error );
+		//! False when no live simulation is attached to `geometry`, or while
+		//! a scrub holds the live state (non-blocking; poll again).
+		bool GetLiveSimulationStatus( const std::string& geometry,
+			Implementation::LiveSimulationStatus& status ) const;
+		unsigned int LiveSimulationCount() const;
+		//! Interactive passes finished without cancellation (the clock's
+		//! coalescing signal).
+		std::uint64_t GetCompletedPassCount() const;
 
 		//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of
 		//! a named painter -- see PainterPreview.h for the full domain /
@@ -7475,6 +7541,25 @@ namespace RISE
 		// serialized under mMutex.
 		std::atomic<bool>                    mTxnOpen;
 		EditorStateSnapshot                  mTxnBaseline;        // H1: one owned baseline (history marker + dirty + selection)
+
+		// Simulation M3c (appended).  Lock order: mLiveOpMutex -> mLiveMutex
+		// -> mRenderAdmissionMutex -> mMutex; a session's own mutex and the
+		// publication's come after any of them.  mPlayback is created in the
+		// constructor and never replaced.
+		std::atomic<std::uint64_t>           mCompletedPasses{ 0 };
+		std::mutex                           mLiveOpMutex;        // serializes attach / detach / restart
+		mutable std::mutex                   mLiveMutex;          // guards mLiveSims
+		std::vector<std::unique_ptr<Implementation::LiveSimulation> > mLiveSims;
+		std::unique_ptr<Implementation::PlaybackClock> mPlayback;
+		double ClampToLiveFrames_( double t ) const;	// caller holds mLiveMutex
+		bool ShowTimeNow_( double t );
+		bool TimelineRangeLocked_( double& start, double& end, unsigned int& frames ) const;
+		bool RebindParked_( Implementation::LiveSimulation& live,
+			std::unique_ptr<Simulation::MeshCacheSource>& source, double installTime,
+			bool force, std::string& error );
+		bool RestartLive_( const std::string& geometry, const std::vector<unsigned char>* parameters,
+			const std::string* record, std::string& error );
+		void ShutdownSimulation_();
 
 		// Disable copy / move
 		SceneEditController( const SceneEditController& );

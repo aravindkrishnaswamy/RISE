@@ -97,6 +97,13 @@ bool LoadParameters(const fs::path& file,std::size_t budget,V& parameters,std::s
 	std::ifstream in(file,std::ios::binary);
 	if (!in.read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size())) ||
 		in.peek()!=std::char_traits<char>::eof()) return Fail(error,"cannot read parameter file");
+	return ParseSolverParameters(bytes,budget,parameters,error);
+}
+
+} // namespace
+
+bool ParseSolverParameters(const Bytes& bytes,std::size_t budget,V& parameters,std::string& error)
+{
 	std::size_t first=0;
 	while (first<bytes.size() && std::isspace(static_cast<unsigned char>(bytes[first]))) ++first;
 	V candidate;
@@ -115,6 +122,8 @@ bool LoadParameters(const fs::path& file,std::size_t budget,V& parameters,std::s
 	parameters=std::move(candidate);
 	return true;
 }
+
+namespace {
 
 // ---------------------------------------------------------------- sidecars
 
@@ -161,9 +170,9 @@ bool ReadJob(const fs::path& root,std::size_t budget,Job& job,std::string& error
 
 // Header (canonical CBOR) then raw state bytes: "RISESIMC", u32 version 1,
 // u64 header length, header, state.
-// The state is consumed: the header is inserted in front of it in place, so a
-// large solver state is not held twice when its buffer has a little slack.
-bool WriteCheckpoint(const fs::path& root,const Job& job,const SolverPosition& p,Bytes&& state,
+// The prefix and the state are written as two parts of one durable file, so
+// the state is never copied (no concatenated buffer).
+bool WriteCheckpoint(const fs::path& root,const Job& job,const SolverPosition& p,const Bytes& state,
 	std::string& error)
 {
 	Bytes header;
@@ -175,9 +184,7 @@ bool WriteCheckpoint(const fs::path& root,const Job& job,const SolverPosition& p
 	auto word=[&](std::uint64_t x,unsigned width){for (unsigned i=0;i<width;++i) prefix.push_back(static_cast<unsigned char>(x>>(8*i)));};
 	word(1,4); word(header.size(),8);
 	prefix.insert(prefix.end(),header.begin(),header.end());
-	Bytes file(std::move(state));
-	file.insert(file.begin(),prefix.begin(),prefix.end());
-	return ReplaceFileDurably(root,checkpointName,file,error);
+	return ReplaceFileDurably(root,checkpointName,{{prefix.data(),prefix.size()},{state.data(),state.size()}},error);
 }
 
 bool ReadCheckpoint(const fs::path& root,const Job& job,std::size_t budget,SolverPosition& p,Bytes& state,
@@ -246,6 +253,11 @@ public:
 		}
 		return writer_.Append(index,output,time,*payload,error,receipt);
 	}
+	bool PublishStatic(const std::string& type,std::shared_ptr<const Bytes> payload,std::string& digest,
+		std::string& error) override {
+		if (!payload) return Fail(error,"null static payload");
+		return writer_.AppendStatic(type,*payload,digest,error);
+	}
 private:
 	CacheWriter& writer_;
 	bool verify_;
@@ -284,7 +296,8 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	WorkerStatus status;
 	status.solver=job.solver;
 	status.framesTotal=d.cache.count;
-	status.endTime=d.cache.startTime+static_cast<double>(d.cache.count)*d.cache.interval;
+	// The time of the last output, which is where a finished run's clock stops.
+	status.endTime=d.cache.startTime+static_cast<double>(d.cache.count ? d.cache.count-1 : 0)*d.cache.interval;
 	auto update=[&](const std::string& state,const std::string& lastError) {
 		const auto p=solver.Position();
 		status.state=state;
@@ -298,7 +311,7 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	};
 	auto checkpoint=[&](std::string& error) {
 		Bytes state;
-		return solver.Checkpoint(state,error) && WriteCheckpoint(root,job,solver.Position(),std::move(state),error);
+		return solver.Checkpoint(state,error) && WriteCheckpoint(root,job,solver.Position(),state,error);
 	};
 	auto fail=[&](const std::string& error) {
 		update("failed",error);
@@ -308,9 +321,12 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	update("running","");
 
 	std::atomic<bool> stop{false}, done{false};
+	// RequestStop is sticky (honoured by the next Advance if none is running),
+	// so one request per stop is enough.
 	std::thread watcher([&]{
+		bool requested=false;
 		while (!done.load()) {
-			if (g_signal!=0 || stop.load()) solver.RequestStop();
+			if (!requested && (g_signal!=0 || stop.load())) { solver.RequestStop(); requested=true; }
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		}
 	});
@@ -360,7 +376,8 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 bool Configure(ISimulationSolver& solver,const V& parameters,SolverDescription& d,const std::string& parent,
 	std::string& error)
 {
-	NoSceneInputs inputs;
+	// Process-lifetime inputs: a solver may keep the object it is configured with.
+	const ISceneInputs& inputs=EmptySceneInputs();
 	if (!solver.Configure(parameters,inputs,d,error)) return false;
 	if (!d.inputs.empty()) return Fail(error,"this solver reads scene inputs; rise-sim bakes scenes from M4");
 	return PrepareCacheDescription(d,inputs,parent,error);
@@ -393,8 +410,12 @@ bool PrepareSideOutput(ISimulationSolver& solver,const SolverDescription& d,cons
 		if (ec) return Fail(error,"cannot retire the previous side output: "+ec.message());
 		fs::remove_all(old,ec);
 	}
-	fs::create_directories(dir,ec);
-	if (ec || !fs::is_directory(dir)) return Fail(error,"cannot create side output directory "+dir.string());
+	if (!fs::is_directory(fs::symlink_status(dir,ec))) {
+		// Owner-only, like everything else the worker creates in the cache.
+		fs::create_directory(dir,ec);
+		if (!ec) fs::permissions(dir,fs::perms::owner_all,fs::perm_options::replace,ec);
+	}
+	if (ec || !fs::is_directory(fs::symlink_status(dir,ec))) return Fail(error,"cannot create side output directory "+dir.string());
 	return solver.SetSideOutputDirectory(dir,error);
 }
 
@@ -430,8 +451,7 @@ int Bake(const std::string& id,const fs::path& parameterFile,const fs::path& roo
 			return WorkerFailed;
 		}
 		parent=old.Digest();
-		NoSceneInputs inputs;
-		if (!PrepareCacheDescription(d,inputs,parent,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
+		if (!PrepareCacheDescription(d,EmptySceneInputs(),parent,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	}
 	CacheWriter writer;
 	if (!writer.Begin(root,d.cache,parent,false,options.budget,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }

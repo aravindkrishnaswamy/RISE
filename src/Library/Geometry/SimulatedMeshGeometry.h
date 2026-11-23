@@ -83,6 +83,13 @@ namespace RISE
 			bool AcquireAssetFreeze( std::string& error ) override;
 			bool ReleaseAssetFreeze( std::string& error ) override;
 
+			//! Simulation M3c: swaps the frame source (a live in-memory
+			//! publication for the baked cache, and back).  The topology must
+			//! be the bound mesh's; the next prepare installs from the new
+			//! source.  Only between frames (the caller parks the render) and
+			//! never under the freeze.  On success `source` holds the previous one.
+			bool RebindSource( std::unique_ptr<Simulation::MeshCacheSource>& source, std::string& error );
+
 			// Diagnostics / test hooks.
 			bool BlurActive() const { return m_blur; }
 			bool Hidden() const { return m_hidden; }
@@ -121,6 +128,8 @@ namespace RISE
 				std::int64_t		frame = 0;
 				std::string			identity;
 			};
+			bool PrepareFrame( const RenderTimeSupport& support, std::string& error,
+				std::function<void()>* rollback );
 			State Capture() const;
 			bool Install( State& next, std::string& error );
 			void ComputeNormals( const VerticesListType& p, NormalsListType& out ) const;
@@ -138,6 +147,9 @@ namespace RISE
 			std::string			m_identity;
 			unsigned long long	m_installs;
 			std::int64_t		m_lastWarnedMissing;
+			// M3c: the generation and support of the last successful prepare.
+			std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> m_preparedSnapshot;
+			RenderTimeSupport	m_preparedSupport;
 			// Freeze bookkeeping.
 			mutable std::mutex	m_freezeMutex;
 			unsigned int		m_leases;

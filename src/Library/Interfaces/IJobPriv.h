@@ -32,6 +32,7 @@
 
 #include <string>
 #include <vector>
+#include "../Simulation/SimulationTimeline.h"   // Simulation M3c: TimelineRange (std-lib only)
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: CstHeadVersion (a trivial POD returned by value below; Cst.h is std-lib-only weight)
 
 namespace RISE
@@ -461,6 +462,15 @@ namespace RISE
 		virtual bool RasterizeExternalRasterizerAtSceneTime( IRasterizer* rasterizer,
 			const char* rasterizerKind, const FireExternalRenderConfig& config,
 			const Rect* region, Scalar nominalTime ) = 0;
+
+		//! Simulation M3c: the frames of every time-varying asset some object
+		//! or the scene renders (simulated meshes, fire media), in scene time,
+		//! for the timeline.  `availability` also reads how much is baked
+		//! (a partial disk cache re-reads its manifest); without it only the
+		//! time maps.  Caller holds the scene stable (the editor's mutex).
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL.
+		virtual bool DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
+			bool availability ) = 0;
 	};
 
 

@@ -445,6 +445,7 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CancellableProgressCallback.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditor.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditController.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\LiveSimulation.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\LightIntrospection.cpp" />
@@ -570,7 +571,10 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationField.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationTimeline.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\BuiltinSolvers.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationSolver.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationHost.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationWorker.cpp" />
@@ -1073,6 +1077,7 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CancellableProgressCallback.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditor.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditController.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\LiveSimulation.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\LightIntrospection.h" />
@@ -1219,7 +1224,10 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationVDBBounds.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationCache.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationMesh.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationField.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTimeline.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\BuiltinSolvers.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationSolver.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationHost.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationWorker.h" />

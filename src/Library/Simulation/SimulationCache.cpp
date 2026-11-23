@@ -5,7 +5,9 @@
 #include <cerrno>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
+#include <mutex>
 #include <set>
 #include <tuple>
 #if defined(_WIN32)
@@ -18,6 +20,9 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <sys/acl.h>
+#endif
 #endif
 
 namespace RISE { namespace Simulation {
@@ -25,6 +30,9 @@ namespace {
 namespace fs = std::filesystem;
 using V = RISECBOR64::Value;
 constexpr char manifestName[] = "manifest.cbor";
+constexpr char formatV1[] = "rise.simulation.cache.v1";  // no static payloads, no evidence scope
+constexpr char formatV2[] = "rise.simulation.cache.v2";
+using Parts = std::vector<std::pair<const std::uint8_t*,std::size_t>>;
 constexpr std::uint64_t maximumBytes = UINT64_C(32) << 30;
 
 bool Fail(std::string& error, const std::string& message)
@@ -68,6 +76,8 @@ bool DescriptionValid(const CacheDescription& d, std::string& error)
 		(d.fidelity == "predictive" && d.evidence.empty()) ||
 		!std::all_of(d.evidence.begin(),d.evidence.end(),DigestValid))
 		return Fail(error,"invalid fidelity or evidence digest");
+	if (!ValidEvidenceConditions(d.evidenceConditions) || (!d.evidenceScope.empty() && !TextValid(d.evidenceScope)))
+		return Fail(error,"invalid evidence conditions or scope");
 	std::set<std::string> names;
 	for (const auto& out : d.outputs) {
 		if (!TextValid(out.name) || !TextValid(out.type) || !names.insert(out.name).second || out.channels.empty())
@@ -90,12 +100,30 @@ V Describe(const CacheDescription& d)
 		outputs.push_back(V::ArrayValue({V::String(out.name),V::String(out.type),V::ArrayValue(channels)}));
 	}
 	for (const auto& hash : d.evidence) evidence.push_back(V::String(hash));
-	return V::MapValue({{"key",V::String(d.key)},{"epoch",V::String(d.epoch)},
+	V::Members m{{"key",V::String(d.key)},{"epoch",V::String(d.epoch)},
 		{"producer",V::String(d.producer)},{"version",V::String(d.producerVersion)},
 		{"first",V::Signed(d.firstIndex)},{"count",V::Unsigned(d.count)},{"start",V::Float(d.startTime)},
 		{"interval",V::Float(d.interval)},{"origin",V::Float(d.sceneOrigin)},{"scale",V::Float(d.timeScale)},
 		{"hold",V::Bool(d.hold)},{"outputs",V::ArrayValue(outputs)},{"fidelity",V::String(d.fidelity)},
-		{"evidence",V::ArrayValue(evidence)},{"records",V::BytesValue(d.physicalRecords)}});
+		{"evidence",V::ArrayValue(evidence)},{"records",V::BytesValue(d.physicalRecords)}};
+	// Optional members, present only when nonempty, so a description without
+	// them encodes exactly as a format v1 description.
+	if (!d.evidenceConditions.empty()) {
+		V::Members conditions;
+		for (const auto& c : d.evidenceConditions) {
+			V::Values values;
+			for (const auto& v : c.second) values.push_back(V::String(v));
+			conditions.emplace_back(c.first,V::ArrayValue(values));
+		}
+		m.emplace_back("conditions",V::MapValue(conditions));
+	}
+	if (!d.evidenceScope.empty()) m.emplace_back("scope",V::String(d.evidenceScope));
+	return V::MapValue(m);
+}
+
+bool Extended(const CacheDescription& d)
+{
+	return !d.evidenceConditions.empty() || !d.evidenceScope.empty();
 }
 
 bool EncodeManifest(const CacheSnapshot& snapshot, Bytes& encoded, std::string& error)
@@ -105,9 +133,20 @@ bool EncodeManifest(const CacheSnapshot& snapshot, Bytes& encoded, std::string& 
 	for (const auto& f : snapshot.Entries())
 		frames.push_back(V::ArrayValue({V::Signed(f.index),V::String(f.output),V::Float(f.time),
 			V::Unsigned(f.size),V::String(f.digest),V::BytesValue(f.receipt)}));
-	return RISECBOR64::Encode(V::MapValue({{"format",V::String("rise.simulation.cache.v1")},
-		{"description",Describe(snapshot.Description())},{"frames",V::ArrayValue(frames)},
-		{"complete",V::Bool(snapshot.Complete())}}),encoded,&error);
+	V::Members m{{"description",Describe(snapshot.Description())},{"frames",V::ArrayValue(frames)},
+		{"complete",V::Bool(snapshot.Complete())}};
+	// Format v1 stays byte-identical for caches without static payloads or
+	// evidence scope, so older readers keep reading them.
+	if (snapshot.Statics().empty() && !Extended(snapshot.Description())) {
+		m.emplace_back("format",V::String(formatV1));
+	} else {
+		V::Values statics;
+		for (const auto& st : snapshot.Statics())
+			statics.push_back(V::ArrayValue({V::String(st.digest),V::String(st.type),V::Unsigned(st.size)}));
+		m.emplace_back("format",V::String(formatV2));
+		m.emplace_back("statics",V::ArrayValue(statics));
+	}
+	return RISECBOR64::Encode(V::MapValue(m),encoded,&error);
 }
 
 bool Signed(const V& v, std::int64_t& n)
@@ -125,9 +164,12 @@ bool Member(const V& map, const char* name, V::Type type)
 	return value && value->GetType()==type;
 }
 
-bool DecodeDescription(const V& v, CacheDescription& d, std::string& error)
+bool DecodeDescription(const V& v, CacheDescription& d, bool extended, std::string& error)
 {
-	if (v.GetType()!=V::Map || v.GetMap().size()!=15 ||
+	const V* conditions=extended ? v.Find("conditions") : nullptr;
+	const V* scope=extended ? v.Find("scope") : nullptr;
+	if (v.GetType()!=V::Map || v.GetMap().size()!=15+(conditions?1:0)+(scope?1:0) ||
+		(conditions && conditions->GetType()!=V::Map) || (scope && scope->GetType()!=V::Text) ||
 		!Member(v,"key",V::Text) || !Member(v,"epoch",V::Text) || !Member(v,"producer",V::Text) ||
 		!Member(v,"version",V::Text) || !v.Find("first") || !Signed(*v.Find("first"),d.firstIndex) ||
 		!Member(v,"count",V::UnsignedInteger) || !Member(v,"start",V::Float64) || !Member(v,"interval",V::Float64) ||
@@ -143,6 +185,22 @@ bool DecodeDescription(const V& v, CacheDescription& d, std::string& error)
 	for (const auto& hash : v.Find("evidence")->GetArray()) {
 		if (hash.GetType()!=V::Text) return Fail(error,"invalid evidence entry");
 		d.evidence.push_back(hash.GetText());
+	}
+	if (conditions) {
+		if (conditions->GetMap().empty()) return Fail(error,"empty evidence conditions are written as absent");
+		for (const auto& c : conditions->GetMap()) {
+			if (c.second.GetType()!=V::Array) return Fail(error,"invalid evidence condition");
+			std::vector<std::string> values;
+			for (const auto& x : c.second.GetArray()) {
+				if (x.GetType()!=V::Text) return Fail(error,"invalid evidence condition value");
+				values.push_back(x.GetText());
+			}
+			d.evidenceConditions.emplace_back(c.first,std::move(values));
+		}
+	}
+	if (scope) {
+		if (scope->GetText().empty()) return Fail(error,"an empty evidence scope is written as absent");
+		d.evidenceScope=scope->GetText();
 	}
 	for (const auto& out : v.Find("outputs")->GetArray()) {
 		const auto& a=out.GetArray();
@@ -202,7 +260,17 @@ bool DescribeFits(AllocationBudget& b,const CacheDescription& d)
 			if (!b.Nodes(4) || !b.Text(ch.name) || !b.Text(ch.representation) || !b.Text(ch.units)) return false;
 	}
 	for (const auto& hash : d.evidence) if (!b.Nodes(1) || !b.Text(hash)) return false;
+	if (!b.Nodes(2) || !b.Text(d.evidenceScope)) return false;
+	for (const auto& c : d.evidenceConditions) {
+		if (!b.Nodes(2) || !b.Text(c.first)) return false;
+		for (const auto& v : c.second) if (!b.Nodes(1) || !b.Text(v)) return false;
+	}
 	return true;
+}
+
+bool StaticFits(AllocationBudget& b,const std::string& type)
+{
+	return b.Nodes(4) && b.Text(type) && b.Charge(65,32);
 }
 
 bool EntryFits(AllocationBudget& b,const std::string& output,const Bytes& receipt)
@@ -214,6 +282,7 @@ bool SnapshotFits(AllocationBudget& b,const CacheSnapshot& s)
 {
 	if (!DescribeFits(b,s.Description())) return false;
 	for (const auto& f : s.Entries()) if (!EntryFits(b,f.output,f.receipt)) return false;
+	for (const auto& st : s.Statics()) if (!StaticFits(b,st.type)) return false;
 	return true;
 }
 
@@ -264,6 +333,7 @@ struct Descriptor {
 };
 #endif
 
+#if defined(_WIN32)
 bool SyncDirectory(const fs::path& path,std::string& error)
 {
 #if defined(_WIN32)
@@ -278,9 +348,10 @@ bool SyncDirectory(const fs::path& path,std::string& error)
 #endif
 	return synced || Fail(error,"durable cache publication unavailable: directory flush");
 }
+#endif
 
 #if defined(_WIN32)
-bool WindowsWrite(const fs::path& root,const std::string& name,const Bytes& bytes,bool replace,std::string& error,
+bool WindowsWrite(const fs::path& root,const std::string& name,const Parts& parts,bool replace,std::string& error,
 	const char* pendingName)
 {
 	const auto pending=root/pendingName;
@@ -288,14 +359,17 @@ bool WindowsWrite(const fs::path& root,const std::string& name,const Bytes& byte
 		return Fail(error,"cannot clear interrupted cache write");
 	HANDLE file=CreateFileW(pending.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
 	if (file==INVALID_HANDLE_VALUE) return Fail(error,"cannot create staged cache file");
-	std::size_t pos=0;
-	while (pos<bytes.size()) {
-		DWORD wrote=0;
-		const auto chunk=static_cast<DWORD>(std::min<std::size_t>(bytes.size()-pos,1u<<20));
-		if (!WriteFile(file,bytes.data()+pos,chunk,&wrote,nullptr) || !wrote) break;
-		pos+=wrote;
+	bool written=true;
+	for (const auto& part : parts) {
+		std::size_t pos=0;
+		while (written && pos<part.second) {
+			DWORD wrote=0;
+			const auto chunk=static_cast<DWORD>(std::min<std::size_t>(part.second-pos,1u<<20));
+			if (!WriteFile(file,part.first+pos,chunk,&wrote,nullptr) || !wrote) written=false;
+			else pos+=wrote;
+		}
 	}
-	const bool durable=pos==bytes.size() && FlushFileBuffers(file);
+	const bool durable=written && FlushFileBuffers(file);
 	const bool closed=CloseHandle(file)!=0;
 	if (!durable || !closed) return Fail(error,"cache file flush failed");
 	const DWORD flags=MOVEFILE_WRITE_THROUGH|(replace?MOVEFILE_REPLACE_EXISTING:0);
@@ -375,6 +449,7 @@ FrameStatus ReadFile(const fs::path& root,const std::string& name,std::uint64_t 
 	return FrameStatus::Ready;
 }
 
+#if defined(_WIN32)
 bool CreateDurableDirectory(const fs::path& path,std::string& error)
 {
 	std::vector<fs::path> missing;
@@ -396,21 +471,162 @@ bool CreateDurableDirectory(const fs::path& path,std::string& error)
 	}
 	return true;
 }
+#endif
+
+
+// ---------------------------------------------------------------- cache location policy
+
+std::mutex trustedMutex;
+std::vector<fs::path> trustedRoots; // canonical, added through AddTrustedCacheRoot
+
+bool Canonical(const fs::path& path,fs::path& out)
+{
+	std::error_code ec;
+	if (!path.is_absolute()) return false;
+	auto c=fs::canonical(path,ec);
+	if (ec || !fs::is_directory(c,ec) || ec) return false;
+	out=c;
+	return true;
+}
+
+// `inner` equals `root` or lies below it, component by component.
+bool Within(const fs::path& inner,const fs::path& root)
+{
+	auto i=inner.begin();
+	for (auto r=root.begin(); r!=root.end(); ++r, ++i) {
+		if (r->empty()) continue;
+		if (i==inner.end() || *i!=*r) return false;
+	}
+	return true;
+}
 
 #if !defined(_WIN32)
-bool SyncWrite(int dir,const std::string& name,const Bytes& bytes,bool replace,std::string& error,
+// An ancestor protects our entry from other users if only this user or root
+// can rename entries in it (owner this user or root; group/world write only
+// with the sticky bit; no ACL that grants rights). The cache directory
+// itself must be owned by this user and writable by nobody else.
+bool TrustedDirectory(int fd,bool cacheDirectory,const fs::path& path,std::string& error)
+{
+	struct stat info{};
+	if (::fstat(fd,&info)!=0 || !S_ISDIR(info.st_mode)) return Fail(error,"cache path component is not a directory: "+path.string());
+	const uid_t me=::geteuid();
+	if (cacheDirectory) {
+		if (info.st_uid!=me || (info.st_mode&0022)!=0)
+			return Fail(error,"cache directory must be owned by this user and writable by nobody else: "+path.string());
+	} else if ((info.st_uid!=me && info.st_uid!=0) || ((info.st_mode&0022)!=0 && (info.st_mode&S_ISVTX)==0)) {
+		return Fail(error,"cache directory has an ancestor other users can modify: "+path.string()+
+			" (use a private directory, or trust a root with "+TrustedCacheRootsEnvironment+")");
+	}
+#ifdef __APPLE__
+	// Extended ALLOW entries can grant deletion or writes despite the mode;
+	// deny-only ACLs (such as a home directory's) are fine.
+	acl_t acl=::acl_get_fd_np(fd,ACL_TYPE_EXTENDED);
+	if (!acl) {
+		if (errno==ENOENT) return true; // no extended ACL
+		return Fail(error,"cannot read the ACL of "+path.string());
+	}
+	bool allowOnly=true;
+	for (int id=ACL_FIRST_ENTRY;;id=ACL_NEXT_ENTRY) {
+		acl_entry_t entry;
+		if (::acl_get_entry(acl,id,&entry)!=0) break;
+		acl_tag_t tag;
+		if (::acl_get_tag_type(entry,&tag)!=0 || tag!=ACL_EXTENDED_DENY) { allowOnly=false; break; }
+	}
+	::acl_free(acl);
+	if (!allowOnly) return Fail(error,"cache path component carries an ACL that grants rights: "+path.string());
+#endif
+	return true;
+}
+#endif
+
+// Verifies (and with `create`, creates owner-only) the cache directory
+// `root` through one chain of descriptors from "/" or from a trusted root,
+// never following a symlink below the canonical starting point. `location`
+// is the canonical path every later operation must use.
+bool SecureCacheDirectory(const fs::path& root,bool create,fs::path& location,std::string& error)
+{
+	std::error_code ec;
+	fs::path wanted=fs::absolute(root,ec).lexically_normal();
+	if (ec || wanted.empty()) return Fail(error,"invalid cache root");
+	if (wanted.filename().empty() && wanted!=wanted.root_path()) wanted=wanted.parent_path();
+	std::vector<fs::path> missing;
+	fs::path existing=wanted;
+	for (;;) {
+		const auto st=fs::symlink_status(existing,ec);
+		if (!ec && st.type()!=fs::file_type::not_found) break;
+		if (existing==existing.root_path() || existing.filename().empty() || existing.filename()=="..")
+			return Fail(error,"invalid cache root");
+		missing.push_back(existing.filename());
+		existing=existing.parent_path();
+		ec.clear();
+	}
+	if (missing.empty() && fs::is_symlink(fs::symlink_status(wanted,ec)))
+		return Fail(error,"cache directory is a symbolic link: "+wanted.string());
+	fs::path base;
+	if (!Canonical(existing,base)) return Fail(error,"invalid cache ancestor: "+existing.string());
+#if defined(_WIN32)
+	location=base;
+	for (auto it=missing.rbegin(); it!=missing.rend(); ++it) location/=*it;
+	if (!create) return true;
+	return CreateDurableDirectory(location,error);
+#else
+	fs::path start("/");
+	for (const auto& r : TrustedCacheRoots())
+		if (Within(base,r) && std::distance(r.begin(),r.end())>std::distance(start.begin(),start.end())) start=r;
+	Descriptor current(::open(start.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC|(start==fs::path("/")?0:O_NOFOLLOW)));
+	if (current.fd<0) return Fail(error,"cannot open cache ancestor "+start.string());
+	fs::path walked=start;
+	const fs::path below=base.lexically_relative(start);
+	std::vector<fs::path> components;
+	for (const auto& c : below) if (!c.empty() && c!=".") components.push_back(c);
+	// The starting point: "/" is checked like any ancestor; a trusted root is not.
+	if (start==fs::path("/") && !TrustedDirectory(current.fd,components.empty() && missing.empty(),walked,error)) return false;
+	if (start!=fs::path("/") && components.empty() && missing.empty() &&
+		!TrustedDirectory(current.fd,true,walked,error)) return false;
+	for (std::size_t i=0;i<components.size();++i) {
+		const bool last=i+1==components.size();
+		Descriptor next(::openat(current.fd,components[i].c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
+		walked/=components[i];
+		if (next.fd<0) return Fail(error,"cache ancestor changed or is a symbolic link: "+walked.string());
+		if (!TrustedDirectory(next.fd,last && missing.empty(),walked,error)) return false;
+		// A predecessor may have died just after creating the deepest visible
+		// directory, before syncing its parent's entry. Repair that cut too.
+		if (last && create && ::fsync(current.fd)!=0) return Fail(error,"durable cache publication unavailable: directory flush");
+		std::swap(current.fd,next.fd);
+	}
+	location=walked;
+	for (auto it=missing.rbegin(); it!=missing.rend(); ++it) {
+		const bool last=it+1==missing.rend();
+		location/=*it;
+		if (!create) return true; // the rest would be created below a verified directory
+		if (::mkdirat(current.fd,it->c_str(),0700)!=0 && errno!=EEXIST)
+			return Fail(error,"cannot create cache directory "+location.string());
+		if (::fsync(current.fd)!=0) return Fail(error,"durable cache publication unavailable: directory flush");
+		Descriptor next(::openat(current.fd,it->c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
+		if (next.fd<0) return Fail(error,"cache directory changed or is a symbolic link: "+location.string());
+		if (!TrustedDirectory(next.fd,last,location,error)) return false;
+		std::swap(current.fd,next.fd);
+	}
+	return true;
+#endif
+}
+
+#if !defined(_WIN32)
+bool SyncWrite(int dir,const std::string& name,const Parts& parts,bool replace,std::string& error,
 	const char* pending=".cache.pending")
 {
 	// The writer lock covers the directory. Remove only a prior interrupted temp.
 	if (::unlinkat(dir,pending,0)!=0 && errno!=ENOENT) return Fail(error,"cannot clean interrupted cache write");
 	Descriptor file(::openat(dir,pending,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600));
 	if (file.fd<0) return Fail(error,"cannot create staged cache file");
-	std::size_t pos=0;
-	while (pos<bytes.size()) {
-		auto n=::write(file.fd,bytes.data()+pos,std::min<std::size_t>(bytes.size()-pos,1u<<20));
-		if (n<0 && errno==EINTR) continue;
-		if (n<=0) return Fail(error,"cache file write failed");
-		pos+=static_cast<std::size_t>(n);
+	for (const auto& part : parts) {
+		std::size_t pos=0;
+		while (pos<part.second) {
+			auto n=::write(file.fd,part.first+pos,std::min<std::size_t>(part.second-pos,1u<<20));
+			if (n<0 && errno==EINTR) continue;
+			if (n<=0) return Fail(error,"cache file write failed");
+			pos+=static_cast<std::size_t>(n);
+		}
 	}
 	if (::fsync(file.fd)!=0) return Fail(error,"cannot sync staged cache file");
 	if (replace) {
@@ -432,7 +648,31 @@ bool CanDecodeCanonicalRecord(const Bytes& encoded,std::size_t budget)
 
 bool IsNativePayloadType(const std::string& type)
 {
-	return type=="grid.v1" || type=="mesh.v1";
+	return type=="grid.v1" || type=="mesh.v1" || type=="mesh.v2" || type=="field.v1";
+}
+
+bool IsNativeStaticType(const std::string& type)
+{
+	return type==MeshTopologyStaticType;
+}
+
+bool NativePayloadReferences(const std::string& type,const Bytes& payload,std::vector<std::string>& digests,
+	std::string& error)
+{
+	digests.clear();
+	if (type!="mesh.v2") return true;
+	return MeshPayloadReferences(payload,digests,error);
+}
+
+bool ValidEvidenceConditions(const EvidenceConditions& conditions)
+{
+	for (std::size_t i=0;i<conditions.size();++i) {
+		const auto& c=conditions[i];
+		if (!TextValid(c.first) || (i && !(conditions[i-1].first<c.first)) || c.second.empty()) return false;
+		for (std::size_t k=0;k<c.second.size();++k)
+			if (!TextValid(c.second[k]) || (k && !(c.second[k-1]<c.second[k]))) return false;
+	}
+	return true;
 }
 
 bool ValidateCacheDescription(const CacheDescription& description,std::string& error)
@@ -446,21 +686,68 @@ bool SidecarName(const std::string& name)
 	return TextValid(name) && name.size()<=200 && name!="." && name!=".." && name!=manifestName &&
 		name!="writer.lock" && name!=".cache.pending" && name.find_first_of("/\\:")==std::string::npos &&
 		(name.size()<6 || name.compare(name.size()-6,6,".frame")!=0) &&
+		(name.size()<7 || name.compare(name.size()-7,7,".static")!=0) &&
 		(name.size()<8 || name.compare(name.size()-8,8,".pending")!=0);
 }
 }
 
 bool ReplaceFileDurably(const fs::path& directory,const std::string& name,const Bytes& bytes,std::string& error)
 {
+	return ReplaceFileDurably(directory,name,Parts{{bytes.data(),bytes.size()}},error);
+}
+
+bool ReplaceFileDurably(const fs::path& directory,const std::string& name,const Parts& parts,std::string& error)
+{
 	if (!SidecarName(name)) return Fail(error,"invalid sidecar file name");
 	const std::string pending="."+name+".pending";
 #if defined(_WIN32)
-	return WindowsWrite(directory,name,bytes,true,error,pending.c_str());
+	return WindowsWrite(directory,name,parts,true,error,pending.c_str());
 #else
 	Descriptor dir(::open(directory.c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
 	if (dir.fd<0) return Fail(error,"cannot open sidecar directory");
-	return SyncWrite(dir.fd,name,bytes,true,error,pending.c_str());
+	return SyncWrite(dir.fd,name,parts,true,error,pending.c_str());
 #endif
+}
+
+bool AddTrustedCacheRoot(const fs::path& root,std::string& error)
+{
+	fs::path canonical;
+	if (!Canonical(root,canonical)) return Fail(error,"a trusted cache root must be an existing absolute directory");
+	std::lock_guard<std::mutex> hold(trustedMutex);
+	if (std::find(trustedRoots.begin(),trustedRoots.end(),canonical)==trustedRoots.end()) trustedRoots.push_back(canonical);
+	return true;
+}
+
+void ClearTrustedCacheRoots()
+{
+	std::lock_guard<std::mutex> hold(trustedMutex);
+	trustedRoots.clear();
+}
+
+std::vector<fs::path> TrustedCacheRoots()
+{
+	std::vector<fs::path> roots;
+	if (const char* list=std::getenv(TrustedCacheRootsEnvironment)) {
+		const std::string text(list);
+		std::size_t begin=0;
+		while (begin<=text.size()) {
+			const auto end=std::min(text.find(':',begin),text.size());
+			fs::path canonical;
+			// Relative, missing or unresolvable entries are ignored (never trusted).
+			if (end>begin && Canonical(fs::path(text.substr(begin,end-begin)),canonical) &&
+				std::find(roots.begin(),roots.end(),canonical)==roots.end()) roots.push_back(canonical);
+			begin=end+1;
+		}
+	}
+	std::lock_guard<std::mutex> hold(trustedMutex);
+	for (const auto& r : trustedRoots) if (std::find(roots.begin(),roots.end(),r)==roots.end()) roots.push_back(r);
+	return roots;
+}
+
+bool CheckCacheLocation(const fs::path& root,bool create,std::string& error)
+{
+	fs::path location;
+	return SecureCacheDirectory(root,create,location,error);
 }
 
 bool ReadSidecarFile(const fs::path& directory,const std::string& name,std::size_t budget,Bytes& bytes,
@@ -504,11 +791,21 @@ bool CacheSnapshot::Open(const fs::path& root,std::size_t budget,CacheSnapshot& 
 	if (!WireFits(bytes,std::min<std::uint64_t>(budget,maximumBytes))) return Fail(error,"manifest exceeds decode budget");
 	V wire;
 	if (!RISECBOR64::DecodeCanonical(bytes,wire,&error)) return false;
-	if (wire.GetType()!=V::Map || wire.GetMap().size()!=4 || !Member(wire,"format",V::Text) ||
-		wire.Find("format")->GetText()!="rise.simulation.cache.v1" || !Member(wire,"description",V::Map) ||
-		!Member(wire,"frames",V::Array) || !Member(wire,"complete",V::Boolean))
+	const bool v2=Member(wire,"format",V::Text) && wire.Find("format")->GetText()==formatV2;
+	if (wire.GetType()!=V::Map || wire.GetMap().size()!=(v2?5u:4u) || !Member(wire,"format",V::Text) ||
+		(!v2 && wire.Find("format")->GetText()!=formatV1) || !Member(wire,"description",V::Map) ||
+		!Member(wire,"frames",V::Array) || !Member(wire,"complete",V::Boolean) || (v2 && !Member(wire,"statics",V::Array)))
 		return Fail(error,"unrecognized cache manifest");
-	if (!DecodeDescription(*wire.Find("description"),candidate.description_,error)) return false;
+	if (!DecodeDescription(*wire.Find("description"),candidate.description_,v2,error)) return false;
+	if (v2) for (const auto& item : wire.Find("statics")->GetArray()) {
+		const auto& row=item.GetArray();
+		if (item.GetType()!=V::Array || row.size()!=3 || row[0].GetType()!=V::Text || row[1].GetType()!=V::Text ||
+			row[2].GetType()!=V::UnsignedInteger || !DigestValid(row[0].GetText()) || !TextValid(row[1].GetText()) ||
+			row[2].GetIntegerArgument()>maximumBytes ||
+			(!candidate.statics_.empty() && !(candidate.statics_.back().digest<row[0].GetText())))
+			return Fail(error,"invalid, duplicate or unsorted static payload entry");
+		candidate.statics_.push_back({row[0].GetText(),row[1].GetText(),row[2].GetIntegerArgument()});
+	}
 	candidate.complete_=wire.Find("complete")->GetBoolean();
 	for (const auto& frame : wire.Find("frames")->GetArray()) {
 		const auto& row=frame.GetArray();
@@ -574,12 +871,63 @@ FrameStatus CacheSnapshot::Read(std::int64_t index,const std::string& output,std
 	return FrameStatus::Ready;
 }
 
+FrameStatus CacheSnapshot::ReadStatic(const std::string& digest,std::size_t budget,
+	std::shared_ptr<const Bytes>& result,std::string& error) const
+{
+	result.reset();
+	const auto it=std::lower_bound(statics_.begin(),statics_.end(),digest,
+		[](const CacheStatic& s,const std::string& d){return s.digest<d;});
+	if (it==statics_.end() || it->digest!=digest) { error="static payload not declared: "+digest; return FrameStatus::Unavailable; }
+	auto bytes=std::make_shared<Bytes>();
+	const auto status=ReadFile(root_,digest+".static",budget,&it->size,*bytes,error);
+	if (status!=FrameStatus::Ready) return status;
+	if (RISECBOR64::SHA256Hex(*bytes)!=digest) { error="static payload digest mismatch"; return FrameStatus::Corrupt; }
+	result=std::move(bytes);
+	return FrameStatus::Ready;
+}
+
+const std::vector<CacheStatic>& IReadOnlyCacheSnapshot::Statics() const
+{
+	static const std::vector<CacheStatic> none;
+	return none;
+}
+
+FrameStatus IReadOnlyCacheSnapshot::ReadStatic(const std::string& digest,std::size_t,std::shared_ptr<const Bytes>& bytes,
+	std::string& error) const
+{
+	bytes.reset();
+	error="static payload not declared: "+digest;
+	return FrameStatus::Unavailable;
+}
+
+bool IReadOnlyCacheSnapshot::FindEntry(std::int64_t index,const std::string& output,CacheEntry& entry) const
+{
+	CacheEntry needle;
+	needle.index=index; needle.output=output;
+	const auto& entries=Entries();
+	const auto it=std::lower_bound(entries.begin(),entries.end(),needle,Earlier);
+	if (it==entries.end() || it->index!=index || it->output!=output) return false;
+	entry=*it;
+	return true;
+}
+
+StaticPayloadResolver IReadOnlyCacheSnapshot::Resolver() const
+{
+	return [this](const std::string& digest,std::size_t budget,std::shared_ptr<const Bytes>& bytes,std::string& error) {
+		return ReadStatic(digest,budget,bytes,error)==FrameStatus::Ready;
+	};
+}
+
 bool IReadOnlyCacheSnapshot::PreflightPredictive(const std::string& expectedKey,
 	const Qualification& qualification,std::size_t budget,std::string& error) const
 {
 	if (!Complete() || Stale(expectedKey) || Description().fidelity!="predictive" ||
 		!qualification.snapshot || !qualification.frame) return Fail(error,"unqualified predictive cache");
 	if (!qualification.snapshot(*this,error)) return false;
+	for (const auto& st : Statics()) {
+		std::shared_ptr<const Bytes> bytes;
+		if (ReadStatic(st.digest,budget,bytes,error)!=FrameStatus::Ready) return false;
+	}
 	for (const auto& entry : Entries()) {
 		std::shared_ptr<const Bytes> bytes;
 		if (Read(entry.index,entry.output,budget,bytes,error)!=FrameStatus::Ready ||
@@ -605,7 +953,7 @@ struct CacheWriter::Lock {
 		return LockFileEx(handle,flags,0,1,0,&range)!=0 || Fail(error,"cache writer lock busy or unavailable");
 	}
 	bool Write(const fs::path& root,const std::string& name,const Bytes& bytes,bool replace,std::string& error) {
-		return WindowsWrite(root,name,bytes,replace,error,".cache.pending");
+		return WindowsWrite(root,name,Parts{{bytes.data(),bytes.size()}},replace,error,".cache.pending");
 	}
 #else
 	Descriptor dir{-1},file{-1};
@@ -621,7 +969,7 @@ struct CacheWriter::Lock {
 		return rc==0 || Fail(error,"cache writer lock busy or unavailable");
 	}
 	bool Write(const fs::path&,const std::string& name,const Bytes& bytes,bool replace,std::string& error){
-		return SyncWrite(dir.fd,name,bytes,replace,error);
+		return SyncWrite(dir.fd,name,Parts{{bytes.data(),bytes.size()}},replace,error);
 	}
 #endif
 };
@@ -686,10 +1034,10 @@ bool CacheWriter::Open(const fs::path& root,const CacheDescription& d,const std:
 	if (!DescribeFits(beginBudget,d)) return Fail(error,"description exceeds writer budget");
 	if (!DescriptionValid(d,error)) return false;
 	std::error_code ec;
-	auto absolute=fs::absolute(root,ec);
-	if (ec) return Fail(error,"invalid cache root");
-	if (!CreateDurableDirectory(absolute,error)) return false;
-	if (ec || !fs::is_directory(fs::symlink_status(absolute,ec)) || ec)
+	fs::path absolute;
+	// Location policy: verified (or owner-only created) chain, canonical path.
+	if (!SecureCacheDirectory(root,true,absolute,error)) return false;
+	if (!fs::is_directory(fs::symlink_status(absolute,ec)) || ec)
 		return Fail(error,"invalid cache root directory");
 	auto lock=std::make_unique<Lock>();
 	if (!lock->Acquire(absolute,mode==OpenMode::ExtendCurrent,error)) return false;
@@ -711,6 +1059,10 @@ bool CacheWriter::Open(const fs::path& root,const CacheDescription& d,const std:
 			return Fail(error,"resumed cache description differs");
 	}
 	if (mode==OpenMode::ResumeVerified) {
+		for (const auto& st : old.Statics()) {
+			std::shared_ptr<const Bytes> verified;
+			if (old.ReadStatic(st.digest,static_cast<std::size_t>(beginBudget.Remaining()),verified,error)!=FrameStatus::Ready) return false;
+		}
 		for (const auto& f : old.Entries()) {
 			std::shared_ptr<const Bytes> verified;
 			if (old.Read(f.index,f.output,static_cast<std::size_t>(beginBudget.Remaining()),verified,error)!=FrameStatus::Ready) return false;
@@ -754,6 +1106,15 @@ bool CacheWriter::Append(std::int64_t index,const std::string& output,double tim
 	AllocationBudget appendBudget(budget_);
 	if (!SnapshotFits(appendBudget,snapshot_) || !EntryFits(appendBudget,output,receipt) ||
 		!appendBudget.Charge(frame.size())) return Fail(error,"append exceeds working memory budget");
+	// A native frame may reference only static payloads already declared.
+	const auto type=std::find_if(snapshot_.description_.outputs.begin(),snapshot_.description_.outputs.end(),
+		[&](const CacheOutput& o){return o.name==output;});
+	std::vector<std::string> references;
+	if (!NativePayloadReferences(type->type,frame,references,error)) return Fail(error,"invalid native frame payload: "+error);
+	for (const auto& r : references)
+		if (!std::binary_search(snapshot_.statics_.begin(),snapshot_.statics_.end(),CacheStatic{r,"",0},
+			[](const CacheStatic& a,const CacheStatic& b){return a.digest<b.digest;}))
+			return Fail(error,"frame references an undeclared static payload "+r);
 	CacheEntry entry{index,output,time,frame.size(),RISECBOR64::SHA256Hex(frame),receipt};
 	auto it=std::lower_bound(snapshot_.entries_.begin(),snapshot_.entries_.end(),entry,Earlier);
 	const bool duplicate=it!=snapshot_.entries_.end() && it->index==index && it->output==output;
@@ -775,6 +1136,38 @@ bool CacheWriter::Append(std::int64_t index,const std::string& output,double tim
 	if (duplicate) return true;
 	CacheSnapshot next=snapshot_;
 	next.entries_.insert(next.entries_.begin()+(it-snapshot_.entries_.begin()),std::move(entry));
+	return Publish(next,error);
+}
+
+bool CacheWriter::AppendStatic(const std::string& type,const Bytes& payload,std::string& digest,std::string& error)
+{
+	if (!lock_ || !TextValid(type) || payload.size()>budget_ || payload.size()>maximumBytes)
+		return Fail(error,"invalid static payload append or byte budget exceeded");
+	AllocationBudget appendBudget(budget_);
+	if (!SnapshotFits(appendBudget,snapshot_) || !StaticFits(appendBudget,type) || !appendBudget.Charge(payload.size()))
+		return Fail(error,"static payload exceeds working memory budget");
+	CacheStatic entry{RISECBOR64::SHA256Hex(payload),type,payload.size()};
+	auto it=std::lower_bound(snapshot_.statics_.begin(),snapshot_.statics_.end(),entry,
+		[](const CacheStatic& a,const CacheStatic& b){return a.digest<b.digest;});
+	const bool declared=it!=snapshot_.statics_.end() && it->digest==entry.digest;
+	if (declared && (it->type!=type || it->size!=entry.size)) return Fail(error,"conflicting static payload declaration");
+	if (!declared && snapshot_.complete_) return Fail(error,"cannot add a static payload to a sealed cache");
+	const auto file=entry.digest+".static";
+	std::error_code ec;
+	const auto status=fs::symlink_status(snapshot_.root_/file,ec);
+	if (ec && ec!=std::errc::no_such_file_or_directory) return Fail(error,"cannot inspect static payload");
+	if (status.type()!=fs::file_type::not_found) {
+		Bytes existing;
+		if (ReadFile(snapshot_.root_,file,appendBudget.Remaining(),&entry.size,existing,error,true)!=FrameStatus::Ready ||
+			existing!=payload) return Fail(error,"existing immutable static payload differs");
+	} else {
+		if (declared) return Fail(error,"declared static payload missing");
+		if (!lock_->Write(snapshot_.root_,file,payload,false,error)) return false;
+	}
+	digest=entry.digest;
+	if (declared) return true;
+	CacheSnapshot next=snapshot_;
+	next.statics_.insert(next.statics_.begin()+(it-snapshot_.statics_.begin()),std::move(entry));
 	return Publish(next,error);
 }
 
