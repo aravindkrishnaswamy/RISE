@@ -130,6 +130,14 @@ processes on the scene file, dependency queue, machine-wide GPU lock, CPU cap, m
 adoption, stop/resume), its C API for the GUI panels, and the agent verbs `sim_list`, `sim_bake`, `sim_status`,
 `sim_wait`, `sim_cancel` and live control. [M5a results](SIMULATION_M5A_RESULTS.md).
 
+2026-11-23: **M2 accepted.** A certified tier-8 fire baked from zero through `rise-sim` (6,457 steps, 5.95 h on a
+loaded machine) reproduced the three M0 reference frames at 10.466, 10.529 and 10.591 s byte for byte; the reference
+run predates r274. All 12 fire test programs pass on the tree at `524d42eba` plus in-progress M5/M6 edits.
+**M3 (cloth, deforming-geometry rendering, live viewport, contract v1), M4 (scene chunks, bindings, staleness) and
+M5 (bake manager, agent verbs, macOS UI) are built**; open within them: measured-fabric comparisons (M3 cases 7–8),
+cloth self-collision evidence, simulation fields in the properties panel, the worker in the app bundle, the Windows
+mirror. M6 (coupling) in progress.
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.
