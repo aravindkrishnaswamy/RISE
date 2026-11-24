@@ -89,6 +89,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Simulation/SimulationTimeline.cpp"
     "${RISE_LIB}/Simulation/BuiltinSolvers.cpp"
     "${RISE_LIB}/Simulation/SceneSimulationWorker.cpp"
+    "${RISE_LIB}/Simulation/SimulationBakeManager.cpp"
+    "${RISE_LIB}/Simulation/SimulationProcess.cpp"
     "${RISE_LIB}/Simulation/SceneInputs.cpp"
     "${RISE_LIB}/Simulation/SceneSimulation.cpp"
     "${RISE_LIB}/Simulation/SimulationParameterSchema.cpp"
@@ -313,6 +315,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBCAMERA
     "${RISE_LIB}/Agent/AgentChatCodecs.cpp"
     "${RISE_LIB}/Agent/AgentChatLoop.cpp"
+    "${RISE_LIB}/Agent/AgentSimulation.cpp"
     "${RISE_LIB}/Agent/AgentEvalRunner.cpp"
     "${RISE_LIB}/Agent/AgentLoopbackHttpServer.cpp"
     "${RISE_LIB}/Agent/AgentMcpAdapter.cpp"

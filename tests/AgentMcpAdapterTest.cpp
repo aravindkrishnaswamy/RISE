@@ -262,7 +262,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 43, "id:null tools/list result carries all 43 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 51, "id:null tools/list result carries all 51 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -336,7 +336,7 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 43, "tools/list returns EXACTLY the 43 agent verbs" );
+		Check( toolsList.size() == 51, "tools/list returns EXACTLY the 51 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			// S1 (2026-08-11): the two staged-build-protocol verbs.
@@ -358,6 +358,9 @@ int main()
 			"make_fabric",             // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): the fabric conversion verb
 			"add_fuzz",                // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): the fuzz-shell verb
 			"render", "render_status", "render_wait", "render_cancel",
+			// Simulation M5 (2026-11-23): the bake and live-simulation verbs.
+			"sim_list", "sim_status", "sim_wait", "sim_bake", "sim_cancel",
+			"sim_live_start", "sim_live_stop", "sim_seek",
 			"read_image", "read_viewport", "query_object_at",
 			"scene_inventory",   // Arc 80 (2026-08-12): the FORWARD "where is everything" inventory
 			"light_scene",       // Arc 81 (2026-08-12): the clean-room lighting pass
@@ -468,6 +471,20 @@ int main()
 			const JsonValue& required = tool.get( "inputSchema" ).get( "required" );
 			Check( required.size() == 1 && required.at( 0 ).asString() == "renderJobId",
 			       "render_status inputSchema.required == [\"renderJobId\"]" );
+		}
+
+		// Simulation M5: sim_wait requires jobId and states render_wait's clamp.
+		{
+			JsonValue tool = FindTool( "sim_wait" );
+			Check( tool.isObject(), "found sim_wait tool" );
+			const JsonValue& required = tool.get( "inputSchema" ).get( "required" );
+			Check( required.size() == 1 && required.at( 0 ).asString() == "jobId",
+			       "sim_wait inputSchema.required == [\"jobId\"]" );
+			const std::string d = tool.get( "inputSchema" ).get( "properties" ).get( "timeoutMs" ).get( "description" ).asString();
+			Check( d.find( "[0,60000]" ) != std::string::npos, "sim_wait timeoutMs states the [0,60000] clamp" );
+			JsonValue bake = FindTool( "sim_bake" );
+			Check( bake.isObject() && bake.get( "description" ).asString().find( "save first" ) != std::string::npos,
+			       "sim_bake states the save rule" );
 		}
 
 		// Description gotcha spot-checks: a known AgentRpc.h documented
@@ -1232,7 +1249,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 43, "no-head tools/list still lists all 43 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 51, "no-head tools/list still lists all 51 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

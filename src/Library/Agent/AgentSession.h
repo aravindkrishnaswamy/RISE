@@ -2709,6 +2709,11 @@ namespace RISE
 			//! through it).
 			bool HasController() const { return mController != nullptr; }
 
+			//! Simulation M5: the sim_* verbs (AgentSimulation.cpp) read the
+			//! wrapped Job and the live controller (null when headless).
+			IJobPriv* SimulationJob() const { return mJob; }
+			SceneEditController* SimulationController() const { return mController; }
+
 			//! The canonical `.RISEscene` text of the head -- SerializeCst of
 			//! the retained CST Document.  Returns "" when the Job retains no
 			//! Document (a Job not loaded via the CST path); `HasDocument()`

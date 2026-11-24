@@ -10972,7 +10972,13 @@ bool Job::DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& s
 	if( !pScene ) { error = "no scene"; return false; }
 	Simulation::SceneObjectInputProvider provider( *pScene,
 		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
-	return simulationGraph->Describe( specs, provider, statuses, error );
+	if( !simulationGraph->Describe( specs, provider, statuses, error ) ) return false;
+	// M5: which consumer geometries show each simulation (the GUI's live
+	// controls address a live run by its geometry).
+	for( Simulation::SceneSimulationStatus& status : statuses )
+		for( const auto& g : simulatedGeometries )
+			if( g.second.binding.simulation == status.name ) status.meshConsumers.push_back( g.first );
+	return true;
 }
 
 bool Job::AddFireMediumFromSimulation(

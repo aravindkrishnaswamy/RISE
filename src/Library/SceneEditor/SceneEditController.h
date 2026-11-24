@@ -60,7 +60,7 @@ namespace RISE
 		struct PlaybackStatus;
 		struct LiveSimulationStatus;
 	}
-	namespace Simulation { class MeshCacheSource; }
+	namespace Simulation { class MeshCacheSource; struct BakeSceneSnapshot; }
 
 	//! Desktop viewport sinks intentionally display ordinary render output as
 	//! opaque, even when a no-hit pixel carries coverage alpha 0.  A negative
@@ -3788,6 +3788,39 @@ namespace RISE
 		//! DescribeSimulations).  Non-blocking like GetTimeVaryingAssets: false
 		//! while an edit or a production render holds the scene.
 		bool GetSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses, std::string& error ) const;
+
+		// ---- Simulation M5: baking (SimulationBakeManager.h; docs/SIMULATION_M5A_RESULTS.md) ----
+		//! What this document tells the process-wide bake manager: its scene
+		//! file (the Job's CST load/save identity; empty when never saved),
+		//! whether the document differs from that file (HasUnsavedChanges,
+		//! confirmed by comparing the serialized Document with the file's
+		//! bytes), and its simulations' states.  `blocking` false: false while
+		//! the scene is busy (a poll); true: waits for the scene lock (a user
+		//! request), but never behind a production render.  `checkUnsaved`
+		//! false skips the byte comparison (unsavedChanges then reports the
+		//! dirty trackers only) -- for polls that only adopt running bakes.
+		bool GetSimulationBakeSnapshot( Simulation::BakeSceneSnapshot& snapshot, bool blocking,
+			std::string& error, bool checkUnsaved = true ) const;
+		//! The change notification's other half: when the bake manager reports
+		//! new frames for this scene's caches (FramesGeneration), rebinds every
+		//! simulated_mesh_geometry bound by `source` whose cache began a new
+		//! epoch or that had no frames before (same topology only: a changed
+		//! topology needs a reload, reported in `error`), installs the frames
+		//! for the current scene time under the render park and kicks a pass --
+		//! the same install the time-scrub and playback paths do.  Geometries
+		//! with a live simulation are left alone.  Cheap when nothing landed
+		//! (`refreshed` false, no lock taken).  Call it when
+		//! RISE_API_SimulationBake_ChangeCounter moves (a ~2 Hz poll).
+		bool RefreshSimulationFrames( bool& refreshed, std::string& error );
+		//! Simulation M5: detach the live run of scene simulation `simulation`
+		//! (LiveSimulationDetach by its consumer's name).
+		bool LiveSimulationDetachSimulation( const std::string& simulation, std::string& error );
+		//! The key this document's jobs are filed under in the bake manager
+		//! (SimulationBakeManager::SceneKey of the scene file; empty when never
+		//! saved).  Non-blocking: while the scene is busy it returns the last
+		//! key it read.  `attachNeeded` is set the first time a key is seen
+		//! (the caller then Attaches a snapshot so running bakes are adopted).
+		std::string SimulationBakeSceneKey( bool* attachNeeded = nullptr ) const;
 		//! Interactive passes finished without cancellation (the clock's
 		//! coalescing signal).
 		std::uint64_t GetCompletedPassCount() const;
@@ -7583,6 +7616,11 @@ namespace RISE
 			std::unique_ptr<Implementation::LiveSimulation>& live, std::string& error );
 		bool AttachPrepared_( std::unique_ptr<Implementation::LiveSimulation> live, std::string& error );
 		void ShutdownSimulation_();
+		// M5 (appended): the bake manager's frames generation last refreshed.
+		std::mutex                           mBakeRefreshMutex;
+		std::uint64_t                        mBakeFramesSeen = 0;
+		mutable std::mutex                   mBakeKeyMutex;
+		mutable std::string                  mBakeSceneKey, mBakeAttachedKey;
 
 		// Disable copy / move
 		SceneEditController( const SceneEditController& );

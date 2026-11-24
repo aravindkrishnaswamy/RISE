@@ -15,6 +15,7 @@
 #include "AgentRpc.h"
 
 #include "AgentSession.h"
+#include "AgentSimulation.h"   // Simulation M5: the sim_* verbs
 #include "AgentDiagnostic.h"
 #include "Base64.h"
 #include "Json.h"
@@ -107,6 +108,14 @@ namespace RISE
 				       method == "render_status"   ||
 				       method == "render_wait"     ||
 				       method == "render_cancel"   ||
+				       // Simulation M5: pure reads of the bake manager's jobs
+				       // and the scene's simulation states (sim_wait only
+				       // blocks, bounded like render_wait).  sim_bake /
+				       // sim_cancel / the live verbs are NOT here: they start
+				       // or stop processes, so they need Commit autonomy.
+				       method == "sim_list"        ||
+				       method == "sim_status"      ||
+				       method == "sim_wait"        ||
 				       method == "read_image"      ||
 				       // Toolkit slice 1: read_viewport is a PURE READ of the
 				       // live interactive viewport pixels -- it never renders
@@ -5612,6 +5621,31 @@ namespace RISE
 							JsonValue::MakeNumber( static_cast<double>( rr.anchorCompositeHeight ) ) );
 					}
 					return MakeSuccess( idValue, renderResult );
+				}
+
+				//--------------------------------------------------------------
+				// Simulation M5: sim_list / sim_status / sim_wait (read-safe)
+				// and sim_bake / sim_cancel / sim_live_start / sim_live_stop /
+				// sim_seek (Commit autonomy by the choke point above, and the
+				// document OWNER only here: a bake starts processes that write
+				// caches on this machine, which a proposing External session
+				// may not do).  AgentSimulation.h has the shapes; baking works
+				// headless (it runs rise-sim), the live verbs answer
+				// {ok:false,supported:false} without an in-app viewport.
+				//--------------------------------------------------------------
+				if( IsAgentSimulationVerb( m ) ) {
+					if( !s || !s->SimulationJob() ) return MakeError( idValue, kInternalError, "no session loaded" );
+					if( IsAgentSimulationControlVerb( m ) && s->Authority() != AgentAuthority::Owner )
+						return MakeError( idValue, kInvalidParams,
+							"refused: " + m + " is available to the document owner's session only "
+							"(an external session can read sim_list/sim_status/sim_wait)" );
+					JsonValue simResult;
+					int simCode = 0;
+					std::string simError;
+					if( !HandleAgentSimulationVerb( m, params, *s->SimulationJob(), s->SimulationController(),
+					                                simResult, simCode, simError ) )
+						return MakeError( idValue, simCode, simError );
+					return MakeSuccess( idValue, simResult );
 				}
 
 				//--------------------------------------------------------------

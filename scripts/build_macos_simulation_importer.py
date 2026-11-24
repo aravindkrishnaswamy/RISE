@@ -13,6 +13,7 @@ LIB = ROOT / "src/Library"
 SOURCES = [
     LIB / "Simulation/SimulationGrid.cpp",
     LIB / "Simulation/SimulationCache.cpp",
+    LIB / "Simulation/SimulationMesh.cpp",  # SimulationCache reads mesh payload references
     LIB / "Utilities/FireSequence.cpp",
     LIB / "Utilities/FireSequenceCache.cpp",
     LIB / "Utilities/FireSimulationRecords.cpp",

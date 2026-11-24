@@ -5066,6 +5066,100 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
 		char* cacheBuf, unsigned int cacheBufLen, char* errorBuf, unsigned int errorBufLen );
 
+	// ---- Simulation M5: baking (docs/SIMULATION_M5A_RESULTS.md) ----
+	// A bake is a separate rise-sim process run on the scene FILE, managed by
+	// one process-wide bake manager shared by every document and the agent:
+	// it queues simulations upstream first, runs one GPU bake at a time
+	// (machine-wide, through a lock the worker takes), caps concurrent CPU
+	// bakes, checks a memory budget, monitors each bake from its cache's
+	// status record, adopts bakes still running from an earlier session, and
+	// stops a bake at a checkpoint so it can be resumed.  A bake never changes
+	// the loaded scene.  Save rule: the scene must have been saved; a bake of
+	// a simulation whose key the document knows is refused by the worker when
+	// the file on disk plans another key ("save first: ..."), and with unsaved
+	// changes a simulation whose key is not known yet is refused at once.
+	// Every function returns false on a null controller; text outputs are
+	// NUL-terminated and truncated to their buffers; every out pointer may be
+	// null; exceptions never cross the ABI.
+
+	//! The rise-sim executable bakes run (null or "" = search: $RISE_SIM_WORKER,
+	//! then beside the running executable -- rise-sim, rise_sim, tools/rise_sim,
+	//! ../tools/rise_sim, ../Helpers/rise-sim, ../Resources/rise-sim -- then $PATH).
+	bool RISE_API_SimulationBake_SetWorkerPath( const char* path );
+	//! The worker a bake would run now; false (with the places searched in
+	//! errorBuf) when none is found.
+	bool RISE_API_SimulationBake_GetWorkerPath( char* pathBuf, unsigned int pathBufLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! `maxConcurrentCpuBakes` (0 keeps the current value; default 2) and the
+	//! budget for running bakes' declared memory estimates (0 = half the
+	//! physical memory).
+	bool RISE_API_SimulationBake_SetLimits( unsigned int maxConcurrentCpuBakes,
+		unsigned long long memoryBudgetBytes );
+	//! Bumped on every change of any bake (state, progress, new frames).  A GUI
+	//! polls it at ~2 Hz; when it moves, re-read the job rows and call
+	//! RefreshSimulationFrames.
+	unsigned long long RISE_API_SimulationBake_ChangeCounter();
+	//! Optional push form of the same signal: one callback per process (null
+	//! clears it).  Called on the bake manager's thread, never under its lock:
+	//! hop to the UI thread before touching UI or calling a controller.
+	typedef void ( *RISE_SimulationBakeChangeCallback )( void* userData, unsigned long long changeCounter );
+	bool RISE_API_SimulationBake_SetChangeCallback( RISE_SimulationBakeChangeCallback callback, void* userData );
+
+	//! Queue a bake of `simulationName` (plus every upstream simulation that is
+	//! not complete).  `force` rebakes it even when complete (not its
+	//! upstreams).  A partial cache of the current key is continued, a stale
+	//! one rebaked as a new epoch.  `outJobId`: the job of `simulationName`.
+	bool RISE_API_SceneEditController_SimulationBake( SceneEditController* p, const char* simulationName,
+		bool force, unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen );
+	//! Every simulation with a solver (`staleOnly`: only those not complete
+	//! with their current key -- "bake all stale"); `outJobCount` jobs queued
+	//! or reused.
+	bool RISE_API_SceneEditController_SimulationBakeAll( SceneEditController* p, bool staleOnly, bool force,
+		unsigned int* outJobCount, char* errorBuf, unsigned int errorBufLen );
+	//! Continue a stopped, interrupted or failed bake (partial cache, current key).
+	bool RISE_API_SceneEditController_SimulationBakeResume( SceneEditController* p, const char* simulationName,
+		unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen );
+	//! Stop the queued or running bake of `simulationName`: a queued one is
+	//! cancelled; a running one checkpoints at its next safe point and ends
+	//! stopped and resumable (the row goes stopping, then stopped).  `kill`
+	//! ends the process at once with no checkpoint -- only for an explicit
+	//! "force stop".
+	bool RISE_API_SceneEditController_SimulationBakeStop( SceneEditController* p, const char* simulationName,
+		bool kill, char* errorBuf, unsigned int errorBufLen );
+	//! Cancel every queued (not yet started) bake of this document.
+	bool RISE_API_SceneEditController_SimulationBakeCancelQueued( SceneEditController* p, unsigned int* outCancelled );
+	//! This document's bake jobs, oldest first (the queue order), including
+	//! finished ones and bakes adopted from an earlier session.  The count and
+	//! each index read a fresh snapshot: re-read the count when an index
+	//! fails.  The first call for a scene also adopts its running bakes.
+	//! `outState`: 0 queued, 1 waiting for GPU, 2 running, 3 stopping,
+	//! 4 stopped, 5 finished, 6 failed, 7 cancelled.  `outResumable`: stopped
+	//! or failed with a partial cache of the current key (Resume continues
+	//! it).  `outAdopted`: a worker this app did not start.  `outInterrupted`:
+	//! it ended without a clean stop.  Times: solver seconds (end = last output
+	//! time); `outWallSeconds` the worker's wall time over bake and resumes;
+	//! `outEtaSeconds` remaining wall seconds, -1 unknown.  `waitingFor`: why a
+	//! queued job has not started (upstream, CPU slot, GPU slot, memory).
+	bool RISE_API_SceneEditController_GetSimulationBakeJobCount( SceneEditController* p, unsigned int* outCount );
+	bool RISE_API_SceneEditController_GetSimulationBakeJob( SceneEditController* p, unsigned int index,
+		unsigned long long* outJobId, char* simulationBuf, unsigned int simulationBufLen,
+		int* outState, bool* outResumable, bool* outAdopted, bool* outInterrupted,
+		double* outSimulatedTime, double* outEndTime,
+		unsigned long long* outFramesWritten, unsigned long long* outFramesTotal,
+		double* outWallSeconds, double* outEtaSeconds, unsigned long long* outPid,
+		char* backendBuf, unsigned int backendBufLen, char* waitingForBuf, unsigned int waitingForBufLen,
+		char* detailBuf, unsigned int detailBufLen, char* errorBuf, unsigned int errorBufLen );
+	//! When new frames landed in this scene's caches since the last call,
+	//! rebinds consumers whose cache began a new epoch or had no frames, and
+	//! installs the current time's frames (the scrub path's install) and
+	//! re-renders.  `outRefreshed` false: nothing new (cheap, no lock).
+	bool RISE_API_SceneEditController_RefreshSimulationFrames( SceneEditController* p, bool* outRefreshed,
+		char* errorBuf, unsigned int errorBufLen );
+	//! Detach the live run of scene simulation `simulationName` (the partner
+	//! of LiveSimulationAttachSimulation).
+	bool RISE_API_SceneEditController_LiveSimulationDetachSimulation( SceneEditController* p,
+		const char* simulationName, char* errorBuf, unsigned int errorBufLen );
+
 	//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of a
 	//! named painter -- see PainterPreview.h (src/Library/SceneEditor) for
 	//! the domain / display-encode / scalar-normalization contract this
@@ -6011,6 +6105,53 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Remove the environment (unbinds radiance_map, live + CST).  Returns false
 	//! when no editable environment exists.
 	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p );
+
+	// ---- Simulation M5 (GUI shell support; docs/SIMULATION_M5B_RESULTS.md) ----
+	// Additive wrappers the macOS (and later Windows) simulations panel needs.
+	// Same conventions as the M3c/M4 block: false on a null controller or a
+	// busy scene (poll again), text NUL-terminated and truncated, every out
+	// pointer may be null.
+
+	//! One declared simulation (same index and snapshot rules as
+	//! GetSimulation), with what that call leaves out: the solver id, its
+	//! backend ("" = not stated), the cache's fidelity label ("" when there is
+	//! no cache), the configuration's time support (first frame time and frame
+	//! interval, scene seconds), the first simulated_mesh_geometry bound to it
+	//! by `source` (what LiveSimulationDetach / GetLiveSimulationStatus /
+	//! LiveSimulationReset / LiveSimulationRecord address; "" when none), and
+	//! the upstream simulations and scene inputs, comma-separated.
+	//! `outState` as GetSimulation (0 missing .. 5 failed).
+	bool RISE_API_SceneEditController_GetSimulationDetails(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		char* solverBuf, unsigned int solverBufLen, char* backendBuf, unsigned int backendBufLen,
+		char* fidelityBuf, unsigned int fidelityBufLen, char* consumerBuf, unsigned int consumerBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		double* outStartTime, double* outInterval,
+		char* cacheBuf, unsigned int cacheBufLen,
+		char* upstreamBuf, unsigned int upstreamBufLen, char* inputsBuf, unsigned int inputsBufLen,
+		char* errorBuf, unsigned int errorBufLen );
+
+	//! Simulation cache location policy (docs/SIMULATION_SOLVER_CONTRACT.md
+	//! "Cache location policy"; Simulation/SimulationCache.h).  A trusted root
+	//! is process-wide and lasts until exit: the GUI persists the roots the user
+	//! chose and calls this at launch.  `root` must be an existing absolute
+	//! directory.  On POSIX the roots in force are also exported to this
+	//! process's RISE_SIMULATION_TRUSTED_ROOTS, so rise-sim bake workers
+	//! started afterwards inherit them.
+	bool RISE_API_AddTrustedCacheRoot( const char* root, char* errorBuf, unsigned int errorBufLen );
+	//! Would the cache writer accept `cacheDirectory` (nothing is created)?
+	//! True when accepted.  When refused: `errorBuf` holds the writer's reason,
+	//! and `suggestedRootBuf` the narrowest directory whose trust would stop the
+	//! ancestor check -- the deepest existing directory above the cache
+	//! directory (empty when there is none to suggest, e.g. the cache directory
+	//! itself is not private).  Trusting is the caller's (the user's) decision.
+	bool RISE_API_CheckCacheLocation( const char* cacheDirectory,
+		char* suggestedRootBuf, unsigned int suggestedRootBufLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! The trusted roots in force (environment, then added), joined by '\n'.
+	bool RISE_API_GetTrustedCacheRoots( char* buf, unsigned int bufLen );
 }
 
 #endif

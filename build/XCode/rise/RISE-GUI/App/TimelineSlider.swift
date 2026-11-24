@@ -46,7 +46,12 @@ struct TimelineSlider: View {
                 .font(Theme.mono(11))
                 .foregroundColor(Theme.textSecondary)
 
-            scrubTrack
+            VStack(spacing: 4) {
+                scrubTrack
+                // Simulation M5: per-asset baked / pending ranges under the
+                // trough (empty for scenes without time-varying assets).
+                BakedRangesTrack(model: viewModel.simulations, range: range)
+            }
 
             if viewModel.hasAnimation {
                 renderMovieChip
@@ -83,7 +88,7 @@ struct TimelineSlider: View {
             }
             .buttonStyle(.plain)
             .help(isPlaying ? "Stop preview playback"
-                            : "Play the active animation in the preview (loops until stopped)")
+                            : "Play the active animation in the preview (loops until stopped; plays in real time on the library clock)")
 
             Button {
                 jumpTo(range.upperBound)
@@ -183,3 +188,46 @@ struct TimelineSlider: View {
         return String(format: "%02d:%02d", m, s)
     }
 }
+
+/// Simulation M5: one thin row per time-varying asset (simulated mesh, fire
+/// medium) under the scrub trough.  The solid part is the range the cache
+/// holds (start -> availableEnd), the faint part what is still pending
+/// (-> end); the colour is the state the library reports (complete, partial,
+/// baking, stale, live).  Positions share the scrub track's time -> x map.
+/// SimulationsModel polls these at 1 Hz only while something bakes or runs
+/// live.
+struct BakedRangesTrack: View {
+    @ObservedObject var model: SimulationsModel
+    let range: ClosedRange<Double>
+
+    var body: some View {
+        if !model.ranges.isEmpty {
+            GeometryReader { geom in
+                let w = max(1, geom.size.width)
+                let span = max(range.upperBound - range.lowerBound, 0.0001)
+                let x: (Double) -> CGFloat = { t in
+                    CGFloat(min(max((t - range.lowerBound) / span, 0), 1)) * w
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(model.ranges) { asset in
+                        ZStack(alignment: .leading) {
+                            Rectangle()
+                                .fill(asset.style.color.opacity(0.25))
+                                .frame(width: max(1, x(asset.end) - x(asset.start)), height: 3)
+                                .offset(x: x(asset.start))
+                            Rectangle()
+                                .fill(asset.style.color)
+                                .frame(width: max(asset.framesAvailable > 0 ? 1 : 0,
+                                                  x(asset.availableEnd) - x(asset.start)), height: 3)
+                                .offset(x: x(asset.start))
+                        }
+                        .frame(width: w, height: 3, alignment: .leading)
+                        .help(asset.helpText)
+                    }
+                }
+            }
+            .frame(height: CGFloat(model.ranges.count) * 5)
+        }
+    }
+}
+

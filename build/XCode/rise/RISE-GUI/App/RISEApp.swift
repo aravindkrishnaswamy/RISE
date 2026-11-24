@@ -322,9 +322,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 enum RISEApplicationMain {
     @MainActor static func main() {
+        // Simulation M5: the library's built-in solvers (cloth.shell,
+        // fire.methane) and the cache locations the user chose to trust in
+        // earlier sessions, once per process before any scene loads.
+        SimulationBootstrap.install()
         // The render probe runs on hosts without a WindowServer session.
         // Entering SwiftUI.App.main() first registers with AppKit.
         ViewportReattachProbe.runIfRequested()
+        SimulationProbes.runIfRequested()
         RISEApp.main()
     }
 }

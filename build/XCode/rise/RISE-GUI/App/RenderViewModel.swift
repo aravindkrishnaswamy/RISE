@@ -546,6 +546,10 @@ final class RenderViewModel: ObservableObject {
     /// stopped).  Distinct from `renderState == .rendering` (production).
     @Published var isPreviewPlaying: Bool = false
 
+    /// Simulation M5: the scene's simulations, live runs and baked ranges
+    /// (SimulationsModel.swift).  Re-attached to every new viewport bridge.
+    let simulations = SimulationsModel()
+
     // L5a — EDR (extended dynamic range) state.
     //
     // `edrAvailable` mirrors the active screen's
@@ -812,6 +816,12 @@ final class RenderViewModel: ObservableObject {
             }
             refinementPollTimer?.invalidate()
             refinementPollTimer = nil
+            // The library clock belonged to the old controller (its owners
+            // stop it before the swap; this only resets the shell's mirror).
+            playbackPollTimer?.invalidate()
+            playbackPollTimer = nil
+            if isPreviewPlaying { isPreviewPlaying = false }
+            simulations.attach(bridge: viewportBridge)
             guard let vb = viewportBridge else {
                 refinementPhase = -1
                 refinementScaleDivisor = 1
@@ -876,9 +886,6 @@ final class RenderViewModel: ObservableObject {
             refinementPollTimer = timer
         }
     }
-    /// Drives the looping preview-play frame stepper (Play button).  Nil
-    /// when not playing; cancelled + niled by stopPreviewPlay().
-    private var previewPlayTask: Task<Void, Never>? = nil
     private let cancelFlag = AtomicBool(false)
     /// Durable document snapshots: the app-quit observer token
     /// (NSApplication.willTerminateNotification) registered once in
@@ -974,6 +981,13 @@ final class RenderViewModel: ObservableObject {
         // BEFORE kicking production).
         chat.sceneEditable = { [weak self] in
             self?.isSceneEditableForAgents ?? false
+        }
+        // Simulation M5: a live run plays through the library clock; restart
+        // the clock so it starts the newly attached run's solver.
+        simulations.onLiveAttached = { [weak self] in
+            guard let self else { return }
+            self.stopPreviewPlay()
+            self.startPreviewPlay()
         }
         chat.chatRenderWillSubmit = { [weak self] in
             guard let self else { return }
@@ -2014,20 +2028,26 @@ final class RenderViewModel: ObservableObject {
     // MARK: - Looping preview play (the Play button by the timeline)
     //
     // The ACTIVE animation is chosen in the right-side "Animation" accordion
-    // category (it routes through SetSelection -> SetActiveAnimation).  The
-    // loop below just plays whichever animation is active, reading its range
-    // and frame count from the bridge (which follow the active animation).
+    // category (it routes through SetSelection -> SetActiveAnimation).
+    //
+    // Simulation M5: playback runs on the LIBRARY clock
+    // (RISE_API_SceneEditController_PlaybackPlay / Pause / Seek,
+    // docs/SIMULATION_M3C_RESULTS.md section 2).  The clock owns the scrub
+    // composite, advances scene time in real time on a controller thread
+    // through the same OnTimeScrub path a slider drag uses, coalesces frames
+    // the viewport cannot keep up with, and never runs ahead of an attached
+    // live simulation.  The shell only polls GetPlaybackStatus to move the
+    // playhead.  A manual drag's OnTimeScrubBegin pauses the clock inside
+    // the library; `stopPreviewPlay` mirrors that here.
 
     /// Toggle looping preview playback (the Play button by the timeline).
     func togglePreviewPlay() {
         if isPreviewPlaying { stopPreviewPlay() } else { startPreviewPlay() }
     }
 
-    /// Loop the active animation through the fast interactive preview
-    /// renderer: step the playhead from time_start to time_end across
-    /// num_frames at a fixed ~30 Hz cadence, wrapping back to the start
-    /// (loop) until stopped.  Paced strictly by the timer — frames the
-    /// renderer can't keep up with are coalesced, never queued.
+    /// Start the library playback clock over the active animation range,
+    /// looping, at the timeline's frame spacing.  Starts from the current
+    /// playhead (the library rewinds when it sits at the end).
     func startPreviewPlay() {
         guard !isPreviewPlaying,
               let vb = viewportBridge,
@@ -2036,33 +2056,11 @@ final class RenderViewModel: ObservableObject {
               // .cancelling means rasterize() has not returned yet, so
               // production workers may still read animator state.
               renderState != .rendering, renderState != .cancelling else { return }
-        var t0: Double = 0
-        var t1: Double = 0
-        var numFrames: UInt = 0
-        guard vb.getAnimationOptions(timeStart: &t0, timeEnd: &t1,
-                                     numFrames: &numFrames) else { return }
-        let frames = max(Int(numFrames), 2)
-        let span = t1 - t0
-        guard span > 0 else { return }
-        let dt = span / Double(frames - 1)
-
-        // Admission can change after the render-state guard above. Do not
-        // start a playback task unless the controller actually opened the
-        // scrub bracket.
-        guard vb.scrubTimeBegin() else { return }
+        // A manual drag owns its own composite; the clock opens another.
+        endManualTimelineScrub(using: vb)
+        guard vb.playbackPlay(fps: 0, loop: true) else { return }
         isPreviewPlaying = true
-        sceneTime = t0                // onChange(sceneTime) -> bridge.scrubTime
-
-        previewPlayTask = Task { [weak self] in
-            var t = t0
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 33_000_000)   // ~30 fps
-                guard let self, self.isPreviewPlaying, !Task.isCancelled else { break }
-                t += dt
-                if t > t1 + 1e-9 { t = t0 }                      // loop
-                self.sceneTime = t
-            }
-        }
+        startPlaybackPoll()
     }
 
     /// Stop looping preview playback (idempotent; also called before any
@@ -2070,9 +2068,53 @@ final class RenderViewModel: ObservableObject {
     func stopPreviewPlay() {
         guard isPreviewPlaying else { return }
         isPreviewPlaying = false
-        previewPlayTask?.cancel()
-        previewPlayTask = nil
-        _ = viewportBridge?.scrubTimeEnd()
+        playbackPollTimer?.invalidate()
+        playbackPollTimer = nil
+        guard let vb = viewportBridge else { return }
+        _ = vb.playbackPause()
+        // The clock may have been mid-frame: show the time it last applied.
+        adoptDisplayedSceneTime(vb.lastSceneTime())
+    }
+
+    /// ~20 Hz playhead poll while the library clock plays.
+    private var playbackPollTimer: Timer? = nil
+
+    private func startPlaybackPoll() {
+        playbackPollTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pollPlaybackStatus() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        playbackPollTimer = timer
+        pollPlaybackStatus()
+    }
+
+    /// One playhead update from the library clock.  `outTime` is the last
+    /// time it showed; `playing` goes false when the library stopped it
+    /// (a manual scrub from another caller, the scene going away).
+    func pollPlaybackStatus() {
+        guard isPreviewPlaying, let vb = viewportBridge else { return }
+        guard let status = vb.playbackStatus() else { return }
+        if status.framesShown > 0 || !status.playing { adoptDisplayedSceneTime(status.time) }
+        lastPlaybackStatus = status
+        if !status.playing {
+            isPreviewPlaying = false
+            playbackPollTimer?.invalidate()
+            playbackPollTimer = nil
+            adoptDisplayedSceneTime(vb.lastSceneTime())
+        }
+    }
+
+    /// The most recent library playback status (frames shown / dropped,
+    /// solver waits) -- for the transport tooltip and the headless probe.
+    @Published private(set) var lastPlaybackStatus: RISEPlaybackStatus? = nil
+
+    /// Move the playhead to a time the library already displayed, without
+    /// the ViewportView binding observer submitting it again.
+    private func adoptDisplayedSceneTime(_ t: Double) {
+        guard sceneTime != t else { return }
+        preappliedSceneTime = t
+        sceneTime = t
     }
 
     func beginManualTimelineScrub(using vb: RISEViewportBridge) {
@@ -2091,20 +2133,21 @@ final class RenderViewModel: ObservableObject {
     /// observer does not submit it again after End.
     func applyManualTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) {
         guard manualTimelineScrubActive else { return }
-        if vb.scrubTime(time) {
-            preappliedSceneTime = time
-        } else {
-            let canonicalTime = vb.lastSceneTime()
-            preappliedSceneTime = canonicalTime
-            sceneTime = canonicalTime
-        }
+        // Simulation M5: an attached live simulation clamps a scrub to its
+        // latest published frame, so the scene time actually shown is read
+        // back after every scrub -- accepted or refused.
+        _ = vb.scrubTime(time)
+        let canonicalTime = vb.lastSceneTime()
+        preappliedSceneTime = canonicalTime
+        if sceneTime != canonicalTime { sceneTime = canonicalTime }
     }
 
     /// Apply a binding-driven playback step only while its native scrub
     /// composite is known to be open.
     func applyTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) -> Bool {
-        guard isPreviewPlaying else { return false }
-        return vb.scrubTime(time)
+        // The library clock is the only writer while playing (its times
+        // arrive pre-applied); any other binding write is not a scene edit.
+        return isPreviewPlaying
     }
 
     /// Rewind/to-end transport uses this direct path so the native move is
@@ -2133,9 +2176,11 @@ final class RenderViewModel: ObservableObject {
         let applied = vb.scrubTime(time)
         _ = vb.scrubTimeEnd()
         guard applied else { return }
-        if sceneTime != time {
-            preappliedSceneTime = time
-            sceneTime = time
+        // Read back the time the scrub showed (a live simulation clamps it).
+        let shown = vb.lastSceneTime()
+        if sceneTime != shown {
+            preappliedSceneTime = shown
+            sceneTime = shown
         }
     }
 
@@ -2188,6 +2233,10 @@ final class RenderViewModel: ObservableObject {
         // snapshot is controller-mutex-safe and tri-state, so a contended
         // external commit leaves the last published value intact until the
         // next poll instead of briefly hiding the timeline.
+        // Simulation M5: bakes run in worker processes; the bake manager's
+        // change counter says when to re-read jobs and install new frames.
+        simulations.bakeCounterObserved(RISEViewportBridge.simulationBakeChangeCounter())
+
         let liveAnimationPresence = vb.animationPresence
         if liveAnimationPresence >= 0 {
             let liveHasAnimation = liveAnimationPresence != 0
@@ -2260,6 +2309,10 @@ final class RenderViewModel: ObservableObject {
         // poll on the main actor.  `viewportBridge != nil` is already
         // guaranteed by every caller of this method.
         if isSceneEditableForAgents, let currentVersion = currentSceneTextVersion(vb) {
+            // Simulation M5: a scene edit (properties panel, scene text,
+            // agent) can change simulation keys and states, and a live run
+            // must follow it (LiveSimulationResync).  Never starts a bake.
+            simulations.sceneRevisionObserved("\(currentVersion.uuid):\(currentVersion.revision)")
             // Item 1 — mirror the live CST into the editor buffer.
             if !isEditorDirty {
                 // No unsaved buffer edits: safe to pull fresh text,

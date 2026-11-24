@@ -569,6 +569,104 @@ private:
 // @implementation) -- Objective-C does not support nested @implementation
 // blocks; @interface RISEAgentHostedServerInfo lives in the .h, right
 // before RISEViewportBridge's own @interface.
+// ---- Simulation M5 value snapshots (declared readonly in the header) ----
+static NSString *RISEM5String(const char *text) {
+    if (!text || !text[0]) return @"";
+    NSString *s = [NSString stringWithUTF8String:text];
+    // A buffer truncated inside a multi-byte sequence is not valid UTF-8.
+    return s ?: [[NSString alloc] initWithBytes:text length:strlen(text) encoding:NSISOLatin1StringEncoding];
+}
+
+@interface RISETimeVaryingAssetInfo ()
+@property (nonatomic, readwrite, copy) NSString *name;
+@property (nonatomic, readwrite) NSInteger kind;
+@property (nonatomic, readwrite) NSInteger state;
+@property (nonatomic, readwrite) BOOL predictive;
+@property (nonatomic, readwrite) double start;
+@property (nonatomic, readwrite) double end;
+@property (nonatomic, readwrite) double availableEnd;
+@property (nonatomic, readwrite) double interval;
+@property (nonatomic, readwrite) unsigned long long framesAvailable;
+@property (nonatomic, readwrite) unsigned long long framesTotal;
+@end
+@implementation RISETimeVaryingAssetInfo
+@end
+
+@interface RISESimulationInfo ()
+@property (nonatomic, readwrite, copy) NSString *name;
+@property (nonatomic, readwrite, copy) NSString *keyword;
+@property (nonatomic, readwrite, copy) NSString *solverId;
+@property (nonatomic, readwrite, copy) NSString *backend;
+@property (nonatomic, readwrite, copy) NSString *fidelity;
+@property (nonatomic, readwrite, copy) NSString *consumerGeometry;
+@property (nonatomic, readwrite) NSInteger state;
+@property (nonatomic, readwrite) BOOL upstreamOutOfDate;
+@property (nonatomic, readwrite) BOOL interactive;
+@property (nonatomic, readwrite) unsigned long long framesAvailable;
+@property (nonatomic, readwrite) unsigned long long framesTotal;
+@property (nonatomic, readwrite) double startTime;
+@property (nonatomic, readwrite) double interval;
+@property (nonatomic, readwrite, copy) NSString *cacheDirectory;
+@property (nonatomic, readwrite, copy) NSString *upstream;
+@property (nonatomic, readwrite, copy) NSString *inputs;
+@property (nonatomic, readwrite, copy) NSString *errorMessage;
+@end
+@implementation RISESimulationInfo
+@end
+
+@interface RISEPlaybackStatus ()
+@property (nonatomic, readwrite) BOOL playing;
+@property (nonatomic, readwrite) BOOL live;
+@property (nonatomic, readwrite) BOOL waitingForSolver;
+@property (nonatomic, readwrite) double time;
+@property (nonatomic, readwrite) double timeStart;
+@property (nonatomic, readwrite) double timeEnd;
+@property (nonatomic, readwrite) double fps;
+@property (nonatomic, readwrite) unsigned long long framesShown;
+@property (nonatomic, readwrite) unsigned long long framesDropped;
+@property (nonatomic, readwrite) unsigned long long solverWaits;
+@property (nonatomic, readwrite) unsigned long long passesCompleted;
+@property (nonatomic, readwrite) double wallSeconds;
+@end
+@implementation RISEPlaybackStatus
+@end
+
+@interface RISESimulationBakeJob ()
+@property (nonatomic, readwrite) unsigned long long jobId;
+@property (nonatomic, readwrite, copy) NSString *simulation;
+@property (nonatomic, readwrite) NSInteger state;
+@property (nonatomic, readwrite) BOOL resumable;
+@property (nonatomic, readwrite) BOOL adopted;
+@property (nonatomic, readwrite) BOOL interrupted;
+@property (nonatomic, readwrite) double simulatedTime;
+@property (nonatomic, readwrite) double endTime;
+@property (nonatomic, readwrite) unsigned long long framesWritten;
+@property (nonatomic, readwrite) unsigned long long framesTotal;
+@property (nonatomic, readwrite) double wallSeconds;
+@property (nonatomic, readwrite) double etaSeconds;
+@property (nonatomic, readwrite, copy) NSString *backend;
+@property (nonatomic, readwrite, copy) NSString *waitingFor;
+@property (nonatomic, readwrite, copy) NSString *detail;
+@property (nonatomic, readwrite, copy) NSString *errorMessage;
+@end
+@implementation RISESimulationBakeJob
+@end
+
+@interface RISELiveSimulationStatus ()
+@property (nonatomic, readwrite) BOOL playing;
+@property (nonatomic, readwrite) BOOL finished;
+@property (nonatomic, readwrite) BOOL failed;
+@property (nonatomic, readwrite) long long latestFrame;
+@property (nonatomic, readwrite) double latestSceneTime;
+@property (nonatomic, readwrite) double firstSceneTime;
+@property (nonatomic, readwrite) double lastSceneTime;
+@property (nonatomic, readwrite) unsigned long long framesPublished;
+@property (nonatomic, readwrite) unsigned long long framesTotal;
+@property (nonatomic, readwrite) double simulatedTime;
+@end
+@implementation RISELiveSimulationStatus
+@end
+
 @implementation RISEAgentHostedServerInfo {
     BOOL       _ok;
     NSUInteger _port;
@@ -3683,6 +3781,275 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
 - (NSString *)agentHostedServerToken {
     if (!_agentHttpServerRunning || !_agentHttpServer) return @"";
     return [NSString stringWithUTF8String:_agentHttpServer->ForTest_Token().c_str()];
+}
+
+#pragma mark - Simulation M5
+
+// Simulation calls that may block (solver configuration) run off the main
+// thread and hold `_previewLifecycleMutex` -- the same guard the off-main
+// preview fetches use -- so -shutdown cannot destroy the controller under
+// them.  The quick status reads are main-thread calls like every other
+// accessor and only nil-check `_controller`.
+
++ (BOOL)registerBuiltinSolvers:(NSString * _Nullable * _Nullable)error {
+    char err[1024] = {0};
+    const bool ok = RISE_API_RegisterBuiltinSolvers(err, sizeof(err));
+    if (!ok && error) *error = RISEM5String(err);
+    return ok ? YES : NO;
+}
+
+- (BOOL)playbackPlayFps:(double)fps loop:(BOOL)loop {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_PlaybackPlay(_controller, fps, loop ? true : false) ? YES : NO;
+}
+
+- (BOOL)playbackPause {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_PlaybackPause(_controller) ? YES : NO;
+}
+
+- (BOOL)playbackSeek:(double)time {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_PlaybackSeek(_controller, time) ? YES : NO;
+}
+
+- (nullable RISEPlaybackStatus *)playbackStatus {
+    if (!_controller) return nil;
+    bool playing = false, live = false, waiting = false;
+    double t = 0, t0 = 0, t1 = 0, fps = 0, wall = 0;
+    unsigned long long shown = 0, dropped = 0, waits = 0, passes = 0;
+    if (!RISE_API_SceneEditController_GetPlaybackStatus(_controller, &playing, &live, &waiting,
+            &t, &t0, &t1, &fps, &shown, &dropped, &waits, &passes, &wall)) return nil;
+    RISEPlaybackStatus *st = [RISEPlaybackStatus new];
+    st.playing = playing; st.live = live; st.waitingForSolver = waiting;
+    st.time = t; st.timeStart = t0; st.timeEnd = t1; st.fps = fps;
+    st.framesShown = shown; st.framesDropped = dropped; st.solverWaits = waits;
+    st.passesCompleted = passes; st.wallSeconds = wall;
+    return st;
+}
+
+- (nullable NSArray<RISETimeVaryingAssetInfo *> *)timeVaryingAssets {
+    if (!_controller) return nil;
+    unsigned int count = 0;
+    if (!RISE_API_SceneEditController_GetTimeVaryingAssetCount(_controller, &count)) return nil;
+    NSMutableArray<RISETimeVaryingAssetInfo *> *out = [NSMutableArray arrayWithCapacity:count];
+    for (unsigned int i = 0; i < count; ++i) {
+        char name[512] = {0};
+        int kind = 0, state = 0;
+        bool predictive = false;
+        double start = 0, end = 0, availableEnd = 0, interval = 0;
+        unsigned long long available = 0, total = 0;
+        // Each index reads a fresh snapshot: a failure means the set
+        // changed (or the scene is busy) -- report "busy" and re-read later.
+        if (!RISE_API_SceneEditController_GetTimeVaryingAsset(_controller, i, name, sizeof(name),
+                &kind, &state, &predictive, &start, &end, &availableEnd, &interval, &available, &total))
+            return nil;
+        RISETimeVaryingAssetInfo *a = [RISETimeVaryingAssetInfo new];
+        a.name = RISEM5String(name); a.kind = kind; a.state = state; a.predictive = predictive;
+        a.start = start; a.end = end; a.availableEnd = availableEnd; a.interval = interval;
+        a.framesAvailable = available; a.framesTotal = total;
+        [out addObject:a];
+    }
+    return out;
+}
+
+- (nullable NSArray<RISESimulationInfo *> *)simulations {
+    if (!_controller) return nil;
+    unsigned int count = 0;
+    if (!RISE_API_SceneEditController_GetSimulationCount(_controller, &count)) return nil;
+    NSMutableArray<RISESimulationInfo *> *out = [NSMutableArray arrayWithCapacity:count];
+    for (unsigned int i = 0; i < count; ++i) {
+        char name[512] = {0}, keyword[128] = {0}, solver[256] = {0}, backend[64] = {0};
+        char fidelity[64] = {0}, consumer[512] = {0}, cache[4096] = {0};
+        char upstream[2048] = {0}, inputs[2048] = {0}, err[2048] = {0};
+        int state = 0;
+        bool upstreamOutOfDate = false, interactive = false;
+        unsigned long long available = 0, total = 0;
+        double startTime = 0, interval = 0;
+        if (!RISE_API_SceneEditController_GetSimulationDetails(_controller, i,
+                name, sizeof(name), keyword, sizeof(keyword), solver, sizeof(solver),
+                backend, sizeof(backend), fidelity, sizeof(fidelity), consumer, sizeof(consumer),
+                &state, &upstreamOutOfDate, &interactive, &available, &total, &startTime, &interval,
+                cache, sizeof(cache), upstream, sizeof(upstream), inputs, sizeof(inputs),
+                err, sizeof(err)))
+            return nil;
+        RISESimulationInfo *info = [RISESimulationInfo new];
+        info.name = RISEM5String(name); info.keyword = RISEM5String(keyword);
+        info.solverId = RISEM5String(solver); info.backend = RISEM5String(backend);
+        info.fidelity = RISEM5String(fidelity); info.consumerGeometry = RISEM5String(consumer);
+        info.state = state; info.upstreamOutOfDate = upstreamOutOfDate; info.interactive = interactive;
+        info.framesAvailable = available; info.framesTotal = total;
+        info.startTime = startTime; info.interval = interval;
+        info.cacheDirectory = RISEM5String(cache); info.upstream = RISEM5String(upstream);
+        info.inputs = RISEM5String(inputs); info.errorMessage = RISEM5String(err);
+        [out addObject:info];
+    }
+    return out;
+}
+
+// Runs `fn` with the controller pinned against -shutdown (see above).
+- (BOOL)m5_withPinnedController:(NSString * _Nullable * _Nullable)error
+                            run:(bool (^)(SceneEditController *ctl, char *err, unsigned int errLen))fn {
+    char err[2048] = {0};
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> lk(_previewLifecycleMutex);
+        if (!_controller || _previewShuttingDown.load(std::memory_order_acquire)) {
+            if (error) *error = @"the scene is closing";
+            return NO;
+        }
+        ok = fn(_controller, err, sizeof(err));
+    }
+    if (!ok && error) *error = RISEM5String(err);
+    return ok ? YES : NO;
+}
+
+- (BOOL)liveAttachSimulation:(NSString *)simulation error:(NSString * _Nullable * _Nullable)error {
+    const std::string name = simulation.UTF8String ? simulation.UTF8String : "";
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        return RISE_API_SceneEditController_LiveSimulationAttachSimulation(ctl, name.c_str(), err, len);
+    }];
+}
+
+- (BOOL)liveDetachGeometry:(NSString *)geometry error:(NSString * _Nullable * _Nullable)error {
+    const std::string name = geometry.UTF8String ? geometry.UTF8String : "";
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        return RISE_API_SceneEditController_LiveSimulationDetach(ctl, name.c_str(), err, len);
+    }];
+}
+
+- (BOOL)liveResetGeometry:(NSString *)geometry error:(NSString * _Nullable * _Nullable)error {
+    const std::string name = geometry.UTF8String ? geometry.UTF8String : "";
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        return RISE_API_SceneEditController_LiveSimulationReset(ctl, name.c_str(), err, len);
+    }];
+}
+
+- (BOOL)liveRecordGeometry:(NSString *)geometry directory:(NSString *)directory
+                     error:(NSString * _Nullable * _Nullable)error {
+    const std::string name = geometry.UTF8String ? geometry.UTF8String : "";
+    const std::string dir = directory.fileSystemRepresentation ? directory.fileSystemRepresentation : "";
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        return RISE_API_SceneEditController_LiveSimulationRecord(ctl, name.c_str(), dir.c_str(), err, len);
+    }];
+}
+
+- (BOOL)liveResync:(NSString * _Nullable * _Nullable)error {
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        return RISE_API_SceneEditController_LiveSimulationResync(ctl, err, len);
+    }];
+}
+
+- (nullable RISELiveSimulationStatus *)liveStatusForGeometry:(NSString *)geometry {
+    if (!_controller || geometry.length == 0) return nil;
+    bool playing = false, finished = false, failed = false;
+    long long latest = -1;
+    double latestT = 0, firstT = 0, lastT = 0, simT = 0;
+    unsigned long long published = 0, total = 0;
+    if (!RISE_API_SceneEditController_GetLiveSimulationStatus(_controller, geometry.UTF8String,
+            &playing, &finished, &failed, &latest, &latestT, &firstT, &lastT, &published, &total, &simT))
+        return nil;
+    RISELiveSimulationStatus *st = [RISELiveSimulationStatus new];
+    st.playing = playing; st.finished = finished; st.failed = failed; st.latestFrame = latest;
+    st.latestSceneTime = latestT; st.firstSceneTime = firstT; st.lastSceneTime = lastT;
+    st.framesPublished = published; st.framesTotal = total; st.simulatedTime = simT;
+    return st;
+}
+
+- (NSUInteger)liveSimulationCount {
+    if (!_controller) return 0;
+    return RISE_API_SceneEditController_LiveSimulationCount(_controller);
+}
+
+- (BOOL)simulationBake:(NSString *)simulation force:(BOOL)force
+                 error:(NSString * _Nullable * _Nullable)error {
+    const std::string name = simulation.UTF8String ? simulation.UTF8String : "";
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        unsigned long long job = 0;
+        return RISE_API_SceneEditController_SimulationBake(ctl, name.c_str(), force ? true : false, &job, err, len);
+    }];
+}
+
+- (BOOL)simulationBakeResume:(NSString *)simulation error:(NSString * _Nullable * _Nullable)error {
+    const std::string name = simulation.UTF8String ? simulation.UTF8String : "";
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        unsigned long long job = 0;
+        return RISE_API_SceneEditController_SimulationBakeResume(ctl, name.c_str(), &job, err, len);
+    }];
+}
+
+- (BOOL)simulationBakeStop:(NSString *)simulation kill:(BOOL)kill
+                     error:(NSString * _Nullable * _Nullable)error {
+    const std::string name = simulation.UTF8String ? simulation.UTF8String : "";
+    return [self m5_withPinnedController:error run:^bool(SceneEditController *ctl, char *err, unsigned int len) {
+        return RISE_API_SceneEditController_SimulationBakeStop(ctl, name.c_str(), kill ? true : false, err, len);
+    }];
+}
+
+- (nullable NSArray<RISESimulationBakeJob *> *)simulationBakeJobs {
+    if (!_controller) return nil;
+    unsigned int count = 0;
+    if (!RISE_API_SceneEditController_GetSimulationBakeJobCount(_controller, &count)) return nil;
+    NSMutableArray<RISESimulationBakeJob *> *out = [NSMutableArray arrayWithCapacity:count];
+    for (unsigned int i = 0; i < count; ++i) {
+        unsigned long long jobId = 0, written = 0, total = 0, pid = 0;
+        char sim[512] = {0}, backend[64] = {0}, waiting[512] = {0}, detail[1024] = {0}, err[2048] = {0};
+        int state = 0;
+        bool resumable = false, adopted = false, interrupted = false;
+        double simT = 0, endT = 0, wall = 0, eta = -1;
+        if (!RISE_API_SceneEditController_GetSimulationBakeJob(_controller, i, &jobId, sim, sizeof(sim),
+                &state, &resumable, &adopted, &interrupted, &simT, &endT, &written, &total, &wall, &eta, &pid,
+                backend, sizeof(backend), waiting, sizeof(waiting), detail, sizeof(detail), err, sizeof(err)))
+            return nil;
+        RISESimulationBakeJob *job = [RISESimulationBakeJob new];
+        job.jobId = jobId; job.simulation = RISEM5String(sim); job.state = state;
+        job.resumable = resumable; job.adopted = adopted; job.interrupted = interrupted;
+        job.simulatedTime = simT; job.endTime = endT; job.framesWritten = written; job.framesTotal = total;
+        job.wallSeconds = wall; job.etaSeconds = eta; job.backend = RISEM5String(backend);
+        job.waitingFor = RISEM5String(waiting); job.detail = RISEM5String(detail);
+        job.errorMessage = RISEM5String(err);
+        [out addObject:job];
+    }
+    return out;
+}
+
++ (unsigned long long)simulationBakeChangeCounter {
+    return RISE_API_SimulationBake_ChangeCounter();
+}
+
+- (BOOL)refreshSimulationFrames {
+    if (!_controller) return NO;
+    bool refreshed = false;
+    char err[1024] = {0};
+    if (!RISE_API_SceneEditController_RefreshSimulationFrames(_controller, &refreshed, err, sizeof(err))) return NO;
+    return refreshed ? YES : NO;
+}
+
++ (BOOL)addTrustedCacheRoot:(NSString *)root error:(NSString * _Nullable * _Nullable)error {
+    char err[2048] = {0};
+    const char *path = root.fileSystemRepresentation;
+    const bool ok = path && RISE_API_AddTrustedCacheRoot(path, err, sizeof(err));
+    if (!ok && error) *error = path ? RISEM5String(err) : @"invalid path";
+    return ok ? YES : NO;
+}
+
++ (BOOL)checkCacheLocation:(NSString *)directory
+             suggestedRoot:(NSString * _Nullable * _Nullable)suggestedRoot
+                     error:(NSString * _Nullable * _Nullable)error {
+    char root[4096] = {0}, err[4096] = {0};
+    const char *path = directory.length ? directory.fileSystemRepresentation : nullptr;
+    const bool ok = path && RISE_API_CheckCacheLocation(path, root, sizeof(root), err, sizeof(err));
+    if (suggestedRoot) *suggestedRoot = RISEM5String(root);
+    if (!ok && error) *error = path ? RISEM5String(err) : @"no cache directory";
+    return ok ? YES : NO;
+}
+
++ (NSArray<NSString *> *)trustedCacheRoots {
+    char buf[16384] = {0};
+    if (!RISE_API_GetTrustedCacheRoots(buf, sizeof(buf))) return @[];
+    NSString *joined = RISEM5String(buf);
+    if (joined.length == 0) return @[];
+    return [joined componentsSeparatedByString:@"\n"];
 }
 
 @end

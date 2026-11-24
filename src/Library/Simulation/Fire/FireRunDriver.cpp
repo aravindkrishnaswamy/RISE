@@ -50,6 +50,15 @@ namespace RISE
 		{
 			ReportFireRunCheck(condition,message);
 		}
+#if !defined(RISE_ENABLE_OPENVDB)
+		// The temporal VDB writer (FireRunFrames.h) exists only in OpenVDB
+		// builds; the Xcode GUI build has none, and its fire solver refuses
+		// before a driver runs.  Publication simply fails there.
+		bool WriteProductionTemporalFrame(const std::filesystem::path&,const SolverFrameValues&)
+		{
+			return false;
+		}
+#endif
 	}
 
 	namespace ProductionStep

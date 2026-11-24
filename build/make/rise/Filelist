@@ -44,6 +44,7 @@ SRCDRISE =\
 SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Agent/AgentChatCodecs.cpp		\
 	$(PATHLIBRARY)Agent/AgentChatLoop.cpp			\
+	$(PATHLIBRARY)Agent/AgentSimulation.cpp			\
 	$(PATHLIBRARY)Agent/AgentEvalRunner.cpp		\
 	$(PATHLIBRARY)Agent/AgentLoopbackHttpServer.cpp	\
 	$(PATHLIBRARY)Agent/AgentMcpAdapter.cpp		\
@@ -115,6 +116,8 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Simulation/SceneSimulation.cpp		\
 	$(PATHLIBRARY)Simulation/SceneInputs.cpp		\
 	$(PATHLIBRARY)Simulation/SceneSimulationWorker.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationProcess.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationBakeManager.cpp	\
 	$(PATHLIBRARY)Simulation/Cloth/ClothMaterial.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothLinearAlgebra.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothModel.cpp		\

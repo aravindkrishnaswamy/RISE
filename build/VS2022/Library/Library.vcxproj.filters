@@ -357,6 +357,12 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SceneSimulationWorker.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationBakeManager.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationProcess.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SceneInputs.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
@@ -718,6 +724,9 @@
       <Filter>Agent</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\AgentChatLoop.cpp">
+      <Filter>Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Agent\AgentSimulation.cpp">
       <Filter>Agent</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Agent\AgentEvalRunner.cpp">
@@ -1752,6 +1761,12 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SceneSimulationWorker.h">
       <Filter>Simulation</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationBakeManager.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationProcess.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SceneInputs.h">
       <Filter>Simulation</Filter>
     </ClInclude>
@@ -2371,6 +2386,9 @@
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentChatLoop.h">
+      <Filter>Agent</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Agent\AgentSimulation.h">
       <Filter>Agent</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Agent\AgentEvalRunner.h">

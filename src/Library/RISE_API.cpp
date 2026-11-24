@@ -11006,6 +11006,7 @@ namespace RISE
 #include "SceneEditor/LiveSimulation.h"           // simulation M3c
 #include "Simulation/BuiltinSolvers.h"
 #include "Simulation/SceneSimulation.h"            // simulation M3c
+#include "Simulation/SimulationBakeManager.h"      // simulation M5
 #include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
 #include "Utilities/Transformable.h"
 
@@ -12385,9 +12386,13 @@ namespace RISE
 	{
 		if( !p ) return false;
 		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
-			std::vector<Simulation::SceneSimulationStatus> statuses;
-			if( !p->GetSimulations( statuses, error ) ) return false;
-			M3cSet( outCount, static_cast<unsigned int>( statuses.size() ) );
+			// M5: the panel's list is also when bakes still running from an
+			// earlier session are adopted (SimulationBakeManager::Attach).
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !p->GetSimulationBakeSnapshot( snapshot, /*blocking=*/false, error, /*checkUnsaved=*/false ) ) return false;
+			std::string ignored;
+			Simulation::SimulationBakeManager::Instance().Attach( snapshot, ignored );
+			M3cSet( outCount, static_cast<unsigned int>( snapshot.simulations.size() ) );
 			return true;
 		} );
 	}
@@ -12414,6 +12419,260 @@ namespace RISE
 			M3cCopyText( s.cacheDir.string(), cacheBuf, cacheBufLen );
 			M3cCopyText( s.error, errorBuf, errorBufLen );
 			return true;
+		} );
+	}
+
+	// ---- Simulation M5: baking ----
+
+	namespace
+	{
+		struct BakeCallback
+		{
+			std::mutex mutex;
+			RISE_SimulationBakeChangeCallback fn = nullptr;
+			void* user = nullptr;
+			std::uint64_t listener = 0;
+		};
+		BakeCallback& TheBakeCallback()
+		{
+			static BakeCallback callback;
+			return callback;
+		}
+		Simulation::SimulationBakeManager& Bakes() { return Simulation::SimulationBakeManager::Instance(); }
+		bool BakeSnapshot( SceneEditController* p, Simulation::BakeSceneSnapshot& snapshot, std::string& error )
+		{
+			return p->GetSimulationBakeSnapshot( snapshot, /*blocking=*/true, error );
+		}
+		const char* NameOrEmpty( const char* s ) { return s ? s : ""; }
+	}
+
+	bool RISE_API_SimulationBake_SetWorkerPath( const char* path )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Bakes().SetWorkerOverride( NameOrEmpty( path ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SimulationBake_GetWorkerPath( char* pathBuf, unsigned int pathBufLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			std::vector<std::string> command;
+			if( !Bakes().ResolveWorker( command, error ) ) return false;
+			std::string text;
+			for( const auto& c : command ) text += ( text.empty() ? "" : " " ) + c;
+			M3cCopyText( text, pathBuf, pathBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SimulationBake_SetLimits( unsigned int maxConcurrentCpuBakes, unsigned long long memoryBudgetBytes )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Simulation::BakeManagerSettings settings = Bakes().Settings();
+			if( maxConcurrentCpuBakes ) settings.maxCpuBakes = maxConcurrentCpuBakes;
+			settings.memoryBudget = memoryBudgetBytes;
+			Bakes().SetSettings( settings );
+			return true;
+		} );
+	}
+
+	unsigned long long RISE_API_SimulationBake_ChangeCounter()
+	{
+		return static_cast<unsigned long long>( Bakes().ChangeCounter() );
+	}
+
+	bool RISE_API_SimulationBake_SetChangeCallback( RISE_SimulationBakeChangeCallback callback, void* userData )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			BakeCallback& cb = TheBakeCallback();
+			std::uint64_t old = 0;
+			{
+				std::lock_guard<std::mutex> lk( cb.mutex );
+				old = cb.listener;
+				cb.listener = 0;
+				cb.fn = callback;
+				cb.user = userData;
+			}
+			if( old ) Bakes().RemoveListener( old );
+			if( callback ) {
+				const std::uint64_t id = Bakes().AddListener( []( const Simulation::BakeEvent& e ) {
+					if( e.kind != Simulation::BakeEvent::Kind::JobChanged ) return;
+					BakeCallback& c = TheBakeCallback();
+					RISE_SimulationBakeChangeCallback fn = nullptr;
+					void* user = nullptr;
+					{
+						std::lock_guard<std::mutex> lk( c.mutex );
+						fn = c.fn;
+						user = c.user;
+					}
+					if( fn ) fn( user, static_cast<unsigned long long>( e.changeCounter ) );
+				} );
+				std::lock_guard<std::mutex> lk( cb.mutex );
+				cb.listener = id;
+			}
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBake( SceneEditController* p, const char* simulationName,
+		bool force, unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !BakeSnapshot( p, snapshot, error ) ) return false;
+			Simulation::BakeRequest request;
+			request.simulations.push_back( NameOrEmpty( simulationName ) );
+			request.force = force;
+			std::vector<std::uint64_t> jobs;
+			if( !Bakes().RequestBake( snapshot, request, jobs, error ) ) return false;
+			// The named simulation's job (its upstreams come first in `jobs`).
+			Simulation::BakeJob job;
+			const std::string key = Simulation::SimulationBakeManager::SceneKey( snapshot.scene );
+			M3cSet( outJobId, static_cast<unsigned long long>(
+				Bakes().LatestJob( key, NameOrEmpty( simulationName ), job ) ? job.id : ( jobs.empty() ? 0 : jobs.back() ) ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeAll( SceneEditController* p, bool staleOnly, bool force,
+		unsigned int* outJobCount, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !BakeSnapshot( p, snapshot, error ) ) return false;
+			Simulation::BakeRequest request;
+			request.all = true;
+			request.staleOnly = staleOnly;
+			request.force = force;
+			std::vector<std::uint64_t> jobs;
+			if( !Bakes().RequestBake( snapshot, request, jobs, error ) ) return false;
+			M3cSet( outJobCount, static_cast<unsigned int>( jobs.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeResume( SceneEditController* p, const char* simulationName,
+		unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !BakeSnapshot( p, snapshot, error ) ) return false;
+			std::uint64_t job = 0;
+			if( !Bakes().Resume( snapshot, NameOrEmpty( simulationName ), job, error ) ) return false;
+			M3cSet( outJobId, static_cast<unsigned long long>( job ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeStop( SceneEditController* p, const char* simulationName,
+		bool kill, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			const std::string key = p->SimulationBakeSceneKey();
+			if( key.empty() ) { error = "the scene has no file, so it has no bakes"; return false; }
+			return Bakes().StopSimulation( key, NameOrEmpty( simulationName ), kill, nullptr, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeCancelQueued( SceneEditController* p, unsigned int* outCancelled )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			const std::string key = p->SimulationBakeSceneKey();
+			if( key.empty() ) return false;
+			M3cSet( outCancelled, Bakes().CancelQueued( key ) );
+			return true;
+		} );
+	}
+
+	namespace
+	{
+		bool BakeJobsOf( SceneEditController* p, std::vector<Simulation::BakeJob>& jobs )
+		{
+			bool attach = false;
+			const std::string key = p->SimulationBakeSceneKey( &attach );
+			if( key.empty() ) return false;
+			if( attach ) {
+				Simulation::BakeSceneSnapshot snapshot;
+				std::string ignored;
+				if( p->GetSimulationBakeSnapshot( snapshot, /*blocking=*/false, ignored, /*checkUnsaved=*/false ) )
+					Bakes().Attach( snapshot, ignored );
+			}
+			jobs = Bakes().Jobs( key );
+			return true;
+		}
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationBakeJobCount( SceneEditController* p, unsigned int* outCount )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::BakeJob> jobs;
+			if( !BakeJobsOf( p, jobs ) ) { M3cSet( outCount, 0u ); return true; }
+			M3cSet( outCount, static_cast<unsigned int>( jobs.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationBakeJob( SceneEditController* p, unsigned int index,
+		unsigned long long* outJobId, char* simulationBuf, unsigned int simulationBufLen,
+		int* outState, bool* outResumable, bool* outAdopted, bool* outInterrupted,
+		double* outSimulatedTime, double* outEndTime,
+		unsigned long long* outFramesWritten, unsigned long long* outFramesTotal,
+		double* outWallSeconds, double* outEtaSeconds, unsigned long long* outPid,
+		char* backendBuf, unsigned int backendBufLen, char* waitingForBuf, unsigned int waitingForBufLen,
+		char* detailBuf, unsigned int detailBufLen, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::BakeJob> jobs;
+			if( !BakeJobsOf( p, jobs ) || index >= jobs.size() ) return false;
+			const Simulation::BakeJob& j = jobs[index];
+			M3cSet( outJobId, static_cast<unsigned long long>( j.id ) );
+			M3cCopyText( j.simulation, simulationBuf, simulationBufLen );
+			M3cSet( outState, static_cast<int>( j.state ) );
+			M3cSet( outResumable, j.resumable );
+			M3cSet( outAdopted, j.adopted );
+			M3cSet( outInterrupted, j.interrupted );
+			M3cSet( outSimulatedTime, j.simulatedTime );
+			M3cSet( outEndTime, j.endTime );
+			M3cSet( outFramesWritten, static_cast<unsigned long long>( j.framesWritten ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( j.framesTotal ) );
+			M3cSet( outWallSeconds, j.wallSeconds );
+			M3cSet( outEtaSeconds, j.etaSeconds );
+			M3cSet( outPid, static_cast<unsigned long long>( j.pid ) );
+			M3cCopyText( j.backend, backendBuf, backendBufLen );
+			M3cCopyText( j.waitingFor, waitingForBuf, waitingForBufLen );
+			M3cCopyText( j.detail, detailBuf, detailBufLen );
+			M3cCopyText( j.lastError, errorBuf, errorBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_RefreshSimulationFrames( SceneEditController* p, bool* outRefreshed,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			bool refreshed = false;
+			const bool ok = p->RefreshSimulationFrames( refreshed, error );
+			M3cSet( outRefreshed, refreshed );
+			return ok;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationDetachSimulation( SceneEditController* p,
+		const char* simulationName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationDetachSimulation( NameOrEmpty( simulationName ), error );
 		} );
 	}
 
@@ -13641,5 +13900,125 @@ namespace RISE
 			CopyToBuf( newName, outNewPainterName, outNewPainterNameLen );
 		}
 		return ok;
+	}
+}
+
+// ---- Simulation M5 (GUI shell support) ----
+#include "Simulation/SimulationCache.h"
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace RISE
+{
+	namespace
+	{
+		std::string M5Join( const std::vector<std::string>& items )
+		{
+			std::string out;
+			for( const std::string& item : items ) { if( !out.empty() ) out += ", "; out += item; }
+			return out;
+		}
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationDetails(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		char* solverBuf, unsigned int solverBufLen, char* backendBuf, unsigned int backendBufLen,
+		char* fidelityBuf, unsigned int fidelityBufLen, char* consumerBuf, unsigned int consumerBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		double* outStartTime, double* outInterval,
+		char* cacheBuf, unsigned int cacheBufLen,
+		char* upstreamBuf, unsigned int upstreamBufLen, char* inputsBuf, unsigned int inputsBufLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			std::vector<Simulation::SceneSimulationStatus> statuses;
+			if( !p->GetSimulations( statuses, error ) || index >= statuses.size() ) return false;
+			const Simulation::SceneSimulationStatus& s = statuses[index];
+			M3cCopyText( s.name, nameBuf, nameBufLen );
+			M3cCopyText( s.keyword, keywordBuf, keywordBufLen );
+			M3cCopyText( s.solverId, solverBuf, solverBufLen );
+			M3cCopyText( s.backend, backendBuf, backendBufLen );
+			M3cCopyText( s.fidelity, fidelityBuf, fidelityBufLen );
+			M3cCopyText( s.meshConsumers.empty() ? std::string() : s.meshConsumers.front(), consumerBuf, consumerBufLen );
+			M3cSet( outState, static_cast<int>( s.state ) );
+			M3cSet( outUpstreamOutOfDate, s.upstreamOutOfDate );
+			M3cSet( outInteractive, s.interactive );
+			M3cSet( outFramesAvailable, static_cast<unsigned long long>( s.framesAvailable ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( s.framesTotal ) );
+			M3cSet( outStartTime, s.startTime );
+			M3cSet( outInterval, s.interval );
+			M3cCopyText( s.cacheDir.string(), cacheBuf, cacheBufLen );
+			M3cCopyText( M5Join( s.upstream ), upstreamBuf, upstreamBufLen );
+			M3cCopyText( M5Join( s.inputs ), inputsBuf, inputsBufLen );
+			M3cCopyText( s.error, errorBuf, errorBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_AddTrustedCacheRoot( const char* root, char* errorBuf, unsigned int errorBufLen )
+	{
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			if( !root || !root[0] ) { error = "no directory given"; return false; }
+			if( !Simulation::AddTrustedCacheRoot( std::filesystem::path( root ), error ) ) return false;
+#if !defined(_WIN32)
+			// Bakes run in rise-sim worker processes, which read trusted roots
+			// from the environment only: export the roots in force (the
+			// environment's, then the added ones, canonical) so every worker
+			// started from now on inherits them.
+			std::string joined;
+			for( const auto& r : Simulation::TrustedCacheRoots() ) { if( !joined.empty() ) joined += ':'; joined += r.string(); }
+			::setenv( Simulation::TrustedCacheRootsEnvironment, joined.c_str(), 1 );
+#endif
+			return true;
+		} );
+	}
+
+	bool RISE_API_CheckCacheLocation( const char* cacheDirectory,
+		char* suggestedRootBuf, unsigned int suggestedRootBufLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		M3cCopyText( std::string(), suggestedRootBuf, suggestedRootBufLen );
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			if( !cacheDirectory || !cacheDirectory[0] ) { error = "no cache directory given"; return false; }
+			namespace fs = std::filesystem;
+			if( Simulation::CheckCacheLocation( fs::path( cacheDirectory ), false, error ) ) return true;
+			// Refused.  The narrowest root to offer: the deepest existing
+			// directory above the cache directory (trusting it stops the
+			// ancestor check there; the cache directory and everything
+			// created below it stay owner-only).  Nothing to offer when the
+			// cache directory itself exists and is not private: no root fixes that.
+			std::error_code ec;
+			fs::path wanted = fs::absolute( fs::path( cacheDirectory ), ec ).lexically_normal();
+			if( ec ) return false;
+			if( wanted.filename().empty() && wanted != wanted.root_path() ) wanted = wanted.parent_path();
+#if !defined(_WIN32)
+			struct stat info{};
+			if( ::lstat( wanted.c_str(), &info ) == 0 &&
+				( !S_ISDIR( info.st_mode ) || info.st_uid != ::geteuid() || ( info.st_mode & 0022 ) != 0 ) )
+				return false;
+#endif
+			for( fs::path dir = wanted.parent_path(); !dir.empty() && dir != dir.root_path(); dir = dir.parent_path() ) {
+				if( !fs::is_directory( dir, ec ) || ec ) { ec.clear(); continue; }
+				const fs::path canonical = fs::canonical( dir, ec );
+				if( !ec && canonical != canonical.root_path() ) M3cCopyText( canonical.string(), suggestedRootBuf, suggestedRootBufLen );
+				break;
+			}
+			return false;
+		} );
+	}
+
+	bool RISE_API_GetTrustedCacheRoots( char* buf, unsigned int bufLen )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::string joined;
+			for( const auto& root : Simulation::TrustedCacheRoots() ) { if( !joined.empty() ) joined += '\n'; joined += root.string(); }
+			M3cCopyText( joined, buf, bufLen );
+			return true;
+		} );
 	}
 }

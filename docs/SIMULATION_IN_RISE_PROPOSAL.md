@@ -125,6 +125,11 @@ from Codex to Claude.
 dependency graph with keys and states, `rise-sim bake|resume|status <scene>`, live runs from the scene without a
 pre-bake. [M4 results](SIMULATION_M4_RESULTS.md).
 
+2026-11-23: **M5a implemented** (library half of M5, in review): the process-wide bake manager (rise-sim
+processes on the scene file, dependency queue, machine-wide GPU lock, CPU cap, memory budget, monitoring,
+adoption, stop/resume), its C API for the GUI panels, and the agent verbs `sim_list`, `sim_bake`, `sim_status`,
+`sim_wait`, `sim_cancel` and live control. [M5a results](SIMULATION_M5A_RESULTS.md).
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.

@@ -235,6 +235,8 @@ void InspectSceneSimulation(const SceneSimulationPlan& plan, SceneSimulationStat
 		s.expectedKey = d.cache.key;
 		s.interactive = d.capabilities.interactive;
 		s.backend = d.capabilities.backend;
+		s.memoryEstimate = d.capabilities.memoryEstimate;
+		s.costEstimate = d.capabilities.costEstimate;
 		s.framesTotal = d.cache.count;
 		s.startTime = d.cache.startTime;
 		s.interval = d.cache.interval;

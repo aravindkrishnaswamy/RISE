@@ -2,6 +2,7 @@
 #include "SimulationWorker.h"
 #include "SimulationHost.h"
 #include "SceneSimulationWorker.h"
+#include "SimulationProcess.h"
 #include "../Agent/Json.h"
 
 #include <atomic>
@@ -18,6 +19,8 @@
 #include <thread>
 
 namespace RISE { namespace Simulation {
+const char* const kWorkerStopFileName = "rise-sim.stop";
+const char* const kWorkerSceneMismatch = "scene mismatch";
 namespace {
 namespace fs = std::filesystem;
 using V = RISECBOR64::Value;
@@ -223,14 +226,82 @@ bool ReadCheckpoint(const fs::path& root,const Job& job,std::size_t budget,Solve
 	return true;
 }
 
-bool WriteStatus(const fs::path& root,const WorkerStatus& s,std::string& error)
+double PriorWall(const fs::path& root);
+
+// M5: this process, as the status record names it (pid, start stamp, host).
+void StampProcess(WorkerStatus& s)
 {
+	static const std::uint64_t pid=CurrentProcessId();
+	static const std::uint64_t start=ProcessStartStamp(pid);
+	static const std::string host=CurrentHostName();
+	s.pid=pid; s.pidStart=start; s.host=host;
+}
+
+bool WriteStatus(const fs::path& root,const WorkerStatus& given,std::string& error)
+{
+	WorkerStatus s=given;
+	StampProcess(s);
 	Bytes bytes;
 	return RISECBOR64::Encode(V::MapValue({{"format",V::String("rise.sim.status.v1")},{"state",V::String(s.state)},
 		{"solver",V::String(s.solver)},{"simulated",V::Float(s.simulatedTime)},{"end",V::Float(s.endTime)},
 		{"frames",V::Unsigned(s.framesWritten)},{"total",V::Unsigned(s.framesTotal)},
-		{"wall",V::Float(s.wallSeconds)},{"error",V::String(s.lastError)},{"detail",V::String(s.detail)}}),bytes,&error) &&
+		{"wall",V::Float(s.wallSeconds)},{"error",V::String(s.lastError)},{"detail",V::String(s.detail)},
+		{"pid",V::Unsigned(s.pid)},{"pid_start",V::Unsigned(s.pidStart)},{"host",V::String(s.host)}}),bytes,&error) &&
 		ReplaceFileDurably(root,statusName,bytes,error);
+}
+
+bool StopFilePresent(const fs::path& root)
+{
+	return Exists(root/kWorkerStopFileName);
+}
+
+// M5: one GPU solver at a time.  A configuration whose backend needs the GPU
+// takes the advisory GPU lock before Start/Restore and holds it until the
+// process ends; while another holder has it the worker reports
+// "waiting-gpu" and keeps honouring stop requests.  Returns WorkerFinished
+// (0) when the run may go on, WorkerStopped when a stop came first.
+int AcquireGpu(const SolverDescription& d,const fs::path& root,const std::string& solver,const WorkerOptions& options,
+	std::uint64_t framesWritten,AdvisoryFileLock& lock,std::ostream& out,std::ostream& err)
+{
+	if (!IsGpuBackend(d.capabilities.backend)) return WorkerFinished;
+	const fs::path path=options.gpuLock.empty() ? DefaultGpuLockPath() : options.gpuLock;
+	bool announced=false;
+	std::string lastHolder;
+	for (;;) {
+		bool busy=false;
+		std::string error;
+		if (lock.TryLock(path,busy,error)) {
+			std::string ignored;
+			lock.WriteContent(std::to_string(CurrentProcessId())+" "+root.string()+"\n",ignored);
+			if (announced) out<<"rise-sim: GPU lock acquired\n";
+			return WorkerFinished;
+		}
+		if (!busy) { err<<"rise-sim: GPU lock: "<<error<<"\n"; return WorkerFailed; }
+		if (g_signal!=0 || StopFilePresent(root)) {
+			WorkerStatus s; s.state="stopped"; s.solver=solver; s.wallSeconds=PriorWall(root);
+			s.endTime=d.cache.startTime+static_cast<double>(d.cache.count ? d.cache.count-1 : 0)*d.cache.interval;
+			s.framesTotal=d.cache.count;
+			s.framesWritten=framesWritten;
+			std::string ignored; WriteStatus(root,s,ignored);
+			out<<"rise-sim: stopped while waiting for the GPU\n";
+			return WorkerStopped;
+		}
+		const std::string holder=ReadLockFileContent(path);
+		if (!announced || holder!=lastHolder) {
+			WorkerStatus s; s.state="waiting-gpu"; s.solver=solver; s.wallSeconds=PriorWall(root);
+			s.endTime=d.cache.startTime+static_cast<double>(d.cache.count ? d.cache.count-1 : 0)*d.cache.interval;
+			s.framesTotal=d.cache.count;
+			s.framesWritten=framesWritten;
+			const auto space=holder.find(' ');
+			s.detail="waiting for the GPU (backend "+d.capabilities.backend+"; lock "+path.string()+
+				(holder.empty() ? std::string(")") : ", held by pid "+holder.substr(0,space)+")");
+			std::string ignored; WriteStatus(root,s,ignored);
+			if (!announced) out<<"rise-sim: "<<s.detail<<"\n";
+			announced=true;
+			lastHolder=holder;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	}
 }
 
 // ---------------------------------------------------------------- run loop
@@ -321,7 +392,10 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	// so one request per stop is enough.
 	std::thread watcher([&]{
 		bool requested=false;
+		unsigned tick=0;
 		while (!done.load()) {
+			// M5: the stop file, checked about four times a second.
+			if (!requested && ++tick%12==0 && StopFilePresent(root)) stop=true;
 			if (!requested && (g_signal!=0 || stop.load())) { solver.RequestStop(); requested=true; }
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		}
@@ -461,7 +535,11 @@ int BakeWith(const std::string& id,const V& parameters,const ISceneInputs& input
 	const Job job{d.solverId,d.version,d.cache.key,d.cache.epoch,d.effectiveParameters};
 	std::error_code ec;
 	fs::remove(root/checkpointName,ec);
+	// M5: a stop file left by an earlier run is not a request to this one.
+	fs::remove(root/kWorkerStopFileName,ec);
 	if (!WriteJob(root,job,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
+	AdvisoryFileLock gpu;
+	if (const int code=AcquireGpu(d,root,job.solver,options,0,gpu,out,err)) return code;
 	if (!PrepareSideOutput(*solver,d,root,true,error) || !solver->Start(error)) {
 		WorkerStatus s; s.state="failed"; s.solver=job.solver; s.lastError=error;
 		std::string ignored; WriteStatus(root,s,ignored);
@@ -510,6 +588,10 @@ int Resume(const fs::path& root,const Options& options,const ISceneInputs& input
 	CacheWriter writer;
 	if (!writer.Begin(root,d.cache,current.Digest(),true,options.budget,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	PrintNotes(d,out);
+	std::error_code ec;
+	fs::remove(root/kWorkerStopFileName,ec);   // M5: stale stop file (see BakeWith)
+	AdvisoryFileLock gpu;
+	if (const int code=AcquireGpu(d,root,job.solver,options,CommittedIndices(writer.Snapshot()),gpu,out,err)) return code;
 	if (!PrepareSideOutput(*solver,d,root,false,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	if (Exists(root/checkpointName)) {
 		SolverPosition position;
@@ -547,7 +629,7 @@ int Status(const fs::path& root,const Options& options,std::ostream& out,std::os
 	if (Exists(root/statusName)) {
 		if (!ReadWorkerStatus(root,s,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 		std::string worker=s.state;
-		if (worker=="running" && state!=CacheState::Baking) worker="interrupted";
+		if ((worker=="running" || worker=="waiting-gpu") && state!=CacheState::Baking) worker="interrupted";
 		out<<"worker: "<<worker<<"\nsolver: "<<s.solver<<"\nsimulated: "<<s.simulatedTime<<" / "<<s.endTime
 			<<"\nframes: "<<s.framesWritten<<" / "<<s.framesTotal<<"\nwall: "<<s.wallSeconds<<" s\n";
 		if (!s.detail.empty()) out<<"detail: "<<s.detail<<"\n";
@@ -566,6 +648,7 @@ void Usage(std::ostream& err)
 		"       rise-sim resume <scene.RISEscene> [<simulation> ...] [options]\n"
 		"       rise-sim status <scene.RISEscene>\n"
 		"options: --checkpoint-seconds S  --budget-mb N  --stop-after-frames N  --force (bake)\n"
+		"         --gpu-lock PATH  --no-upstream (scene bake)  --expect-key NAME=KEY (scene bake/resume)\n"
 		"exit: 0 finished, 1 failed, 2 usage, 3 stopped (resumable)\n";
 	const auto ids=RegisteredSolvers();
 	err<<"solvers:";
@@ -619,6 +702,13 @@ bool ReadWorkerStatus(const fs::path& root,WorkerStatus& status,std::string& err
 		if (detail->GetType()!=V::Text) return Fail(error,"invalid worker status record");
 		s.detail=detail->GetText();
 	}
+	// M5: the worker process (absent in records of older workers).
+	const V *pid=v.Find("pid"), *start=v.Find("pid_start"), *host=v.Find("host");
+	if ((pid && pid->GetType()!=V::UnsignedInteger) || (start && start->GetType()!=V::UnsignedInteger) ||
+		(host && host->GetType()!=V::Text)) return Fail(error,"invalid worker status record");
+	if (pid) s.pid=pid->GetIntegerArgument();
+	if (start) s.pidStart=start->GetIntegerArgument();
+	if (host) s.host=host->GetText();
 	status=std::move(s);
 	return true;
 }
@@ -638,6 +728,18 @@ int WorkerMain(const std::vector<std::string>& args,std::ostream& out,std::ostre
 		double value=0;
 		if (a=="--force") options.force=true;
 		else if (a=="--all") options.all=true;
+		else if (a=="--no-upstream") options.noUpstream=true;
+		else if (a=="--gpu-lock") {
+			if (i+1>=args.size() || args[i+1].empty()) { Usage(err); return WorkerUsage; }
+			options.gpuLock=args[++i];
+		}
+		else if (a=="--expect-key") {
+			if (i+1>=args.size()) { Usage(err); return WorkerUsage; }
+			const std::string& pair=args[++i];
+			const auto eq=pair.find('=');
+			if (eq==std::string::npos || eq==0 || eq+1>=pair.size()) { Usage(err); return WorkerUsage; }
+			options.expectKeys.emplace_back(pair.substr(0,eq),pair.substr(eq+1));
+		}
 		else if (a=="--checkpoint-seconds") { if (!number(value)) { Usage(err); return WorkerUsage; } options.checkpointSeconds=value; }
 		else if (a=="--budget-mb") {
 			if (!number(value) || value<1 || value>32768) { Usage(err); return WorkerUsage; }
@@ -657,7 +759,7 @@ int WorkerMain(const std::vector<std::string>& args,std::ostream& out,std::ostre
 	if (positional.size()>=2 && IsSceneFilePath(positional[1]) && (command=="bake" || command=="resume" || command=="status"))
 		return SceneWorkerMain(command,positional[1],
 			std::vector<std::string>(positional.begin()+2,positional.end()),options,out,err);
-	if (options.all) { Usage(err); return WorkerUsage; }
+	if (options.all || options.noUpstream || !options.expectKeys.empty()) { Usage(err); return WorkerUsage; }
 	if (command=="bake" && positional.size()==4) return Bake(positional[1],positional[2],positional[3],options,out,err);
 	if (command=="resume" && positional.size()==2 && !options.force) return Resume(positional[1],options,EmptySceneInputs(),out,err);
 	if (command=="status" && positional.size()==2) return Status(positional[1],options,out,err);

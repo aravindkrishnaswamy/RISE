@@ -104,10 +104,17 @@ int SceneWorkerMain(const std::string& command, const std::string& scene, const 
 	// The requested simulations, plus (bake) everything they depend on.
 	std::set<std::string> wanted(names.begin(), names.end());
 	if (names.empty()) for (const auto& p : plans) wanted.insert(p.spec->name);
-	if (command == "bake") {
+	if (command == "bake" && !options.noUpstream) {
 		for (auto it = plans.rbegin(); it != plans.rend(); ++it)
 			if (wanted.count(it->spec->name)) for (const auto& u : it->upstream) wanted.insert(u);
 	}
+	// M5: --expect-key names simulations of this scene; each is checked when it
+	// is planned for its bake, before its cache is touched.
+	for (const auto& e : options.expectKeys)
+		if (!planOf(e.first)) {
+			err << "rise-sim: --expect-key names " << e.first << ", which the scene does not declare\n";
+			return WorkerUsage;
+		}
 	// Plans are in dependency order: each upstream is final before its consumers.
 	// The scene is planned again before each bake: a consumer's scene inputs
 	// read its upstream's cache, which the previous bake may just have written.
@@ -141,6 +148,20 @@ int SceneWorkerMain(const std::string& command, const std::string& scene, const 
 			return WorkerFailed;
 		}
 		if (!plan.inputs) { err << "rise-sim: " << spec.name << ": no scene inputs\n"; return WorkerFailed; }
+		// M5: the document that asked for this bake planned it with a key; the
+		// file on disk must plan the same one, or the bake would not be what the
+		// document shows (unsaved edits, or the file changed since it loaded).
+		for (const auto& e : options.expectKeys) {
+			if (e.first != name) continue;
+			const std::string onDisk = plan.configured ? plan.description.cache.key : std::string();
+			if (onDisk != e.second) {
+				err << "rise-sim: " << kWorkerSceneMismatch << ": " << name << ": the scene file " << scene <<
+					" plans key " << (onDisk.empty() ? std::string("(unknown)") : Short(onDisk)) <<
+					" but the loaded document expects " << Short(e.second) <<
+					"; save the scene first (the bake runs from the file on disk)\n";
+				return WorkerFailed;
+			}
+		}
 		const auto& caps = plan.description.capabilities;
 		out << "rise-sim: " << spec.name << " (" << spec.solverId << (caps.backend.empty() ? "" : ", " + caps.backend) <<
 			"): " << SceneSimulationStateName(state.state) << ", cache " << spec.cacheDir.string() << "\n";

@@ -258,6 +258,40 @@ Read-only tools in the same batch are unaffected (they carry no `baseEpoch` and 
 
 So the precondition map is: render-control → none (coordinator reconciles staleness); `save_scene`/`load_scene`/`export_*` → an **expected `DocumentId`** (+ a save lease for `save_scene`; + a returned frame `generation` for exports); graph-mutating tools → the full `baseEpoch` transaction precondition.
 
+### 4.4a Simulation bakes and live simulation (SHIPPED, M5, 2026-11-23)
+
+Wire truth: `src/Library/Agent/AgentSimulation.{h,cpp}` (dispatched from `AgentRpc.cpp`, listed by
+`AgentMcpAdapter.cpp`). Design and limits: [../SIMULATION_M5A_RESULTS.md](../SIMULATION_M5A_RESULTS.md).
+A bake is a separate `rise-sim` process run on the scene **file**, managed by the process-wide
+`SimulationBakeManager`; it never mutates the document, so none of these tools carries a `baseEpoch`.
+
+| Tool | Params | Autonomy | Result |
+|---|---|---|---|
+| `sim_list` | `{}` | read-safe | `{ok, scene, unsavedChanges, liveSupported, simulations:[{name, keyword, solver, state, upstreamOutOfDate, keyStatus, expectedKey, cacheKey, fidelity, cacheDir, interactive, backend, framesAvailable, framesTotal, startTime, interval, endTime, upstream, inputs, error?, job?}]}`; `keyStatus` is `current` / `stale` / `missing` / `unknown`; also adopts bakes still running from an earlier session |
+| `sim_bake` | `{simulation}` or `{all:true, staleOnly?}`, `force?` | commit, owner session | `{ok, jobId, jobIds, jobs}` at once; a refusal (save first, unknown simulation) is `{ok:false, message}` |
+| `sim_status` | `{jobId?}` | read-safe | `{found, job}`, or `{jobs:[...]}` for the scene |
+| `sim_wait` | `{jobId, timeoutMs?}` | read-safe | `{completed, found, job}`; `timeoutMs` default 5000, clamped `[0,60000]` exactly like `render_wait` |
+| `sim_cancel` | `{jobId}` or `{simulation}`, `kill?` | commit, owner session | `{cancelled, found, job, message?}`: queued → cancelled; running → stopping → stopped (checkpoint, `resumable:true`) |
+| `sim_live_start` | `{simulation, fps?}` | commit, owner session | `{ok, supported, message?}` |
+| `sim_live_stop` | `{simulation}` | commit, owner session | `{ok, supported, message?}` |
+| `sim_seek` | `{time}` | commit, owner session | `{ok, supported, time, message?}` |
+
+`job` = `{jobId, simulation, state, terminal, resumable, adopted, interrupted, resume, force, solver, backend,
+cacheDir, simulatedTime, endTime, framesWritten, framesTotal, progress, wallSeconds, etaSeconds (null =
+unknown), pid, dependsOn, waitingFor?, detail?, error?, log?}`, `state` one of `queued`, `waiting-gpu`,
+`running`, `stopping`, `stopped`, `finished`, `failed`, `cancelled`.
+
+- **Headless.** `rise --agent-stdio` / `--mcp` bakes exactly like the GUI (the worker is a separate process
+  found next to the `rise` binary, `bin/tools/rise_sim`); the default read posture allows only the three
+  read verbs, so `sim_bake` needs `--agent-autonomy=commit`. The live verbs need an in-app viewport and
+  answer `{ok:false, supported:false}` headless (not an RPC error, the `render_cancel` honesty convention).
+- **Resume** is `sim_bake` of the same simulation: a partial cache of the current key is continued from its
+  checkpoint.
+- **Annotations.** Under `--agent-autonomy=read` the five control tools carry the read-refusal note; under
+  `propose` they carry an "UNAVAILABLE at --agent-autonomy=propose" note (they are on neither allowlist).
+- **Not in the in-app chat catalog** (`AgentChatCodecs.cpp`'s `kToolDefs`): the chat tool set is curated for
+  scene building and pinned by fingerprint tests; adding the bake verbs there is a separate product decision.
+
 ### 4.5 Output & persistence
 
 | Tool | inputSchema (sketch) | Annotations | Backed by | Persistence |

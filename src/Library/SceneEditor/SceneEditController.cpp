@@ -39,6 +39,7 @@
 #include "../Job.h"                                // simulation M4: scene simulations (SimulationSpecs, bindings)
 #include "../Simulation/SceneInputs.h"
 #include "../Simulation/SimulationTimeline.h"
+#include "../Simulation/SimulationBakeManager.h"   // simulation M5: bake snapshot, frames generation
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
 #include <map>                            // source-traceability reverse: cached keyword -> Category map
@@ -21495,6 +21496,128 @@ bool SceneEditController::GetSimulations( std::vector<Simulation::SceneSimulatio
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return LiveFail( error, "the scene is busy; poll again" );
 	return mJob.DescribeSimulations( statuses, error );
+}
+
+bool SceneEditController::GetSimulationBakeSnapshot( Simulation::BakeSceneSnapshot& snapshot, const bool blocking,
+	std::string& error, const bool checkUnsaved ) const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) )
+		return LiveFail( error, "a production render owns the scene; try again when it finishes" );
+	std::unique_lock<std::mutex> lk( mMutex, std::defer_lock );
+	if( blocking ) lk.lock();
+	else if( !lk.try_lock() ) return LiveFail( error, "the scene is busy; poll again" );
+	snapshot = Simulation::BakeSceneSnapshot();
+	snapshot.scene = mJob.GetCstLoadFileIdentity().filePath;
+	if( !mJob.DescribeSimulations( snapshot.simulations, error ) ) return false;
+	// The dirty trackers are conservative (an edit then its undo stays dirty);
+	// the bytes decide.  Only paid when the trackers say dirty.
+	if( !snapshot.scene.empty() && mEditor.HasUnsavedChanges() ) {
+		snapshot.unsavedChanges = true;
+		const RISE::Cst::Document* doc = mJob.HasRetainedCstDocument() ? mJob.GetCstDocument() : nullptr;
+		if( doc && checkUnsaved ) {
+			std::ifstream in( snapshot.scene, std::ios::binary );
+			if( in ) {
+				const std::string disk( ( std::istreambuf_iterator<char>( in ) ), std::istreambuf_iterator<char>() );
+				snapshot.unsavedChanges = disk != RISE::Cst::SerializeCst( *doc );
+			}
+		}
+	}
+	return true;
+}
+
+bool SceneEditController::RefreshSimulationFrames( bool& refreshed, std::string& error )
+{
+	refreshed = false;
+	std::lock_guard<std::mutex> refreshLk( mBakeRefreshMutex );
+	std::string scene;
+	if( !GetCurrentScenePath_( scene, /*blocking=*/false ) ) return true;	// busy: the next poll
+	const std::string key = Simulation::SimulationBakeManager::SceneKey( scene );
+	if( key.empty() ) return true;
+	const std::uint64_t generation = Simulation::SimulationBakeManager::Instance().FramesGeneration( key );
+	if( generation == mBakeFramesSeen ) return true;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return true;	// later: generation not consumed
+	// Lock order: mLiveMutex -> mRenderAdmissionMutex -> mMutex (M3c).
+	std::unique_lock<std::mutex> liveLk( mLiveMutex );
+	std::set<const IGeometry*> live;
+	for( const auto& l : mLiveSims ) live.insert( &l->Geometry() );
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return true;
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+	Job* job = dynamic_cast<Job*>( &mJob );
+	IGeometryManager* geometries = mJob.GetGeometries();
+	std::string problems;
+	if( job && geometries ) {
+		struct Names : public IEnumCallback<const char*>
+		{
+			std::vector<std::string> names;
+			bool operator()( const char* const& name ) override { names.push_back( name ); return true; }
+		} names;
+		geometries->EnumerateItemNames( names );
+		for( const std::string& n : names.names ) {
+			std::string simulation, output;
+			if( !job->SimulationOfGeometry( n.c_str(), simulation, output ) ) continue;
+			auto* mesh = dynamic_cast<Implementation::SimulatedMeshGeometry*>( geometries->GetItem( n.c_str() ) );
+			Simulation::SimulatedGeometryBinding binding;
+			if( !mesh || live.count( mesh ) || !job->SimulatedGeometryBindingOf( mesh, binding ) ) continue;
+			// The cache's current generation: a new epoch replaced the one bound.
+			Simulation::CacheSnapshot disk;
+			std::string why;
+			const bool open = Simulation::CacheSnapshot::Open( binding.cacheDir, std::size_t( 64 ) << 20, disk, why );
+			const bool replaced = mesh->HasSource() && open &&
+				( disk.Description().epoch != mesh->Source().Description().epoch ||
+				  disk.Description().key != mesh->Source().Description().key );
+			if( mesh->HasSource() && !replaced ) continue;	// a partial cache is re-read by every Sample
+			std::unique_ptr<Simulation::MeshCacheSource> source;
+			if( open && Simulation::MeshCacheSource::Open( binding.cacheDir, binding.options, source, why ) ) {
+				if( !mesh->RebindSource( source, why ) )
+					problems += ( problems.empty() ? "" : "; " ) + n + ": " + why + " (reload the scene)";
+			} else if( replaced ) {
+				// The bound frames are gone with their epoch; hidden until the
+				// new one has a frame.
+				std::unique_ptr<Simulation::MeshCacheSource> previous;
+				mesh->UnbindSource( previous, why );
+			}
+		}
+	}
+	unsigned int meshes = 0;
+	std::string installError;
+	if( !Implementation::InstallSimulatedMeshesAtTime( mJob, mEditor.LastSceneTime(), meshes, installError ) )
+		GlobalLog()->PrintEx( eLog_Error, "SceneEditController::RefreshSimulationFrames: %s", installError.c_str() );
+	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+	mEditPending.store( true, std::memory_order_release );
+	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	mBakeFramesSeen = generation;
+	refreshed = true;
+	if( !problems.empty() ) return LiveFail( error, problems );
+	return true;
+}
+
+std::string SceneEditController::SimulationBakeSceneKey( bool* attachNeeded ) const
+{
+	std::string path;
+	const bool read = GetCurrentScenePath_( path, /*blocking=*/false );
+	std::lock_guard<std::mutex> lk( mBakeKeyMutex );
+	if( read ) mBakeSceneKey = Simulation::SimulationBakeManager::SceneKey( path );
+	if( attachNeeded ) {
+		*attachNeeded = read && !mBakeSceneKey.empty() && mBakeSceneKey != mBakeAttachedKey;
+		if( *attachNeeded ) mBakeAttachedKey = mBakeSceneKey;
+	}
+	return mBakeSceneKey;
+}
+
+bool SceneEditController::LiveSimulationDetachSimulation( const std::string& simulation, std::string& error )
+{
+	std::string geometry;
+	{
+		std::lock_guard<std::mutex> liveLk( mLiveMutex );
+		for( const auto& live : mLiveSims ) if( live->SimulationName() == simulation ) geometry = live->GeometryName();
+	}
+	if( geometry.empty() ) return LiveFail( error, "`" + simulation + "` does not run live" );
+	return LiveSimulationDetach( geometry, error );
 }
 
 bool SceneEditController::LiveSimulationDetach( const std::string& geometry, std::string& error )

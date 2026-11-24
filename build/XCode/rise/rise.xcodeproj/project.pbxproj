@@ -125,9 +125,13 @@
 		A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
 		A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E062000000000000C0DE /* AgentChatCodecs.h */; };
 		A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
+		1D1F023C1C62B0286E0A8CA8 /* AgentSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 39B7B954BBD5355963E8B2F2 /* AgentSimulation.cpp */; };
 		A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
+		BCC21E2959CEDF26810DE347 /* AgentSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 39B7B954BBD5355963E8B2F2 /* AgentSimulation.cpp */; };
 		A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
+		4EA728B8C0F6A7464F7976DA /* AgentSimulation.h in Headers */ = {isa = PBXBuildFile; fileRef = E1209B8E52C012621DEACB48 /* AgentSimulation.h */; };
 		A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E072000000000000C0DE /* AgentChatLoop.h */; };
+		6FF42388C07D78DF9D2FC91A /* AgentSimulation.h in Sources */ = {isa = PBXBuildFile; fileRef = E1209B8E52C012621DEACB48 /* AgentSimulation.h */; };
 		A6E7B081000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
 		A6E7B082000000000000C0DE /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
 		A6E7B083000000000000C0DE /* AgentMcpAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = A6E7E082000000000000C0DE /* AgentMcpAdapter.h */; };
@@ -878,6 +882,8 @@
 		3F5258A8BC864055713DB63C /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
 		6EB5300FF4EA9117E51CD4D8 /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
 		00B03088EC3CB38266F055D5 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
+		9B426F65DC40CB63183747FE /* SimulationBakeManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */; };
+		4A3FEF0D23E6BCDEB4E50575 /* SimulationProcess.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EAF2275A488D08CE1A09D69B /* SimulationProcess.cpp */; };
 		BB0F82F33D80479B0D795F5A /* SceneInputs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */; };
 		3AD0BC09F26C8CCD353CC4D3 /* SceneSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */; };
 		15D5D455EF54710A79425144 /* SimulationParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */; };
@@ -1622,6 +1628,8 @@
 		3AF3CEDF4C0FAC54C8D8EF07 /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
 		7CD1C32B3C4CB5ABF9F9E251 /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
 		50267BEF73FB6E9949EB5550 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
+		F8F77693CFD7FDC610643A2F /* SimulationBakeManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */; };
+		8E537C9B4DE9E861662EAA08 /* SimulationProcess.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EAF2275A488D08CE1A09D69B /* SimulationProcess.cpp */; };
 		D03F407A544ABD4F14F0BE6F /* SceneInputs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */; };
 		2AE0D4CC583DFCD26DCC5C63 /* SceneSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */; };
 		CBB11B929476403B60D9E178 /* SimulationParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */; };
@@ -1630,7 +1638,7 @@
 		AAFE1D6A5FFCA0F24111AB04 /* SimulationHost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0124CC05BC6837146CA0D81D /* SimulationHost.cpp */; };
 		218AFD78DCBD2CCE13199068 /* SimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CA63189BA0E0E27FABCD67DE /* SimulationWorker.cpp */; };
 		B229F69B2DC45E9C86122F02 /* FireSequenceCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AB447AD2CE1A50C5AA8D15FA /* FireSequenceCache.cpp */; };
-		F513000131EE000100000003 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
+		F513000131EE000100000003 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; settings = {COMPILER_FLAGS = "-O3 -ffast-math -fno-finite-math-only -funroll-loops -ffp-contract=fast -fno-lto"; }; };
 		F513000131EE000100000004 /* FireCase.h in Headers */ = {isa = PBXBuildFile; fileRef = F513000131EE00010000000A /* FireCase.h */; };
 		F512000131EE000100000004 /* FireSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
 		52FCEF962AD95A5983BF616B /* SimulationGrid.h in Headers */ = {isa = PBXBuildFile; fileRef = 9FC1A06BE03650CAA8659064 /* SimulationGrid.h */; };
@@ -1664,6 +1672,8 @@
 		6E84FDA2E93DDBF446CC4793 /* SimulatedMeshSource.h in Headers */ = {isa = PBXBuildFile; fileRef = F821D440C19007500CF128AD /* SimulatedMeshSource.h */; };
 		13E99112CC31280D6899AF94 /* BuiltinSolvers.h in Headers */ = {isa = PBXBuildFile; fileRef = 8B97ACC97187C257354D2C36 /* BuiltinSolvers.h */; };
 		687420977F475B3D47096C70 /* SceneSimulationWorker.h in Headers */ = {isa = PBXBuildFile; fileRef = 64BC895F923FF647F39E1BD1 /* SceneSimulationWorker.h */; };
+		E4A5A63448390BAEB6C4C765 /* SimulationBakeManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F8A849107808C8467BC680A7 /* SimulationBakeManager.h */; };
+		EFFD5E2486DDDDF596497A32 /* SimulationProcess.h in Headers */ = {isa = PBXBuildFile; fileRef = 6BFF71EC4E2CA5955B694F7E /* SimulationProcess.h */; };
 		0B1FC4A66976185EFBFBBF02 /* SceneInputs.h in Headers */ = {isa = PBXBuildFile; fileRef = 409E31882E8B109106E21863 /* SceneInputs.h */; };
 		EB5293C13F56677A97936BA0 /* SceneSimulation.h in Headers */ = {isa = PBXBuildFile; fileRef = 4AE018B6C6971F68AFDB4B11 /* SceneSimulation.h */; };
 		62D3C0B46AAD41F1575CE48D /* SimulationParameterSchema.h in Headers */ = {isa = PBXBuildFile; fileRef = 902470B97C8CD64F3357582F /* SimulationParameterSchema.h */; };
@@ -2371,7 +2381,9 @@
 		A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatCodecs.cpp; sourceTree = "<group>"; };
 		A6E7E062000000000000C0DE /* AgentChatCodecs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatCodecs.h; sourceTree = "<group>"; };
 		A6E7E071000000000000C0DE /* AgentChatLoop.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentChatLoop.cpp; sourceTree = "<group>"; };
+		39B7B954BBD5355963E8B2F2 /* AgentSimulation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentSimulation.cpp; sourceTree = "<group>"; };
 		A6E7E072000000000000C0DE /* AgentChatLoop.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentChatLoop.h; sourceTree = "<group>"; };
+		E1209B8E52C012621DEACB48 /* AgentSimulation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentSimulation.h; sourceTree = "<group>"; };
 		A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentMcpAdapter.cpp; sourceTree = "<group>"; };
 		A6E7E082000000000000C0DE /* AgentMcpAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AgentMcpAdapter.h; sourceTree = "<group>"; };
 		A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AgentLoopbackHttpServer.cpp; sourceTree = "<group>"; };
@@ -3080,11 +3092,15 @@
 		F821D440C19007500CF128AD /* SimulatedMeshSource.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulatedMeshSource.h; sourceTree = "<group>"; };
 		1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BuiltinSolvers.cpp; sourceTree = "<group>"; };
 		81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneSimulationWorker.cpp; sourceTree = "<group>"; };
+		0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationBakeManager.cpp; sourceTree = "<group>"; };
+		EAF2275A488D08CE1A09D69B /* SimulationProcess.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationProcess.cpp; sourceTree = "<group>"; };
 		7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneInputs.cpp; sourceTree = "<group>"; };
 		BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneSimulation.cpp; sourceTree = "<group>"; };
 		841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationParameterSchema.cpp; sourceTree = "<group>"; };
 		8B97ACC97187C257354D2C36 /* BuiltinSolvers.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BuiltinSolvers.h; sourceTree = "<group>"; };
 		64BC895F923FF647F39E1BD1 /* SceneSimulationWorker.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneSimulationWorker.h; sourceTree = "<group>"; };
+		F8A849107808C8467BC680A7 /* SimulationBakeManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationBakeManager.h; sourceTree = "<group>"; };
+		6BFF71EC4E2CA5955B694F7E /* SimulationProcess.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationProcess.h; sourceTree = "<group>"; };
 		409E31882E8B109106E21863 /* SceneInputs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneInputs.h; sourceTree = "<group>"; };
 		4AE018B6C6971F68AFDB4B11 /* SceneSimulation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneSimulation.h; sourceTree = "<group>"; };
 		902470B97C8CD64F3357582F /* SimulationParameterSchema.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationParameterSchema.h; sourceTree = "<group>"; };
@@ -3655,7 +3671,9 @@
 				A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */,
 				A6E7E062000000000000C0DE /* AgentChatCodecs.h */,
 				A6E7E071000000000000C0DE /* AgentChatLoop.cpp */,
+				39B7B954BBD5355963E8B2F2 /* AgentSimulation.cpp */,
 				A6E7E072000000000000C0DE /* AgentChatLoop.h */,
+				E1209B8E52C012621DEACB48 /* AgentSimulation.h */,
 				A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */,
 				A6E7E0C2000000000000C0DE /* ChatTrajectory.h */,
 				A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */,
@@ -4714,11 +4732,15 @@
 				F821D440C19007500CF128AD /* SimulatedMeshSource.h */,
 				1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */,
 				81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */,
+				0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */,
+				EAF2275A488D08CE1A09D69B /* SimulationProcess.cpp */,
 				7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */,
 				BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */,
 				841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */,
 				8B97ACC97187C257354D2C36 /* BuiltinSolvers.h */,
 				64BC895F923FF647F39E1BD1 /* SceneSimulationWorker.h */,
+				F8A849107808C8467BC680A7 /* SimulationBakeManager.h */,
+				6BFF71EC4E2CA5955B694F7E /* SimulationProcess.h */,
 				409E31882E8B109106E21863 /* SceneInputs.h */,
 				4AE018B6C6971F68AFDB4B11 /* SceneSimulation.h */,
 				902470B97C8CD64F3357582F /* SimulationParameterSchema.h */,
@@ -5274,6 +5296,7 @@
 				A6E7B093000000000000C0DE /* AgentLoopbackHttpServer.h in Headers */,
 				A6E7B063000000000000C0DE /* AgentChatCodecs.h in Headers */,
 				A6E7B073000000000000C0DE /* AgentChatLoop.h in Headers */,
+				4EA728B8C0F6A7464F7976DA /* AgentSimulation.h in Headers */,
 				A6E7B0C3000000000000C0DE /* ChatTrajectory.h in Headers */,
 				A6E7B0D3000000000000C0DE /* AgentEvalRunner.h in Headers */,
 				A6E7B0E1000000000000C0DE /* ChatHttpTransport.h in Headers */,
@@ -5853,6 +5876,8 @@
 				6E84FDA2E93DDBF446CC4793 /* SimulatedMeshSource.h in Headers */,
 				13E99112CC31280D6899AF94 /* BuiltinSolvers.h in Headers */,
 				687420977F475B3D47096C70 /* SceneSimulationWorker.h in Headers */,
+				E4A5A63448390BAEB6C4C765 /* SimulationBakeManager.h in Headers */,
+				EFFD5E2486DDDDF596497A32 /* SimulationProcess.h in Headers */,
 				0B1FC4A66976185EFBFBBF02 /* SceneInputs.h in Headers */,
 				EB5293C13F56677A97936BA0 /* SceneSimulation.h in Headers */,
 				62D3C0B46AAD41F1575CE48D /* SimulationParameterSchema.h in Headers */,
@@ -6204,6 +6229,7 @@
 				A6E7B091000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
 				A6E7B061000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
 				A6E7B071000000000000C0DE /* AgentChatLoop.cpp in Sources */,
+				1D1F023C1C62B0286E0A8CA8 /* AgentSimulation.cpp in Sources */,
 				A6E7B0C1000000000000C0DE /* ChatTrajectory.cpp in Sources */,
 				A6E7B0D1000000000000C0DE /* AgentEvalRunner.cpp in Sources */,
 				A6E7B0E3000000000000C0DE /* TlsTransportMac.mm in Sources */,
@@ -6521,6 +6547,8 @@
 				3AF3CEDF4C0FAC54C8D8EF07 /* SimulatedMeshSource.cpp in Sources */,
 				7CD1C32B3C4CB5ABF9F9E251 /* BuiltinSolvers.cpp in Sources */,
 				50267BEF73FB6E9949EB5550 /* SceneSimulationWorker.cpp in Sources */,
+				F8F77693CFD7FDC610643A2F /* SimulationBakeManager.cpp in Sources */,
+				8E537C9B4DE9E861662EAA08 /* SimulationProcess.cpp in Sources */,
 				D03F407A544ABD4F14F0BE6F /* SceneInputs.cpp in Sources */,
 				2AE0D4CC583DFCD26DCC5C63 /* SceneSimulation.cpp in Sources */,
 				CBB11B929476403B60D9E178 /* SimulationParameterSchema.cpp in Sources */,
@@ -6705,6 +6733,7 @@
 				A6E7B092000000000000C0DE /* AgentLoopbackHttpServer.cpp in Sources */,
 				A6E7B062000000000000C0DE /* AgentChatCodecs.cpp in Sources */,
 				A6E7B072000000000000C0DE /* AgentChatLoop.cpp in Sources */,
+				BCC21E2959CEDF26810DE347 /* AgentSimulation.cpp in Sources */,
 				A6E7B0C2000000000000C0DE /* ChatTrajectory.cpp in Sources */,
 				A6E7B0D2000000000000C0DE /* AgentEvalRunner.cpp in Sources */,
 				A6E7B0E4000000000000C0DE /* TlsTransportMac.mm in Sources */,
@@ -6719,6 +6748,7 @@
 				A6E7B094000000000000C0DE /* AgentLoopbackHttpServer.h in Sources */,
 				A6E7B064000000000000C0DE /* AgentChatCodecs.h in Sources */,
 				A6E7B074000000000000C0DE /* AgentChatLoop.h in Sources */,
+				6FF42388C07D78DF9D2FC91A /* AgentSimulation.h in Sources */,
 				A6E7B0C4000000000000C0DE /* ChatTrajectory.h in Sources */,
 				A6E7B0D4000000000000C0DE /* AgentEvalRunner.h in Sources */,
 				A6E7B0E2000000000000C0DE /* ChatHttpTransport.h in Sources */,
@@ -7543,6 +7573,8 @@
 				3F5258A8BC864055713DB63C /* SimulatedMeshSource.cpp in Sources */,
 				6EB5300FF4EA9117E51CD4D8 /* BuiltinSolvers.cpp in Sources */,
 				00B03088EC3CB38266F055D5 /* SceneSimulationWorker.cpp in Sources */,
+				9B426F65DC40CB63183747FE /* SimulationBakeManager.cpp in Sources */,
+				4A3FEF0D23E6BCDEB4E50575 /* SimulationProcess.cpp in Sources */,
 				BB0F82F33D80479B0D795F5A /* SceneInputs.cpp in Sources */,
 				3AD0BC09F26C8CCD353CC4D3 /* SceneSimulation.cpp in Sources */,
 				15D5D455EF54710A79425144 /* SimulationParameterSchema.cpp in Sources */,

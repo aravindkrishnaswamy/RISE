@@ -59,10 +59,15 @@ struct SceneSimulationStatus {
 	bool upstreamOutOfDate = false;
 	bool interactive = false;              // capabilities.interactive of this configuration
 	std::string backend;                   // capabilities.backend ("" = not stated)
+	std::uint64_t memoryEstimate = 0;      // M5: capabilities.memoryEstimate (peak bytes; 0 = unknown)
+	double costEstimate = 0;               // M5: capabilities.costEstimate (s per simulated s; 0 = unknown)
 	std::string fidelity;                  // of the cache on disk ("" when missing)
 	std::uint64_t framesAvailable = 0, framesTotal = 0;
 	double startTime = 0, interval = 0;    // the configuration's time support
 	std::string error;                     // why Failed (or a configuration problem)
+	//! M5: the simulated_mesh_geometry elements bound to it by `source` (by
+	//! name; a live run drives the first), filled in by Job::DescribeSimulations.
+	std::vector<std::string> meshConsumers;
 };
 
 //! What the scene supplies: scene inputs for a simulation.  Implemented by
