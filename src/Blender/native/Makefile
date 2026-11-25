@@ -15,6 +15,7 @@ endif
 TARGET = rise_blender_bridge.$(SHARED_EXT)
 SRCS = rise_blender_bridge.cpp
 OBJS = $(SRCS:.cpp=.o)
+DEPS = $(OBJS:.o=.d)
 
 CPPFLAGS += -I.
 CXXFLAGS += -std=c++17
@@ -67,7 +68,9 @@ $(TARGET): rise_archive $(OBJS) ../../../bin/librise.a
 
 .cpp.o:
 	@echo Compiling: $<
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $< -o $@
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -MMD -MP -MF $*.d -c $< -o $@
+
+-include $(DEPS)
 
 clean:
-	@rm -f $(OBJS) $(TARGET)
+	@rm -f $(OBJS) $(DEPS) $(TARGET)

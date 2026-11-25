@@ -527,9 +527,9 @@ bool RenderTwoCardScene(
 
 void TestAbiVersionAndAlphaFields()
 {
-	std::cout << "Test: ABI version 19 and preserved append-only v14 alpha fields" << std::endl;
+	std::cout << "Test: ABI version 20 and preserved append-only v14/v20 fields" << std::endl;
 
-	Check( RISE_BLENDER_API_VERSION == 19, "RISE_BLENDER_API_VERSION is 19" );
+	Check( RISE_BLENDER_API_VERSION == 23, "RISE_BLENDER_API_VERSION is 23" );
 
 	Check( offsetof( rise_blender_material, alpha ) >
 	       offsetof( rise_blender_material, coat_normal_scale ),
@@ -546,11 +546,18 @@ void TestAbiVersionAndAlphaFields()
 	Check( RISE_BLENDER_ALPHA_OPAQUE == 0 && RISE_BLENDER_ALPHA_CLIP == 1 && RISE_BLENDER_ALPHA_BLEND == 2,
 		"rise_blender_alpha_mode enumerators are 0/1/2" );
 
-	// rise_blender_object gained shader_name.
+	// rise_blender_object gained shader_name (v14) and object_color/index/random (v20).
 	rise_blender_object obj;
 	std::memset( &obj, 0, sizeof(obj) );
 	obj.shader_name = "probe";
 	Check( std::string( obj.shader_name ) == "probe", "rise_blender_object.shader_name exists and is settable" );
+	Check( offsetof( rise_blender_object, object_color ) > offsetof( rise_blender_object, shader_name ),
+		"object.object_color is appended after shader_name" );
+	Check( offsetof( rise_blender_object, object_index ) > offsetof( rise_blender_object, object_color ),
+		"object.object_index follows object_color" );
+	Check( offsetof( rise_blender_object, object_random ) > offsetof( rise_blender_object, object_index ),
+		"object.object_random follows object_index" );
+	Check( RISE_BLENDER_MODIFIER_RELIEF == 2, "RISE_BLENDER_MODIFIER_RELIEF is 2" );
 }
 
 void TestOpaqueMaterialUnaffected()
@@ -1140,6 +1147,268 @@ void TestBridgeTransparentFilmRegionAndExpression()
 	}
 }
 
+void TestBridgeObjectInfoAndReliefModifier()
+{
+	std::cout << "Test: ABI v20 ObjectInfo per-object attributes + RISE_BLENDER_MODIFIER_RELIEF" << std::endl;
+
+	const uint32_t W = 32;
+	const uint32_t H = 16;
+
+	// Build two flat quads side by side (left x in [-1.8, -0.2], right x in [0.2, 1.8])
+	// in the XZ plane facing -Y, viewed by an orthographic camera at (0, -5, 0) looking +Y
+	// with up +Z (so -X is left, +X is right, +Z is up; blender_matrix_to_rise_matrix
+	// transposes row-major to RISE column-major without swapping axes).
+	rise_blender_camera cam;
+	std::memset( &cam, 0, sizeof(cam) );
+	cam.projection_type = RISE_BLENDER_CAMERA_ORTHOGRAPHIC;
+	cam.location[0] = 0.0f; cam.location[1] = -5.0f; cam.location[2] = 0.0f;
+	cam.forward[0]  = 0.0f; cam.forward[1]  =  1.0f; cam.forward[2]  = 0.0f;
+	cam.up[0]       = 0.0f; cam.up[1]       =  0.0f; cam.up[2]       = 1.0f;
+	cam.ortho_scale = 4.0f;
+	cam.width = W;
+	cam.height = H;
+	cam.pixel_aspect = 1.0f;
+
+	// Unit quad centered at origin in Blender XZ plane (facing -Y toward camera).
+	const float verts[12] = {
+		-0.8f, 0.0f, -0.8f,
+		 0.8f, 0.0f, -0.8f,
+		 0.8f, 0.0f,  0.8f,
+		-0.8f, 0.0f,  0.8f
+	};
+	const float norms[12] = {
+		0.0f, -1.0f, 0.0f,
+		0.0f, -1.0f, 0.0f,
+		0.0f, -1.0f, 0.0f,
+		0.0f, -1.0f, 0.0f
+	};
+	const float uvs[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
+	const uint32_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+
+	rise_blender_mesh quadMesh;
+	std::memset( &quadMesh, 0, sizeof(quadMesh) );
+	quadMesh.name = "quad";
+	quadMesh.vertices = verts;
+	quadMesh.normals = norms;
+	quadMesh.uvs = uvs;
+	quadMesh.vertex_indices = idx;
+	quadMesh.normal_indices = idx;
+	quadMesh.uv_indices = idx;
+	quadMesh.num_vertices = 4;
+	quadMesh.num_normals = 4;
+	quadMesh.num_uvs = 4;
+	quadMesh.num_triangles = 2;
+	quadMesh.double_sided = 1;
+
+	// Part 1: Two objects sharing ONE emissive expression material reading ALL
+	// 6 ObjectInfo fields (color.xyz, alpha, index, random), rendered under BOTH
+	// PT and BDPT (also testing BDPTVertex::pObjectInfo + LightSampler::FillEmitterRecord!).
+	for( int rk = 0; rk < 2; ++rk ) {
+		const uint32_t kind = (rk == 0) ? RISE_BLENDER_RASTERIZER_PT_PEL : RISE_BLENDER_RASTERIZER_BDPT_PEL;
+		const char* tag = (rk == 0) ? "PT" : "BDPT";
+
+		rise_blender_painter exprP;
+		std::memset( &exprP, 0, sizeof(exprP) );
+		exprP.name = "p_objinfo";
+		exprP.kind = RISE_BLENDER_PAINTER_EXPRESSION;
+		exprP.expression = "vec3(osl_object_color().x + osl_object_color().y * 0.25, osl_object_random() + osl_object_color().z * 0.1, osl_object_index() * 0.1 + osl_object_alpha() * 0.5)";
+
+		rise_blender_painter blackP;
+		std::memset( &blackP, 0, sizeof(blackP) );
+		blackP.name = "p_black";
+		blackP.kind = RISE_BLENDER_PAINTER_UNIFORM;
+
+		rise_blender_material mat;
+		std::memset( &mat, 0, sizeof(mat) );
+		mat.name = "m_objinfo";
+		mat.model = RISE_BLENDER_MATERIAL_LAMBERT;
+		mat.diffuse_painter_name = "p_black";
+		mat.emission_painter_name = "p_objinfo";
+		mat.double_sided = 1;
+
+		rise_blender_object objs[2];
+		std::memset( objs, 0, sizeof(objs) );
+		// Left quad at x = -1.0: R=0.4+0.8*0.25=0.60, G=0.15+0.5*0.1=0.20, B=0.2+0.2=0.40
+		objs[0].name = "quad_left";
+		objs[0].geometry_name = "quad";
+		objs[0].material_name = "m_objinfo";
+		objs[0].transform[0] = 1.0f; objs[0].transform[5] = 1.0f;
+		objs[0].transform[10] = 1.0f; objs[0].transform[15] = 1.0f;
+		objs[0].transform[3] = -1.0f;
+		objs[0].casts_shadows = 1; objs[0].receives_shadows = 1; objs[0].visible = 1;
+		objs[0].object_color[0] = 0.4f; objs[0].object_color[1] = 0.8f;
+		objs[0].object_color[2] = 0.5f; objs[0].object_color[3] = 0.4f;
+		objs[0].object_index = 2.0f;
+		objs[0].object_random = 0.15f;
+
+		// Right quad at x = +1.0: R=0.1+0.4*0.25=0.20, G=0.80+1.0*0.1=0.90, B=0.5+0.5=1.00
+		objs[1] = objs[0];
+		objs[1].name = "quad_right";
+		objs[1].transform[3] = 1.0f;
+		objs[1].object_color[0] = 0.1f; objs[1].object_color[1] = 0.4f;
+		objs[1].object_color[2] = 1.0f; objs[1].object_color[3] = 1.0f;
+		objs[1].object_index = 5.0f;
+		objs[1].object_random = 0.80f;
+
+		rise_blender_painter painters[2] = { exprP, blackP };
+		rise_blender_scene scene;
+		std::memset( &scene, 0, sizeof(scene) );
+		scene.camera = &cam;
+		scene.painters = painters; scene.num_painters = 2;
+		scene.materials = &mat; scene.num_materials = 1;
+		scene.meshes = &quadMesh; scene.num_meshes = 1;
+		scene.objects = objs; scene.num_objects = 2;
+
+		rise_blender_render_settings settings;
+		std::memset( &settings, 0, sizeof(settings) );
+		settings.width = W; settings.height = H;
+		settings.pixel_samples = 4; settings.max_recursion = 2;
+		settings.show_lights = 1;
+		settings.rasterizer_kind = kind;
+
+		rise_blender_render_result res;
+		std::memset( &res, 0, sizeof(res) );
+		char err[512] = {0};
+		const int ok = rise_blender_render_scene( &scene, &settings, 0, 0, 0, &res, err, sizeof(err) );
+		Check( ok != 0 && res.rgba != 0, std::string( "ABI v20 ObjectInfo render (" ) + tag + ") ok: " + err );
+		if( ok && res.rgba ) {
+			const uint32_t cy = H / 2;
+			const uint32_t lx = W / 4;
+			const uint32_t rx = (3 * W) / 4;
+			const float* pL = &res.rgba[(cy * W + lx) * 4];
+			const float* pR = &res.rgba[(cy * W + rx) * 4];
+			const float pi = 3.14159265358979323846f;
+			const float lR = pL[0] * pi, lG = pL[1] * pi, lB = pL[2] * pi;
+			const float rR = pR[0] * pi, rG = pR[1] * pi, rB = pR[2] * pi;
+			Check( std::fabs( lR - 0.60f ) < 0.05f && std::fabs( lG - 0.20f ) < 0.05f && std::fabs( lB - 0.40f ) < 0.05f,
+				std::string( "Left quad (" ) + tag + ") rendered all 6 ObjectInfo fields (got " +
+				std::to_string( lR ) + "," + std::to_string( lG ) + "," + std::to_string( lB ) + ")" );
+			Check( std::fabs( rR - 0.20f ) < 0.05f && std::fabs( rG - 0.90f ) < 0.05f && std::fabs( rB - 1.00f ) < 0.05f,
+				std::string( "Right quad (" ) + tag + ") rendered all 6 ObjectInfo fields (got " +
+				std::to_string( rR ) + "," + std::to_string( rG ) + "," + std::to_string( rB ) + ")" );
+			rise_blender_free_render_result( &res );
+		}
+	}
+
+	// Part 1b: Missing source painter for RISE_BLENDER_MODIFIER_RELIEF fails cleanly.
+	{
+		RISE::IJobPriv* errJob = 0;
+		RISE::RISE_CreateJobPriv( &errJob );
+		rise_blender_modifier badMod;
+		std::memset( &badMod, 0, sizeof(badMod) );
+		badMod.name = "mod_missing";
+		badMod.kind = RISE_BLENDER_MODIFIER_RELIEF;
+		badMod.source_painter_name = "does_not_exist";
+		badMod.scale = 1.0f;
+		char errBuf[256] = {0};
+		const bool added = add_modifier( *errJob, badMod, errBuf, sizeof(errBuf) );
+		Check( !added && std::string( errBuf ).find( "not found" ) != std::string::npos,
+			"RISE_BLENDER_MODIFIER_RELIEF rejects missing source painter cleanly" );
+		RISE::safe_release( errJob );
+	}
+
+	// Part 2: RISE_BLENDER_MODIFIER_RELIEF with procedural expression_painter height.
+	// Height h(Po) = Po.x (rises along +X, so grad(h) = (+1, 0, 0)).
+	// Point light on the -X side (-6, -2, 0):
+	//   - positive scale (+1.0, Invert OFF): Blinn N' = N - scale * grad(h)
+	//     tilts normal toward -X (TOWARD the light) -> BRIGHTER!
+	//   - negative scale (-1.0, Invert ON): tilts normal toward +X (AWAY) -> DARKER!
+	// Placing quad_pos farther (+1) and quad_neg closer (-1) to the -X light ensures
+	// quad_pos only wins because the relief normal tilt really faces the light.
+	{
+		rise_blender_painter greyP;
+		std::memset( &greyP, 0, sizeof(greyP) );
+		greyP.name = "p_grey";
+		greyP.kind = RISE_BLENDER_PAINTER_UNIFORM;
+		greyP.color[0] = 0.8f; greyP.color[1] = 0.8f; greyP.color[2] = 0.8f;
+
+		rise_blender_painter heightP;
+		std::memset( &heightP, 0, sizeof(heightP) );
+		heightP.name = "p_height_expr";
+		heightP.kind = RISE_BLENDER_PAINTER_EXPRESSION;
+		heightP.expression = "Po.x";
+
+		rise_blender_modifier mods[2];
+		std::memset( mods, 0, sizeof(mods) );
+		mods[0].name = "mod_relief_pos";
+		mods[0].kind = RISE_BLENDER_MODIFIER_RELIEF;
+		mods[0].source_painter_name = "p_height_expr";
+		mods[0].scale = 1.0f;
+		mods[0].window = 0.0f;
+
+		mods[1] = mods[0];
+		mods[1].name = "mod_relief_neg";
+		mods[1].scale = -1.0f;
+
+		rise_blender_material mat;
+		std::memset( &mat, 0, sizeof(mat) );
+		mat.name = "m_grey";
+		mat.model = RISE_BLENDER_MATERIAL_LAMBERT;
+		mat.diffuse_painter_name = "p_grey";
+		mat.double_sided = 1;
+
+		rise_blender_light light;
+		std::memset( &light, 0, sizeof(light) );
+		light.name = "side_light";
+		light.type = RISE_BLENDER_LIGHT_POINT;
+		light.color[0] = 1.0f; light.color[1] = 1.0f; light.color[2] = 1.0f;
+		light.intensity = 250.0f;
+		light.position[0] = -6.0f; light.position[1] = -2.0f; light.position[2] = 0.0f;
+
+		rise_blender_object objs[2];
+		std::memset( objs, 0, sizeof(objs) );
+		// quad_neg on left (-1, closer to -X light)
+		objs[0].name = "quad_neg";
+		objs[0].geometry_name = "quad";
+		objs[0].material_name = "m_grey";
+		objs[0].modifier_name = "mod_relief_neg";
+		objs[0].transform[0] = 1.0f; objs[0].transform[5] = 1.0f;
+		objs[0].transform[10] = 1.0f; objs[0].transform[15] = 1.0f;
+		objs[0].transform[3] = -1.0f;
+		objs[0].casts_shadows = 1; objs[0].receives_shadows = 1; objs[0].visible = 1;
+
+		// quad_pos on right (+1, farther from -X light)
+		objs[1] = objs[0];
+		objs[1].name = "quad_pos";
+		objs[1].modifier_name = "mod_relief_pos";
+		objs[1].transform[3] = 1.0f;
+
+		rise_blender_painter painters[2] = { greyP, heightP };
+		rise_blender_scene scene;
+		std::memset( &scene, 0, sizeof(scene) );
+		scene.camera = &cam;
+		scene.painters = painters; scene.num_painters = 2;
+		scene.modifiers = mods; scene.num_modifiers = 2;
+		scene.materials = &mat; scene.num_materials = 1;
+		scene.meshes = &quadMesh; scene.num_meshes = 1;
+		scene.objects = objs; scene.num_objects = 2;
+		scene.lights = &light; scene.num_lights = 1;
+
+		rise_blender_render_settings settings;
+		std::memset( &settings, 0, sizeof(settings) );
+		settings.width = W; settings.height = H;
+		settings.pixel_samples = 4; settings.max_recursion = 2;
+		settings.rasterizer_kind = RISE_BLENDER_RASTERIZER_PT_PEL;
+
+		rise_blender_render_result res;
+		std::memset( &res, 0, sizeof(res) );
+		char err[512] = {0};
+		const int ok = rise_blender_render_scene( &scene, &settings, 0, 0, 0, &res, err, sizeof(err) );
+		Check( ok != 0 && res.rgba != 0, std::string( "ABI v20 ReliefModifier render ok: " ) + err );
+		if( ok && res.rgba ) {
+			const uint32_t cy = H / 2;
+			const uint32_t lx = W / 4;
+			const uint32_t rx = (3 * W) / 4;
+			const float lumNeg = res.rgba[(cy * W + lx) * 4];
+			const float lumPos = res.rgba[(cy * W + rx) * 4];
+			Check( lumPos > lumNeg * 1.5f && lumPos > 0.05f,
+				"RISE_BLENDER_MODIFIER_RELIEF tilts normal in Blinn elevation direction (pos=" +
+				std::to_string( lumPos ) + " > neg=" + std::to_string( lumNeg ) + ")" );
+			rise_blender_free_render_result( &res );
+		}
+	}
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "=== Blender bridge Alpha test (DL-193) ===" << std::endl;
@@ -1157,6 +1426,7 @@ int main( int argc, char** argv )
 		TestAlphaCutoutUnderBDPT();
 		TestFilteredAndSplatFilmTransparentAlpha();
 		TestBridgeTransparentFilmRegionAndExpression();
+		TestBridgeObjectInfoAndReliefModifier();
 	}
 
 	std::cout << "----------------------------------------" << std::endl;

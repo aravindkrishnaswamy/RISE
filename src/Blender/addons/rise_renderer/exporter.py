@@ -59,6 +59,9 @@ FILTER_BILINEAR = 1
 
 MODIFIER_BUMP = 0
 MODIFIER_NORMAL_MAP = 1
+MODIFIER_RELIEF = 2
+MODIFIER_STACK = 3
+MODIFIER_BLEND = 4
 
 # Deprecated Stage-A alias retained only for ABI v4 enum completeness;
 # post-Stage-B (`RISEPel = Rec709RGBPel`) all non-colour and normal-map
@@ -84,6 +87,8 @@ MATERIAL_PBR_METALLIC_ROUGHNESS = 3
 # surface material, not a wrap.  See rise_blender_bridge.h's own
 # comment on the enumerator.
 MATERIAL_RANDOMWALK_SSS = 4
+# ABI v21 — RISE `mix_material` for native ShaderNodeMixShader trees.
+MATERIAL_MIX = 5
 
 # ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- rise_blender_alpha_mode.
 ALPHA_MODE_OPAQUE = 0
@@ -221,6 +226,8 @@ class CameraData:
     aperture_ratio: float = 1.0
     iso: float = 0.0
     scene_unit_meters: float = 1.0
+    # ABI v23 — planar near-clip distance (Blender camera.data.clip_start).
+    clip_start: float = 0.0
 
 
 @dataclass
@@ -246,21 +253,41 @@ class PainterData:
     uv_scale_v: float = 1.0
     # ABI v19 — Expression painter (kind=PAINTER_EXPRESSION).
     expression: str | None = None
+    # ABI v23 — Texture wrap mode (0=clamp, 1=repeat, 2=mirrored_repeat).
+    wrap_mode: int = 0
 
 
 @dataclass
 class ModifierData:
     name: str
     kind: int
-    source_painter_name: str
-    scale: float
-    window: float
+    source_painter_name: str | None = None
+    scale: float = 1.0
+    window: float = 0.0
     # ABI v11.  MODIFIER_BUMP only: True selects the bridge's
     # window-INDEPENDENT amplitude fold (RISE_API_CreateBumpMapModifierEx's
     # normalizeGradient=true, `scale' = -scale`) instead of the legacy
     # window-COUPLED one (`scale' = -scale*2*window`) that `IJob::
     # AddBumpMapModifier` is ABI-frozen to.  Ignored by MODIFIER_NORMAL_MAP.
     normalize: bool = False
+    # ABI v23 — MODIFIER_STACK / MODIFIER_BLEND fields.
+    stack_member_names: tuple[str, ...] = ()
+    blend_a_name: str | None = None
+    blend_b_name: str | None = None
+    blend_weight_painter_name: str | None = None
+
+
+@dataclass
+class MixChildData:
+    material_name: str | None
+    weight_painter_name: str
+    modifier_name: str | None = None
+
+
+@dataclass
+class MeshAttributeData:
+    name: str
+    rgba: list[float]
 
 
 @dataclass
@@ -365,6 +392,9 @@ class MaterialData:
     # folded to the effective V_d = abbe / scale.  DIELECTRIC only;
     # <= 0 = no dispersion.
     dispersion_abbe: float = 0.0
+    # ABI v21 — RISE_BLENDER_MATERIAL_MIX (`mix_material`).
+    mix_children: list[MixChildData] = field(default_factory=list)
+    mix_passthrough_painter_name: str | None = None
 
 
 @dataclass
@@ -380,6 +410,8 @@ class MeshData:
     use_face_normals: bool
     tangent_attribute: list[float] = field(default_factory=list)
     tangent_is_shader_direction: bool = False
+    # ABI v21 — Named per-corner RGBA attributes (`mesh_attr3` / `mesh_attr_alpha`).
+    named_attributes: list[MeshAttributeData] = field(default_factory=list)
 
     @property
     def num_vertices(self) -> int:
@@ -415,6 +447,12 @@ class ObjectData:
     # an opaque material -- see `rise_blender_object.shader_name`'s own
     # comment in rise_blender_bridge.h for the full contract.
     shader_name: str | None = None
+    # ABI v20 — Per-object Cycles Object Info attributes (`osl_object_*`).
+    object_color: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+    object_index: float = 0.0
+    object_random: float = 0.0
+    # ABI v23 — Per-particle-instance random (`osl_particle_random()`).
+    particle_random: float = 0.0
 
 
 @dataclass
@@ -570,6 +608,9 @@ class _MaterialBinding:
     # per-object-applied shape) and threaded into every `ObjectData`
     # bound to this material.
     shader_name: str | None = None
+    # ABI v21 — Named geometry attributes referenced by this material's
+    # expression painters (`mesh_attr3` / `mesh_attr_alpha`).
+    mesh_attributes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -624,6 +665,24 @@ def _safe_name(name: str) -> str:
     return cleaned or "item"
 
 
+def _safe_ident(name: str) -> str:
+    """Identifier-safe name (`[A-Za-z0-9_]+`, no `.` or `-`) so painter names
+    are always valid bare identifiers in RISE `sample(name)` / `sample_uv(...)`."""
+    cleaned = re.sub(r"[^0-9A-Za-z_]+", "_", name or "").strip("_")
+    return cleaned or "item"
+
+
+def _tex_image_wrap_mode(image_node) -> int:
+    """Map Blender `ShaderNodeTexImage.extension` to RISE `eRasterWrapMode`
+    (0 = ClampToEdge, 1 = Repeat, 2 = MirroredRepeat)."""
+    ext = getattr(image_node, "extension", "REPEAT")
+    if ext == "REPEAT":
+        return 1
+    if ext == "MIRROR":
+        return 2
+    return 0
+
+
 def _unique_name(state: _ExportState, prefix: str, name: str) -> str:
     base = f"{prefix}_{_safe_name(name)}"
     count = state.name_counts.get(base, 0)
@@ -676,13 +735,20 @@ def _matrix_world_bounds(matrix_world, local_bound_box) -> tuple[tuple[float, fl
 
 
 def _texture_color_space(texture_wrapper, image) -> int:
+    cs = getattr(image, "colorspace_settings", None)
+    if cs is not None:
+        if getattr(cs, "is_data", False):
+            return COLOR_SPACE_LINEAR
+        cs_name = getattr(cs, "name", "")
+        if cs_name == "sRGB":
+            return COLOR_SPACE_SRGB
+        if cs_name:
+            return COLOR_SPACE_LINEAR
     if getattr(texture_wrapper, "colorspace_is_data", False):
-        return COLOR_SPACE_LINEAR
-    if getattr(image.colorspace_settings, "is_data", False):
         return COLOR_SPACE_LINEAR
     if getattr(texture_wrapper, "colorspace_name", "") == "Non-Color":
         return COLOR_SPACE_LINEAR
-    if image.colorspace_settings.name == "sRGB":
+    if getattr(texture_wrapper, "colorspace_name", "") == "sRGB":
         return COLOR_SPACE_SRGB
     return COLOR_SPACE_LINEAR
 
@@ -798,9 +864,12 @@ def _extract_mapping_transform(image_node, state: _ExportState | None, context_n
     vector_input = image_node.inputs.get("Vector") if "Vector" in image_node.inputs else None
     if vector_input is None or not vector_input.is_linked:
         return None
+    vlinks = [lk for lk in vector_input.links if not getattr(lk, "is_muted", False)]
+    if not vlinks:
+        return None
 
-    src = vector_input.links[0].from_node
-    if src.bl_idname != "ShaderNodeMapping":
+    src, _src_sock = _skip_reroutes_and_muted_with_socket(vlinks[0].from_node, vlinks[0].from_socket)
+    if src is None or src.bl_idname != "ShaderNodeMapping":
         # Direct Texture Coordinate or similar — texcoords check
         # downstream handles UV-vs-other.  No transform to extract.
         return None
@@ -816,11 +885,13 @@ def _extract_mapping_transform(image_node, state: _ExportState | None, context_n
     # / Object / Window / Reflection / Normal / Camera) is out of scope.
     map_vec_in = mapping.inputs.get("Vector")
     if map_vec_in is not None and map_vec_in.is_linked:
-        upstream = map_vec_in.links[0]
-        if upstream.from_node.bl_idname == "ShaderNodeTexCoord":
-            if upstream.from_socket.name != "UV":
-                _warn_once(state, f"RISE only supports UV-mapped textures for {context_name} (Mapping reads from '{upstream.from_socket.name}').")
-                return "reject"
+        mlinks = [lk for lk in map_vec_in.links if not getattr(lk, "is_muted", False)]
+        if mlinks:
+            up_node, up_sock = _skip_reroutes_and_muted_with_socket(mlinks[0].from_node, mlinks[0].from_socket)
+            if up_node is not None and up_node.bl_idname == "ShaderNodeTexCoord":
+                if getattr(up_sock, "name", "") != "UV":
+                    _warn_once(state, f"RISE only supports UV-mapped textures for {context_name} (Mapping reads from '{getattr(up_sock, 'name', '')}').")
+                    return "reject"
         # Other upstream node types (NodeReroute, Mix, etc.) — accept
         # optimistically; if the chain ultimately produces non-UV
         # coords the texture footprint will be wrong but renderable.
@@ -900,7 +971,13 @@ def _add_uv_transform_painter(
     return name
 
 
-def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name: str) -> tuple[str, int] | None:
+def _validate_texture_wrapper(
+    texture_wrapper,
+    state: _ExportState,
+    context_name: str,
+    *,
+    for_expression: bool = False,
+) -> tuple[str, int] | None:
     if texture_wrapper is None or texture_wrapper.image is None:
         return None
 
@@ -908,23 +985,19 @@ def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name
     if image.source not in ("FILE", "GENERATED"):
         _warn_once(state, f"RISE only supports file-backed or packed textures for {context_name}.")
         return None
-    # NOTE: Mapping-node detection used to reject the wrapper outright
-    # here.  RISE now has a UVTransformPainter that the exporter wraps
-    # around the texture painter (see `_color_or_texture_painter`),
-    # so we accept Mapping nodes and defer the affine extraction to
-    # the caller.  The `texcoords` check below covers the rejection
-    # path for non-UV source coords (Generated / Object / etc.).
-    if getattr(texture_wrapper, "texcoords", "UV") not in ("UV", "Vector"):
-        # "Vector" is the from-socket name on ShaderNodeMapping's
-        # output — accept it; the upstream UV check happens inside
-        # `_extract_mapping_transform`.
-        _warn_once(state, f"RISE currently supports only UV-mapped textures for {context_name}.")
-        return None
+    if not for_expression:
+        # Direct texture painters sample primary mesh UV (optionally wrapped
+        # in UVTransformPainter for a constant Mapping node).  Expression
+        # images handle arbitrary Vector inputs via `sample_uv(p, u, v)`.
+        if getattr(texture_wrapper, "texcoords", "UV") not in ("UV", "Vector"):
+            _warn_once(state, f"RISE currently supports only UV-mapped textures for {context_name}.")
+            return None
     if getattr(texture_wrapper, "projection", "FLAT") != "FLAT":
         _warn_once(state, f"RISE currently supports only flat image projection for {context_name}.")
         return None
-    if getattr(texture_wrapper, "extension", "REPEAT") != "REPEAT":
-        _warn_once(state, f"RISE currently supports only repeat image extension for {context_name}.")
+    allowed_ext = ("REPEAT", "EXTEND", "MIRROR", "CLIP") if for_expression else ("REPEAT", "EXTEND", "MIRROR")
+    if getattr(texture_wrapper, "extension", "REPEAT") not in allowed_ext:
+        _warn_once(state, f"RISE currently supports only repeat/extend/mirror image extension for {context_name}.")
         return None
 
     filepath = _resolve_image_for_bridge(image, state)
@@ -981,6 +1054,7 @@ def _add_texture_painter(
     color_space: int,
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
     shift: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    wrap_mode: int = 0,
 ) -> str:
     key = (
         "texture",
@@ -989,11 +1063,12 @@ def _add_texture_painter(
         color_space,
         tuple(round(value, 6) for value in scale),
         tuple(round(value, 6) for value in shift),
+        int(wrap_mode),
     )
     if key in state.painter_cache:
         return state.painter_cache[key]
 
-    name = _unique_name(state, "pnt", label)
+    name = _unique_name(state, "pnt", _safe_ident(label))
     payload = PainterData(
         name=name,
         kind=kind,
@@ -1003,10 +1078,191 @@ def _add_texture_painter(
         lowmemory=False,
         scale=scale,
         shift=shift,
+        wrap_mode=int(wrap_mode),
     )
     state.painters.append(payload)
     state.painter_cache[key] = name
     return name
+
+
+class _DeferredExprImageResolver:
+    """Image resolver callback for ``procedural_expr`` compilation.
+
+    Validates ``ShaderNodeTexImage`` nodes and reserves identifier-safe RISE
+    texture painter names without mutating ``state.painters`` until ``commit()``
+    is called after compilation succeeds (avoiding orphaned painters on failed
+    compilation while guaranteeing every texture painter is registered before
+    the ``ExpressionPainter`` that calls ``sample()`` / ``sample_uv()`` on it).
+    """
+
+    def __init__(self, state: _ExportState, label_prefix: str, *, force_linear: bool = False):
+        self._state = state
+        self._label_prefix = label_prefix
+        self._force_linear = force_linear
+        self._pending: list[tuple[tuple, str, str, int, int, int]] = []
+        self._by_key: dict[tuple, str] = {}
+
+    def __call__(self, image_node) -> str | None:
+        image = getattr(image_node, "image", None)
+        if image is None:
+            return None
+        colorspace_name = "Non-Color" if self._force_linear else str(
+            getattr(getattr(image, "colorspace_settings", None), "name", "sRGB") or "sRGB"
+        )
+        wrapper = _ImageSocketWrapper(
+            image_node,
+            colorspace_is_data=self._force_linear,
+            colorspace_name=colorspace_name,
+        )
+        validated = _validate_texture_wrapper(
+            wrapper,
+            self._state,
+            f"expression image on '{self._label_prefix}'",
+            for_expression=True,
+        )
+        if not validated:
+            return None
+        filepath, color_space = validated
+        if self._force_linear:
+            color_space = COLOR_SPACE_LINEAR
+        kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+        wrap_mode = _tex_image_wrap_mode(image_node)
+        cache_key = (
+            "texture",
+            kind,
+            filepath,
+            color_space,
+            (1.0, 1.0, 1.0),
+            (0.0, 0.0, 0.0),
+            int(wrap_mode),
+        )
+        existing = self._state.painter_cache.get(cache_key)
+        if existing is not None:
+            return existing
+        pending_name = self._by_key.get(cache_key)
+        if pending_name is not None:
+            return pending_name
+        img_label = _safe_ident(f"{self._label_prefix}_{getattr(image, 'name', 'tex')}")
+        name = _unique_name(self._state, "pnt", img_label)
+        self._by_key[cache_key] = name
+        self._pending.append((cache_key, name, filepath, kind, color_space, int(wrap_mode)))
+        return name
+
+    def commit(self) -> None:
+        for cache_key, name, filepath, kind, color_space, wrap_mode in self._pending:
+            if cache_key in self._state.painter_cache:
+                continue
+            payload = PainterData(
+                name=name,
+                kind=kind,
+                path=filepath,
+                color_space=color_space,
+                filter_type=FILTER_BILINEAR,
+                lowmemory=False,
+                scale=(1.0, 1.0, 1.0),
+                shift=(0.0, 0.0, 0.0),
+                wrap_mode=wrap_mode,
+            )
+            self._state.painters.append(payload)
+            self._state.painter_cache[cache_key] = name
+        self._pending.clear()
+
+
+def _is_direct_simple_image_socket(socket, *, want_output: str = "Color") -> bool:
+    """True iff ``socket`` links (through reroutes / muted passthroughs only)
+    directly to ``ShaderNodeTexImage.<want_output>`` with ``projection == 'FLAT'``,
+    ``extension in ('REPEAT', 'EXTEND', 'MIRROR')``, and either unmodified
+    primary UV or a constant zero-rotation ``POINT`` Mapping explicitly fed by
+    ``TexCoord.UV`` (so ``TEXTURE`` mode, rotations, unlinked Mapping vectors,
+    ``CLIP``, ``UVMap``, and filters all route through ``procedural_expr`` for
+    exact Cycles parity)."""
+    if socket is None or not getattr(socket, "is_linked", False):
+        return False
+    links = [lk for lk in socket.links if not getattr(lk, "is_muted", False)]
+    if not links:
+        return False
+    node = links[0].from_node
+    out_sock = links[0].from_socket
+    seen: set[tuple[int, str]] = set()
+    steps = 0
+    while node is not None:
+        steps += 1
+        if steps > 16:
+            return False
+        out_key = procedural_expr.canonical_output_name(node, out_sock)
+        vkey = (rna_key(node), out_key if getattr(node, "mute", False) else "")
+        if vkey in seen:
+            return False
+        seen.add(vkey)
+        if getattr(node, "bl_idname", "") == "NodeReroute":
+            if not node.inputs or not node.inputs[0].is_linked:
+                return False
+            rlinks = [lk for lk in node.inputs[0].links if not getattr(lk, "is_muted", False)]
+            if not rlinks:
+                return False
+            node = rlinks[0].from_node
+            out_sock = rlinks[0].from_socket
+            continue
+        if getattr(node, "mute", False):
+            pass_inp = procedural_expr.resolve_muted_input_socket(node, out_key)
+            if pass_inp is None or not pass_inp.is_linked:
+                return False
+            plinks = [lk for lk in pass_inp.links if not getattr(lk, "is_muted", False)]
+            if not plinks:
+                return False
+            node = plinks[0].from_node
+            out_sock = plinks[0].from_socket
+            continue
+        if getattr(node, "bl_idname", "") != "ShaderNodeTexImage":
+            return False
+        if getattr(out_sock, "name", "") != want_output:
+            return False
+        if getattr(node, "projection", "FLAT") != "FLAT":
+            return False
+        if getattr(node, "extension", "REPEAT") not in ("REPEAT", "EXTEND", "MIRROR"):
+            return False
+        vec_in = node.inputs.get("Vector") if "Vector" in node.inputs else None
+        if vec_in is None or not vec_in.is_linked:
+            return True
+        vlinks = [lk for lk in vec_in.links if not getattr(lk, "is_muted", False)]
+        if not vlinks:
+            return True
+        vsrc, vsock = _skip_reroutes_and_muted_with_socket(vlinks[0].from_node, vlinks[0].from_socket)
+        if vsrc is None:
+            return False
+        vbl = getattr(vsrc, "bl_idname", "")
+        if vbl == "ShaderNodeTexCoord":
+            return (not getattr(vsrc, "from_instancer", False)) and getattr(vsock, "name", "") == "UV"
+        if vbl == "ShaderNodeMapping":
+            # Only direct for constant POINT Mapping with zero rotation explicitly
+            # reading TexCoord.UV (UVTransformPainter uses KHR clockwise rotation
+            # and does not implement TEXTURE inverse or unlinked default Vector).
+            if getattr(vsrc, "vector_type", "POINT") != "POINT":
+                return False
+            for mname in ("Location", "Rotation", "Scale"):
+                ms = vsrc.inputs.get(mname) if mname in vsrc.inputs else None
+                if ms is not None and any(not getattr(lk, "is_muted", False) for lk in getattr(ms, "links", ())):
+                    return False
+            rot_sock = vsrc.inputs.get("Rotation") if "Rotation" in vsrc.inputs else None
+            if rot_sock is not None:
+                rv = getattr(rot_sock, "default_value", (0.0, 0.0, 0.0))
+                if any(not (abs(float(c)) <= 1e-6) for c in rv[:3]):
+                    return False
+            mv = vsrc.inputs.get("Vector") if "Vector" in vsrc.inputs else None
+            if mv is None or not mv.is_linked:
+                return False
+            mvlinks = [lk for lk in mv.links if not getattr(lk, "is_muted", False)]
+            if not mvlinks:
+                return False
+            mvsrc, mvsock = _skip_reroutes_and_muted_with_socket(mvlinks[0].from_node, mvlinks[0].from_socket)
+            return (
+                mvsrc is not None
+                and getattr(mvsrc, "bl_idname", "") == "ShaderNodeTexCoord"
+                and not getattr(mvsrc, "from_instancer", False)
+                and getattr(mvsock, "name", "") == "UV"
+            )
+        return False
+    return False
 
 
 def _add_blend_painter(
@@ -1081,7 +1337,9 @@ def _color_or_texture_painter(
     if validated:
         filepath, color_space = validated
         kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-        base = _add_texture_painter(state, label, filepath, kind, color_space, scale=scale, shift=shift)
+        node_image = getattr(texture_wrapper, "node_image", None) or getattr(texture_wrapper, "tex_image_node", None)
+        wrap_mode = _tex_image_wrap_mode(node_image) if node_image is not None else 1
+        base = _add_texture_painter(state, label, filepath, kind, color_space, scale=scale, shift=shift, wrap_mode=wrap_mode)
         return _maybe_wrap_with_uv_transform(state, label, base, texture_wrapper)
     scaled = (
         color[0] * scale[0] + shift[0],
@@ -1103,6 +1361,8 @@ def _scalar_or_texture_painter(
     if validated:
         filepath, color_space = validated
         kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+        node_image = getattr(texture_wrapper, "node_image", None) or getattr(texture_wrapper, "tex_image_node", None)
+        wrap_mode = _tex_image_wrap_mode(node_image) if node_image is not None else 1
         base = _add_texture_painter(
             state,
             label,
@@ -1111,6 +1371,7 @@ def _scalar_or_texture_painter(
             color_space,
             scale=(scale, scale, scale),
             shift=(shift, shift, shift),
+            wrap_mode=wrap_mode,
         )
         return _maybe_wrap_with_uv_transform(state, label, base, texture_wrapper)
     scalar = value * scale + shift
@@ -1279,14 +1540,23 @@ def _warn_unsupported_principled_features(
 
 # Procedural texture nodes the classifier admits as "simple".  Noise,
 # Voronoi, and White Noise compile natively to RISE `expression_painter`
-# expressions on supported Principled sockets; this table drives the
-# per-socket fallback warning whenever one of them feeds an untranslated
-# socket (e.g. Bump, Alpha) or an unsupported node/mode (e.g. Checker).
+# expressions on supported Principled sockets (including procedural Bump
+# heights via MODIFIER_RELIEF); this table drives the per-socket fallback
+# warning whenever one of them feeds an untranslated socket (e.g. Alpha)
+# or an unsupported node/mode (e.g. Checker).
 _UNTRANSLATED_PROCEDURAL_TEXTURES = {
     "ShaderNodeTexNoise": "Noise",
     "ShaderNodeTexVoronoi": "Voronoi",
     "ShaderNodeTexWhiteNoise": "White Noise",
     "ShaderNodeTexChecker": "Checker",
+    "ShaderNodeTexGradient": "Gradient",
+    "ShaderNodeTexBrick": "Brick",
+    "ShaderNodeAttribute": "Attribute",
+    "ShaderNodeVertexColor": "Vertex Color",
+    "ShaderNodeNewGeometry": "Geometry",
+    "ShaderNodeParticleInfo": "Particle Info",
+    "ShaderNodeAmbientOcclusion": "Ambient Occlusion",
+    "ShaderNodeObjectInfo": "Object Info",
 }
 
 
@@ -1383,14 +1653,32 @@ class _ImageSocketWrapper:
 
     def has_mapping_node(self) -> bool:
         vector_input = self.node_image.inputs["Vector"]
-        return vector_input.is_linked and vector_input.links[0].from_node.bl_idname == "ShaderNodeMapping"
+        if not vector_input.is_linked:
+            return False
+        live = [lk for lk in vector_input.links if not getattr(lk, "is_muted", False)]
+        if not live:
+            return False
+        src_node, _ = _skip_reroutes_and_muted_with_socket(live[0].from_node, live[0].from_socket)
+        return src_node is not None and src_node.bl_idname == "ShaderNodeMapping"
 
     @property
     def texcoords(self) -> str:
         vector_input = self.node_image.inputs["Vector"]
         if not vector_input.is_linked:
             return "UV"
-        return vector_input.links[0].from_socket.name
+        live = [lk for lk in vector_input.links if not getattr(lk, "is_muted", False)]
+        if not live:
+            return "UV"
+        src_node, src_sock = _skip_reroutes_and_muted_with_socket(live[0].from_node, live[0].from_socket)
+        if src_node is not None and src_node.bl_idname == "ShaderNodeAttribute":
+            return "Attribute"
+        if src_node is not None and src_node.bl_idname == "ShaderNodeUVMap":
+            if bool(getattr(src_node, "uv_map", "") or "") or bool(getattr(src_node, "from_instancer", False)):
+                return "UVMap"
+            return "UV"
+        if src_sock is not None:
+            return src_sock.name
+        return live[0].from_socket.name
 
     @property
     def projection(self) -> str:
@@ -1401,17 +1689,10 @@ class _ImageSocketWrapper:
         return self.node_image.extension
 
 
-# Shader nodes that pass colour / scalar through a Principled BSDF input
-# without direct translation of their filtering effect. We treat them as
-# transparent for texture-discovery purposes: artists routinely drop an
-# RGB Curves / Hue/Saturation / Bright-Contrast on a base-colour texture
-# to mildly tweak it.  We can't reproduce the curve in RISE, so the
-# painter ends up tied to the underlying texture; the resulting render
-# may drift slightly in colour from Cycles, but that is *vastly* better
-# than the previous behaviour where PrincipledBSDFWrapper silently
-# returned `texture=None` (causing every material in the scene to
-# collapse onto a single shared uniform painter via _add_uniform_painter
-# cache identity).
+# Legacy fallback pass-through nodes used ONLY when expression compilation fails
+# and the direct-image walker searches for an underlying texture.  (In the
+# primary Phase 2 path, RGBCurve / HSV / BrightContrast / Gamma / Invert /
+# ValToRGB are compiled faithfully into RISE ExpressionPainters.)
 _SOCKET_PASS_THROUGH_NODES = {
     "NodeReroute",
     "ShaderNodeRGBCurve",
@@ -1465,17 +1746,31 @@ def _walk_socket_for_image_node(socket, *, max_depth: int = 16):
 
     if socket is None or not socket.is_linked:
         return None
+    root_links = [lk for lk in socket.links if not getattr(lk, "is_muted", False)]
+    if not root_links:
+        return None
 
-    visited: set[int] = set()
-    stack = [(socket.links[0].from_node, 0)]
+    visited: set[tuple[int, str]] = set()
+    root_from = root_links[0].from_node
+    stack = [(root_from, procedural_expr.canonical_output_name(root_from, root_links[0].from_socket), 0)]
     while stack:
-        node, depth = stack.pop()
+        node, out_key, depth = stack.pop()
         if depth > max_depth:
             continue
         node_id = rna_key(node)
-        if node_id in visited:
+        vkey = (node_id, out_key if getattr(node, "mute", False) else "")
+        if vkey in visited:
             continue
-        visited.add(node_id)
+        visited.add(vkey)
+
+        if getattr(node, "mute", False):
+            pass_inp = procedural_expr.resolve_muted_input_socket(node, out_key)
+            if pass_inp is not None and pass_inp.is_linked:
+                plinks = [lk for lk in pass_inp.links if not getattr(lk, "is_muted", False)]
+                if plinks:
+                    pnode = plinks[0].from_node
+                    stack.append((pnode, procedural_expr.canonical_output_name(pnode, plinks[0].from_socket), depth + 1))
+            continue
 
         bl = node.bl_idname
         if bl == "ShaderNodeTexImage":
@@ -1483,7 +1778,10 @@ def _walk_socket_for_image_node(socket, *, max_depth: int = 16):
 
         if bl == "NodeReroute":
             if node.inputs and node.inputs[0].is_linked:
-                stack.append((node.inputs[0].links[0].from_node, depth + 1))
+                rlinks = [lk for lk in node.inputs[0].links if not getattr(lk, "is_muted", False)]
+                if rlinks:
+                    rnode = rlinks[0].from_node
+                    stack.append((rnode, procedural_expr.canonical_output_name(rnode, rlinks[0].from_socket), depth + 1))
             continue
 
         if bl in _SOCKET_PASS_THROUGH_NODES:
@@ -1494,26 +1792,34 @@ def _walk_socket_for_image_node(socket, *, max_depth: int = 16):
             # sweep is safe in practice.
             for inp in node.inputs:
                 if inp.is_linked and inp.type in {"RGBA", "VALUE", "VECTOR"}:
-                    stack.append((inp.links[0].from_node, depth + 1))
+                    ilinks = [lk for lk in inp.links if not getattr(lk, "is_muted", False)]
+                    if ilinks:
+                        inode = ilinks[0].from_node
+                        stack.append((inode, procedural_expr.canonical_output_name(inode, ilinks[0].from_socket), depth + 1))
             continue
 
         if bl in _SOCKET_MIX_NODES:
-            chosen = None
+            chosen_link = None
             for candidate in _MIX_PRIMARY_SOCKET_NAMES:
                 if candidate in node.inputs:
                     sock = node.inputs[candidate]
                     if sock.is_linked:
-                        chosen = sock
-                        break
-            if chosen is None:
+                        clinks = [lk for lk in sock.links if not getattr(lk, "is_muted", False)]
+                        if clinks:
+                            chosen_link = clinks[0]
+                            break
+            if chosen_link is None:
                 # Fall back: first linked colour or value input that
                 # isn't the factor.
                 for inp in node.inputs:
                     if inp.is_linked and inp.type in {"RGBA", "VALUE"} and inp.name.lower() != "factor":
-                        chosen = inp
-                        break
-            if chosen is not None:
-                stack.append((chosen.links[0].from_node, depth + 1))
+                        clinks = [lk for lk in inp.links if not getattr(lk, "is_muted", False)]
+                        if clinks:
+                            chosen_link = clinks[0]
+                            break
+            if chosen_link is not None:
+                cnode = chosen_link.from_node
+                stack.append((cnode, procedural_expr.canonical_output_name(cnode, chosen_link.from_socket), depth + 1))
             continue
 
         # Unknown node — stop the walk for this branch.
@@ -1659,36 +1965,410 @@ def _skip_reroutes(node, *, max_depth: int = 16):
         seen.add(rna_key(node))
         if not node.inputs or not node.inputs[0].is_linked:
             return None
-        node = node.inputs[0].links[0].from_node
+        rlinks = [lk for lk in node.inputs[0].links if not getattr(lk, "is_muted", False)]
+        if not rlinks:
+            return None
+        node = rlinks[0].from_node
     return node
 
 
-def _direct_normal_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
-    """Detect a Principled BSDF wired with either a Bump node (height
-    map) or a Normal Map node (tangent-space RGB) and produce a
-    RISE-side modifier.
+def _skip_reroutes_and_muted_with_socket(node, out_sock=None, *, max_depth: int = 16):
+    """Walk backward through ``NodeReroute`` and muted nodes (following
+    ``internal_links`` via ``resolve_muted_input_socket``) to the upstream
+    active ``(node, out_sock)`` pair.  Returns ``(None, None)`` if the chain
+    dead-ends or exceeds ``max_depth``."""
+    seen: set[tuple[int, str]] = set()
+    steps = 0
+    while node is not None:
+        steps += 1
+        if steps > max_depth:
+            return None, None
+        out_key = procedural_expr.canonical_output_name(node, out_sock) if out_sock is not None else ""
+        key = (rna_key(node), out_key if getattr(node, "mute", False) else "")
+        if key in seen:
+            return None, None
+        seen.add(key)
+        if getattr(node, "bl_idname", "") == "NodeReroute":
+            if not node.inputs or not node.inputs[0].is_linked:
+                return None, None
+            rlinks = [lk for lk in node.inputs[0].links if not getattr(lk, "is_muted", False)]
+            if not rlinks:
+                return None, None
+            node = rlinks[0].from_node
+            out_sock = rlinks[0].from_socket
+            continue
+        if getattr(node, "mute", False):
+            pass_inp = procedural_expr.resolve_muted_input_socket(node, out_key or out_sock)
+            if pass_inp is None or not pass_inp.is_linked:
+                return None, None
+            plinks = [lk for lk in pass_inp.links if not getattr(lk, "is_muted", False)]
+            if not plinks:
+                return None, None
+            node = plinks[0].from_node
+            out_sock = plinks[0].from_socket
+            continue
+        return node, out_sock
+    return None, None
 
-    Returns the modifier name, or None if the Normal slot isn't
-    connected to one of the supported chains.
-    """
 
-    node = wrapper.node_principled_bsdf
-    normal_input = _node_input(node, "Normal")
-    if normal_input is None or not normal_input.is_linked:
-        return None
+def _skip_reroutes_and_muted(node, out_sock=None, *, max_depth: int = 16):
+    """Walk backward through ``NodeReroute`` and muted nodes to the upstream
+    active node.  Returns ``None`` if the chain dead-ends or exceeds ``max_depth``."""
+    src_node, _ = _skip_reroutes_and_muted_with_socket(node, out_sock, max_depth=max_depth)
+    return src_node
 
-    normal_node = _skip_reroutes(normal_input.links[0].from_node)
-    if normal_node is None:
-        return None
 
-    if normal_node.bl_idname == "ShaderNodeNormalMap":
-        return _build_normal_map_modifier(material, normal_node, state)
+def _add_modifier_stack(
+    state: _ExportState,
+    label: str,
+    member_names: tuple[str, ...],
+) -> str:
+    # Flatten nested single-element or direct members cleanly
+    key = ("stack", member_names)
+    if key in state.modifier_cache:
+        return state.modifier_cache[key]
+    modifier_name = _unique_name(state, "mod", f"{label}_stack")
+    state.modifiers.append(
+        ModifierData(
+            name=modifier_name,
+            kind=MODIFIER_STACK,
+            stack_member_names=member_names,
+        )
+    )
+    state.modifier_cache[key] = modifier_name
+    return modifier_name
 
-    if normal_node.bl_idname == "ShaderNodeBump":
-        return _build_bump_modifier(material, normal_node, state)
 
-    _warn_once(state, f"RISE only supports a direct Bump or Normal Map node on '{material.name_full}'.")
+def _add_blended_modifier(
+    state: _ExportState,
+    label: str,
+    mod_a_name: str | None,
+    mod_b_name: str | None,
+    weight_spec: str,
+) -> str:
+    key = ("blend", mod_a_name, mod_b_name, weight_spec)
+    if key in state.modifier_cache:
+        return state.modifier_cache[key]
+    modifier_name = _unique_name(state, "mod", f"{label}_blend")
+    state.modifiers.append(
+        ModifierData(
+            name=modifier_name,
+            kind=MODIFIER_BLEND,
+            blend_a_name=mod_a_name,
+            blend_b_name=mod_b_name,
+            blend_weight_painter_name=weight_spec,
+        )
+    )
+    state.modifier_cache[key] = modifier_name
+    return modifier_name
+
+
+def _mix_normal_sockets(node):
+    """Return ``(fac_sock, a_sock, b_sock)`` for a normal-blending
+    ``ShaderNodeMix`` (``RGBA``/``VECTOR`` with uniform scalar factor,
+    ``blend_type=='MIX'`` for ``RGBA``, no ``clamp_result``, clamped factor)
+    or ``ShaderNodeMixRGB`` (``MIX``, no ``use_clamp``), or ``None`` if
+    unsupported."""
+    bl = getattr(node, "bl_idname", "")
+    if bl == "ShaderNodeMixRGB":
+        if getattr(node, "blend_type", "MIX") != "MIX" or getattr(node, "use_clamp", False):
+            return None
+        return (
+            _node_input(node, "Fac"),
+            _node_input(node, "Color1"),
+            _node_input(node, "Color2"),
+        )
+    if bl == "ShaderNodeMix":
+        dt = getattr(node, "data_type", "FLOAT")
+        if dt not in ("RGBA", "VECTOR"):
+            return None
+        if dt == "RGBA":
+            if getattr(node, "blend_type", "MIX") != "MIX" or getattr(node, "clamp_result", False):
+                return None
+        elif getattr(node, "factor_mode", "UNIFORM") != "UNIFORM":
+            return None
+        want_type = "RGBA" if dt == "RGBA" else "VECTOR"
+        fac_sock = None
+        a_sock = None
+        b_sock = None
+        for inp in getattr(node, "inputs", ()):
+            sname = getattr(inp, "name", "")
+            stype = getattr(inp, "type", "")
+            if sname == "Factor" and stype == "VALUE" and fac_sock is None:
+                fac_sock = inp
+            elif sname == "A" and stype == want_type and a_sock is None:
+                a_sock = inp
+            elif sname == "B" and stype == want_type and b_sock is None:
+                b_sock = inp
+        if fac_sock is None:
+            fac_sock = _node_input(node, "Factor")
+        if a_sock is None or b_sock is None:
+            return None
+        if not getattr(node, "clamp_factor", True):
+            flinks = [lk for lk in fac_sock.links if not getattr(lk, "is_muted", False)] if (fac_sock is not None and fac_sock.is_linked) else []
+            if flinks:
+                return None
+            try:
+                fv = float(fac_sock.default_value) if fac_sock is not None else 0.5
+                if not (0.0 <= fv <= 1.0):
+                    return None
+            except (TypeError, ValueError):
+                return None
+        return (fac_sock, a_sock, b_sock)
     return None
+
+
+def _build_normal_modifier_tree(
+    material,
+    normal_input,
+    state: _ExportState,
+    *,
+    bbox_min=None,
+    bbox_max=None,
+    material_pass_index: float = 0.0,
+    used_generated_out: list[bool] | None = None,
+    handled_out: list[bool] | None = None,
+    mesh_attrs_out: set[str] | None = None,
+    attr_types: dict[str, str] | None = None,
+    depth: int = 0,
+    seen: frozenset[int] = frozenset(),
+) -> str | None:
+    """Recursively translate a shader ``Normal`` input tree of ``NormalMap``,
+    ``Bump`` (with optional nested ``Bump.Normal`` -> ``ModifierStack``), and
+    ``Mix``/``MixRGB`` (``MIX`` mode -> ``BlendedModifier``) into a RISE
+    modifier name (or ``None`` for the unperturbed surface normal)."""
+    if depth > 16:
+        _warn_once(state, f"RISE normal-modifier graph exceeded max depth on '{material.name_full}'.")
+        return None
+    normal_links = (
+        [lk for lk in normal_input.links if not getattr(lk, "is_muted", False)]
+        if (normal_input is not None and normal_input.is_linked) else []
+    )
+    if not normal_links:
+        if handled_out is not None:
+            handled_out.append(True)
+        return None
+
+    normal_node = _skip_reroutes_and_muted(normal_links[0].from_node, normal_links[0].from_socket)
+    if normal_node is None:
+        if handled_out is not None:
+            handled_out.append(True)
+        return None
+
+    nid = rna_key(normal_node)
+    if nid in seen:
+        _warn_once(state, f"RISE detected a cyclic normal-modifier graph on '{material.name_full}'.")
+        return None
+    next_seen = seen | {nid}
+
+    bl = getattr(normal_node, "bl_idname", "")
+    if bl == "ShaderNodeNormalMap":
+        mod = _build_normal_map_modifier(
+            material,
+            normal_node,
+            state,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            used_generated_out=used_generated_out,
+            mesh_attrs_out=mesh_attrs_out,
+            attr_types=attr_types,
+        )
+        if mod is not None and handled_out is not None:
+            handled_out.append(True)
+        return mod
+
+    if bl == "ShaderNodeBump":
+        nested_normal = _node_input(normal_node, "Normal")
+        base_handled: list[bool] = []
+        base_mod = _build_normal_modifier_tree(
+            material,
+            nested_normal,
+            state,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            used_generated_out=used_generated_out,
+            handled_out=base_handled,
+            mesh_attrs_out=mesh_attrs_out,
+            attr_types=attr_types,
+            depth=depth + 1,
+            seen=next_seen,
+        )
+        bump_handled: list[bool] = []
+        bump_mod = _build_bump_modifier(
+            material,
+            normal_node,
+            state,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            used_generated_out=used_generated_out,
+            handled_out=bump_handled,
+            mesh_attrs_out=mesh_attrs_out,
+            attr_types=attr_types,
+            allow_nested_normal=True,
+        )
+        if base_handled and bump_handled and handled_out is not None:
+            handled_out.append(True)
+        if base_mod is not None and bump_mod is not None:
+            return _add_modifier_stack(state, material.name_full, (base_mod, bump_mod))
+        return bump_mod if bump_mod is not None else base_mod
+
+    mix_socks = _mix_normal_sockets(normal_node)
+    if mix_socks is not None:
+        fac_sock, a_sock, b_sock = mix_socks
+        fac_links = (
+            [lk for lk in fac_sock.links if not getattr(lk, "is_muted", False)]
+            if (fac_sock is not None and fac_sock.is_linked) else []
+        )
+        const_fac: float | None = None
+        weight_spec: str | None = None
+        if not fac_links:
+            try:
+                const_fac = _clamp01(float(fac_sock.default_value)) if fac_sock is not None else 0.5
+            except (TypeError, ValueError):
+                const_fac = 0.5
+            weight_spec = f"{const_fac:.6f}"
+        else:
+            fac_resolver = _DeferredExprImageResolver(state, f"{material.name_full}_normmix")
+            fac_comp = procedural_expr.compile_socket_expression(
+                fac_sock,
+                want_type="scalar",
+                bbox_min=bbox_min,
+                bbox_max=bbox_max,
+                material_pass_index=material_pass_index,
+                attr_types=attr_types,
+                image_resolver=fac_resolver,
+            )
+            if fac_comp is None:
+                _warn_once(state, f"RISE could not translate the normal-mix Factor graph on '{material.name_full}'.")
+                return None
+            fac_resolver.commit()
+            if used_generated_out is not None and fac_comp.uses_generated:
+                used_generated_out.append(True)
+            if mesh_attrs_out is not None and fac_comp.mesh_attributes:
+                mesh_attrs_out.update(fac_comp.mesh_attributes)
+            if _is_pure_float_literal(fac_comp.expression):
+                const_fac = _clamp01(float(fac_comp.expression.strip()))
+                weight_spec = f"{const_fac:.6f}"
+            else:
+                weight_spec = _add_expression_painter(
+                    state, f"{material.name_full}_normmix_w", fac_comp.expression
+                )
+
+        # Constant factor fast paths (0 -> A only, 1 -> B only): skip the
+        # unused branch cleanly (e.g. lone-monk's `leather - book - cover 3`
+        # has Mix Factor=1.0 -> Bump.001 directly).
+        if const_fac is not None and const_fac <= 1e-6:
+            return _build_normal_modifier_tree(
+                material, a_sock, state,
+                bbox_min=bbox_min, bbox_max=bbox_max,
+                material_pass_index=material_pass_index,
+                used_generated_out=used_generated_out,
+                handled_out=handled_out,
+                mesh_attrs_out=mesh_attrs_out,
+                attr_types=attr_types,
+                depth=depth + 1, seen=next_seen,
+            )
+        if const_fac is not None and const_fac >= 1.0 - 1e-6:
+            return _build_normal_modifier_tree(
+                material, b_sock, state,
+                bbox_min=bbox_min, bbox_max=bbox_max,
+                material_pass_index=material_pass_index,
+                used_generated_out=used_generated_out,
+                handled_out=handled_out,
+                mesh_attrs_out=mesh_attrs_out,
+                attr_types=attr_types,
+                depth=depth + 1, seen=next_seen,
+            )
+
+        a_handled: list[bool] = []
+        b_handled: list[bool] = []
+        mod_a = _build_normal_modifier_tree(
+            material, a_sock, state,
+            bbox_min=bbox_min, bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            used_generated_out=used_generated_out,
+            handled_out=a_handled,
+            mesh_attrs_out=mesh_attrs_out,
+            attr_types=attr_types,
+            depth=depth + 1, seen=next_seen,
+        )
+        mod_b = _build_normal_modifier_tree(
+            material, b_sock, state,
+            bbox_min=bbox_min, bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            used_generated_out=used_generated_out,
+            handled_out=b_handled,
+            mesh_attrs_out=mesh_attrs_out,
+            attr_types=attr_types,
+            depth=depth + 1, seen=next_seen,
+        )
+        if a_handled and b_handled and handled_out is not None:
+            handled_out.append(True)
+        if mod_a is None and mod_b is None:
+            return None
+        if mod_a == mod_b:
+            return mod_a
+        return _add_blended_modifier(state, material.name_full, mod_a, mod_b, weight_spec or "0.5")
+
+    _warn_once(state, f"RISE only supports Bump, Normal Map, or Mix(MIX) normal modifier trees on '{material.name_full}'.")
+    return None
+
+
+def _direct_normal_modifier_for_node(
+    material,
+    node,
+    state: _ExportState,
+    bbox_min=None,
+    bbox_max=None,
+    material_pass_index: float = 0.0,
+    used_generated_out: list[bool] | None = None,
+    handled_out: list[bool] | None = None,
+    mesh_attrs_out: set[str] | None = None,
+    attr_types: dict[str, str] | None = None,
+) -> str | None:
+    """Translate a shader node's ``Normal`` socket (NormalMap, Bump, stacked
+    Bump.Normal, or Mix(MIX) blended normals) into a RISE modifier."""
+    return _build_normal_modifier_tree(
+        material,
+        _node_input(node, "Normal"),
+        state,
+        bbox_min=bbox_min,
+        bbox_max=bbox_max,
+        material_pass_index=material_pass_index,
+        used_generated_out=used_generated_out,
+        handled_out=handled_out,
+        mesh_attrs_out=mesh_attrs_out,
+        attr_types=attr_types,
+    )
+
+
+def _direct_normal_modifier(
+    material,
+    wrapper: PrincipledBSDFWrapper,
+    state: _ExportState,
+    bbox_min=None,
+    bbox_max=None,
+    material_pass_index: float = 0.0,
+    used_generated_out: list[bool] | None = None,
+    handled_out: list[bool] | None = None,
+    mesh_attrs_out: set[str] | None = None,
+    attr_types: dict[str, str] | None = None,
+) -> str | None:
+    return _direct_normal_modifier_for_node(
+        material,
+        wrapper.node_principled_bsdf,
+        state,
+        bbox_min=bbox_min,
+        bbox_max=bbox_max,
+        material_pass_index=material_pass_index,
+        used_generated_out=used_generated_out,
+        handled_out=handled_out,
+        mesh_attrs_out=mesh_attrs_out,
+        attr_types=attr_types,
+    )
 
 
 def _bump_modifier_scale(strength: float, distance: float, invert: bool) -> float:
@@ -1724,98 +2404,213 @@ def _bump_modifier_scale(strength: float, distance: float, invert: bool) -> floa
     return magnitude if invert else -magnitude
 
 
-def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | None:
-    nested_normal = _node_input(normal_node, "Normal")
-    if nested_normal is not None and nested_normal.is_linked:
-        _warn_once(state, f"RISE ignores nested normal inputs feeding the Bump node on '{material.name_full}'.")
+def _relief_modifier_scale(strength: float, distance: float, invert: bool) -> float:
+    """Signed amplitude for a procedural ShaderNodeBump exported as
+    `MODIFIER_RELIEF` (RISE's 3D surface-domain `ReliefModifier`, ABI v20).
+
+    Unlike `_bump_modifier_scale` (which carries an extra negation to
+    cancel the legacy `MODIFIER_BUMP` shim's depth convention),
+    `ReliefModifier` uses Blinn's elevation convention directly:
+    `N' = normalize(N - scale * grad(h))`.  Matches Cycles `svm_node_bump`
+    (`strength = max(strength, 0.0f)`, `scale *= -1.0f` when `invert` is set):
+
+        Invert OFF   ->  +max(0, Strength) * Distance
+        Invert ON    ->  -max(0, Strength) * Distance
+    """
+
+    magnitude = max(0.0, float(strength)) * float(distance)
+    return -magnitude if invert else magnitude
+
+
+def _build_bump_modifier(
+    material,
+    normal_node,
+    state: _ExportState,
+    bbox_min=None,
+    bbox_max=None,
+    material_pass_index: float = 0.0,
+    used_generated_out: list[bool] | None = None,
+    handled_out: list[bool] | None = None,
+    mesh_attrs_out: set[str] | None = None,
+    attr_types: dict[str, str] | None = None,
+    allow_nested_normal: bool = False,
+) -> str | None:
+    if not allow_nested_normal:
+        nested_normal = _node_input(normal_node, "Normal")
+        nested_links = [lk for lk in nested_normal.links if not getattr(lk, "is_muted", False)] if (nested_normal is not None and nested_normal.is_linked) else []
+        if nested_links:
+            _warn_once(state, f"RISE ignores nested normal inputs feeding the Bump node on '{material.name_full}'.")
 
     height_input = _node_input(normal_node, "Height")
-    if height_input is None or not height_input.is_linked:
-        _warn_once(state, f"RISE only supports image-driven Bump nodes on '{material.name_full}'.")
+    height_links = [lk for lk in height_input.links if not getattr(lk, "is_muted", False)] if (height_input is not None and height_input.is_linked) else []
+    if not height_links:
+        if handled_out is not None:
+            handled_out.append(True)
         return None
 
-    image_node = _walk_socket_for_image_node(height_input)
-    if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
-        _warn_once(state, f"RISE only supports direct image textures as Bump height sources on '{material.name_full}'.")
-        return None
+    image_node = _walk_socket_for_image_node(height_input) if _is_direct_simple_image_socket(height_input) else None
+    if image_node is not None and image_node.bl_idname == "ShaderNodeTexImage":
+        texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
+        validated = _validate_texture_wrapper(texture_wrapper, state, f"the Bump node on '{material.name_full}'")
+        if not validated:
+            return None
 
-    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
-    validated = _validate_texture_wrapper(texture_wrapper, state, f"the Bump node on '{material.name_full}'")
-    if not validated:
-        return None
+        filepath, color_space = validated
+        kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+        painter_name = _add_texture_painter(
+            state,
+            f"{material.name_full}_bump_height",
+            filepath,
+            kind,
+            color_space,
+            wrap_mode=_tex_image_wrap_mode(image_node),
+        )
+        painter_name = _maybe_wrap_with_uv_transform(
+            state, f"{material.name_full}_bump_height", painter_name, texture_wrapper)
+        strength = _socket_default_float(normal_node, "Strength", 1.0)
+        distance = _socket_default_float(normal_node, "Distance", 1.0)
+        scale = _bump_modifier_scale(strength, distance, bool(getattr(normal_node, "invert", False)))
+        modifier_key = ("bump", painter_name, round(scale, 6))
+        if modifier_key in state.modifier_cache:
+            if handled_out is not None:
+                handled_out.append(True)
+            return state.modifier_cache[modifier_key]
 
-    filepath, color_space = validated
-    kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-    painter_name = _add_texture_painter(
-        state,
-        f"{material.name_full}_bump_height",
-        filepath,
-        kind,
-        color_space,
+        modifier_name = _unique_name(state, "mod", f"{material.name_full}_bump")
+        state.modifiers.append(
+            ModifierData(
+                name=modifier_name,
+                kind=MODIFIER_BUMP,
+                source_painter_name=painter_name,
+                scale=scale,
+                # Texture-space HALF-STEP for the central difference, in UV units.
+                #
+                # This was 1.0, which is not a small step -- it is the whole UV
+                # range.  RISE's bridge samples the height painter through
+                # `Painter::Evaluate`, which CLAMPS (u, v) to [0, 1], so a
+                # half-step of 1.0 made every central difference f(1, v) - f(0, v):
+                # the same two texels everywhere on the surface, i.e. a constant
+                # tilt of the shading normal rather than a bump.  0.005 is roughly a
+                # texel on a 200px map and a fraction of one on anything larger,
+                # which is what a finite-difference derivative estimate wants.
+                # (Fixed 2026-09-06 alongside the `bumpmap_modifier` removal; the
+                # bridge entry point is now a shim over `relief_modifier`, and the
+                # amplitude fold means the perturbation scales with this value --
+                # see docs/RELIEF_MODIFIER_DESIGN.md 7.2/7.5.)
+                window=0.005,
+                # normalize=True: without it, the shim's legacy fold COUPLES the
+                # delivered tilt to `window` (tilt ~ scale*2*window*grad), so
+                # shrinking `window` from 1.0 to 0.005 above -- correct on its own
+                # terms -- would ALSO have silently divided the tilt by ~200
+                # (2*0.005 / 2*1.0). normalize=True selects the bridge's
+                # window-independent fold instead (tilt ~ scale*grad, so the
+                # magnitude matches Blender's Bump node: Strength*Distance*
+                # gradient), so this window shrink is a pure step-size
+                # refinement, not an amplitude change.  See
+                # docs/RELIEF_MODIFIER_DESIGN.md 7.5 "Phase B review" for the
+                # fold, and 12 "Fix round 2" for the SIGN, which
+                # `_bump_modifier_scale` above carries and which the fold
+                # deliberately does not touch.
+                normalize=True,
+            )
+        )
+        state.modifier_cache[modifier_key] = modifier_name
+        if handled_out is not None:
+            handled_out.append(True)
+        return modifier_name
+
+    # Procedural / expression Bump Height -> RISE 3D surface-domain ReliefModifier.
+    bump_img_resolver = _DeferredExprImageResolver(state, f"{material.name_full}_bump")
+    compiled = procedural_expr.compile_bump_height_expression(
+        normal_node,
+        bbox_min=bbox_min,
+        bbox_max=bbox_max,
+        material_pass_index=material_pass_index,
+        attr_types=attr_types,
+        image_resolver=bump_img_resolver,
     )
-    painter_name = _maybe_wrap_with_uv_transform(
-        state, f"{material.name_full}_bump_height", painter_name, texture_wrapper)
+    if compiled is None:
+        _warn_once(
+            state,
+            f"RISE could not translate the Bump height source on '{material.name_full}' "
+            "(only image textures and supported procedural expression graphs are supported).",
+        )
+        return None
+    bump_img_resolver.commit()
+
+    if used_generated_out is not None and compiled.uses_generated:
+        used_generated_out.append(True)
+    if mesh_attrs_out is not None and compiled.mesh_attributes:
+        mesh_attrs_out.update(compiled.mesh_attributes)
+    if handled_out is not None:
+        handled_out.append(True)
+
+    strength_input = _node_input(normal_node, "Strength")
+    if strength_input is not None and any(not getattr(lk, "is_muted", False) for lk in strength_input.links):
+        _warn_once(
+            state,
+            f"RISE ignores linked Bump Strength on '{material.name_full}' and uses its default value.",
+        )
+    distance_input = _node_input(normal_node, "Distance")
+    if distance_input is not None and any(not getattr(lk, "is_muted", False) for lk in distance_input.links):
+        _warn_once(
+            state,
+            f"RISE ignores linked Bump Distance on '{material.name_full}' and uses its default value.",
+        )
+
     strength = _socket_default_float(normal_node, "Strength", 1.0)
     distance = _socket_default_float(normal_node, "Distance", 1.0)
-    scale = _bump_modifier_scale(strength, distance, bool(getattr(normal_node, "invert", False)))
-    modifier_key = ("bump", painter_name, round(scale, 6))
+    scale = _relief_modifier_scale(strength, distance, bool(getattr(normal_node, "invert", False)))
+    if not math.isfinite(scale) or abs(scale) == 0.0:
+        return None
+
+    painter_name = _add_expression_painter(
+        state,
+        f"{material.name_full}_bump_height_expr",
+        compiled.expression,
+    )
+    modifier_key = ("relief", painter_name, float(scale))
     if modifier_key in state.modifier_cache:
         return state.modifier_cache[modifier_key]
 
-    modifier_name = _unique_name(state, "mod", f"{material.name_full}_bump")
+    modifier_name = _unique_name(state, "mod", f"{material.name_full}_relief")
     state.modifiers.append(
         ModifierData(
             name=modifier_name,
-            kind=MODIFIER_BUMP,
+            kind=MODIFIER_RELIEF,
             source_painter_name=painter_name,
             scale=scale,
-            # Texture-space HALF-STEP for the central difference, in UV units.
-            #
-            # This was 1.0, which is not a small step -- it is the whole UV
-            # range.  RISE's bridge samples the height painter through
-            # `Painter::Evaluate`, which CLAMPS (u, v) to [0, 1], so a
-            # half-step of 1.0 made every central difference f(1, v) - f(0, v):
-            # the same two texels everywhere on the surface, i.e. a constant
-            # tilt of the shading normal rather than a bump.  0.005 is roughly a
-            # texel on a 200px map and a fraction of one on anything larger,
-            # which is what a finite-difference derivative estimate wants.
-            # (Fixed 2026-09-06 alongside the `bumpmap_modifier` removal; the
-            # bridge entry point is now a shim over `relief_modifier`, and the
-            # amplitude fold means the perturbation scales with this value --
-            # see docs/RELIEF_MODIFIER_DESIGN.md 7.2/7.5.)
-            window=0.005,
-            # normalize=True: without it, the shim's legacy fold COUPLES the
-            # delivered tilt to `window` (tilt ~ scale*2*window*grad), so
-            # shrinking `window` from 1.0 to 0.005 above -- correct on its own
-            # terms -- would ALSO have silently divided the tilt by ~200
-            # (2*0.005 / 2*1.0). normalize=True selects the bridge's
-            # window-independent fold instead (tilt ~ scale*grad, so the
-            # magnitude matches Blender's Bump node: Strength*Distance*
-            # gradient), so this window shrink is a pure step-size
-            # refinement, not an amplitude change.  See
-            # docs/RELIEF_MODIFIER_DESIGN.md 7.5 "Phase B review" for the
-            # fold, and 12 "Fix round 2" for the SIGN, which
-            # `_bump_modifier_scale` above carries and which the fold
-            # deliberately does not touch.
-            normalize=True,
+            # window <= 0 tells ReliefModifier (domain="surface") to derive
+            # the central-difference half-step automatically from the pixel
+            # footprint (fw/2, with 1e-3 fallback when no footprint exists).
+            window=0.0,
+            normalize=False,
         )
     )
     state.modifier_cache[modifier_key] = modifier_name
     return modifier_name
 
 
-def _build_coat_normal_painter(material, normal_map_node, state: _ExportState) -> tuple[str | None, float]:
+def _build_coat_normal_painter(
+    material,
+    normal_map_node,
+    state: _ExportState,
+    *,
+    bbox_min=None,
+    bbox_max=None,
+    material_pass_index: float = 0.0,
+    used_generated_out: list[bool] | None = None,
+    mesh_attrs_out: set[str] | None = None,
+    attr_types: dict[str, str] | None = None,
+) -> tuple[str | None, float]:
     """Translate a Principled BSDF Coat Normal's ShaderNodeNormalMap
     into a registered COLOUR painter (NOT a modifier -- DL-192's
     `coat_normal_painter_name` is a MATERIAL parameter, consumed only
     by `coated_material`'s own coat lobe, unlike the surface's Normal
     input which perturbs the whole shading point via an object-level
     modifier).  Mirrors `_build_normal_map_modifier`'s own validation
-    and painter-registration steps exactly, stopping short of
-    registering a modifier.  Returns (painter_name, strength); either
-    element is (None, 1.0) if the node can't be resolved (already
-    warned by the caller or below).
-    """
+    and painter-registration steps, supporting both direct image textures
+    and expression-compiled color graphs (e.g. DirectX Invert G groups)."""
     if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
         _warn_once(state, f"RISE only supports tangent-space Normal Map nodes on '{material.name_full}' (Coat Normal).")
         return None, 1.0
@@ -1824,6 +2619,28 @@ def _build_coat_normal_painter(material, normal_map_node, state: _ExportState) -
     if color_input is None or not color_input.is_linked:
         _warn_once(state, f"RISE only supports image-driven Normal Map nodes on '{material.name_full}' (Coat Normal).")
         return None, 1.0
+
+    strength = float(_socket_default_float(normal_map_node, "Strength", 1.0))
+
+    if not _is_direct_simple_image_socket(color_input):
+        img_resolver = _DeferredExprImageResolver(state, f"{material.name_full}_coat_normal")
+        compiled = procedural_expr.compile_socket_expression(
+            color_input,
+            want_type="vec3",
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=img_resolver,
+        )
+        if compiled is not None:
+            img_resolver.commit()
+            if used_generated_out is not None and compiled.uses_generated:
+                used_generated_out.append(True)
+            if mesh_attrs_out is not None and compiled.mesh_attributes:
+                mesh_attrs_out.update(compiled.mesh_attributes)
+            painter_name = _add_expression_painter(state, f"{material.name_full}_coat_normal_expr", compiled.expression)
+            return painter_name, strength
 
     image_node = _walk_socket_for_image_node(color_input)
     if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
@@ -1846,21 +2663,32 @@ def _build_coat_normal_painter(material, normal_map_node, state: _ExportState) -
         filepath,
         kind,
         COLOR_SPACE_LINEAR,
+        wrap_mode=_tex_image_wrap_mode(image_node),
     )
     painter_name = _maybe_wrap_with_uv_transform(
         state, f"{material.name_full}_coat_normal", painter_name, texture_wrapper)
-    strength = float(_socket_default_float(normal_map_node, "Strength", 1.0))
     return painter_name, strength
 
 
-def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -> str | None:
+def _build_normal_map_modifier(
+    material,
+    normal_map_node,
+    state: _ExportState,
+    *,
+    bbox_min=None,
+    bbox_max=None,
+    material_pass_index: float = 0.0,
+    used_generated_out: list[bool] | None = None,
+    mesh_attrs_out: set[str] | None = None,
+    attr_types: dict[str, str] | None = None,
+) -> str | None:
     """Translate a ShaderNodeNormalMap into a RISE NormalMap modifier.
 
     Mirrors glTF KHR normalTexture semantics: the painter must be
     loaded as Rec709RGB_Linear (`COLOR_SPACE_LINEAR = 0`) so the
     RGB-encoded tangent stays bit-exact, and the strength scalar maps
-    to normalTexture.scale.
-    """
+    to normalTexture.scale.  Supports both direct image textures and
+    expression-compiled normal color graphs (e.g. DirectX Invert G groups)."""
 
     if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
         _warn_once(state, f"RISE only supports tangent-space Normal Map nodes on '{material.name_full}'.")
@@ -1871,31 +2699,54 @@ def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -
         _warn_once(state, f"RISE only supports image-driven Normal Map nodes on '{material.name_full}'.")
         return None
 
-    image_node = _walk_socket_for_image_node(color_input)
-    if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
-        _warn_once(state, f"RISE only supports direct image textures as Normal Map sources on '{material.name_full}'.")
-        return None
+    painter_name: str | None = None
+    if not _is_direct_simple_image_socket(color_input):
+        img_resolver = _DeferredExprImageResolver(state, f"{material.name_full}_normal")
+        compiled = procedural_expr.compile_socket_expression(
+            color_input,
+            want_type="vec3",
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=img_resolver,
+        )
+        if compiled is not None:
+            img_resolver.commit()
+            if used_generated_out is not None and compiled.uses_generated:
+                used_generated_out.append(True)
+            if mesh_attrs_out is not None and compiled.mesh_attributes:
+                mesh_attrs_out.update(compiled.mesh_attributes)
+            painter_name = _add_expression_painter(state, f"{material.name_full}_normal_expr", compiled.expression)
 
-    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
-    validated = _validate_texture_wrapper(texture_wrapper, state, f"the Normal Map on '{material.name_full}'")
-    if not validated:
-        return None
+    if painter_name is None:
+        image_node = _walk_socket_for_image_node(color_input)
+        if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
+            _warn_once(state, f"RISE only supports direct image textures as Normal Map sources on '{material.name_full}'.")
+            return None
 
-    filepath, _color_space_ignored = validated
-    kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-    # Normal-map painters MUST be loaded as Rec709RGB_Linear
-    # (`COLOR_SPACE_LINEAR = 0`) -- RISE's native working space -- to
-    # bypass both gamma decoding AND any colour-space primary matrix
-    # that would warp the encoded tangent (matching GLTFSceneImporter).
-    painter_name = _add_texture_painter(
-        state,
-        f"{material.name_full}_normal",
-        filepath,
-        kind,
-        COLOR_SPACE_LINEAR,
-    )
-    painter_name = _maybe_wrap_with_uv_transform(
-        state, f"{material.name_full}_normal", painter_name, texture_wrapper)
+        texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
+        validated = _validate_texture_wrapper(texture_wrapper, state, f"the Normal Map on '{material.name_full}'")
+        if not validated:
+            return None
+
+        filepath, _color_space_ignored = validated
+        kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+        # Normal-map painters MUST be loaded as Rec709RGB_Linear
+        # (`COLOR_SPACE_LINEAR = 0`) -- RISE's native working space -- to
+        # bypass both gamma decoding AND any colour-space primary matrix
+        # that would warp the encoded tangent (matching GLTFSceneImporter).
+        painter_name = _add_texture_painter(
+            state,
+            f"{material.name_full}_normal",
+            filepath,
+            kind,
+            COLOR_SPACE_LINEAR,
+            wrap_mode=_tex_image_wrap_mode(image_node),
+        )
+        painter_name = _maybe_wrap_with_uv_transform(
+            state, f"{material.name_full}_normal", painter_name, texture_wrapper)
+
     strength = _socket_default_float(normal_map_node, "Strength", 1.0)
     modifier_key = ("normal_map", painter_name, round(strength, 6))
     if modifier_key in state.modifier_cache:
@@ -2136,14 +2987,24 @@ def _find_world_output(world):
     return None
 
 
-def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _MaterialBinding:
+def _material_payload(
+    material,
+    state: _ExportState,
+    mesh_bbox=None,
+    attr_types: dict[str, str] | None = None,
+) -> _MaterialBinding:
     key = _pointer_key(material)
     bbox_key = None
     if mesh_bbox is not None:
         bmin, bmax = mesh_bbox
         bbox_key = tuple(round(float(v), 6) for v in (*bmin, *bmax))
-    if (key, bbox_key) in state.material_map:
-        return state.material_map[(key, bbox_key)]
+    float2_sig = tuple(sorted(k for k, v in (attr_types or {}).items() if v == "FLOAT2"))
+    if ("gen_attr", key, bbox_key, float2_sig) in state.material_map:
+        return state.material_map[("gen_attr", key, bbox_key, float2_sig)]
+    if ("attr", key, float2_sig) in state.material_map:
+        return state.material_map[("attr", key, float2_sig)]
+    if ("gen", key, bbox_key) in state.material_map:
+        return state.material_map[("gen", key, bbox_key)]
     if key in state.material_map:
         return state.material_map[key]
 
@@ -2258,11 +3119,73 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     # Official wrapper scans node order without renderer-target semantics.
     # Bind its read-only accessors to the SAME selected Surface/socket as the
     # classifier and direction producer, retaining supported texture access.
-    from .material_bake import _find_principled_through_surface
+    from .material_bake import (
+        MixLeafSpec,
+        _find_principled_through_surface,
+        find_simple_bsdf_through_surface,
+        flatten_mix_shader_surface,
+    )
     selected_output = _find_material_output(material)
     wrapper.node_out = selected_output
     wrapper.node_principled_bsdf = _find_principled_through_surface(selected_output)
     if wrapper.node_principled_bsdf is None:
+        # Standalone Diffuse / Glossy (Anisotropic) / Emission surface root.
+        simple_bsdf = find_simple_bsdf_through_surface(selected_output)
+        if simple_bsdf is not None:
+            leaf_kind, bsdf_node = simple_bsdf
+            leaf_spec = MixLeafSpec(kind=leaf_kind, node=bsdf_node, factors=())
+            mat_name, mod_name, used_generated_coords, mesh_attrs = _export_simple_bsdf_leaf(
+                material,
+                leaf_spec,
+                state,
+                label_prefix=material.name_full,
+                mesh_bbox=mesh_bbox,
+                attr_types=attr_types,
+            )
+            if mat_name is not None:
+                binding = _MaterialBinding(
+                    surface_material_name=mat_name,
+                    modifier_name=mod_name,
+                    interior_medium_name=None,
+                    double_sided=not getattr(material, "use_backface_culling", False),
+                    mesh_attributes=tuple(sorted(mesh_attrs)),
+                )
+                uses_mesh_attrs = bool(binding.mesh_attributes)
+                if used_generated_coords and uses_mesh_attrs:
+                    cache_key = ("gen_attr", key, bbox_key, float2_sig)
+                elif uses_mesh_attrs:
+                    cache_key = ("attr", key, float2_sig)
+                elif used_generated_coords:
+                    cache_key = ("gen", key, bbox_key)
+                else:
+                    cache_key = key
+                state.material_map[cache_key] = binding
+                return binding
+
+        # ABI v21: native ShaderNodeMixShader -> RISE `mix_material` with
+        # per-leaf modifiers and pass-through support.
+        mix_leaves = flatten_mix_shader_surface(selected_output)
+        if mix_leaves is not None:
+            mix_result = _export_mix_shader_material(
+                material, mix_leaves, state, mesh_bbox=mesh_bbox, attr_types=attr_types
+            )
+            if mix_result is not None:
+                binding, used_generated_coords = mix_result
+                # R2 P1-1: any material referencing a ShaderNodeAttribute must
+                # key on float2_sig (even when empty) so a non-FLOAT2 mesh
+                # cannot poison bare `key` for a later FLOAT2 mesh sharing the material.
+                uses_mesh_attrs = bool(binding.mesh_attributes)
+                if used_generated_coords and uses_mesh_attrs:
+                    cache_key = ("gen_attr", key, bbox_key, float2_sig)
+                elif uses_mesh_attrs:
+                    cache_key = ("attr", key, float2_sig)
+                elif used_generated_coords:
+                    cache_key = ("gen", key, bbox_key)
+                else:
+                    cache_key = key
+                state.material_map[cache_key] = binding
+                return binding
+
         # PrincipledBSDFWrapper couldn't trace from Material Output
         # Surface back to a single Principled BSDF — usually because
         # the Material Output is fed by a Mix Shader / Add Shader
@@ -2300,6 +3223,415 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
             state.material_map[key] = binding
             return binding
 
+    binding, used_generated_coords = _export_principled_binding(
+        material,
+        wrapper,
+        state,
+        label_prefix=material.name_full,
+        mesh_bbox=mesh_bbox,
+        allow_volume=True,
+        allow_dielectric=True,
+        attr_types=attr_types,
+    )
+    uses_mesh_attrs = bool(binding.mesh_attributes)
+    if used_generated_coords and uses_mesh_attrs:
+        cache_key = ("gen_attr", key, bbox_key, float2_sig)
+    elif uses_mesh_attrs:
+        cache_key = ("attr", key, float2_sig)
+    elif used_generated_coords:
+        cache_key = ("gen", key, bbox_key)
+    else:
+        cache_key = key
+    state.material_map[cache_key] = binding
+    return binding
+
+
+def _is_pure_float_literal(expr: str) -> bool:
+    if "\n" in expr or not expr.strip():
+        return False
+    try:
+        v = float(expr.strip())
+        return math.isfinite(v)
+    except ValueError:
+        return False
+
+
+def _export_simple_bsdf_leaf(
+    material,
+    leaf,
+    state: _ExportState,
+    *,
+    label_prefix: str,
+    mesh_bbox=None,
+    attr_types: dict[str, str] | None = None,
+) -> tuple[str | None, str | None, bool, set[str]]:
+    """Export one non-Principled leaf of a ``ShaderNodeMixShader`` tree.
+
+    Returns ``(material_name_or_none, modifier_name_or_none, used_generated, mesh_attrs)``.
+    """
+    bbox_min = mesh_bbox[0] if mesh_bbox is not None else None
+    bbox_max = mesh_bbox[1] if mesh_bbox is not None else None
+    material_pass_index = float(getattr(material, "pass_index", 0))
+    double_sided = not getattr(material, "use_backface_culling", False)
+    used_generated = False
+    mesh_attrs: set[str] = set()
+
+    if leaf.kind == "absorber" or leaf.node is None:
+        return (None, None, False, mesh_attrs)
+
+    node = leaf.node
+
+    def _leaf_expr(socket_name: str, suffix: str, want_type: str, scale=None) -> str | None:
+        nonlocal used_generated
+        sock = _node_input(node, socket_name)
+        img_resolver = _DeferredExprImageResolver(state, f"{label_prefix}_{suffix}")
+        compiled = procedural_expr.compile_socket_expression(
+            sock,
+            want_type=want_type,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            scale=scale,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=img_resolver,
+        )
+        if compiled is None:
+            return None
+        img_resolver.commit()
+        if compiled.uses_generated:
+            used_generated = True
+        if compiled.mesh_attributes:
+            mesh_attrs.update(compiled.mesh_attributes)
+        return _add_expression_painter(state, f"{label_prefix}_{suffix}", compiled.expression)
+
+    if leaf.kind == "diffuse":
+        diff_rough = _socket_default_float(node, "Roughness", 0.0)
+        diff_rough_sock = _node_input(node, "Roughness")
+        if diff_rough > 1e-4 or (diff_rough_sock is not None and diff_rough_sock.is_linked):
+            _warn_once(
+                state,
+                f"RISE approximates Diffuse BSDF Roughness as Lambertian on '{material.name_full}'.",
+            )
+        col = _socket_default_color(node, "Color", (0.8, 0.8, 0.8))
+        col_sock = _node_input(node, "Color")
+        col_expr = None if _is_direct_simple_image_socket(col_sock) else _leaf_expr("Color", "diff_expr", "vec3")
+        col_tex = None if col_expr is not None else _maybe_resolve_socket_texture(node, "Color", None, colorspace_is_data=False)
+        if col_tex is None and col_expr is None and col_sock is not None and any(
+            not getattr(lk, "is_muted", False) for lk in col_sock.links
+        ):
+            _warn_once(
+                state,
+                f"RISE could not translate the linked Diffuse Color on '{material.name_full}'; using its default value.",
+            )
+        col_painter = col_expr if col_expr is not None else _color_or_texture_painter(
+            state, f"{label_prefix}_diff", col, texture_wrapper=col_tex
+        )
+        norm_gen: list[bool] = []
+        mod_name = _direct_normal_modifier_for_node(
+            material, node, state,
+            bbox_min=bbox_min, bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            used_generated_out=norm_gen, mesh_attrs_out=mesh_attrs,
+            attr_types=attr_types,
+        )
+        if norm_gen:
+            used_generated = True
+        mat_name = _unique_name(state, "mat", label_prefix)
+        state.materials.append(MaterialData(
+            name=mat_name,
+            model=MATERIAL_LAMBERT,
+            diffuse_painter_name=col_painter,
+            double_sided=double_sided,
+        ))
+        return (mat_name, mod_name, used_generated, mesh_attrs)
+
+    if leaf.kind == "glossy":
+        aniso_val = _socket_default_float(node, "Anisotropy", 0.0)
+        aniso_sock = _node_input(node, "Anisotropy")
+        tang_sock = _node_input(node, "Tangent")
+        if abs(aniso_val) > 1e-4 or (aniso_sock is not None and aniso_sock.is_linked) or (tang_sock is not None and tang_sock.is_linked):
+            _warn_once(
+                state,
+                f"RISE ignores Glossy/Anisotropic BSDF Anisotropy/Tangent on '{material.name_full}'.",
+            )
+        col = _socket_default_color(node, "Color", (0.8, 0.8, 0.8))
+        col_sock = _node_input(node, "Color")
+        col_expr = None if _is_direct_simple_image_socket(col_sock) else _leaf_expr("Color", "glossy_col_expr", "vec3")
+        col_tex = None if col_expr is not None else _maybe_resolve_socket_texture(node, "Color", None, colorspace_is_data=False)
+        col_has_links = bool(col_sock is not None and col_sock.is_linked and any(not getattr(lk, "is_muted", False) for lk in col_sock.links))
+        if col_has_links and col_expr is None and col_tex is None:
+            _warn_once(
+                state,
+                f"RISE reads Glossy BSDF Color on '{material.name_full}' at its socket default; "
+                f"the linked graph could not be translated.",
+            )
+        col_painter = col_expr if col_expr is not None else _color_or_texture_painter(
+            state, f"{label_prefix}_glossy_col", col, texture_wrapper=col_tex
+        )
+        rough = _clamp01(_socket_default_float(node, "Roughness", 0.5))
+        rough_sock = _node_input(node, "Roughness")
+        rough_expr = None if _is_direct_simple_image_socket(rough_sock) else _leaf_expr("Roughness", "glossy_rough_expr", "scalar")
+        rough_tex = None if rough_expr is not None else _maybe_resolve_socket_texture(node, "Roughness", None, colorspace_is_data=True)
+        rough_has_links = bool(rough_sock is not None and rough_sock.is_linked and any(not getattr(lk, "is_muted", False) for lk in rough_sock.links))
+        if rough_has_links and rough_expr is None and rough_tex is None:
+            _warn_once(
+                state,
+                f"RISE reads Glossy BSDF Roughness on '{material.name_full}' at its socket default; "
+                f"the linked graph could not be translated.",
+            )
+        rough_painter = rough_expr if rough_expr is not None else _scalar_or_texture_painter(
+            state, f"{label_prefix}_glossy_rough", rough, texture_wrapper=rough_tex
+        )
+        metallic_painter = _add_uniform_painter(state, f"{label_prefix}_glossy_metal", (1.0, 1.0, 1.0))
+        norm_gen = []
+        mod_name = _direct_normal_modifier_for_node(
+            material, node, state,
+            bbox_min=bbox_min, bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            used_generated_out=norm_gen, mesh_attrs_out=mesh_attrs,
+            attr_types=attr_types,
+        )
+        if norm_gen:
+            used_generated = True
+        mat_name = _unique_name(state, "mat", label_prefix)
+        state.materials.append(MaterialData(
+            name=mat_name,
+            model=MATERIAL_PBR_METALLIC_ROUGHNESS,
+            base_color_painter_name=col_painter,
+            metallic_painter_name=metallic_painter,
+            roughness_painter_name=rough_painter,
+            double_sided=double_sided,
+        ))
+        return (mat_name, mod_name, used_generated, mesh_attrs)
+
+    if leaf.kind == "emission":
+        ec = _socket_default_color(node, "Color", (1.0, 1.0, 1.0))
+        es = max(0.0, _socket_default_float(node, "Strength", 1.0))
+        ec_sock = _node_input(node, "Color")
+        es_sock = _node_input(node, "Strength")
+        em_painter = None
+        if ec_sock is not None and es_sock is not None and ec_sock.is_linked and es_sock.is_linked:
+            pair_resolver = _DeferredExprImageResolver(state, f"{label_prefix}_emit_pair")
+            paired = procedural_expr.compile_socket_product_expression(
+                ec_sock,
+                es_sock,
+                bbox_min=bbox_min,
+                bbox_max=bbox_max,
+                material_pass_index=material_pass_index,
+                attr_types=attr_types,
+                image_resolver=pair_resolver,
+            )
+            if paired is not None:
+                pair_resolver.commit()
+                if paired.uses_generated:
+                    used_generated = True
+                if paired.mesh_attributes:
+                    mesh_attrs.update(paired.mesh_attributes)
+                em_painter = _add_expression_painter(state, f"{label_prefix}_emit_expr", paired.expression)
+        if em_painter is None:
+            ec_expr = (
+                None if _is_direct_simple_image_socket(ec_sock)
+                else (_leaf_expr("Color", "emit_expr", "vec3", scale=(es, es, es)) if es > 1e-6 else None)
+            )
+            ec_tex = None if ec_expr is not None else _maybe_resolve_socket_texture(node, "Color", None, colorspace_is_data=False)
+            es_expr = (
+                None if (ec_expr is not None or ec_tex is not None or _is_direct_simple_image_socket(es_sock))
+                else _leaf_expr("Strength", "emit_str_expr", "scalar", scale=ec)
+            )
+            es_tex = None if (ec_expr is not None or ec_tex is not None or es_expr is not None) else _maybe_resolve_socket_texture(node, "Strength", None, colorspace_is_data=True)
+            if ec_expr is not None:
+                em_painter = ec_expr
+            elif ec_tex is not None:
+                em_painter = _color_or_texture_painter(
+                    state, f"{label_prefix}_emit", ec, texture_wrapper=ec_tex, scale=(es, es, es)
+                )
+            elif es_expr is not None:
+                em_painter = es_expr
+            elif es_tex is not None:
+                em_painter = _scalar_or_texture_painter(
+                    state, f"{label_prefix}_emit", es, texture_wrapper=es_tex, scale=max(ec)
+                )
+            elif es > 1e-6 and max(ec) > 1e-6:
+                em_painter = _add_uniform_painter(
+                    state, f"{label_prefix}_emit", (ec[0] * es, ec[1] * es, ec[2] * es)
+                )
+        black_painter = _add_uniform_painter(state, f"{label_prefix}_emit_black", (0.0, 0.0, 0.0))
+        mat_name = _unique_name(state, "mat", label_prefix)
+        state.materials.append(MaterialData(
+            name=mat_name,
+            model=MATERIAL_LAMBERT,
+            diffuse_painter_name=black_painter,
+            emission_painter_name=em_painter,
+            double_sided=double_sided,
+        ))
+        return (mat_name, None, used_generated, mesh_attrs)
+
+    return (None, None, False, mesh_attrs)
+
+
+def _export_mix_shader_material(
+    material,
+    mix_leaves,
+    state: _ExportState,
+    *,
+    mesh_bbox=None,
+    attr_types: dict[str, str] | None = None,
+) -> tuple[_MaterialBinding, bool] | None:
+    """Export a flattened ``ShaderNodeMixShader`` tree into RISE ``MATERIAL_MIX``."""
+    bbox_min = mesh_bbox[0] if mesh_bbox is not None else None
+    bbox_max = mesh_bbox[1] if mesh_bbox is not None else None
+    material_pass_index = float(getattr(material, "pass_index", 0))
+    double_sided = not getattr(material, "use_backface_culling", False)
+
+    # Compile ALL leaf weight expressions AND combined passthrough expression
+    # upfront so any unsupported factor or VM slot overflow fails cleanly
+    # without emitting orphaned child materials into state.materials (R1 B-P1-2).
+    compiled_weights: list[procedural_expr.CompiledExpression] = []
+    transparent_factor_lists: list[list] = []
+    mix_img_resolver = _DeferredExprImageResolver(state, f"{material.name_full}_mix")
+    for leaf in mix_leaves:
+        compiled = procedural_expr.compile_mix_weight_expression(
+            list(leaf.factors),
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=mix_img_resolver,
+        )
+        if compiled is None:
+            return None
+        compiled_weights.append(compiled)
+        if leaf.kind == "transparent":
+            transparent_factor_lists.append(list(leaf.factors))
+
+    compiled_passthrough: procedural_expr.CompiledExpression | None = None
+    if transparent_factor_lists:
+        compiled_passthrough = procedural_expr.compile_mix_passthrough_expression(
+            transparent_factor_lists,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=mix_img_resolver,
+        )
+        if compiled_passthrough is None:
+            return None
+    mix_img_resolver.commit()
+
+    used_generated_coords = False
+    used_mesh_attributes: set[str] = set()
+    mix_children: list[MixChildData] = []
+
+    for idx, (leaf, w_comp) in enumerate(zip(mix_leaves, compiled_weights)):
+        if leaf.kind == "transparent":
+            continue
+        if w_comp.uses_generated:
+            used_generated_coords = True
+        if w_comp.mesh_attributes:
+            used_mesh_attributes.update(w_comp.mesh_attributes)
+
+        leaf_prefix = f"{material.name_full}_leaf{idx}"
+        if leaf.kind == "principled":
+            leaf_binding, leaf_gen = _export_principled_binding(
+                material,
+                _FallbackPrincipledWrapper(leaf.node),
+                state,
+                label_prefix=leaf_prefix,
+                mesh_bbox=mesh_bbox,
+                allow_volume=False,
+                allow_dielectric=False,
+                attr_types=attr_types,
+            )
+            leaf_mat_name = leaf_binding.surface_material_name
+            leaf_mod_name = leaf_binding.modifier_name
+            if leaf_gen:
+                used_generated_coords = True
+            if leaf_binding.mesh_attributes:
+                used_mesh_attributes.update(leaf_binding.mesh_attributes)
+        else:
+            leaf_mat_name, leaf_mod_name, leaf_gen, leaf_attrs = _export_simple_bsdf_leaf(
+                material,
+                leaf,
+                state,
+                label_prefix=leaf_prefix,
+                mesh_bbox=mesh_bbox,
+                attr_types=attr_types,
+            )
+            if leaf_gen:
+                used_generated_coords = True
+            if leaf_attrs:
+                used_mesh_attributes.update(leaf_attrs)
+
+        if _is_pure_float_literal(w_comp.expression):
+            weight_spec = w_comp.expression.strip()
+        else:
+            weight_spec = _add_expression_painter(
+                state, f"{material.name_full}_mix_w{idx}", w_comp.expression
+            )
+        mix_children.append(
+            MixChildData(
+                material_name=leaf_mat_name,
+                weight_painter_name=weight_spec,
+                modifier_name=leaf_mod_name,
+            )
+        )
+
+    if not mix_children:
+        # Pure transparent-only MixShader tree (e.g. Mix(TransparentA, TransparentB)):
+        # MixMaterial requires >= 1 child, so emit a 0-weight absorber child while
+        # `passthrough_spec` carries the full straight-through transmission weight.
+        mix_children.append(
+            MixChildData(
+                material_name=None,
+                weight_painter_name="0.0",
+                modifier_name=None,
+            )
+        )
+
+    passthrough_spec: str | None = None
+    if compiled_passthrough is not None:
+        if compiled_passthrough.uses_generated:
+            used_generated_coords = True
+        if compiled_passthrough.mesh_attributes:
+            used_mesh_attributes.update(compiled_passthrough.mesh_attributes)
+        if _is_pure_float_literal(compiled_passthrough.expression):
+            pt_val = float(compiled_passthrough.expression.strip())
+            passthrough_spec = compiled_passthrough.expression.strip() if pt_val > 0.0 else None
+        else:
+            passthrough_spec = _add_expression_painter(
+                state, f"{material.name_full}_mix_passthrough", compiled_passthrough.expression
+            )
+
+    payload = MaterialData(
+        name=_unique_name(state, "mat", material.name_full),
+        model=MATERIAL_MIX,
+        double_sided=double_sided,
+        mix_children=mix_children,
+        mix_passthrough_painter_name=passthrough_spec,
+    )
+    state.materials.append(payload)
+    binding = _MaterialBinding(
+        surface_material_name=payload.name,
+        modifier_name=None,
+        interior_medium_name=None,
+        double_sided=double_sided,
+        shader_name=None,
+        mesh_attributes=tuple(sorted(used_mesh_attributes)),
+    )
+    return (binding, used_generated_coords)
+
+
+def _export_principled_binding(
+    material,
+    wrapper,
+    state: _ExportState,
+    *,
+    label_prefix: str,
+    mesh_bbox=None,
+    allow_volume: bool = True,
+    allow_dielectric: bool = True,
+    attr_types: dict[str, str] | None = None,
+) -> tuple[_MaterialBinding, bool]:
     # All per-socket lookups go through `_maybe_resolve_socket_texture`
     # so reroute / RGB-Curves / Mix chains feeding the Principled BSDF
     # still produce per-material textures.  `PrincipledBSDFWrapper`'s
@@ -2316,8 +3648,10 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     principled_node = wrapper.node_principled_bsdf
     bbox_min = mesh_bbox[0] if mesh_bbox is not None else None
     bbox_max = mesh_bbox[1] if mesh_bbox is not None else None
+    material_pass_index = float(getattr(material, "pass_index", 0))
     translated_sockets: set[str] = set()
     used_generated_coords = False
+    used_mesh_attributes: set[str] = set()
 
     def _try_expr_painter(
         socket_name: str,
@@ -2327,72 +3661,74 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     ) -> str | None:
         nonlocal used_generated_coords
         sock = _node_input(principled_node, socket_name)
+        img_resolver = _DeferredExprImageResolver(state, label)
         compiled = procedural_expr.compile_socket_expression(
             sock,
             want_type=want_type,
             bbox_min=bbox_min,
             bbox_max=bbox_max,
             scale=scale,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=img_resolver,
         )
         if compiled is None:
             return None
+        img_resolver.commit()
         translated_sockets.add(socket_name)
         if compiled.uses_generated:
             used_generated_coords = True
+        if compiled.mesh_attributes:
+            used_mesh_attributes.update(compiled.mesh_attributes)
         return _add_expression_painter(state, label, compiled.expression)
 
+    def _resolve_color_or_expr(
+        socket_name: str,
+        label: str,
+        default_color: tuple[float, float, float],
+        wrapper_tex,
+        scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    ):
+        sock = _node_input(principled_node, socket_name)
+        if not _is_direct_simple_image_socket(sock):
+            expr_pnt = _try_expr_painter(socket_name, f"{label}_expr", "vec3", scale=scale)
+            if expr_pnt is not None:
+                return expr_pnt, None
+        tex = _maybe_resolve_socket_texture(principled_node, socket_name, wrapper_tex, colorspace_is_data=False)
+        return _color_or_texture_painter(state, label, default_color, texture_wrapper=tex, scale=scale), tex
+
+    def _resolve_scalar_or_expr(
+        socket_name: str,
+        label: str,
+        default_val: float,
+        wrapper_tex,
+        scale: float = 1.0,
+    ):
+        sock = _node_input(principled_node, socket_name)
+        if not _is_direct_simple_image_socket(sock):
+            expr_pnt = _try_expr_painter(socket_name, f"{label}_expr", "scalar", scale=scale)
+            if expr_pnt is not None:
+                return expr_pnt, None
+        tex = _maybe_resolve_socket_texture(principled_node, socket_name, wrapper_tex, colorspace_is_data=True)
+        return _scalar_or_texture_painter(state, label, default_val, texture_wrapper=tex, scale=scale), tex
+
     base_color = _float_color3(wrapper.base_color)
-    base_color_texture = _maybe_resolve_socket_texture(
-        principled_node, "Base Color",
-        wrapper.base_color_texture,
-        colorspace_is_data=False,
+    base_painter, base_color_texture = _resolve_color_or_expr(
+        "Base Color", f"{material.name_full}_base", base_color, wrapper.base_color_texture
     )
-    base_expr = (
-        _try_expr_painter("Base Color", f"{material.name_full}_base_expr", "vec3")
-        if base_color_texture is None else None
-    )
-    base_painter = base_expr if base_expr is not None else _color_or_texture_painter(
-        state,
-        f"{material.name_full}_base",
-        base_color,
-        texture_wrapper=base_color_texture,
-    )
+    base_expr = base_painter if "Base Color" in translated_sockets else None
 
     metallic = _clamp01(wrapper.metallic)
-    metallic_texture = _maybe_resolve_socket_texture(
-        principled_node, "Metallic",
-        wrapper.metallic_texture,
-        colorspace_is_data=True,
-    )
-    metallic_expr = (
-        _try_expr_painter("Metallic", f"{material.name_full}_metallic_expr", "scalar")
-        if metallic_texture is None else None
-    )
-    metallic_painter = metallic_expr if metallic_expr is not None else _scalar_or_texture_painter(
-        state,
-        f"{material.name_full}_metallic",
-        metallic,
-        texture_wrapper=metallic_texture,
+    metallic_painter, metallic_texture = _resolve_scalar_or_expr(
+        "Metallic", f"{material.name_full}_metallic", metallic, wrapper.metallic_texture
     )
 
     # RISE_API_CreatePBRMetallicRoughnessMaterial squares roughness
     # internally into the GGX alpha, so we hand it the raw roughness
     # value (or texture) — no need to pre-square here.
     roughness = _clamp01(wrapper.roughness)
-    roughness_texture = _maybe_resolve_socket_texture(
-        principled_node, "Roughness",
-        wrapper.roughness_texture,
-        colorspace_is_data=True,
-    )
-    roughness_expr = (
-        _try_expr_painter("Roughness", f"{material.name_full}_roughness_expr", "scalar")
-        if roughness_texture is None else None
-    )
-    roughness_painter = roughness_expr if roughness_expr is not None else _scalar_or_texture_painter(
-        state,
-        f"{material.name_full}_roughness",
-        roughness,
-        texture_wrapper=roughness_texture,
+    roughness_painter, roughness_texture = _resolve_scalar_or_expr(
+        "Roughness", f"{material.name_full}_roughness", roughness, wrapper.roughness_texture
     )
 
     # Specular IOR Level slot — KHR_materials_specular `specular_factor`.
@@ -2401,21 +3737,8 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     # 0.5 needs to map to RISE's specular_factor=1.0.  Multiplying by 2
     # bridges the conventions exactly.
     specular = _clamp01(wrapper.specular)
-    specular_texture = _maybe_resolve_socket_texture(
-        principled_node, "Specular IOR Level",
-        wrapper.specular_texture,
-        colorspace_is_data=True,
-    )
-    specular_expr = (
-        _try_expr_painter("Specular IOR Level", f"{material.name_full}_specular_factor_expr", "scalar", scale=2.0)
-        if specular_texture is None else None
-    )
-    specular_factor_painter = specular_expr if specular_expr is not None else _scalar_or_texture_painter(
-        state,
-        f"{material.name_full}_specular_factor",
-        specular,
-        texture_wrapper=specular_texture,
-        scale=2.0,
+    specular_factor_painter, specular_texture = _resolve_scalar_or_expr(
+        "Specular IOR Level", f"{material.name_full}_specular_factor", specular, wrapper.specular_texture, scale=2.0
     )
 
     # Specular Tint slot -- KHR_materials_specular `specularColorFactor`
@@ -2465,16 +3788,16 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
             )
     elif specular_tint_socket is not None:
         specular_tint_default = _socket_default_color(principled_node, "Specular Tint", (1.0, 1.0, 1.0))
-        specular_tint_texture = _maybe_resolve_socket_texture(
-            principled_node, "Specular Tint", None, colorspace_is_data=False,
-        )
         specular_tint_expr = (
-            _try_expr_painter("Specular Tint", f"{material.name_full}_specular_tint_expr", "vec3")
-            if specular_tint_texture is None else None
+            None if _is_direct_simple_image_socket(specular_tint_socket)
+            else _try_expr_painter("Specular Tint", f"{material.name_full}_specular_tint_expr", "vec3")
         )
         if specular_tint_expr is not None:
             specular_color_painter = specular_tint_expr
         else:
+            specular_tint_texture = _maybe_resolve_socket_texture(
+                principled_node, "Specular Tint", None, colorspace_is_data=False,
+            )
             is_default_white = (
                 specular_tint_texture is None
                 and abs(specular_tint_default[0] - 1.0) < 1e-4
@@ -2550,41 +3873,31 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     sheen_roughness_texture_painter = None
     if sheen_weight > 1e-4:
         sheen_tint = _socket_default_color(principled_node, "Sheen Tint", (1.0, 1.0, 1.0))
-        sheen_tint_texture = _maybe_resolve_socket_texture(
-            principled_node, "Sheen Tint", None, colorspace_is_data=False,
-        )
-        sheen_tint_expr = (
-            _try_expr_painter(
-                "Sheen Tint",
-                f"{material.name_full}_sheen_color_expr",
-                "vec3",
-                scale=(sheen_weight, sheen_weight, sheen_weight),
-            )
-            if sheen_tint_texture is None else None
-        )
-        sheen_color_painter = sheen_tint_expr if sheen_tint_expr is not None else _color_or_texture_painter(
-            state,
+        sheen_color_painter, _ = _resolve_color_or_expr(
+            "Sheen Tint",
             f"{material.name_full}_sheen_color",
             sheen_tint,
-            texture_wrapper=sheen_tint_texture,
+            None,
             scale=(sheen_weight, sheen_weight, sheen_weight),
         )
 
         sheen_roughness_value = _clamp01(_socket_default_float(principled_node, "Sheen Roughness", 0.5))
-        sheen_roughness_texture = _maybe_resolve_socket_texture(
-            principled_node, "Sheen Roughness", None, colorspace_is_data=True,
-        )
-        if sheen_roughness_texture is not None:
-            sheen_roughness_texture_painter = _scalar_or_texture_painter(
-                state,
-                f"{material.name_full}_sheen_roughness",
-                sheen_roughness_value,
-                texture_wrapper=sheen_roughness_texture,
-            )
-        else:
+        sheen_rough_sock = _node_input(principled_node, "Sheen Roughness")
+        if not _is_direct_simple_image_socket(sheen_rough_sock):
             sheen_roughness_texture_painter = _try_expr_painter(
                 "Sheen Roughness", f"{material.name_full}_sheen_roughness_expr", "scalar"
             )
+        if sheen_roughness_texture_painter is None:
+            sheen_roughness_texture = _maybe_resolve_socket_texture(
+                principled_node, "Sheen Roughness", None, colorspace_is_data=True,
+            )
+            if sheen_roughness_texture is not None:
+                sheen_roughness_texture_painter = _scalar_or_texture_painter(
+                    state,
+                    f"{material.name_full}_sheen_roughness",
+                    sheen_roughness_value,
+                    texture_wrapper=sheen_roughness_texture,
+                )
 
     # Coat (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
     # sibling audit) -- Blender's Principled "Coat Weight" / "Coat
@@ -2602,20 +3915,21 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     coat_weight_socket = _node_input(principled_node, "Coat Weight")
     coat_weight_texture_painter = None
     if coat_weight_socket is not None and coat_weight_socket.is_linked:
-        coat_weight_texture = _maybe_resolve_socket_texture(
-            principled_node, "Coat Weight", None, colorspace_is_data=True,
-        )
-        if coat_weight_texture is not None:
-            coat_weight_texture_painter = _scalar_or_texture_painter(
-                state,
-                f"{material.name_full}_coat_weight",
-                coat_weight_value,
-                texture_wrapper=coat_weight_texture,
-            )
-        else:
+        if not _is_direct_simple_image_socket(coat_weight_socket):
             coat_weight_texture_painter = _try_expr_painter(
                 "Coat Weight", f"{material.name_full}_coat_weight_expr", "scalar"
             )
+        if coat_weight_texture_painter is None:
+            coat_weight_texture = _maybe_resolve_socket_texture(
+                principled_node, "Coat Weight", None, colorspace_is_data=True,
+            )
+            if coat_weight_texture is not None:
+                coat_weight_texture_painter = _scalar_or_texture_painter(
+                    state,
+                    f"{material.name_full}_coat_weight",
+                    coat_weight_value,
+                    texture_wrapper=coat_weight_texture,
+                )
         if coat_weight_texture_painter is None:
             _warn_once(
                 state,
@@ -2632,16 +3946,17 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     coat_contributes = coat_weight_value > 1e-4 or coat_weight_texture_painter is not None
     if coat_contributes:
         coat_tint_default = _socket_default_color(principled_node, "Coat Tint", (1.0, 1.0, 1.0))
-        coat_tint_texture = _maybe_resolve_socket_texture(
-            principled_node, "Coat Tint", None, colorspace_is_data=False,
-        )
+        coat_tint_sock = _node_input(principled_node, "Coat Tint")
         coat_tint_expr = (
             _try_expr_painter("Coat Tint", f"{material.name_full}_coat_tint_expr", "vec3")
-            if coat_tint_texture is None else None
+            if not _is_direct_simple_image_socket(coat_tint_sock) else None
         )
         if coat_tint_expr is not None:
             coat_tint_painter = coat_tint_expr
         else:
+            coat_tint_texture = _maybe_resolve_socket_texture(
+                principled_node, "Coat Tint", None, colorspace_is_data=False,
+            )
             is_default_white = (
                 coat_tint_texture is None
                 and abs(coat_tint_default[0] - 1.0) < 1e-4
@@ -2657,20 +3972,22 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
                 )
 
         coat_roughness_value = _clamp01(_socket_default_float(principled_node, "Coat Roughness", 0.03))
-        coat_roughness_texture = _maybe_resolve_socket_texture(
-            principled_node, "Coat Roughness", None, colorspace_is_data=True,
-        )
-        if coat_roughness_texture is not None:
-            coat_roughness_texture_painter = _scalar_or_texture_painter(
-                state,
-                f"{material.name_full}_coat_roughness",
-                coat_roughness_value,
-                texture_wrapper=coat_roughness_texture,
-            )
-        else:
+        coat_rough_sock = _node_input(principled_node, "Coat Roughness")
+        if not _is_direct_simple_image_socket(coat_rough_sock):
             coat_roughness_texture_painter = _try_expr_painter(
                 "Coat Roughness", f"{material.name_full}_coat_roughness_expr", "scalar"
             )
+        if coat_roughness_texture_painter is None:
+            coat_roughness_texture = _maybe_resolve_socket_texture(
+                principled_node, "Coat Roughness", None, colorspace_is_data=True,
+            )
+            if coat_roughness_texture is not None:
+                coat_roughness_texture_painter = _scalar_or_texture_painter(
+                    state,
+                    f"{material.name_full}_coat_roughness",
+                    coat_roughness_value,
+                    texture_wrapper=coat_roughness_texture,
+                )
 
         coat_ior_socket = _node_input(principled_node, "Coat IOR")
         if coat_ior_socket is not None and coat_ior_socket.is_linked:
@@ -2689,16 +4006,35 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
         # coat's own GGX lobe).  Mirrors `_direct_normal_modifier`'s own
         # "direct Normal Map node, or warn" gate.
         coat_normal_input = _node_input(principled_node, "Coat Normal")
-        if coat_normal_input is not None and coat_normal_input.is_linked:
-            coat_normal_source = _skip_reroutes(coat_normal_input.links[0].from_node)
-            if coat_normal_source is not None and coat_normal_source.bl_idname == "ShaderNodeNormalMap":
-                coat_normal_painter, coat_normal_scale = _build_coat_normal_painter(
-                    material, coat_normal_source, state)
-            else:
-                _warn_once(
-                    state,
-                    f"RISE only supports a direct Normal Map node on Coat Normal for '{material.name_full}'.",
-                )
+        coat_normal_links = (
+            [lk for lk in coat_normal_input.links if not getattr(lk, "is_muted", False)]
+            if (coat_normal_input is not None and coat_normal_input.is_linked) else []
+        )
+        if coat_normal_links:
+            coat_normal_source = _skip_reroutes_and_muted(
+                coat_normal_links[0].from_node, coat_normal_links[0].from_socket
+            )
+            if coat_normal_source is not None:
+                if coat_normal_source.bl_idname == "ShaderNodeNormalMap":
+                    coat_norm_gen: list[bool] = []
+                    coat_normal_painter, coat_normal_scale = _build_coat_normal_painter(
+                        material,
+                        coat_normal_source,
+                        state,
+                        bbox_min=bbox_min,
+                        bbox_max=bbox_max,
+                        material_pass_index=material_pass_index,
+                        used_generated_out=coat_norm_gen,
+                        mesh_attrs_out=used_mesh_attributes,
+                        attr_types=attr_types,
+                    )
+                    if coat_norm_gen:
+                        used_generated_coords = True
+                else:
+                    _warn_once(
+                        state,
+                        f"RISE only supports a direct Normal Map node on Coat Normal for '{material.name_full}'.",
+                    )
 
         # LAYERING DECISION (docs/BLENDER_MATERIAL_TRANSLATION.md "Coat
         # and Subsurface"), UPDATED 2026-09-27: this USED TO warn and
@@ -2803,7 +4139,7 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
             _socket_default_float(principled_node, "Subsurface Anisotropy", 0.0))))
 
         albedo_source = base_color
-        if base_color_texture is not None:
+        if base_color_texture is not None or base_expr is not None:
             _warn_once(
                 state,
                 f"RISE approximates Subsurface on '{material.name_full}' using Base Color's socket "
@@ -2860,48 +4196,68 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
             state,
             f"RISE treats '{material.name_full}' as a transmissive material because its Transmission input is texture-driven.",
         )
-    transmission_heavy = transmission_texture is not None or transmission >= 0.05
+    transmission_heavy = allow_dielectric and (transmission_texture is not None or transmission >= 0.05)
 
     emission_painter = None
     emission_color = _float_color3(wrapper.emission_color)
     emission_strength = max(0.0, float(wrapper.emission_strength))
-    emission_color_texture = _maybe_resolve_socket_texture(
-        principled_node, "Emission Color",
-        wrapper.emission_color_texture,
-        colorspace_is_data=False,
-    )
-    emission_strength_texture = _maybe_resolve_socket_texture(
-        principled_node, "Emission Strength",
-        wrapper.emission_strength_texture,
-        colorspace_is_data=True,
-    )
-    if emission_color_texture is not None and emission_strength_texture is not None:
-        _warn_once(
-            state,
-            f"RISE only supports one textured emission input on '{material.name_full}'. The emission strength texture is ignored.",
+    ec_sock = _node_input(principled_node, "Emission Color")
+    es_sock = _node_input(principled_node, "Emission Strength")
+    ec_direct_img = _is_direct_simple_image_socket(ec_sock)
+    es_direct_img = _is_direct_simple_image_socket(es_sock)
+    emission_color_texture = (
+        _maybe_resolve_socket_texture(
+            principled_node, "Emission Color",
+            wrapper.emission_color_texture,
+            colorspace_is_data=False,
         )
-        emission_strength_texture = None
+        if ec_direct_img else None
+    )
+    emission_strength_texture = (
+        _maybe_resolve_socket_texture(
+            principled_node, "Emission Strength",
+            wrapper.emission_strength_texture,
+            colorspace_is_data=True,
+        )
+        if es_direct_img else None
+    )
 
+    ec_has_links = bool(ec_sock is not None and ec_sock.is_linked and any(not getattr(lk, "is_muted", False) for lk in ec_sock.links))
+    es_has_links = bool(es_sock is not None and es_sock.is_linked and any(not getattr(lk, "is_muted", False) for lk in es_sock.links))
     emission_paired_expr = None
-    if emission_color_texture is None and emission_strength_texture is None:
-        ec_sock = _node_input(principled_node, "Emission Color")
-        es_sock = _node_input(principled_node, "Emission Strength")
+    if ec_has_links and es_has_links:
+        paired_img_resolver = _DeferredExprImageResolver(state, f"{label_prefix}_emission_expr")
         paired = procedural_expr.compile_socket_product_expression(
             ec_sock,
             es_sock,
             bbox_min=bbox_min,
             bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=paired_img_resolver,
         )
         if paired is not None:
+            paired_img_resolver.commit()
             translated_sockets.add("Emission Color")
             translated_sockets.add("Emission Strength")
             if paired.uses_generated:
                 used_generated_coords = True
+            if paired.mesh_attributes:
+                used_mesh_attributes.update(paired.mesh_attributes)
             emission_paired_expr = _add_expression_painter(
                 state,
-                f"{material.name_full}_emission_expr",
+                f"{label_prefix}_emission_expr",
                 paired.expression,
             )
+            emission_color_texture = None
+            emission_strength_texture = None
+
+    if emission_paired_expr is None and emission_color_texture is not None and emission_strength_texture is not None:
+        _warn_once(
+            state,
+            f"RISE only supports one textured emission input on '{material.name_full}'. The emission strength texture is ignored.",
+        )
+        emission_strength_texture = None
 
     emission_color_expr = (
         _try_expr_painter(
@@ -2926,9 +4282,29 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
     ):
         # When Emission Strength is unlinked and 0, emission is disabled;
         # suppress a spurious fallback warning if Emission Color itself is a
-        # supported procedural graph.
-        ec_sock = _node_input(principled_node, "Emission Color")
-        if procedural_expr.compile_socket_expression(ec_sock, want_type="vec3", bbox_min=bbox_min, bbox_max=bbox_max) is not None:
+        # supported procedural/image-expression graph (read-only probe: never
+        # unpacks packed images or emits warnings).
+        def _probe_expr_img(img_node) -> str | None:
+            if getattr(img_node, "bl_idname", "") != "ShaderNodeTexImage":
+                return None
+            if getattr(img_node, "projection", "FLAT") != "FLAT":
+                return None
+            if getattr(img_node, "extension", "REPEAT") not in procedural_expr.SUPPORTED_TEX_IMAGE_EXTENSIONS:
+                return None
+            img = getattr(img_node, "image", None)
+            if img is None or getattr(img, "source", "FILE") not in ("FILE", "GENERATED"):
+                return None
+            return "__probe_tex"
+
+        if procedural_expr.compile_socket_expression(
+            ec_sock,
+            want_type="vec3",
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
+            material_pass_index=material_pass_index,
+            attr_types=attr_types,
+            image_resolver=_probe_expr_img,
+        ) is not None:
             translated_sockets.add("Emission Color")
     emission_strength_expr = (
         _try_expr_painter(
@@ -2944,16 +4320,40 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
             and emission_strength_texture is None
         ) else None
     )
+    # Fallback to legacy image walker if expression compilation failed on a linked non-direct socket.
+    if (
+        emission_paired_expr is None
+        and emission_color_texture is None
+        and emission_color_expr is None
+        and not ec_direct_img
+        and emission_strength > 1e-6
+    ):
+        emission_color_texture = _maybe_resolve_socket_texture(
+            principled_node, "Emission Color",
+            wrapper.emission_color_texture,
+            colorspace_is_data=False,
+        )
+    if emission_paired_expr is None and emission_strength_texture is None and emission_strength_expr is None and not es_direct_img:
+        emission_strength_texture = _maybe_resolve_socket_texture(
+            principled_node, "Emission Strength",
+            wrapper.emission_strength_texture,
+            colorspace_is_data=True,
+        )
+        if emission_color_texture is not None and emission_strength_texture is not None:
+            _warn_once(
+                state,
+                f"RISE only supports one textured emission input on '{material.name_full}'. The emission strength texture is ignored.",
+            )
+            emission_strength_texture = None
 
     if (
         emission_strength > 1e-6
-        or emission_color_texture is not None
         or emission_strength_texture is not None
         or emission_paired_expr is not None
         or emission_color_expr is not None
         or emission_strength_expr is not None
     ):
-        if emission_color_texture is not None:
+        if emission_color_texture is not None and emission_strength > 1e-6:
             emission_painter = _color_or_texture_painter(
                 state,
                 f"{material.name_full}_emission",
@@ -2982,9 +4382,24 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
                 tuple(emission_color[index] * emission_strength for index in range(3)),
             )
 
-    _warn_unsupported_principled_features(state, material, wrapper, translated_sockets)
-
-    modifier_name = _direct_normal_modifier(material, wrapper, state)
+    normal_used_generated: list[bool] = []
+    normal_handled: list[bool] = []
+    modifier_name = _direct_normal_modifier(
+        material,
+        wrapper,
+        state,
+        bbox_min=bbox_min,
+        bbox_max=bbox_max,
+        material_pass_index=material_pass_index,
+        used_generated_out=normal_used_generated,
+        handled_out=normal_handled,
+        mesh_attrs_out=used_mesh_attributes,
+        attr_types=attr_types,
+    )
+    if normal_used_generated:
+        used_generated_coords = True
+    if normal_handled:
+        translated_sockets.add("Normal")
 
     # Alpha (ABI v14, DL-214): the bridge binds material intersection
     # coverage. OPAQUE ignores the socket, CLIP applies alpha_threshold,
@@ -3016,9 +4431,20 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
         alpha_socket = _node_input(principled_node, "Alpha")
         if alpha_socket is not None:
             alpha_value = _clamp01(float(alpha_socket.default_value))
-            if alpha_socket.is_linked:
-                alpha_texture = _maybe_resolve_socket_texture(
-                    principled_node, "Alpha", None, colorspace_is_data=True,
+            alpha_has_links = bool(
+                alpha_socket.is_linked
+                and any(not getattr(lk, "is_muted", False) for lk in alpha_socket.links)
+            )
+            if alpha_has_links:
+                if not _is_direct_simple_image_socket(alpha_socket, want_output="Alpha"):
+                    alpha_texture_painter = _try_expr_painter(
+                        "Alpha", f"{material.name_full}_alpha_expr", "scalar"
+                    )
+                alpha_texture = (
+                    _maybe_resolve_socket_texture(
+                        principled_node, "Alpha", None, colorspace_is_data=True,
+                    )
+                    if alpha_texture_painter is None else None
                 )
                 if alpha_texture is not None:
                     # Read CHAN_A from the raw texture (matching
@@ -3034,6 +4460,7 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
                         kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
                         alpha_texture_painter = _add_texture_painter(
                             state, f"{material.name_full}_alpha", filepath, kind, color_space,
+                            wrap_mode=_tex_image_wrap_mode(getattr(alpha_texture, "node_image", None)),
                         )
                         alpha_texture_painter = _maybe_wrap_with_uv_transform(
                             state, f"{material.name_full}_alpha", alpha_texture_painter, alpha_texture)
@@ -3054,10 +4481,12 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
         # DL-214: the native bridge installs scalar material coverage for
         # every integrator. No incompatible-rasterizer warning is needed.
 
+    _warn_unsupported_principled_features(state, material, wrapper, translated_sockets)
 
-    output_node = _find_material_output(material)
+
+    output_node = _find_material_output(material) if allow_volume else None
     interior_medium_name = None
-    if output_node is not None:
+    if allow_volume and output_node is not None:
         volume_spec = _parse_volume_socket(_node_input(output_node, "Volume"), state, f"the material '{material.name_full}'")
         if volume_spec is not None:
             interior_medium_name = _export_homogeneous_medium(state, f"{material.name_full}_volume", volume_spec)
@@ -3104,10 +4533,35 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
         transmission_value = transmission
         if transmission_texture is not None:
             _warn_once(state, f"RISE currently ignores textured Transmission on '{material.name_full}'; using the uniform value.")
-        tau_r = base_color[0] * transmission_value
-        tau_g = base_color[1] * transmission_value
-        tau_b = base_color[2] * transmission_value
-        tau_inline = f"{tau_r:.6f} {tau_g:.6f} {tau_b:.6f}"
+        # ABI v21: pass a registered IPainter name (procedural expression or
+        # image texture) straight through as `tau_painter_name`; the native
+        # bridge wraps it in PainterRGBScalarPainter so glass/water tint
+        # varies spatially across the surface (e.g. Geometry Nodes `distance`
+        # attribute -> ColorRamp -> Base Color on `water`).
+        if base_expr is not None:
+            if abs(transmission_value - 1.0) <= 1e-6:
+                tau_spec = base_expr
+            else:
+                scaled_tau = _try_expr_painter(
+                    "Base Color",
+                    f"{label_prefix}_tau_expr",
+                    "vec3",
+                    scale=(transmission_value, transmission_value, transmission_value),
+                )
+                tau_spec = scaled_tau if scaled_tau is not None else base_expr
+        elif base_color_texture is not None:
+            tau_spec = _color_or_texture_painter(
+                state,
+                f"{label_prefix}_tau",
+                base_color,
+                texture_wrapper=base_color_texture,
+                scale=(transmission_value, transmission_value, transmission_value),
+            )
+        else:
+            tau_r = base_color[0] * transmission_value
+            tau_g = base_color[1] * transmission_value
+            tau_b = base_color[2] * transmission_value
+            tau_spec = f"{tau_r:.6f} {tau_g:.6f} {tau_b:.6f}"
 
         ior_texture_check = _maybe_resolve_socket_texture(
             principled_node, "IOR",
@@ -3150,9 +4604,9 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
         scatter_inline = f"{scatter_value:.6f}"
 
         payload = MaterialData(
-            name=_unique_name(state, "mat", material.name_full),
+            name=_unique_name(state, "mat", label_prefix),
             model=MATERIAL_DIELECTRIC,
-            tau_painter_name=tau_inline,
+            tau_painter_name=tau_spec,
             ior_painter_name=ior_inline,
             scatter_painter_name=scatter_inline,
             emission_painter_name=emission_painter,
@@ -3193,7 +4647,7 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
                 f"randomwalk_sss_material has no thin-film interface, so the film is skipped.",
             )
         payload = MaterialData(
-            name=_unique_name(state, "mat", material.name_full),
+            name=_unique_name(state, "mat", label_prefix),
             model=MATERIAL_RANDOMWALK_SSS,
             emissive_scale=1.0,
             emission_painter_name=emission_painter,
@@ -3229,7 +4683,7 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
         # roughness² alpha, anisotropy, and emission natively (so we
         # don't need the Luminaire wrapper).
         payload = MaterialData(
-            name=_unique_name(state, "mat", material.name_full),
+            name=_unique_name(state, "mat", label_prefix),
             model=MATERIAL_PBR_METALLIC_ROUGHNESS,
             base_color_painter_name=base_painter,
             metallic_painter_name=metallic_painter,
@@ -3275,10 +4729,9 @@ def _material_payload(material, state: _ExportState, mesh_bbox=None) -> _Materia
         interior_medium_name=interior_medium_name,
         double_sided=double_sided,
         shader_name=shader_name,
+        mesh_attributes=tuple(sorted(used_mesh_attributes)),
     )
-    cache_key = (key, bbox_key) if used_generated_coords else key
-    state.material_map[cache_key] = binding
-    return binding
+    return (binding, used_generated_coords)
 
 
 # ---------------------------------------------------------------------------
@@ -4053,6 +5506,7 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
         aperture_ratio=aperture_ratio,
         iso=iso,
         scene_unit_meters=scene_unit_meters,
+        clip_start=max(0.0, float(getattr(camera_data, "clip_start", 0.0))),
     )
 
 
@@ -4313,6 +5767,224 @@ def _validate_mesh_payload(mesh: MeshData):
     if mesh.uv_indices and max(mesh.uv_indices, default=0) >= mesh.num_uvs:
         raise RuntimeError(f"RISE mesh export produced an out-of-range UV index for '{mesh.name}'.")
 
+    for attr in mesh.named_attributes:
+        if not attr.name or len(attr.rgba) != expected_index_count * 4:
+            raise RuntimeError(
+                f"RISE mesh export produced an invalid named attribute '{attr.name}' for '{mesh.name}'."
+            )
+
+
+def _extract_named_mesh_attributes(
+    mesh,
+    attr_names: tuple[str, ...],
+    vertex_indices: list[int],
+    loop_indices: list[int],
+    polygon_indices: list[int],
+    state: _ExportState,
+) -> list[MeshAttributeData]:
+    """Extract requested GEOMETRY attributes from an evaluated Blender ``Mesh``
+    into linear per-triangle-corner RGBA buffers matching ``vertex_indices``."""
+    if not attr_names:
+        return []
+    attributes = getattr(mesh, "attributes", None)
+
+    num_corners = len(vertex_indices)
+    if num_corners == 0:
+        return []
+
+    extracted: list[MeshAttributeData] = []
+    for attr_name in attr_names:
+        if attr_name.startswith(procedural_expr.UV_MAP_ATTR_PREFIX):
+            uv_name = attr_name[len(procedural_expr.UV_MAP_ATTR_PREFIX):]
+            uv_layers = getattr(mesh, "uv_layers", None)
+            uv_layer = uv_layers.get(uv_name) if uv_layers is not None else None
+            if uv_layer is None or len(uv_layer.data) == 0:
+                continue
+            uv_count = len(uv_layer.data)
+            uv_buf = array.array("f", [0.0]) * (uv_count * 2)
+            uv_layer.data.foreach_get("uv", uv_buf)
+            rgba_uv = array.array("f", [0.0]) * (num_corners * 4)
+            for c_i, src_i in enumerate(loop_indices):
+                base = c_i * 4
+                if 0 <= src_i < uv_count:
+                    s = src_i * 2
+                    rgba_uv[base] = uv_buf[s]
+                    rgba_uv[base + 1] = uv_buf[s + 1]
+                rgba_uv[base + 2] = 0.0
+                rgba_uv[base + 3] = 1.0
+            extracted.append(MeshAttributeData(name=attr_name, rgba=rgba_uv.tolist()))
+            continue
+
+        if attr_name == procedural_expr.ISLAND_RANDOM_ATTR:
+            # Connected-component island random per vertex matching Cycles
+            # `blender/mesh.cpp:534-578` + `util/disjoint_set.h` + `hash_uint_to_float`:
+            # rank-based DisjointSet over `mesh.edges`, then `hash_uint_to_float(find(v))`.
+            num_verts = len(getattr(mesh, "vertices", ()))
+            if num_verts <= 0:
+                continue
+            parents = list(range(num_verts))
+            ranks = [0] * num_verts
+
+            def _find(x: int) -> int:
+                root = x
+                while parents[root] != root:
+                    root = parents[root]
+                while parents[x] != root:
+                    parent = parents[x]
+                    parents[x] = root
+                    x = parent
+                return root
+
+            edges = getattr(mesh, "edges", ())
+            for edge in edges:
+                everts = getattr(edge, "vertices", ())
+                if len(everts) >= 2:
+                    xr = _find(int(everts[0]))
+                    yr = _find(int(everts[1]))
+                    if xr == yr:
+                        continue
+                    if ranks[xr] < ranks[yr]:
+                        xr, yr = yr, xr
+                    parents[yr] = xr
+                    if ranks[xr] == ranks[yr]:
+                        ranks[xr] += 1
+
+            vert_random = [_cycles_hash_uint_to_float(_find(v)) for v in range(num_verts)]
+            rgba: list[float] = []
+            for vi in vertex_indices:
+                rv = vert_random[vi] if 0 <= vi < num_verts else 0.0
+                rgba.extend((rv, rv, rv, 1.0))
+            extracted.append(MeshAttributeData(name=attr_name, rgba=rgba))
+            continue
+
+        if attributes is None:
+            continue
+
+        lookup_name = attr_name
+        if attr_name == procedural_expr.ACTIVE_COLOR_ATTR:
+            color_attrs = getattr(mesh, "color_attributes", None)
+            lookup_name = str(
+                getattr(color_attrs, "default_color_name", "")
+                or getattr(color_attrs, "active_color_name", "")
+                or ""
+            )
+            if not lookup_name:
+                continue
+
+        attr = attributes.get(lookup_name)
+        if attr is None:
+            continue
+        domain = getattr(attr, "domain", "")
+        data_type = getattr(attr, "data_type", "")
+        count = len(attr.data)
+        if count <= 0:
+            continue
+
+        if domain == "POINT":
+            corner_indices = vertex_indices
+        elif domain == "CORNER":
+            corner_indices = loop_indices
+        elif domain == "FACE":
+            corner_indices = [p for p in polygon_indices for _ in range(3)]
+        else:
+            _warn_once(
+                state,
+                f"RISE skips mesh attribute '{attr_name}' on unsupported domain '{domain}' "
+                "(only POINT, CORNER, and FACE domains are supported).",
+            )
+            continue
+
+        if len(corner_indices) != num_corners:
+            continue
+
+        rgba = array.array("f", [0.0]) * (num_corners * 4)
+        if data_type == "FLOAT":
+            buf = array.array("f", [0.0]) * count
+            attr.data.foreach_get("value", buf)
+            for c_i, src_i in enumerate(corner_indices):
+                v = buf[src_i] if 0 <= src_i < count else 0.0
+                base = c_i * 4
+                rgba[base] = v
+                rgba[base + 1] = v
+                rgba[base + 2] = v
+                rgba[base + 3] = 1.0
+        elif data_type == "INT":
+            buf = array.array("i", [0]) * count
+            attr.data.foreach_get("value", buf)
+            for c_i, src_i in enumerate(corner_indices):
+                v = float(buf[src_i]) if 0 <= src_i < count else 0.0
+                base = c_i * 4
+                rgba[base] = v
+                rgba[base + 1] = v
+                rgba[base + 2] = v
+                rgba[base + 3] = 1.0
+        elif data_type == "INT8":
+            # Blender RNA `ByteIntAttributeValue.value` is PROP_RAW_INT8 (1-byte signed).
+            buf = array.array("b", [0]) * count
+            attr.data.foreach_get("value", buf)
+            for c_i, src_i in enumerate(corner_indices):
+                v = float(buf[src_i]) if 0 <= src_i < count else 0.0
+                base = c_i * 4
+                rgba[base] = v
+                rgba[base + 1] = v
+                rgba[base + 2] = v
+                rgba[base + 3] = 1.0
+        elif data_type == "BOOLEAN":
+            buf = [False] * count
+            attr.data.foreach_get("value", buf)
+            for c_i, src_i in enumerate(corner_indices):
+                v = (1.0 if buf[src_i] else 0.0) if 0 <= src_i < count else 0.0
+                base = c_i * 4
+                rgba[base] = v
+                rgba[base + 1] = v
+                rgba[base + 2] = v
+                rgba[base + 3] = 1.0
+        elif data_type == "FLOAT2":
+            buf = array.array("f", [0.0]) * (count * 2)
+            attr.data.foreach_get("vector", buf)
+            for c_i, src_i in enumerate(corner_indices):
+                base = c_i * 4
+                if 0 <= src_i < count:
+                    s = src_i * 2
+                    rgba[base] = buf[s]
+                    rgba[base + 1] = buf[s + 1]
+                rgba[base + 2] = 0.0
+                rgba[base + 3] = 1.0
+        elif data_type == "FLOAT_VECTOR":
+            buf = array.array("f", [0.0]) * (count * 3)
+            attr.data.foreach_get("vector", buf)
+            for c_i, src_i in enumerate(corner_indices):
+                base = c_i * 4
+                if 0 <= src_i < count:
+                    s = src_i * 3
+                    rgba[base] = buf[s]
+                    rgba[base + 1] = buf[s + 1]
+                    rgba[base + 2] = buf[s + 2]
+                rgba[base + 3] = 1.0
+        elif data_type in ("FLOAT_COLOR", "BYTE_COLOR"):
+            # Both FLOAT_COLOR.color and BYTE_COLOR.color return scene-linear
+            # RGBA floats in Blender 4.0+/5.3 RNA (verified live on 5.3).
+            buf = array.array("f", [0.0]) * (count * 4)
+            attr.data.foreach_get("color", buf)
+            for c_i, src_i in enumerate(corner_indices):
+                base = c_i * 4
+                if 0 <= src_i < count:
+                    s = src_i * 4
+                    rgba[base] = buf[s]
+                    rgba[base + 1] = buf[s + 1]
+                    rgba[base + 2] = buf[s + 2]
+                    rgba[base + 3] = buf[s + 3]
+        else:
+            _warn_once(
+                state,
+                f"RISE skips mesh attribute '{attr_name}' with unsupported data type '{data_type}'.",
+            )
+            continue
+
+        extracted.append(MeshAttributeData(name=attr_name, rgba=rgba.tolist()))
+
+    return extracted
+
 
 def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_info=None) -> list[tuple[int, str, _MaterialBinding]]:
     # GeometryNodes-instanced geometry reuses a small pool of
@@ -4322,19 +5994,22 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
     # demo flips one prototype between 'head' and 'tail' partway
     # through 10 000 instances.  Mix the per-instance material
     # signature into the cache key so head and tail bind correctly.
-    mat_signature = tuple(
-        s.material.name if s.material else None
-        for s in eval_object.material_slots
-    )
+    slot_mat_sig = tuple(_pointer_key(s.material) for s in eval_object.material_slots)
+    data_obj = getattr(eval_object, "data", None)
+    data_ptr = data_obj.as_pointer() if (data_obj is not None and hasattr(data_obj, "as_pointer")) else 0
+    data_mat_sig = tuple(_pointer_key(m) for m in getattr(data_obj, "materials", ()))
     from . import tangent_bake
     materials = [slot.material for slot in eval_object.material_slots]
-    materials.extend(getattr(getattr(eval_object, "data", None), "materials", []))
+    materials.extend(getattr(data_obj, "materials", []))
     linked_tangent = any((socket := tangent_bake.find_tangent_socket(mat)) is not None
                          and socket.is_linked for mat in materials)
     matrix_world = matrix_world if matrix_world is not None else eval_object.matrix_world
     # Object/world-dependent graph bakes are instance-local, including identical
     # transforms. Generated mesh materials also participate in this decision.
-    cache_key = (eval_object.as_pointer(), mat_signature)
+    # Include both eval_object.data pointer and data.materials pointers so
+    # Geometry Nodes instances reusing an eval_object wrapper with different
+    # mesh data / attributes / materials never collide (R1 B-P1-8).
+    cache_key = (eval_object.as_pointer(), data_ptr, slot_mat_sig, data_mat_sig)
     cached = state.geometry_cache.get(cache_key)
     if cached is not None and not linked_tangent:
         return cached
@@ -4369,10 +6044,14 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
             mesh.corner_normals.foreach_get("vector", normal_values)
 
         uv_values = array.array("f")
-        has_uv = mesh.uv_layers.active is not None and len(mesh.uv_layers.active.data) == len(mesh.loops)
+        primary_uv_layer = next(
+            (layer for layer in mesh.uv_layers if getattr(layer, "active_render", False)),
+            mesh.uv_layers.active,
+        )
+        has_uv = primary_uv_layer is not None and len(primary_uv_layer.data) == len(mesh.loops)
         if has_uv:
             raw_uv_values = array.array("f", [0.0]) * (len(mesh.loops) * 2)
-            mesh.uv_layers.active.data.foreach_get("uv", raw_uv_values)
+            primary_uv_layer.data.foreach_get("uv", raw_uv_values)
             uv_values = array.array("f", [0.0]) * (len(mesh.loops) * 3)
             uv_values[0::3] = raw_uv_values[0::2]
             uv_values[1::3] = raw_uv_values[1::2]
@@ -4380,21 +6059,29 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
         triangle_vertices = array.array("I", [0]) * (triangle_count * 3)
         triangle_loops = array.array("I", [0]) * (triangle_count * 3)
         triangle_materials = array.array("I", [0]) * triangle_count
+        triangle_polygons = array.array("I", [0]) * triangle_count
         mesh.loop_triangles.foreach_get("vertices", triangle_vertices)
         mesh.loop_triangles.foreach_get("loops", triangle_loops)
         mesh.loop_triangles.foreach_get("material_index", triangle_materials)
+        mesh.loop_triangles.foreach_get("polygon_index", triangle_polygons)
 
         buckets: dict[int, dict[str, list[int]]] = {}
         for tri_index, material_index in enumerate(triangle_materials):
             bucket = buckets.setdefault(
                 int(material_index),
-                {"vertex_indices": [], "normal_indices": [], "uv_indices": []},
+                {"vertex_indices": [], "normal_indices": [], "uv_indices": [], "polygon_indices": []},
             )
             start = tri_index * 3
             bucket["vertex_indices"].extend(int(v) for v in triangle_vertices[start:start + 3])
             bucket["normal_indices"].extend(int(v) for v in triangle_loops[start:start + 3])
             if has_uv:
                 bucket["uv_indices"].extend(int(v) for v in triangle_loops[start:start + 3])
+            bucket["polygon_indices"].append(int(triangle_polygons[tri_index]))
+
+        mesh_attr_types = {
+            a.name: getattr(a, "data_type", "")
+            for a in getattr(mesh, "attributes", ())
+        }
 
         for material_index, bucket in buckets.items():
             # GeometryNodes-generated meshes put per-instance materials
@@ -4410,8 +6097,16 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
                 if slot_material is not None:
                     material = slot_material
 
-            binding = _material_payload(material, state, mesh_bbox=mesh_bbox)
+            binding = _material_payload(material, state, mesh_bbox=mesh_bbox, attr_types=mesh_attr_types)
             directions = tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info, bucket["normal_indices"], allow_parallel=bool(binding.modifier_name))
+            named_attrs = _extract_named_mesh_attributes(
+                mesh,
+                binding.mesh_attributes,
+                bucket["vertex_indices"],
+                bucket["normal_indices"],
+                bucket["polygon_indices"],
+                state,
+            )
             mesh_name = _unique_name(state, "mesh", f"{eval_object.name_full}_m{material_index}")
             mesh_payload = MeshData(
                 name=mesh_name,
@@ -4426,6 +6121,7 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
                 tangent_is_shader_direction=bool(directions),
                 tangent_attribute=([component for corner in bucket["normal_indices"]
                                     for component in directions[corner]] if directions else []),
+                named_attributes=named_attrs,
             )
             _validate_mesh_payload(mesh_payload)
             state.meshes.append(mesh_payload)
@@ -5180,6 +6876,128 @@ def _volume_object_medium(base_object, eval_object, matrix_world, state: _Export
     return medium_name, None
 
 
+def _cycles_hash_string(name: str) -> int:
+    """Matches Cycles `util/hash.h` `hash_string(const char*)` (signed char)."""
+    i = 0
+    for byte in name.encode("utf-8"):
+        c = byte if byte < 128 else (byte - 256)
+        i = (i * 37 + c) & 0xFFFFFFFF
+    return i
+
+
+def _cycles_hash_uint2(kx: int, ky: int) -> int:
+    """Matches Cycles `util/hash.h` Jenkins lookup3 `hash_uint2(kx, ky)`."""
+    mask = 0xFFFFFFFF
+
+    def _rot(x: int, k: int) -> int:
+        return ((x << k) & mask) | (x >> (32 - k))
+
+    a = b = c = (0xDEADBEEF + (2 << 2) + 13) & mask
+    b = (b + (ky & mask)) & mask
+    a = (a + (kx & mask)) & mask
+    c = (c ^ b) & mask
+    c = (c - _rot(b, 14)) & mask
+    a = (a ^ c) & mask
+    a = (a - _rot(c, 11)) & mask
+    b = (b ^ a) & mask
+    b = (b - _rot(a, 25)) & mask
+    c = (c ^ b) & mask
+    c = (c - _rot(b, 16)) & mask
+    a = (a ^ c) & mask
+    a = (a - _rot(c, 4)) & mask
+    b = (b ^ a) & mask
+    b = (b - _rot(a, 14)) & mask
+    c = (c ^ b) & mask
+    c = (c - _rot(b, 24)) & mask
+    return c
+
+
+def _cycles_hash_uint(kx: int) -> int:
+    """Matches Cycles `util/hash.h` Jenkins lookup3 `hash_uint(kx)`."""
+    mask = 0xFFFFFFFF
+
+    def _rot(x: int, k: int) -> int:
+        return ((x << k) & mask) | (x >> (32 - k))
+
+    a = b = c = (0xDEADBEEF + (1 << 2) + 13) & mask
+    a = (a + (kx & mask)) & mask
+    c = (c ^ b) & mask
+    c = (c - _rot(b, 14)) & mask
+    a = (a ^ c) & mask
+    a = (a - _rot(c, 11)) & mask
+    b = (b ^ a) & mask
+    b = (b - _rot(a, 25)) & mask
+    c = (c ^ b) & mask
+    c = (c - _rot(b, 16)) & mask
+    a = (a ^ c) & mask
+    a = (a - _rot(c, 4)) & mask
+    b = (b ^ a) & mask
+    b = (b - _rot(a, 14)) & mask
+    c = (c ^ b) & mask
+    c = (c - _rot(b, 24)) & mask
+    return c
+
+
+def _cycles_hash_uint_to_float(kx: int) -> float:
+    import struct
+    h = _cycles_hash_uint(int(kx) & 0xFFFFFFFF)
+    inv = struct.unpack("<f", struct.pack("<f", 1.0 / float(0xFFFFFFFF)))[0]
+    return float(struct.unpack("<f", struct.pack("<f", float(h) * inv))[0])
+
+
+def _cycles_hash_uint2_to_float(kx: int, ky: int) -> float:
+    import struct
+    h = _cycles_hash_uint2(int(kx) & 0xFFFFFFFF, int(ky) & 0xFFFFFFFF)
+    inv = struct.unpack("<f", struct.pack("<f", 1.0 / float(0xFFFFFFFF)))[0]
+    return float(struct.unpack("<f", struct.pack("<f", float(h) * inv))[0])
+
+
+_CYCLES_DUMMY_PARTICLE_RANDOM = _cycles_hash_uint2_to_float(0, 0)
+
+
+def _cycles_particle_random(object_instance) -> float:
+    """Compute Cycles' `Particle Info -> Random` scalar in [0, 1].
+    Mirrors Cycles `blender/particles.cpp` (`pa.index = persistent_id[0]`,
+    skipping child particles with `pid >= len(psys.particles)`) +
+    `scene/particles.cpp` (`kparticles[0]` dummy particle -> `hash_uint2_to_float(0, 0)`
+    for non-particle objects)."""
+    if not getattr(object_instance, "is_instance", False):
+        return _CYCLES_DUMMY_PARTICLE_RANDOM
+    psys = getattr(object_instance, "particle_system", None)
+    if psys is None:
+        return _CYCLES_DUMMY_PARTICLE_RANDOM
+    pid_seq = getattr(object_instance, "persistent_id", None)
+    if not pid_seq:
+        return _CYCLES_DUMMY_PARTICLE_RANDOM
+    pid = int(pid_seq[0])
+    particles = getattr(psys, "particles", None)
+    if pid < 0 or (particles is not None and pid >= len(particles)):
+        return _CYCLES_DUMMY_PARTICLE_RANDOM
+    return _cycles_hash_uint2_to_float(pid, 0)
+
+
+def _cycles_object_random(name: str, is_instance: bool, random_id: int) -> float:
+    """Compute Cycles' `Object Info -> Random` scalar in [0, 1].
+
+    Mirrors Cycles `blender/object.cpp` (`sync_object`) + `scene/object.cpp`
+    (`device_update_object_transform`):
+      - For instances (`is_instance` True): use `DepsgraphObjectInstance.random_id`,
+        reinterpreting Blender Python's signed 32-bit int as uint32.
+      - For regular objects: `hash_uint2(hash_string(obj.name), 0)`.
+      - Evaluate `(float)rid * (1.0f / (float)0xFFFFFFFF)` in IEEE 754 float32
+        (where `(float)0xFFFFFFFF == 4294967296.0f`) to match Cycles bit-for-bit.
+    """
+    import struct
+
+    if is_instance:
+        rid = int(random_id) & 0xFFFFFFFF
+    else:
+        rid = _cycles_hash_uint2(_cycles_hash_string(name), 0)
+    f_rid = struct.unpack("<f", struct.pack("<f", float(rid)))[0]
+    inv_u32 = struct.unpack("<f", struct.pack("<f", 1.0 / 4294967296.0))[0]
+    return float(struct.unpack("<f", struct.pack("<f", f_rid * inv_u32))[0])
+
+
 def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     scene = depsgraph.scene
     render_settings = build_render_settings(scene)
@@ -5262,11 +7080,30 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
             if not mesh_buckets:
                 continue
 
+            raw_color = getattr(eval_object, "color", (1.0, 1.0, 1.0, 1.0))
+            obj_color = (
+                float(raw_color[0]),
+                float(raw_color[1]),
+                float(raw_color[2]),
+                float(raw_color[3]) if len(raw_color) > 3 else 1.0,
+            )
+            obj_index = float(getattr(eval_object, "pass_index", 0))
+            obj_random = _cycles_object_random(
+                getattr(eval_object, "name", original_object.name),
+                is_instance,
+                int(getattr(object_instance, "random_id", 0)),
+            )
+            obj_particle_random = _cycles_particle_random(object_instance)
+
             mesh_instances.append(
                 {
                     "mesh_buckets": list(mesh_buckets),
                     "object_name": original_object.name_full,
                     "transform": _flatten_matrix(object_instance.matrix_world.copy()),
+                    "object_color": obj_color,
+                    "object_index": obj_index,
+                    "object_random": obj_random,
+                    "particle_random": obj_particle_random,
                 }
             )
         elif original_object.type == "CURVES":
@@ -5291,6 +7128,10 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
         mesh_buckets = mesh_instance["mesh_buckets"]
         object_name = mesh_instance["object_name"]
         transform = mesh_instance["transform"]
+        obj_color = mesh_instance["object_color"]
+        obj_index = mesh_instance["object_index"]
+        obj_random = mesh_instance["object_random"]
+        obj_particle_random = mesh_instance["particle_random"]
 
         for material_index, mesh_name, binding in mesh_buckets:
             state.objects.append(
@@ -5305,6 +7146,10 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                     modifier_name=binding.modifier_name,
                     interior_medium_name=binding.interior_medium_name,
                     shader_name=binding.shader_name,
+                    object_color=obj_color,
+                    object_index=obj_index,
+                    object_random=obj_random,
+                    particle_random=obj_particle_random,
                 )
             )
 

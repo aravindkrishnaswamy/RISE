@@ -690,9 +690,12 @@ _POINTER_TO_C = {
     bridge._Medium: "const rise_blender_medium*",
     bridge._HairMaterial: "const rise_blender_hair_material*",
     bridge._HairObject: "const rise_blender_hair_object*",
+    bridge._MixChild: "const rise_blender_mix_child*",
+    bridge._MeshAttribute: "const rise_blender_mesh_attribute*",
     # The result image buffer -- the one non-const pointer in the ABI.
     ctypes.c_float: "float*",
     ctypes.c_uint32: "const uint32_t*",
+    ctypes.c_char_p: "const char* const*",
 }
 
 
@@ -756,15 +759,81 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 19)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 23)
+
+    def test_progress_info_struct_matches(self):
+        self._assert_matches(bridge._ProgressInfo, "rise_blender_progress_info")
 
     def test_mesh_struct_matches(self):
         self._assert_matches(bridge._Mesh, "rise_blender_mesh")
 
     def test_tangent_payload_is_tail_appended(self):
-        self.assertEqual([name for name, _ in bridge._Mesh._fields_[-3:]], ["tangent_attribute", "num_tangents", "tangent_is_shader_direction"])
+        names = [name for name, _ in bridge._Mesh._fields_]
+        self.assertEqual(names[-5:-2], ["tangent_attribute", "num_tangents", "tangent_is_shader_direction"])
+        self.assertEqual(names[-2:], ["named_attributes", "num_named_attributes"])
         self.assertGreater(bridge._Mesh.tangent_attribute.offset, bridge._Mesh.use_face_normals.offset)
         self.assertEqual(bridge._Mesh.num_tangents.offset, bridge._Mesh.tangent_attribute.offset + ctypes.sizeof(ctypes.c_void_p))
+        self.assertGreater(bridge._Mesh.named_attributes.offset, bridge._Mesh.tangent_is_shader_direction.offset)
+
+    def test_mix_and_attribute_structs_match(self):
+        self._assert_matches(bridge._MixChild, "rise_blender_mix_child")
+        self._assert_matches(bridge._MeshAttribute, "rise_blender_mesh_attribute")
+        self._assert_matches(bridge._Material, "rise_blender_material")
+        self.assertEqual(
+            [name for name, _ in bridge._Material._fields_[-3:]],
+            ["mix_children", "num_mix_children", "mix_passthrough_painter_name"],
+        )
+
+    def test_abi_v21_marshalling_mix_and_mesh_attributes(self):
+        # Exercise _SceneHandle._marshal_material and _marshal_mesh directly
+        # for ABI v21 fields + non-multiple-of-4 rgba rejection (R1 A-P1-4 / B-P2-7).
+        import types
+        handle = bridge._SceneHandle.__new__(bridge._SceneHandle)
+        handle.keepalive = []
+
+        mix_child_a = types.SimpleNamespace(
+            material_name="leaf0", weight_painter_name="w0", modifier_name="mod0"
+        )
+        mix_child_b = types.SimpleNamespace(
+            material_name=None, weight_painter_name="0.25", modifier_name=None
+        )
+        mat_stub = types.SimpleNamespace(
+            name="m_mix", model=5,
+            diffuse_painter_name=None, specular_painter_name=None,
+            alpha_x_painter_name=None, alpha_y_painter_name=None,
+            ior_painter_name=None, extinction_painter_name=None,
+            tau_painter_name=None, scatter_painter_name=None,
+            emission_painter_name=None, double_sided=True,
+            mix_children=[mix_child_a, mix_child_b],
+            mix_passthrough_painter_name="w_pt",
+        )
+        c_mat = handle._marshal_material(mat_stub)
+        self.assertEqual(c_mat.num_mix_children, 2)
+        self.assertEqual(c_mat.mix_children[0].material_name, b"leaf0")
+        self.assertEqual(c_mat.mix_children[0].weight_painter_name, b"w0")
+        self.assertEqual(c_mat.mix_children[0].modifier_name, b"mod0")
+        self.assertIsNone(c_mat.mix_children[1].material_name)
+        self.assertEqual(c_mat.mix_passthrough_painter_name, b"w_pt")
+
+        attr_ok = types.SimpleNamespace(name="distance", rgba=[0.1, 0.2, 0.3, 1.0, 0.4, 0.5, 0.6, 1.0, 0.7, 0.8, 0.9, 1.0])
+        mesh_stub = types.SimpleNamespace(
+            name="m_geo",
+            vertices=[0.0] * 9, normals=[0.0] * 9, uvs=[],
+            vertex_indices=[0, 1, 2], normal_indices=[0, 1, 2], uv_indices=[],
+            num_vertices=3, num_normals=3, num_uvs=0, num_triangles=1,
+            double_sided=True, use_face_normals=False,
+            named_attributes=[attr_ok],
+        )
+        c_mesh = handle._marshal_mesh(mesh_stub)
+        self.assertEqual(c_mesh.num_named_attributes, 1)
+        self.assertEqual(c_mesh.named_attributes[0].name, b"distance")
+        self.assertEqual(c_mesh.named_attributes[0].num_corners, 3)
+        self.assertAlmostEqual(c_mesh.named_attributes[0].rgba[0], 0.1, places=5)
+
+        # R1 A-P1-4: non-multiple-of-4 rgba must raise BridgeError
+        attr_bad = types.SimpleNamespace(name="bad", rgba=[0.1, 0.2, 0.3, 1.0, 0.5])
+        with self.assertRaises(bridge.BridgeError):
+            handle._marshal_mesh_attribute(attr_bad)
 
     def test_stale_dylib_version_fails_loudly(self):
         # Simulate a current-minus-one ABI dylib beside the current addon. Mock both
@@ -829,6 +898,55 @@ class BridgeAbiLayoutTest(unittest.TestCase):
             match = re.search(name + r"\s*=\s*(\d+)", self.source)
             self.assertIsNotNone(match, f"{name} missing from the header")
             self.assertEqual(int(match.group(1)), value, f"{name} tag drifted")
+
+    def test_marshal_modifier_stack_and_blend(self):
+        """Phase 3 R1 P1-1 regression test: _SceneHandle._marshal_modifier must
+        append stack_member_names keepalive to self.keepalive (no AttributeError)
+        and marshal MODIFIER_STACK / MODIFIER_BLEND payloads cleanly."""
+        handle = object.__new__(bridge._SceneHandle)
+        handle.keepalive = []
+
+        stack_mod = type(
+            "_Mod", (),
+            {
+                "name": "mod_stack",
+                "kind": 3,
+                "source_painter_name": None,
+                "scale": 1.0,
+                "window": 0.0,
+                "normalize": False,
+                "stack_member_names": ("mod_a", "mod_b"),
+                "blend_a_name": None,
+                "blend_b_name": None,
+                "blend_weight_painter_name": None,
+            },
+        )()
+        p_stack = handle._marshal_modifier(stack_mod)
+        self.assertEqual(p_stack.num_stack_members, 2)
+        self.assertEqual(p_stack.stack_member_names[0], b"mod_a")
+        self.assertEqual(p_stack.stack_member_names[1], b"mod_b")
+        self.assertTrue(len(handle.keepalive) >= 1)
+
+        blend_mod = type(
+            "_Mod", (),
+            {
+                "name": "mod_blend",
+                "kind": 4,
+                "source_painter_name": None,
+                "scale": 1.0,
+                "window": 0.0,
+                "normalize": False,
+                "stack_member_names": (),
+                "blend_a_name": "mod_a",
+                "blend_b_name": "mod_b",
+                "blend_weight_painter_name": "0.5",
+            },
+        )()
+        p_blend = handle._marshal_modifier(blend_mod)
+        self.assertEqual(p_blend.num_stack_members, 0)
+        self.assertEqual(p_blend.blend_a_name, b"mod_a")
+        self.assertEqual(p_blend.blend_b_name, b"mod_b")
+        self.assertEqual(p_blend.blend_weight_painter_name, b"0.5")
 
 
 _EXPORTER_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exporter.py")
@@ -918,7 +1036,7 @@ class ExporterSpecularTintGatingTest(unittest.TestCase):
             cls.source = handle.read()
 
     def _material_payload_body(self):
-        start = self.source.index("def _material_payload(")
+        start = self.source.index("def _export_principled_binding(")
         end = self.source.index("\ndef ", start + 1)
         return self.source[start:end]
 
@@ -980,7 +1098,7 @@ class ExporterCoatNormalAlphaTangentGatingTest(unittest.TestCase):
             cls.source = handle.read()
 
     def _material_payload_body(self):
-        start = self.source.index("def _material_payload(")
+        start = self.source.index("def _export_principled_binding(")
         end = self.source.index("\ndef ", start + 1)
         return self.source[start:end]
 
@@ -1896,7 +2014,7 @@ class RnaIdentityKeyTest(unittest.TestCase):
         import ast
         here = os.path.dirname(os.path.abspath(__file__))
         offenders = []
-        for name in ("exporter.py", "material_bake.py", "tangent_bake.py", "engine.py", "ui.py"):
+        for name in ("exporter.py", "material_bake.py", "procedural_expr.py", "tangent_bake.py", "engine.py", "ui.py"):
             with open(os.path.join(here, name), encoding="utf-8") as stream:
                 tree = ast.parse(stream.read(), filename=name)
             for node in ast.walk(tree):
@@ -1911,6 +2029,177 @@ class RnaIdentityKeyTest(unittest.TestCase):
                         if not (constant(left) or constant(right)):
                             offenders.append(f"{name}:{node.lineno} identity comparison")
         self.assertEqual(offenders, [], "use blender_compat.rna_key / == instead")
+
+
+class TestProgressAndETAFormatting(unittest.TestCase):
+    """ABI v22 progress + live ETA formatting and bridge dispatch tests."""
+
+    @classmethod
+    def _load_engine_module(cls):
+        import importlib.util
+        import types
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        fake_bpy = types.ModuleType("bpy")
+        fake_bpy.types = types.SimpleNamespace(RenderEngine=object)
+        fake_bpy.app = types.SimpleNamespace(background=False)
+        fake_pkg = types.ModuleType("_rise_engine_test_pkg")
+        fake_pkg.__path__ = [here]
+        fake_props = types.ModuleType("_rise_engine_test_pkg.properties")
+        fake_props.addon_preferences = lambda: None
+        fake_exporter = types.ModuleType("_rise_engine_test_pkg.exporter")
+        fake_bake = types.ModuleType("_rise_engine_test_pkg.material_bake")
+
+        stubs = {
+            "bpy": fake_bpy,
+            "_rise_engine_test_pkg": fake_pkg,
+            "_rise_engine_test_pkg.bridge": bridge,
+            "_rise_engine_test_pkg.exporter": fake_exporter,
+            "_rise_engine_test_pkg.material_bake": fake_bake,
+            "_rise_engine_test_pkg.properties": fake_props,
+        }
+        spec = importlib.util.spec_from_file_location(
+            "_rise_engine_test_pkg.engine",
+            os.path.join(here, "engine.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, stubs):
+            spec.loader.exec_module(mod)
+        return mod
+
+    def test_format_duration_boundaries_and_non_finite(self):
+        eng = self._load_engine_module()
+        self.assertEqual(eng._format_duration(0.0), "00:00.00")
+        self.assertEqual(eng._format_duration(-5.0), "00:00.00")
+        self.assertEqual(eng._format_duration(float("nan")), "00:00.00")
+        self.assertEqual(eng._format_duration(float("inf")), "00:00.00")
+        self.assertEqual(eng._format_duration(12.34), "00:12.34")
+        # Centisecond carry must roll over to 01:00.00, never 00:60.00
+        self.assertEqual(eng._format_duration(59.996), "01:00.00")
+        self.assertEqual(eng._format_duration(3599.996), "01:00:00.00")
+        self.assertEqual(eng._format_duration(3661.5), "01:01:01.50")
+
+    def test_live_remaining_seconds_counts_down_and_clamps(self):
+        eng = self._load_engine_module()
+        self.assertEqual(eng._live_remaining_seconds(10.0, False, 100.0, 102.0), -1.0)
+        self.assertAlmostEqual(eng._live_remaining_seconds(10.0, True, 100.0, 102.5), 7.5)
+        self.assertEqual(eng._live_remaining_seconds(10.0, True, 100.0, 115.0), 0.0)
+        # Negative clock skew does not inflate remaining time
+        self.assertAlmostEqual(eng._live_remaining_seconds(10.0, True, 100.0, 99.0), 10.0)
+
+    def test_format_render_status_stages_and_eta(self):
+        eng = self._load_engine_module()
+        # Indeterminate stage (Building scene / Denoising): non-empty info, no % or Remaining
+        self.assertEqual(
+            eng._format_render_status("Building scene", -1.0, -1.0, False),
+            "Building scene",
+        )
+        self.assertEqual(
+            eng._format_render_status("Denoising: ", -1.0, -1.0, False),
+            "Denoising",
+        )
+        # Warmup (has_remaining=False): stage + percentage, no Remaining
+        self.assertEqual(
+            eng._format_render_status("Rasterizing Scene: ", 0.02, -1.0, False),
+            "Rasterizing Scene 2%",
+        )
+        # Active ETA: Cycles-style "Remaining: MM:SS.CC | Stage Pct%"
+        self.assertEqual(
+            eng._format_render_status("Rasterizing Scene: ", 0.25, 42.15, True),
+            "Remaining: 00:42.15 | Rasterizing Scene 25%",
+        )
+        # At 100%: omit Remaining
+        self.assertEqual(
+            eng._format_render_status("Rasterizing Scene", 1.0, 0.0, True),
+            "Rasterizing Scene 100%",
+        )
+        # Empty title falls back to non-empty "Rendering" so Blender keeps ticking Time:
+        self.assertEqual(
+            eng._format_render_status("", 0.5, 5.0, True),
+            "Remaining: 00:05.00 | Rendering 50%",
+        )
+
+    def test_should_refresh_stats_gui_and_background_modes(self):
+        eng = self._load_engine_module()
+        # GUI mode: refreshes on interval, stage change, ETA warmup, or fast pct change
+        self.assertFalse(eng._should_refresh_stats(
+            is_background=False, stage_changed=False, pct_changed=False,
+            eta_became_ready=False, elapsed_since_update=0.10, status_interval=0.25,
+        ))
+        self.assertTrue(eng._should_refresh_stats(
+            is_background=False, stage_changed=False, pct_changed=False,
+            eta_became_ready=False, elapsed_since_update=0.25, status_interval=0.25,
+        ))
+        self.assertTrue(eng._should_refresh_stats(
+            is_background=False, stage_changed=False, pct_changed=True,
+            eta_became_ready=False, elapsed_since_update=0.06, status_interval=0.25,
+        ))
+        # Background mode: skips timer-only ticks (avoids stdout spam), fires on stage/pct/ETA-ready
+        self.assertFalse(eng._should_refresh_stats(
+            is_background=True, stage_changed=False, pct_changed=False,
+            eta_became_ready=False, elapsed_since_update=10.0, status_interval=0.25,
+        ))
+        self.assertTrue(eng._should_refresh_stats(
+            is_background=True, stage_changed=True, pct_changed=False,
+            eta_became_ready=False, elapsed_since_update=0.0, status_interval=0.25,
+        ))
+        self.assertTrue(eng._should_refresh_stats(
+            is_background=True, stage_changed=False, pct_changed=True,
+            eta_became_ready=False, elapsed_since_update=0.0, status_interval=0.25,
+        ))
+        self.assertTrue(eng._should_refresh_stats(
+            is_background=True, stage_changed=False, pct_changed=False,
+            eta_became_ready=True, elapsed_since_update=0.0, status_interval=0.25,
+        ))
+
+    def test_render_scene_uses_ex_entry_point_for_progress_info(self):
+        # Verify bridge.render_scene dispatches to rise_blender_render_scene_ex
+        # when progress_info is passed and decodes _ProgressInfo fields cleanly.
+        captured = []
+
+        class FakeLib:
+            def __init__(self):
+                self.called_ex = False
+                self.called_legacy = False
+
+            def rise_blender_render_scene_ex(
+                self, _scene, _settings, _prog_cb, info_cb, _img_cb, _ud, res_ptr, _err, _err_sz
+            ):
+                self.called_ex = True
+                fn = ctypes.cast(info_cb, bridge._PROGRESS_INFO_CALLBACK)
+                info = bridge._ProgressInfo(
+                    progress=0.5,
+                    elapsed_seconds=4.0,
+                    remaining_seconds=4.0,
+                    has_remaining=1,
+                    title=b"Rasterizing Scene",
+                )
+                self.cb_ret = fn(None, ctypes.byref(info))
+                res = res_ptr._obj
+                res.width = 0
+                res.height = 0
+                return 1
+
+            def rise_blender_render_scene(self, *args):
+                self.called_legacy = True
+                return 1
+
+            def rise_blender_free_render_result(self, _res_ptr):
+                pass
+
+        fake_lib = FakeLib()
+        fake_handle = SimpleNamespace(scene=bridge._Scene(), settings=bridge._RenderSettings())
+        with mock.patch.object(bridge, "_load_library", return_value=fake_lib), \
+             mock.patch.object(bridge, "_SceneHandle", return_value=fake_handle):
+            bridge.render_scene(
+                scene=None,
+                settings=None,
+                progress_info=lambda p, e, r, hr, t: (captured.append((p, e, r, hr, t)) or True),
+            )
+        self.assertTrue(fake_lib.called_ex)
+        self.assertFalse(fake_lib.called_legacy)
+        self.assertEqual(fake_lib.cb_ret, 1)
+        self.assertEqual(captured, [(0.5, 4.0, 4.0, True, "Rasterizing Scene")])
 
 
 if __name__ == "__main__":

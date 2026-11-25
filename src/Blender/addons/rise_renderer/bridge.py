@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 19
+_EXPECTED_API_VERSION = 23
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -77,6 +77,8 @@ class _Camera(ctypes.Structure):
         ("aperture_ratio", ctypes.c_float),
         ("iso", ctypes.c_float),
         ("scene_unit_meters", ctypes.c_float),
+        # ABI v23 — planar near-clip distance (camera.data.clip_start).
+        ("clip_start", ctypes.c_float),
     ]
 
 
@@ -102,6 +104,8 @@ class _Painter(ctypes.Structure):
         ("uv_scale_v", ctypes.c_float),
         # ABI v19 -- PAINTER_EXPRESSION; see bridge .h.
         ("expression", ctypes.c_char_p),
+        # ABI v23 -- texture wrap mode (0=clamp, 1=repeat, 2=mirrored_repeat).
+        ("wrap_mode", ctypes.c_int),
     ]
 
 
@@ -114,6 +118,28 @@ class _Modifier(ctypes.Structure):
         ("window", ctypes.c_float),
         # ABI v11 -- MODIFIER_BUMP only; see bridge .h.
         ("normalize", ctypes.c_int),
+        # ABI v23 -- MODIFIER_STACK / MODIFIER_BLEND; see bridge .h.
+        ("stack_member_names", ctypes.POINTER(ctypes.c_char_p)),
+        ("num_stack_members", ctypes.c_uint32),
+        ("blend_a_name", ctypes.c_char_p),
+        ("blend_b_name", ctypes.c_char_p),
+        ("blend_weight_painter_name", ctypes.c_char_p),
+    ]
+
+
+class _MixChild(ctypes.Structure):
+    _fields_ = [
+        ("material_name", ctypes.c_char_p),
+        ("weight_painter_name", ctypes.c_char_p),
+        ("modifier_name", ctypes.c_char_p),
+    ]
+
+
+class _MeshAttribute(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("rgba", ctypes.POINTER(ctypes.c_float)),
+        ("num_corners", ctypes.c_uint32),
     ]
 
 
@@ -173,6 +199,10 @@ class _Material(ctypes.Structure):
         ("thin_film_metal_f0", ctypes.c_double * 3),
         ("thin_film_metal_tint", ctypes.c_double * 3),
         ("dispersion_abbe", ctypes.c_double),
+        # ABI v21 -- RISE_BLENDER_MATERIAL_MIX (`mix_material`).
+        ("mix_children", ctypes.POINTER(_MixChild)),
+        ("num_mix_children", ctypes.c_uint32),
+        ("mix_passthrough_painter_name", ctypes.c_char_p),
     ]
 
 
@@ -194,6 +224,9 @@ class _Mesh(ctypes.Structure):
         ("tangent_attribute", ctypes.POINTER(ctypes.c_float)),
         ("num_tangents", ctypes.c_uint32),
         ("tangent_is_shader_direction", ctypes.c_uint32),
+        # ABI v21 -- named per-corner RGBA attributes for mesh_attr3 / mesh_attr_alpha.
+        ("named_attributes", ctypes.POINTER(_MeshAttribute)),
+        ("num_named_attributes", ctypes.c_uint32),
     ]
 
 
@@ -210,6 +243,12 @@ class _Object(ctypes.Structure):
         ("interior_medium_name", ctypes.c_char_p),
         # ABI v14 (DL-193, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
         ("shader_name", ctypes.c_char_p),
+        # ABI v20 -- per-object Cycles Object Info attributes.
+        ("object_color", ctypes.c_float * 4),
+        ("object_index", ctypes.c_float),
+        ("object_random", ctypes.c_float),
+        # ABI v23 -- per-particle-instance random (`osl_particle_random()`).
+        ("particle_random", ctypes.c_float),
     ]
 
 
@@ -435,7 +474,18 @@ class _RenderResult(ctypes.Structure):
     ]
 
 
+class _ProgressInfo(ctypes.Structure):
+    _fields_ = [
+        ("progress", ctypes.c_float),
+        ("elapsed_seconds", ctypes.c_double),
+        ("remaining_seconds", ctypes.c_double),
+        ("has_remaining", ctypes.c_int),
+        ("title", ctypes.c_char_p),
+    ]
+
+
 _PROGRESS_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_float, ctypes.c_char_p)
+_PROGRESS_INFO_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(_ProgressInfo))
 _IMAGE_CALLBACK = ctypes.CFUNCTYPE(
     ctypes.c_int,
     ctypes.c_void_p,
@@ -568,6 +618,18 @@ def _load_library(preferred_path: str | None = None):
         ctypes.c_size_t,
     ]
     library.rise_blender_render_scene.restype = ctypes.c_int
+    library.rise_blender_render_scene_ex.argtypes = [
+        ctypes.POINTER(_Scene),
+        ctypes.POINTER(_RenderSettings),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(_RenderResult),
+        ctypes.POINTER(ctypes.c_char),
+        ctypes.c_size_t,
+    ]
+    library.rise_blender_render_scene_ex.restype = ctypes.c_int
     library.rise_blender_free_render_result.argtypes = [ctypes.POINTER(_RenderResult)]
     library.rise_blender_free_render_result.restype = None
     library.rise_blender_shutdown.argtypes = []
@@ -705,6 +767,7 @@ class _SceneHandle:
         payload.aperture_ratio = float(getattr(camera, "aperture_ratio", 1.0))
         payload.iso = float(getattr(camera, "iso", 0.0))
         payload.scene_unit_meters = float(getattr(camera, "scene_unit_meters", 1.0))
+        payload.clip_start = float(getattr(camera, "clip_start", 0.0))
         return payload
 
     def _marshal_painter(self, painter):
@@ -727,6 +790,7 @@ class _SceneHandle:
         payload.uv_scale_u = float(getattr(painter, "uv_scale_u", 1.0))
         payload.uv_scale_v = float(getattr(painter, "uv_scale_v", 1.0))
         payload.expression = self._cstring(getattr(painter, "expression", None))
+        payload.wrap_mode = int(getattr(painter, "wrap_mode", 0))
         return payload
 
     def _marshal_modifier(self, modifier):
@@ -740,6 +804,19 @@ class _SceneHandle:
         # ModifierData built by an older exporter module during a live
         # add-on reload, matching the v6/v9 field-addition pattern above.
         payload.normalize = int(bool(getattr(modifier, "normalize", False)))
+        stack_members = tuple(getattr(modifier, "stack_member_names", ()) or ())
+        if stack_members:
+            arr_t = ctypes.c_char_p * len(stack_members)
+            arr = arr_t(*(self._cstring(m) for m in stack_members))
+            self.keepalive.append(arr)
+            payload.stack_member_names = arr
+            payload.num_stack_members = len(stack_members)
+        else:
+            payload.stack_member_names = None
+            payload.num_stack_members = 0
+        payload.blend_a_name = self._cstring(getattr(modifier, "blend_a_name", None))
+        payload.blend_b_name = self._cstring(getattr(modifier, "blend_b_name", None))
+        payload.blend_weight_painter_name = self._cstring(getattr(modifier, "blend_weight_painter_name", None))
         return payload
 
     def _marshal_material(self, material):
@@ -807,6 +884,38 @@ class _SceneHandle:
             values = tuple(getattr(material, attribute, (1.0, 1.0, 1.0)))
             setattr(payload, attribute, (ctypes.c_double * 3)(*(float(v) for v in values[:3])))
         payload.dispersion_abbe = float(getattr(material, "dispersion_abbe", 0.0))
+        # ABI v21 -- RISE_BLENDER_MATERIAL_MIX (`mix_material`).
+        mix_children = list(getattr(material, "mix_children", ()) or ())
+        if mix_children:
+            child_array = self._marshal_array(mix_children, _MixChild, self._marshal_mix_child)
+            payload.mix_children = child_array
+            payload.num_mix_children = len(mix_children)
+        else:
+            payload.mix_children = None
+            payload.num_mix_children = 0
+        payload.mix_passthrough_painter_name = self._cstring(
+            getattr(material, "mix_passthrough_painter_name", None)
+        )
+        return payload
+
+    def _marshal_mix_child(self, child):
+        payload = _MixChild()
+        payload.material_name = self._cstring(getattr(child, "material_name", None))
+        payload.weight_painter_name = self._cstring(getattr(child, "weight_painter_name", None))
+        payload.modifier_name = self._cstring(getattr(child, "modifier_name", None))
+        return payload
+
+    def _marshal_mesh_attribute(self, attr):
+        payload = _MeshAttribute()
+        name = getattr(attr, "name", None)
+        payload.name = self._cstring(name)
+        rgba = getattr(attr, "rgba", ()) or ()
+        if len(rgba) % 4 != 0:
+            raise BridgeError(
+                f"Mesh attribute '{name or ''}' rgba length ({len(rgba)}) must be a multiple of 4."
+            )
+        payload.rgba = self._float_pointer(rgba)
+        payload.num_corners = len(rgba) // 4
         return payload
 
     def _marshal_mesh(self, mesh):
@@ -828,6 +937,15 @@ class _SceneHandle:
         payload.tangent_attribute = self._float_pointer(tangents)
         payload.num_tangents = len(tangents) // 4
         payload.tangent_is_shader_direction = int(getattr(mesh, "tangent_is_shader_direction", False))
+        # ABI v21 -- named per-corner RGBA attributes.
+        named_attrs = list(getattr(mesh, "named_attributes", ()) or ())
+        if named_attrs:
+            attr_array = self._marshal_array(named_attrs, _MeshAttribute, self._marshal_mesh_attribute)
+            payload.named_attributes = attr_array
+            payload.num_named_attributes = len(named_attrs)
+        else:
+            payload.named_attributes = None
+            payload.num_named_attributes = 0
         return payload
 
     def _marshal_object(self, obj):
@@ -843,6 +961,14 @@ class _SceneHandle:
         payload.interior_medium_name = self._cstring(obj.interior_medium_name)
         # ABI v14 -- same `getattr` tolerance pattern as above (DL-193).
         payload.shader_name = self._cstring(getattr(obj, "shader_name", None))
+        # ABI v20 -- per-object Cycles Object Info attributes.
+        obj_color = tuple(getattr(obj, "object_color", (1.0, 1.0, 1.0, 1.0)))
+        if len(obj_color) < 4:
+            obj_color = obj_color + (1.0,) * (4 - len(obj_color))
+        payload.object_color = (ctypes.c_float * 4)(*(float(v) for v in obj_color[:4]))
+        payload.object_index = float(getattr(obj, "object_index", 0.0))
+        payload.object_random = float(getattr(obj, "object_random", 0.0))
+        payload.particle_random = float(getattr(obj, "particle_random", 0.0))
         return payload
 
     def _marshal_light(self, light):
@@ -1029,7 +1155,14 @@ def _decode_bridge_warnings(result) -> list[str]:
     return [line for line in (part.strip() for part in text.split("\n")) if line]
 
 
-def render_scene(scene, settings, bridge_path: str | None = None, progress=None, image_update=None) -> RenderImage:
+def render_scene(
+    scene,
+    settings,
+    bridge_path: str | None = None,
+    progress=None,
+    image_update=None,
+    progress_info=None,
+) -> RenderImage:
     library = _load_library(bridge_path)
     handle = _SceneHandle(scene, settings)
     error_buffer = ctypes.create_string_buffer(2048)
@@ -1039,11 +1172,30 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None,
     progress_pointer = None
     if progress is not None:
         def _bridge_progress(_user_data, progress_value, title):
-            title_text = title.decode("utf-8") if title else ""
+            title_text = title.decode("utf-8", errors="replace") if title else ""
             return 1 if progress(float(progress_value), title_text) else 0
 
         progress_callback = _PROGRESS_CALLBACK(_bridge_progress)
         progress_pointer = ctypes.cast(progress_callback, ctypes.c_void_p)
+
+    progress_info_callback = None
+    progress_info_pointer = None
+    if progress_info is not None:
+        def _bridge_progress_info(_user_data, info_ptr):
+            if not info_ptr:
+                return 1
+            info = info_ptr.contents
+            title_text = info.title.decode("utf-8", errors="replace") if info.title else ""
+            return 1 if progress_info(
+                float(info.progress),
+                float(info.elapsed_seconds),
+                float(info.remaining_seconds),
+                bool(info.has_remaining),
+                title_text,
+            ) else 0
+
+        progress_info_callback = _PROGRESS_INFO_CALLBACK(_bridge_progress_info)
+        progress_info_pointer = ctypes.cast(progress_info_callback, ctypes.c_void_p)
 
     image_callback = None
     image_pointer = None
@@ -1064,16 +1216,29 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None,
         image_callback = _IMAGE_CALLBACK(_bridge_image)
         image_pointer = ctypes.cast(image_callback, ctypes.c_void_p)
 
-    success = library.rise_blender_render_scene(
-        ctypes.byref(handle.scene),
-        ctypes.byref(handle.settings),
-        progress_pointer,
-        image_pointer,
-        None,
-        ctypes.byref(result),
-        error_buffer,
-        len(error_buffer),
-    )
+    if progress_info_pointer is not None:
+        success = library.rise_blender_render_scene_ex(
+            ctypes.byref(handle.scene),
+            ctypes.byref(handle.settings),
+            progress_pointer,
+            progress_info_pointer,
+            image_pointer,
+            None,
+            ctypes.byref(result),
+            error_buffer,
+            len(error_buffer),
+        )
+    else:
+        success = library.rise_blender_render_scene(
+            ctypes.byref(handle.scene),
+            ctypes.byref(handle.settings),
+            progress_pointer,
+            image_pointer,
+            None,
+            ctypes.byref(result),
+            error_buffer,
+            len(error_buffer),
+        )
 
     if not success:
         message = _decode_error(error_buffer) or "The RISE bridge failed to render the scene."

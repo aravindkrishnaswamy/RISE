@@ -196,7 +196,7 @@ void TestAbiVersionAndLayout()
 {
 	std::cout << "Test: ABI version 13 and append-only v13 coat/subsurface fields" << std::endl;
 
-	Check( RISE_BLENDER_API_VERSION == 19, "RISE_BLENDER_API_VERSION is 19" );
+	Check( RISE_BLENDER_API_VERSION == 23, "RISE_BLENDER_API_VERSION is 23" );
 	Check( rise_blender_api_version() == RISE_BLENDER_API_VERSION,
 		"rise_blender_api_version() reports the compiled-in constant" );
 

@@ -1,6 +1,7 @@
 #include "rise_blender_bridge.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <climits>
 #include <cmath>
@@ -15,10 +16,12 @@
 #include <stdexcept>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <RISE_API.h>
 #include <Interfaces/IFunction2DManager.h>
+#include <Interfaces/IGeometryManager.h>
 #include <Interfaces/ILog.h>
 #include <Interfaces/IJobPriv.h>
 #include <Interfaces/IRasterizer.h>
@@ -32,6 +35,7 @@
 #include <Interfaces/IPhaseFunction.h>
 #include <Interfaces/IScalarPainter.h>
 #include <Interfaces/IScalarPainterManager.h>
+#include <Interfaces/ITriangleMeshGeometry.h>
 #include <Interfaces/IProgressCallback.h>
 #include <Managers/GenericManager.h>
 #include <Shaders/AdvancedShaderWiring.h>
@@ -40,6 +44,7 @@
 #include <Utilities/OidnConfig.h>
 #include <Utilities/PathGuidingField.h>
 #include <Utilities/ProgressiveConfig.h>
+#include <Utilities/RenderETAEstimator.h>
 #include <Utilities/SMSConfig.h>
 #include <Utilities/SpectralConfig.h>
 #include <Utilities/StabilityConfig.h>
@@ -241,6 +246,10 @@ namespace
 			return false;
 		}
 
+		if( mesh.num_triangles > std::numeric_limits<uint32_t>::max() / 3u ) {
+			write_error( error_message, error_message_size, "Mesh triangle count overflows 32-bit corner index range" );
+			return false;
+		}
 		const size_t triangle_index_count = static_cast<size_t>( mesh.num_triangles ) * 3;
 
 		if( !validate_index_array( mesh.vertex_indices, triangle_index_count, mesh.num_vertices ) ) {
@@ -259,6 +268,28 @@ namespace
 			if( !mesh.uvs || !validate_index_array( mesh.uv_indices, triangle_index_count, mesh.num_uvs ) ) {
 				write_error( error_message, error_message_size, "Mesh UV payload is invalid" );
 				return false;
+			}
+		}
+
+		if( mesh.num_named_attributes > 0 ) {
+			if( !mesh.named_attributes ) {
+				write_error( error_message, error_message_size, "Mesh named_attributes array is null" );
+				return false;
+			}
+			for( uint32_t i = 0; i < mesh.num_named_attributes; ++i ) {
+				const rise_blender_mesh_attribute& attr = mesh.named_attributes[i];
+				if( !attr.name || !attr.name[0] || !attr.rgba ||
+					static_cast<size_t>( attr.num_corners ) != triangle_index_count )
+				{
+					write_error( error_message, error_message_size, "Mesh named corner attribute payload is invalid" );
+					return false;
+				}
+				for( uint32_t j = 0; j < i; ++j ) {
+					if( std::strcmp( mesh.named_attributes[j].name, attr.name ) == 0 ) {
+						write_error( error_message, error_message_size, "Mesh named_attributes contains duplicate attribute names" );
+						return false;
+					}
+				}
 			}
 		}
 
@@ -511,44 +542,192 @@ namespace
 		}
 	};
 
+	std::string normalize_progress_title( const char* raw )
+	{
+		if( !raw ) {
+			return std::string();
+		}
+		std::string s( raw );
+		size_t start = 0;
+		while( start < s.size() && std::isspace( static_cast<unsigned char>( s[start] ) ) ) {
+			++start;
+		}
+		size_t end = s.size();
+		while( end > start ) {
+			const unsigned char ch = static_cast<unsigned char>( s[end - 1] );
+			if( std::isspace( ch ) || ch == ':' ) {
+				--end;
+			} else {
+				break;
+			}
+		}
+		return s.substr( start, end - start );
+	}
+
 	class ProgressBridge : public RISE::IProgressCallback
 	{
 	protected:
 		rise_blender_progress_callback callback_;
+		rise_blender_progress_info_callback info_callback_;
 		void* user_data_;
-		bool aborted_;
+		std::mutex mutex_;
+		RISE::RenderETAEstimator eta_;
+		std::string current_title_;
+		double last_poll_elapsed_;
+		std::atomic<bool> aborted_;
 
 	public:
-		ProgressBridge( rise_blender_progress_callback callback, void* user_data ) :
+		ProgressBridge(
+			rise_blender_progress_callback callback,
+			rise_blender_progress_info_callback info_callback,
+			void* user_data
+		) :
 			callback_( callback ),
+			info_callback_( info_callback ),
 			user_data_( user_data ),
+			last_poll_elapsed_( 0.0 ),
 			aborted_( false )
 		{
+			eta_.Begin();
 		}
 
 		bool Progress( const double progress, const double total ) override
 		{
-			if( !callback_ ) {
+			if( aborted_.load( std::memory_order_relaxed ) ) {
+				return false;
+			}
+			if( !callback_ && !info_callback_ ) {
 				return true;
 			}
+			if( !std::isfinite( progress ) || !std::isfinite( total ) || total <= 0.0 ) {
+				return !aborted_.load( std::memory_order_relaxed );
+			}
 
-			const float normalized = total > 0.0 ? float( progress / total ) : 1.0f;
-			aborted_ = callback_( user_data_, clamp_value<float>( normalized, 0.0f, 1.0f ), 0 ) == 0;
-			return !aborted_;
+			std::lock_guard<std::mutex> lock( mutex_ );
+			if( aborted_.load( std::memory_order_relaxed ) ) {
+				return false;
+			}
+
+			eta_.Update( progress, total );
+			const float frac = clamp_value<float>( static_cast<float>( eta_.ProgressFraction() ), 0.0f, 1.0f );
+			const double elapsed = eta_.ElapsedSeconds();
+			double remaining = -1.0;
+			const bool has_remaining = eta_.RemainingSeconds( remaining );
+
+			bool keep_going = true;
+			if( callback_ ) {
+				keep_going = ( callback_( user_data_, frac, 0 ) != 0 ) && keep_going;
+			}
+			if( info_callback_ ) {
+				rise_blender_progress_info info;
+				info.progress = frac;
+				info.elapsed_seconds = elapsed;
+				info.remaining_seconds = has_remaining ? remaining : -1.0;
+				info.has_remaining = has_remaining ? 1 : 0;
+				info.title = current_title_.c_str();
+				keep_going = ( info_callback_( user_data_, &info ) != 0 ) && keep_going;
+			}
+			if( !keep_going ) {
+				aborted_.store( true, std::memory_order_relaxed );
+			}
+			return keep_going;
 		}
 
 		void SetTitle( const char* title ) override
 		{
-			if( !callback_ ) {
+			if( aborted_.load( std::memory_order_relaxed ) ) {
+				return;
+			}
+			const std::string normalized = normalize_progress_title( title );
+			if( normalized.empty() ) {
 				return;
 			}
 
-			aborted_ = callback_( user_data_, -1.0f, title ) == 0;
+			std::lock_guard<std::mutex> lock( mutex_ );
+			if( aborted_.load( std::memory_order_relaxed ) ) {
+				return;
+			}
+			// Progressive passes re-emit the same phase title ("Rasterizing Scene: ")
+			// at the start of every pass while progress continues monotonically
+			// across all passes.  Keep ETA continuity when the title is unchanged.
+			if( normalized == current_title_ ) {
+				return;
+			}
+
+			current_title_ = normalized;
+			eta_.Begin();
+			last_poll_elapsed_ = 0.0;
+
+			if( !callback_ && !info_callback_ ) {
+				return;
+			}
+
+			bool keep_going = true;
+			if( callback_ ) {
+				keep_going = ( callback_( user_data_, -1.0f, current_title_.c_str() ) != 0 ) && keep_going;
+			}
+			if( info_callback_ ) {
+				rise_blender_progress_info info;
+				info.progress = -1.0f;
+				info.elapsed_seconds = 0.0;
+				info.remaining_seconds = -1.0;
+				info.has_remaining = 0;
+				info.title = current_title_.c_str();
+				keep_going = ( info_callback_( user_data_, &info ) != 0 ) && keep_going;
+			}
+			if( !keep_going ) {
+				aborted_.store( true, std::memory_order_relaxed );
+			}
+		}
+
+		// Throttled cancellation check during indeterminate setup phases
+		// (mesh/object upload before rasterization begins).
+		bool PollStageCancel()
+		{
+			if( aborted_.load( std::memory_order_relaxed ) ) {
+				return true;
+			}
+			if( !callback_ && !info_callback_ ) {
+				return false;
+			}
+
+			std::lock_guard<std::mutex> lock( mutex_ );
+			if( aborted_.load( std::memory_order_relaxed ) ) {
+				return true;
+			}
+			const double elapsed = eta_.ElapsedSeconds();
+			if( ( elapsed - last_poll_elapsed_ ) < 0.1 ) {
+				return false;
+			}
+			last_poll_elapsed_ = elapsed;
+
+			bool keep_going = true;
+			if( callback_ ) {
+				keep_going = ( callback_( user_data_, -1.0f, current_title_.c_str() ) != 0 ) && keep_going;
+			}
+			if( info_callback_ ) {
+				rise_blender_progress_info info;
+				info.progress = -1.0f;
+				info.elapsed_seconds = elapsed;
+				info.remaining_seconds = -1.0;
+				info.has_remaining = 0;
+				info.title = current_title_.c_str();
+				keep_going = ( info_callback_( user_data_, &info ) != 0 ) && keep_going;
+			}
+			if( !keep_going ) {
+				aborted_.store( true, std::memory_order_relaxed );
+			}
+			return !keep_going;
+		}
+
+		bool IsCancelled() const override
+		{
+			return aborted_.load( std::memory_order_relaxed );
 		}
 
 		bool Aborted() const
 		{
-			return aborted_;
+			return aborted_.load( std::memory_order_relaxed );
 		}
 	};
 
@@ -790,6 +969,9 @@ namespace
 				return false;
 			}
 
+			if( camera.clip_start > 0.0f ) {
+				job.SetCameraNearClip( "default", double( camera.clip_start ) );
+			}
 			return true;
 		}
 
@@ -900,6 +1082,9 @@ namespace
 				return false;
 			}
 
+			if( camera.clip_start > 0.0f ) {
+				job.SetCameraNearClip( "default", double( camera.clip_start ) );
+			}
 			return true;
 		}
 
@@ -924,6 +1109,9 @@ namespace
 			return false;
 		}
 
+		if( camera.clip_start > 0.0f ) {
+			job.SetCameraNearClip( "default", double( camera.clip_start ) );
+		}
 		return true;
 	}
 
@@ -944,6 +1132,9 @@ namespace
 		double shift[3] = { painter.shift[0], painter.shift[1], painter.shift[2] };
 		const char filter_type = static_cast<char>( painter.filter_type );
 		const char color_space = texture_color_space_value( painter.color_space );
+		const char wrap_mode = ( painter.wrap_mode >= 0 && painter.wrap_mode <= 2 )
+			? static_cast<char>( painter.wrap_mode )
+			: static_cast<char>( 0 );
 
 		switch( painter.kind )
 		{
@@ -955,7 +1146,7 @@ namespace
 			return true;
 
 		case RISE_BLENDER_PAINTER_TEXTURE_PNG:
-			if( !painter.path || !job.AddPNGTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift ) ) {
+			if( !painter.path || !job.AddPNGTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift, wrap_mode, wrap_mode ) ) {
 				write_error( error_message, error_message_size, "Failed to create a PNG texture painter" );
 				return false;
 			}
@@ -966,7 +1157,7 @@ namespace
 			write_error( error_message, error_message_size, "This build of RISE does not include EXR texture support" );
 			return false;
 #else
-			if( !painter.path || !job.AddEXRTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift ) ) {
+			if( !painter.path || !job.AddEXRTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift, wrap_mode, wrap_mode ) ) {
 				write_error( error_message, error_message_size, "Failed to create an EXR texture painter" );
 				return false;
 			}
@@ -974,7 +1165,7 @@ namespace
 #endif
 
 		case RISE_BLENDER_PAINTER_TEXTURE_HDR:
-			if( !painter.path || !job.AddHDRTexturePainter( painter.name, painter.path, filter_type, painter.lowmemory != 0, scale, shift ) ) {
+			if( !painter.path || !job.AddHDRTexturePainter( painter.name, painter.path, filter_type, painter.lowmemory != 0, scale, shift, wrap_mode, wrap_mode ) ) {
 				write_error( error_message, error_message_size, "Failed to create an HDR texture painter" );
 				return false;
 			}
@@ -985,7 +1176,7 @@ namespace
 			write_error( error_message, error_message_size, "This build of RISE does not include TIFF texture support" );
 			return false;
 #else
-			if( !painter.path || !job.AddTIFFTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift ) ) {
+			if( !painter.path || !job.AddTIFFTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift, wrap_mode, wrap_mode ) ) {
 				write_error( error_message, error_message_size, "Failed to create a TIFF texture painter" );
 				return false;
 			}
@@ -1002,7 +1193,7 @@ namespace
 			return true;
 
 		case RISE_BLENDER_PAINTER_TEXTURE_JPEG:
-			if( !painter.path || !job.AddJPEGTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift ) ) {
+			if( !painter.path || !job.AddJPEGTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift, wrap_mode, wrap_mode ) ) {
 				write_error( error_message, error_message_size, "Failed to create a JPEG texture painter" );
 				return false;
 			}
@@ -1109,7 +1300,14 @@ namespace
 		const size_t error_message_size
 	)
 	{
-		if( !modifier.name || !modifier.source_painter_name ) {
+		if( !modifier.name || !modifier.name[0] ) {
+			write_error( error_message, error_message_size, "Encountered an invalid modifier payload" );
+			return false;
+		}
+		if( modifier.kind != RISE_BLENDER_MODIFIER_STACK &&
+			modifier.kind != RISE_BLENDER_MODIFIER_BLEND &&
+			!modifier.source_painter_name )
+		{
 			write_error( error_message, error_message_size, "Encountered an invalid modifier payload" );
 			return false;
 		}
@@ -1165,6 +1363,123 @@ namespace
 			if( !job.AddNormalMapModifier( modifier.name, modifier.source_painter_name, modifier.scale ) ) {
 				write_error( error_message, error_message_size, "Failed to create a normal-map modifier" );
 				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_MODIFIER_RELIEF:
+			{
+				// ABI v20 — 3D surface-domain ReliefModifier for procedural
+				// ShaderNodeBump height expressions.  Resolve the source
+				// colour painter and wrap channel R in an IScalarPainter
+				// (reusing the wrapper when multiple modifiers reference the
+				// same height painter), then delegate to AddReliefModifier
+				// in "surface" domain.
+				RISE::IPainterManager* pmgr = job.GetPainters();
+				RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+				if( !pmgr || !smgr ) {
+					write_error( error_message, error_message_size, "Failed to create a relief modifier: painter managers unavailable" );
+					return false;
+				}
+
+				std::string heightName;
+				if( !modifier.source_painter_name || !modifier.source_painter_name[0] ||
+					std::strcmp( modifier.source_painter_name, "none" ) == 0 )
+				{
+					write_error( error_message, error_message_size, "Failed to create a relief modifier: source painter is empty or 'none'" );
+					return false;
+				}
+				RISE::IPainter* pColorPainter = pmgr->GetItem( modifier.source_painter_name );
+				if( pColorPainter ) {
+					heightName = std::string( modifier.source_painter_name ) + "::reliefheight";
+					if( !smgr->GetItem( heightName.c_str() ) ) {
+						RISE::IScalarPainter* pScalar = 0;
+						RISE::RISE_API_CreatePainterChannelScalarPainter(
+							&pScalar, *pColorPainter, 0, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+						if( !pScalar ) {
+							write_error( error_message, error_message_size, "Failed to create scalar height wrapper for relief modifier" );
+							return false;
+						}
+						const bool added = smgr->AddItem( pScalar, heightName.c_str() );
+						pScalar->release();
+						if( !added ) {
+							write_error( error_message, error_message_size, "Failed to register scalar height wrapper for relief modifier" );
+							return false;
+						}
+					}
+				} else if( smgr->GetItem( modifier.source_painter_name ) ) {
+					heightName = modifier.source_painter_name;
+				} else {
+					write_error( error_message, error_message_size, "Failed to create a relief modifier: source painter not found" );
+					return false;
+				}
+
+				if( !job.AddReliefModifier( modifier.name, heightName.c_str(), double( modifier.scale ), "surface", double( modifier.window ) ) ) {
+					write_error( error_message, error_message_size, "Failed to create a relief modifier" );
+					return false;
+				}
+			}
+			return true;
+
+		case RISE_BLENDER_MODIFIER_STACK:
+			{
+				if( !modifier.stack_member_names || modifier.num_stack_members == 0 ) {
+					write_error( error_message, error_message_size, "Failed to create a modifier stack: empty member list" );
+					return false;
+				}
+				std::vector<const char*> members;
+				members.reserve( modifier.num_stack_members );
+				for( uint32_t i = 0; i < modifier.num_stack_members; ++i ) {
+					const char* m = modifier.stack_member_names[i];
+					if( !m || !m[0] ) {
+						write_error( error_message, error_message_size, "Failed to create a modifier stack: null/empty member name" );
+						return false;
+					}
+					members.push_back( m );
+				}
+				if( !job.AddModifierStack( modifier.name, members.data(), static_cast<unsigned int>( members.size() ) ) ) {
+					write_error( error_message, error_message_size, "Failed to create a modifier stack" );
+					return false;
+				}
+			}
+			return true;
+
+		case RISE_BLENDER_MODIFIER_BLEND:
+			{
+				const char* modA = ( modifier.blend_a_name && modifier.blend_a_name[0] ) ? modifier.blend_a_name : "none";
+				const char* modB = ( modifier.blend_b_name && modifier.blend_b_name[0] ) ? modifier.blend_b_name : "none";
+				const char* rawW = ( modifier.blend_weight_painter_name && modifier.blend_weight_painter_name[0] )
+					? modifier.blend_weight_painter_name : "0.5";
+				if( std::strcmp( rawW, "none" ) == 0 ) {
+					write_error( error_message, error_message_size, "Failed to create a blended modifier: weight cannot be 'none'" );
+					return false;
+				}
+				std::string weightSpec = rawW;
+				RISE::IPainterManager* pmgr = job.GetPainters();
+				RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+				if( pmgr && smgr && !smgr->GetItem( rawW ) ) {
+					if( RISE::IPainter* pColorW = pmgr->GetItem( rawW ) ) {
+						weightSpec = std::string( rawW ) + "::blendw";
+						if( !smgr->GetItem( weightSpec.c_str() ) ) {
+							RISE::IScalarPainter* pScalar = 0;
+							RISE::RISE_API_CreatePainterChannelScalarPainter(
+								&pScalar, *pColorW, 0, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+							if( !pScalar ) {
+								write_error( error_message, error_message_size, "Failed to create scalar weight wrapper for blended modifier" );
+								return false;
+							}
+							const bool added = smgr->AddItem( pScalar, weightSpec.c_str() );
+							pScalar->release();
+							if( !added ) {
+								write_error( error_message, error_message_size, "Failed to register scalar weight wrapper for blended modifier" );
+								return false;
+							}
+						}
+					}
+				}
+				if( !job.AddBlendedModifier( modifier.name, modA, modB, weightSpec.c_str() ) ) {
+					write_error( error_message, error_message_size, "Failed to create a blended modifier" );
+					return false;
+				}
 			}
 			return true;
 		}
@@ -1296,9 +1611,48 @@ namespace
 
 		case RISE_BLENDER_MATERIAL_DIELECTRIC:
 		{
-			if( !material.tau_painter_name || !material.ior_painter_name || !material.scatter_painter_name ) {
+			if( !material.tau_painter_name || !material.tau_painter_name[0] ||
+				std::strcmp( material.tau_painter_name, "none" ) == 0 ||
+				!material.ior_painter_name || !material.scatter_painter_name )
+			{
 				write_error( error_message, error_message_size, "Failed to create a dielectric material" );
 				return false;
+			}
+
+			// ABI v21: if `tau_painter_name` names a registered colour IPainter
+			// (e.g. a procedural expression or image texture driving glass/water
+			// Base Color), wrap it into an RGB IScalarPainter via
+			// `PainterRGBScalarPainter` so dielectric transmission varies
+			// spatially across the surface.  Inline `"r g b"` literals and
+			// pre-registered IScalarPainters pass straight through unchanged.
+			std::string tauName = material.tau_painter_name;
+			{
+				RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+				RISE::IPainterManager* pmgr = job.GetPainters();
+				if( smgr && pmgr && !smgr->GetItem( material.tau_painter_name ) ) {
+					RISE::IPainter* pTauColor = pmgr->GetItem( material.tau_painter_name );
+					if( pTauColor ) {
+						const std::string rgbWrapperName = std::string( material.tau_painter_name ) + "::tau_rgb";
+						if( !smgr->GetItem( rgbWrapperName.c_str() ) ) {
+							RISE::IScalarPainter* pRgbScalar = 0;
+							RISE::RISE_API_CreatePainterRGBScalarPainter(
+								&pRgbScalar, *pTauColor, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+							if( !pRgbScalar ) {
+								write_error( error_message, error_message_size,
+									"Failed to create RGB scalar wrapper for dielectric tau painter" );
+								return false;
+							}
+							const bool added = smgr->AddItem( pRgbScalar, rgbWrapperName.c_str() );
+							pRgbScalar->release();
+							if( !added ) {
+								write_error( error_message, error_message_size,
+									"Failed to register RGB scalar wrapper for dielectric tau painter" );
+								return false;
+							}
+						}
+						tauName = rgbWrapperName;
+					}
+				}
 			}
 
 			// ABI v18: transmission dispersion turns the numeric IOR into
@@ -1328,11 +1682,11 @@ namespace
 				const RISE::Scalar arK[1] = { RISE::Scalar( 0.0 ) };
 				const RISE::Scalar arT[1] = { RISE::Scalar( material.thin_film_thickness ) };
 				ok = job.AddDielectricMaterial(
-					material_name, material.tau_painter_name, iorName.c_str(),
+					material_name, tauName.c_str(), iorName.c_str(),
 					material.scatter_painter_name, false, arN, arK, arT, 1u );
 			} else {
 				ok = job.AddDielectricMaterial(
-					material_name, material.tau_painter_name, iorName.c_str(),
+					material_name, tauName.c_str(), iorName.c_str(),
 					material.scatter_painter_name, false );
 			}
 			if( ok ) {
@@ -1952,7 +2306,8 @@ namespace
 		RISE::IJobPriv& job,
 		const rise_blender_material& material,
 		char* error_message,
-		const size_t error_message_size
+		const size_t error_message_size,
+		const std::unordered_set<std::string>* expression_painters = 0
 	)
 	{
 		if( material.alpha_mode == RISE_BLENDER_ALPHA_OPAQUE ) {
@@ -1965,20 +2320,179 @@ namespace
         std::string alpha = alphaLiteral;
         if (material.alpha_texture_painter_name && material.alpha_texture_painter_name[0]) {
             alpha = matName + ".alpha";
-            if (!job.AddPainterChannelScalarPainter(alpha.c_str(), material.alpha_texture_painter_name, 3, 1, 0)) {
+            // Scalar ExpressionPainters carry their scalar in RGB (alpha is always 1.0),
+            // whereas RGBA image textures carry coverage in channel 3 (CHAN_A).
+            const unsigned int alphaChannel =
+                (expression_painters && expression_painters->count(material.alpha_texture_painter_name)) ? 0u : 3u;
+            if (!job.AddPainterChannelScalarPainter(alpha.c_str(), material.alpha_texture_painter_name, alphaChannel, 1, 0)) {
                 write_error(error_message, error_message_size, "Failed to bind scalar alpha texture");
                 return false;
             }
         }
         if (!job.SetMaterialAlpha(matName.c_str(), alpha.c_str(),
-            material.alpha_mode == RISE_BLENDER_ALPHA_CLIP ? "mask" : "blend", material.alpha_threshold)) return false;
+            material.alpha_mode == RISE_BLENDER_ALPHA_CLIP ? "mask" : "blend", material.alpha_threshold)) {
+            write_error(error_message, error_message_size, "Failed to bind material alpha coverage");
+            return false;
+        }
         // ABI-v14 exporters may still bind this name. Keep its ordinary
         // shading response, with coverage applied only by traversal.
         const char* ops[] = {"DefaultEmission", "DefaultDirectLighting"};
         const unsigned int lo[] = {0,0}, hi[] = {100,100};
         const char operations[] = {'+','+'};
-        if (!job.AddAdvancedShader((matName + ".shader").c_str(), 2, ops, lo, hi, operations)) return false;
+        if (!job.AddAdvancedShader((matName + ".shader").c_str(), 2, ops, lo, hi, operations)) {
+            write_error(error_message, error_message_size, "Failed to register material alpha compatibility shader");
+            return false;
+        }
 
+		return true;
+	}
+
+	//! ABI v21: resolve a mix weight (or pass-through weight) slot to an
+	//! argument accepted by `IJob::AddMixMaterial`: either an existing
+	//! `IScalarPainter` name, a registered colour `IPainter` name wrapped
+	//! via channel R in `PainterChannelScalarPainter`, or an inline numeric
+	//! literal.  Fails loudly on unknown names rather than silently dropping
+	//! a weight expression.
+	bool resolve_mix_weight_slot(
+		RISE::IJobPriv& job,
+		const char* slotSpec,
+		std::string& outName,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		if( !slotSpec || !slotSpec[0] || std::strcmp( slotSpec, "none" ) == 0 ) {
+			write_error( error_message, error_message_size, "Mix material child is missing a weight painter or literal" );
+			return false;
+		}
+
+		RISE::IScalarPainterManager* smgr = job.GetScalarPainters();
+		RISE::IPainterManager* pmgr = job.GetPainters();
+		if( smgr && smgr->GetItem( slotSpec ) ) {
+			outName = slotSpec;
+			return true;
+		}
+
+		if( pmgr && smgr ) {
+			RISE::IPainter* pColor = pmgr->GetItem( slotSpec );
+			if( pColor ) {
+				const std::string wrapperName = std::string( slotSpec ) + "::mixweight";
+				if( !smgr->GetItem( wrapperName.c_str() ) ) {
+					RISE::IScalarPainter* pScalar = 0;
+					RISE::RISE_API_CreatePainterChannelScalarPainter(
+						&pScalar, *pColor, 0, RISE::Scalar( 1.0 ), RISE::Scalar( 0.0 ) );
+					if( !pScalar ) {
+						write_error( error_message, error_message_size,
+							"Failed to create scalar wrapper for mix weight painter" );
+						return false;
+					}
+					const bool added = smgr->AddItem( pScalar, wrapperName.c_str() );
+					pScalar->release();
+					if( !added ) {
+						write_error( error_message, error_message_size,
+							"Failed to register scalar wrapper for mix weight painter" );
+						return false;
+					}
+				}
+				outName = wrapperName;
+				return true;
+			}
+		}
+
+		double literalVal = 0.0;
+		if( parse_scalar_literal( slotSpec, literalVal ) ) {
+			outName = slotSpec;
+			return true;
+		}
+
+		const std::string msg = std::string( "Mix material weight '" ) + slotSpec +
+			"' is neither a registered painter nor a finite numeric literal";
+		write_error( error_message, error_message_size, msg.c_str() );
+		return false;
+	}
+
+	//! ABI v21: create a RISE `mix_material` from `rise_blender_material`'s
+	//! `mix_children` array and optional `mix_passthrough_painter_name`.
+	bool add_mix_material(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		if( material.emission_painter_name && material.emission_painter_name[0] ) {
+			write_error( error_message, error_message_size,
+				"Mix material cannot carry outer emission; attach emission to child leaves instead" );
+			return false;
+		}
+
+		if( material.num_mix_children == 0 || !material.mix_children ) {
+			write_error( error_message, error_message_size, "Mix material requires at least one child entry" );
+			return false;
+		}
+
+		std::vector<std::string> childMats;
+		std::vector<std::string> childWeights;
+		std::vector<std::string> childMods;
+		childMats.reserve( material.num_mix_children );
+		childWeights.reserve( material.num_mix_children );
+		childMods.reserve( material.num_mix_children );
+
+		for( uint32_t i = 0; i < material.num_mix_children; ++i ) {
+			const rise_blender_mix_child& child = material.mix_children[i];
+			childMats.push_back( ( child.material_name && child.material_name[0] ) ? child.material_name : "none" );
+			std::string resolvedWeight;
+			if( !resolve_mix_weight_slot( job, child.weight_painter_name, resolvedWeight, error_message, error_message_size ) ) {
+				return false;
+			}
+			childWeights.push_back( resolvedWeight );
+			childMods.push_back( ( child.modifier_name && child.modifier_name[0] ) ? child.modifier_name : "none" );
+		}
+
+		std::string passthroughWeight;
+		const char* passthroughPtr = 0;
+		if( material.mix_passthrough_painter_name && material.mix_passthrough_painter_name[0] &&
+			std::strcmp( material.mix_passthrough_painter_name, "none" ) != 0 )
+		{
+			if( !resolve_mix_weight_slot( job, material.mix_passthrough_painter_name, passthroughWeight, error_message, error_message_size ) ) {
+				return false;
+			}
+			passthroughPtr = passthroughWeight.c_str();
+		}
+
+		std::vector<const char*> matPtrs( material.num_mix_children );
+		std::vector<const char*> weightPtrs( material.num_mix_children );
+		std::vector<const char*> modPtrs( material.num_mix_children );
+		for( uint32_t i = 0; i < material.num_mix_children; ++i ) {
+			matPtrs[i] = childMats[i].c_str();
+			weightPtrs[i] = childWeights[i].c_str();
+			modPtrs[i] = childMods[i].c_str();
+		}
+
+		std::string mixDiag;
+		struct MixDiagSinkGuard {
+			std::string* prev;
+			explicit MixDiagSinkGuard( std::string& dst ) : prev( RISE::g_cstFinalizeDiagSink ) {
+				RISE::g_cstFinalizeDiagSink = &dst;
+			}
+			~MixDiagSinkGuard() { RISE::g_cstFinalizeDiagSink = prev; }
+		} diagGuard( mixDiag );
+
+		if( !job.AddMixMaterial(
+			material.name,
+			matPtrs.data(),
+			weightPtrs.data(),
+			modPtrs.data(),
+			material.num_mix_children,
+			passthroughPtr ) )
+		{
+			std::string msg = "Failed to create a mix material";
+			if( !mixDiag.empty() ) {
+				msg += ": " + mixDiag;
+			}
+			write_error( error_message, error_message_size, msg.c_str() );
+			return false;
+		}
 		return true;
 	}
 
@@ -1986,7 +2500,8 @@ namespace
 		RISE::IJobPriv& job,
 		const rise_blender_material& material,
 		char* error_message,
-		const size_t error_message_size
+		const size_t error_message_size,
+		const std::unordered_set<std::string>* expression_painters = 0
 	)
 	{
 		if( !material.name || !material.name[0] ) {
@@ -2005,6 +2520,11 @@ namespace
 		// wrap internally too (mirrors the PBR-MR branch just above).
 		else if( material.model == RISE_BLENDER_MATERIAL_RANDOMWALK_SSS ) {
 			base_ok = add_randomwalk_sss_material( job, material, error_message, error_message_size );
+		}
+		// ABI v21: mix_material must be outermost (leaves own their own
+		// emission and modifiers).
+		else if( material.model == RISE_BLENDER_MATERIAL_MIX ) {
+			base_ok = add_mix_material( job, material, error_message, error_message_size );
 		}
 		else if( material.emission_painter_name && material.emission_painter_name[0] ) {
 			const std::string surface_name = std::string( material.name ) + "::surface";
@@ -2027,7 +2547,7 @@ namespace
 
 		// ABI v14 / DL-214: install shared scalar material coverage over
 		// whichever branch above just registered `material.name`.
-		return wire_alpha_shader_for_material( job, material, error_message, error_message_size );
+		return wire_alpha_shader_for_material( job, material, error_message, error_message_size, expression_painters );
 	}
 
 	bool add_mesh(
@@ -2077,6 +2597,29 @@ namespace
 		{
 			write_error( error_message, error_message_size, "Failed to add indexed triangle mesh geometry to the RISE job" );
 			return false;
+		}
+
+		// ABI v21 — Attach named per-corner RGBA attributes for `mesh_attr3` /
+		// `mesh_attr_alpha` expression evaluation.
+		if( mesh.num_named_attributes > 0 ) {
+			RISE::IGeometryManager* gmgr = job.GetGeometries();
+			RISE::IGeometry* pGeom = gmgr ? gmgr->GetItem( mesh.name ) : 0;
+			RISE::ITriangleMeshGeometryIndexed5* pMesh5 =
+				dynamic_cast<RISE::ITriangleMeshGeometryIndexed5*>( pGeom );
+			if( !pMesh5 ) {
+				job.RemoveGeometry( mesh.name );
+				write_error( error_message, error_message_size,
+					"Failed to attach named mesh attributes: geometry does not implement ITriangleMeshGeometryIndexed5" );
+				return false;
+			}
+			for( uint32_t i = 0; i < mesh.num_named_attributes; ++i ) {
+				const rise_blender_mesh_attribute& attr = mesh.named_attributes[i];
+				if( !pMesh5->AddNamedCornerAttribute( attr.name, attr.rgba, attr.num_corners ) ) {
+					job.RemoveGeometry( mesh.name );
+					write_error( error_message, error_message_size, "Failed to attach a named per-corner mesh attribute" );
+					return false;
+				}
+			}
 		}
 
 		return true;
@@ -2133,6 +2676,17 @@ namespace
 		rise_object->PushTopTransStack( blender_matrix_to_rise_matrix( object.transform ) );
 		rise_object->FinalizeTransformations();
 		rise_object->SetWorldVisible( object.visible != 0 );
+
+		// ABI v20 — Per-object Cycles Object Info attributes (`osl_object_*`).
+		RISE::ObjectInfoData objInfo;
+		objInfo.color[0] = object.object_color[0];
+		objInfo.color[1] = object.object_color[1];
+		objInfo.color[2] = object.object_color[2];
+		objInfo.alpha = object.object_color[3];
+		objInfo.objectIndex = object.object_index;
+		objInfo.random = object.object_random;
+		objInfo.particleRandom = object.particle_random;
+		rise_object->SetObjectInfo( objInfo );
 		return true;
 	}
 
@@ -2703,6 +3257,11 @@ namespace
 		bound.visible = object.visible;
 		bound.modifier_name = 0;
 		bound.interior_medium_name = 0;
+		// Default Blender object color (1,1,1,1) for hair grooms.
+		bound.object_color[0] = 1.0f;
+		bound.object_color[1] = 1.0f;
+		bound.object_color[2] = 1.0f;
+		bound.object_color[3] = 1.0f;
 
 		char object_error[512];
 		object_error[0] = 0;
@@ -3576,6 +4135,30 @@ extern "C" int rise_blender_render_scene(
 	size_t error_message_size
 )
 {
+	return rise_blender_render_scene_ex(
+		scene,
+		settings,
+		progress_callback,
+		0,
+		image_callback,
+		user_data,
+		result,
+		error_message,
+		error_message_size );
+}
+
+extern "C" int rise_blender_render_scene_ex(
+	const rise_blender_scene* scene,
+	const rise_blender_render_settings* settings,
+	rise_blender_progress_callback progress_callback,
+	rise_blender_progress_info_callback progress_info_callback,
+	rise_blender_image_callback image_callback,
+	void* user_data,
+	rise_blender_render_result* result,
+	char* error_message,
+	size_t error_message_size
+)
+{
 	write_error( error_message, error_message_size, "" );
 
 	if( result ) {
@@ -3597,13 +4180,19 @@ extern "C" int rise_blender_render_scene(
 			return 0;
 		}
 
-		ProgressBridge progress( progress_callback, user_data );
+		ProgressBridge progress( progress_callback, progress_info_callback, user_data );
 		MemoryRasterizerOutput raster_output( image_callback, user_data );
 		VolumeCacheGuard volume_cache_guard;
 		struct JobCleanup
 		{
 			RISE::IJobPriv*& job;
-			~JobCleanup() { RISE::safe_release( job ); }
+			~JobCleanup()
+			{
+				if( job ) {
+					job->SetProgress( 0 );
+					RISE::safe_release( job );
+				}
+			}
 		} cleanup{ job };
 		// Non-fatal diagnostics (ABI v9); DL-193 (docs/DEBT_LEDGER.md) adds
 		// the alpha/integrator-compatibility warning below, alongside the
@@ -3611,6 +4200,11 @@ extern "C" int rise_blender_render_scene(
 		std::vector<std::string> warnings;
 
 		job->SetProgress( &progress );
+		progress.SetTitle( "Building scene" );
+		if( progress.Aborted() ) {
+			write_error( error_message, error_message_size, "RISE render canceled" );
+			return 0;
+		}
 		// Top-level BVH for the scene's objects.  CLAUDE.md documents the
 		// production default as (leaf=4, depth=32) — same as
 		// `InitializeContainers` installs; we re-call to be explicit and to
@@ -3630,10 +4224,20 @@ extern "C" int rise_blender_render_scene(
 			return 0;
 		}
 
+		std::unordered_set<std::string> expression_painters;
 		for( uint32_t i = 0; i < scene->num_painters; ++i ) {
+			if( progress.PollStageCancel() ) {
+				write_error( error_message, error_message_size, "RISE render canceled" );
+				return 0;
+			}
 			if( !add_painter( *job, scene->painters[i], error_message, error_message_size ) ) {
 				RISE::safe_release( job );
 				return 0;
+			}
+			if( scene->painters[i].kind == RISE_BLENDER_PAINTER_EXPRESSION &&
+				scene->painters[i].name && scene->painters[i].name[0] )
+			{
+				expression_painters.insert( scene->painters[i].name );
 			}
 		}
 
@@ -3649,7 +4253,7 @@ extern "C" int rise_blender_render_scene(
 		// `alpha_mode` is authoritative regardless of which model branch a
 		// material takes.  Consumed after `configure_rasterizer` below.
 		for( uint32_t i = 0; i < scene->num_materials; ++i ) {
-			if( !add_material( *job, scene->materials[i], error_message, error_message_size ) ) {
+			if( !add_material( *job, scene->materials[i], error_message, error_message_size, &expression_painters ) ) {
 				RISE::safe_release( job );
 				return 0;
 			}
@@ -3657,6 +4261,10 @@ extern "C" int rise_blender_render_scene(
 		}
 
 		for( uint32_t i = 0; i < scene->num_meshes; ++i ) {
+			if( progress.PollStageCancel() ) {
+				write_error( error_message, error_message_size, "RISE render canceled" );
+				return 0;
+			}
 			if( !add_mesh( *job, scene->meshes[i], error_message, error_message_size ) ) {
 				RISE::safe_release( job );
 				return 0;
@@ -3664,6 +4272,10 @@ extern "C" int rise_blender_render_scene(
 		}
 
 		for( uint32_t i = 0; i < scene->num_objects; ++i ) {
+			if( ( i & 63u ) == 0u && progress.PollStageCancel() ) {
+				write_error( error_message, error_message_size, "RISE render canceled" );
+				return 0;
+			}
 			if( !add_object( *job, scene->objects[i], error_message, error_message_size ) ) {
 				RISE::safe_release( job );
 				return 0;
@@ -3679,6 +4291,10 @@ extern "C" int rise_blender_render_scene(
 		}
 
 		for( uint32_t i = 0; i < scene->num_hair_objects; ++i ) {
+			if( progress.PollStageCancel() ) {
+				write_error( error_message, error_message_size, "RISE render canceled" );
+				return 0;
+			}
 			(void)add_hair_object( *job, scene->hair_objects[i], warnings );
 		}
 
@@ -3748,12 +4364,13 @@ extern "C" int rise_blender_render_scene(
 			raster_ok = job->Rasterize();
 		}
 
-		if( !raster_ok ) {
+		if( !raster_ok || progress.Aborted() ) {
 			if( progress.Aborted() ) {
 				write_error( error_message, error_message_size, "RISE render canceled" );
 			} else {
 				write_error( error_message, error_message_size, "RISE rasterization failed" );
 			}
+			job->SetProgress( 0 );
 			RISE::safe_release( job );
 			return 0;
 		}
@@ -3792,6 +4409,9 @@ extern "C" int rise_blender_render_scene(
 
 		pack_warnings( warnings, result->warnings, sizeof( result->warnings ) );
 
+		if( job ) {
+			job->SetProgress( 0 );
+		}
 		RISE::safe_release( job );
 		return 1;
 	} catch( const std::exception& failure ) {

@@ -423,8 +423,7 @@ class RISE_RENDER_PT_materials(_RISEPanel):
         scene = context.scene
         needs_bake = [
             mat.name
-            for mat in bpy.data.materials
-            if material_bake.needs_bake_attempt(scene, mat)
+            for mat in material_bake.materials_needing_bake(scene)
         ]
         already_baked: list[tuple[str, str, bool]] = []
         for mat in bpy.data.materials:

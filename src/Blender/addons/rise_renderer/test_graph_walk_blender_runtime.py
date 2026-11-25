@@ -88,13 +88,13 @@ def main():
           ids < len(tree.nodes) and pointers == len(tree.nodes),
           "%d nodes: %d distinct id(), %d distinct pointers" % (len(tree.nodes), ids, pointers))
 
-    # 1. classify_material: nodes the manual-bake classifier does not accept
-    #    (Combine XYZ <- Math <- Object Info, driving a Mapping's Location)
-    #    behind accepted ones.  The id()-keyed walk skipped them and called
-    #    the material "simple", so the render gate never fired.  Whether a
-    #    given shape trips the reuse depends on the allocator, so several
-    #    shapes are built: the shipped code must be right on all of them and
-    #    the control must be wrong on at least one.
+    # 1. classify_material: a truly unaccepted node (Magic Texture) behind a
+    #    chain of accepted ones (Bump, ColorRamp, Noise, Mapping, Combine XYZ,
+    #    Math).  The id()-keyed walk skipped them and called the material
+    #    "simple", so the render gate never fired.  Whether a given shape trips
+    #    the reuse depends on the allocator, so several shapes are built: the
+    #    shipped code must be right on all of them and the control must be
+    #    wrong on at least one.
     def classify_fixture(branches):
         material, tree, principled, _ = new_material("classify_%d" % branches)
         for index in range(branches):
@@ -105,8 +105,8 @@ def main():
             coord = tree.nodes.new("ShaderNodeTexCoord")
             combine = tree.nodes.new("ShaderNodeCombineXYZ")
             math_node = tree.nodes.new("ShaderNodeMath")
-            info = tree.nodes.new("ShaderNodeObjectInfo")
-            tree.links.new(info.outputs["Random"], math_node.inputs[0])
+            magic = tree.nodes.new("ShaderNodeTexMagic")
+            tree.links.new(magic.outputs["Fac"], math_node.inputs[0])
             tree.links.new(math_node.outputs[0], combine.inputs[0])
             tree.links.new(combine.outputs[0], mapping.inputs["Location"])
             tree.links.new(coord.outputs["Object"], mapping.inputs["Vector"])
@@ -135,12 +135,12 @@ def main():
     #    input.  The id()-keyed walk returned None and the bump was dropped.
     material, tree, principled, _ = new_material("bump_reroutes")
     bump = tree.nodes.new("ShaderNodeBump")
-    tree.links.new(reroute_chain(tree, bump.outputs[0], 4), principled.inputs["Normal"])
+    tree.links.new(reroute_chain(tree, bump.outputs[0], 8), principled.inputs["Normal"])
 
     def skip():
         node = exporter._skip_reroutes(principled.inputs["Normal"].links[0].from_node)
         return node.bl_idname if node is not None else None
-    case("a Bump behind 4 reroutes is still found", [exporter], skip, "ShaderNodeBump")
+    case("a Bump behind 8 reroutes is still found", [exporter], skip, "ShaderNodeBump")
 
     # 4. exporter._walk_socket_for_image_node: an image behind pass-through
     #    nodes that each have a second linked input.  The id()-keyed walk

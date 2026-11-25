@@ -83,6 +83,11 @@ class _FakeSocket:
 
 
 class _FakeSocketCollection(list):
+    def __contains__(self, key):
+        if isinstance(key, str):
+            return any(s.name == key for s in self)
+        return super().__contains__(key)
+
     def get(self, name, default=None):
         for s in self:
             if s.name == name:
@@ -250,14 +255,157 @@ class RenderRegionTest(unittest.TestCase):
         self.assertEqual(buf[0], 0.0)
 
 
-class BridgeAbiV19Test(unittest.TestCase):
-    def test_abi_v19_fields_present(self):
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 19)
+class BridgeAbiV20Test(unittest.TestCase):
+    def test_abi_v20_fields_present(self):
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 23)
+        self.assertEqual(exporter.MODIFIER_RELIEF, 2)
         painter_fields = [f[0] for f in bridge._Painter._fields_]
         self.assertIn("expression", painter_fields)
         settings_fields = [f[0] for f in bridge._RenderSettings._fields_]
         for name in ("use_region", "region_left", "region_top", "region_right", "region_bottom", "film_transparent"):
             self.assertIn(name, settings_fields)
+        object_fields = [f[0] for f in bridge._Object._fields_]
+        self.assertEqual(object_fields[-4:], ["object_color", "object_index", "object_random", "particle_random"])
+
+    def test_relief_modifier_scale_sign_and_clamping(self):
+        # Invert OFF -> +max(0, strength) * distance; Invert ON -> -max(0, strength) * distance
+        self.assertAlmostEqual(exporter._relief_modifier_scale(0.5, 0.2, False), 0.1, places=12)
+        self.assertAlmostEqual(exporter._relief_modifier_scale(0.5, 0.2, True), -0.1, places=12)
+        # Negative strength clamps to 0 (matching Cycles svm_node_bump)
+        self.assertEqual(abs(exporter._relief_modifier_scale(-0.5, 0.2, False)), 0.0)
+        # Negative distance composes with invert
+        self.assertAlmostEqual(exporter._relief_modifier_scale(0.5, -0.2, False), -0.1, places=12)
+        self.assertAlmostEqual(exporter._relief_modifier_scale(0.5, -0.2, True), 0.1, places=12)
+
+    def test_cycles_object_random_regular_and_signed_instance_id(self):
+        # Pin exact Cycles Jenkins lookup3 hash for "Cube":
+        # hash_string("Cube") = 0x00364913, hash_uint2(..., 0) = 0x502a11df (1344934367)
+        self.assertEqual(exporter._cycles_hash_string("Cube"), 0x00364913)
+        self.assertEqual(exporter._cycles_hash_uint2(0x00364913, 0), 0x502A11DF)
+        r1 = exporter._cycles_object_random("Cube", False, 0)
+        self.assertAlmostEqual(r1, 0.31314194202423096, places=7)
+        r2 = exporter._cycles_object_random("Sphere", False, 0)
+        self.assertNotEqual(r1, r2)
+        self.assertEqual(r1, exporter._cycles_object_random("Cube", False, 12345))
+        # Instances with negative signed 32-bit random_id from Blender Python must
+        # reinterpret as uint32 so output stays in [0, 1] (never negative!).
+        r_neg = exporter._cycles_object_random("instance_sphere_2", True, -863676259)
+        expected = float((-863676259) & 0xFFFFFFFF) / 4294967296.0
+        self.assertAlmostEqual(r_neg, expected, places=6)
+        self.assertGreater(r_neg, 0.5)
+        self.assertLessEqual(r_neg, 1.0)
+        # Endpoint 0xFFFFFFFF (-1 signed) maps to exact 1.0 in float32 matching Cycles
+        self.assertEqual(exporter._cycles_object_random("inst", True, -1), 1.0)
+
+    def test_marshal_object_v20_fields(self):
+        handle = bridge._SceneHandle.__new__(bridge._SceneHandle)
+        handle.keepalive = []
+        # Full 4-tuple ObjectData
+        obj = exporter.ObjectData(
+            name="o1",
+            geometry_name="m1",
+            material_name="mat1",
+            transform=[1.0 if i % 5 == 0 else 0.0 for i in range(16)],
+            casts_shadows=True,
+            receives_shadows=True,
+            visible=True,
+            object_color=(0.2, 0.4, 0.6, 0.8),
+            object_index=9.0,
+            object_random=0.37,
+        )
+        c_obj = handle._marshal_object(obj)
+        self.assertAlmostEqual(c_obj.object_color[0], 0.2, places=6)
+        self.assertAlmostEqual(c_obj.object_color[1], 0.4, places=6)
+        self.assertAlmostEqual(c_obj.object_color[2], 0.6, places=6)
+        self.assertAlmostEqual(c_obj.object_color[3], 0.8, places=6)
+        self.assertAlmostEqual(c_obj.object_index, 9.0, places=6)
+        self.assertAlmostEqual(c_obj.object_random, 0.37, places=6)
+        # 3-tuple pads alpha to 1.0; missing attributes fall back to (1,1,1,1), 0, 0
+        legacy_obj = types.SimpleNamespace(
+            name="o2", geometry_name="m1", material_name="mat1",
+            transform=[1.0 if i % 5 == 0 else 0.0 for i in range(16)],
+            casts_shadows=True, receives_shadows=True, visible=True,
+            modifier_name=None, interior_medium_name=None,
+            object_color=(0.1, 0.2, 0.3),
+        )
+        c_leg = handle._marshal_object(legacy_obj)
+        self.assertAlmostEqual(c_leg.object_color[3], 1.0, places=6)
+        self.assertEqual(c_leg.object_index, 0.0)
+        self.assertEqual(c_leg.object_random, 0.0)
+
+    def test_build_bump_modifier_procedural_relief_and_guards(self):
+        state = exporter._ExportState()
+        mat = types.SimpleNamespace(name_full="test_mat")
+        noise = _FakeNode(
+            "ShaderNodeTexNoise",
+            inputs=[
+                _FakeSocket("Vector", "VECTOR", (0.0, 0.0, 0.0)),
+                _FakeSocket("W", "VALUE", 0.0),
+                _FakeSocket("Scale", "VALUE", 8.0),
+                _FakeSocket("Detail", "VALUE", 2.0),
+                _FakeSocket("Roughness", "VALUE", 0.5),
+                _FakeSocket("Lacunarity", "VALUE", 2.0),
+                _FakeSocket("Offset", "VALUE", 0.0),
+                _FakeSocket("Gain", "VALUE", 1.0),
+                _FakeSocket("Distortion", "VALUE", 0.0),
+            ],
+            outputs=[_FakeSocket("Factor", "VALUE")],
+            noise_dimensions="3D",
+            noise_type="FBM",
+            normalize=True,
+        )
+        bump = _FakeNode(
+            "ShaderNodeBump",
+            inputs=[
+                _FakeSocket("Strength", "VALUE", 0.4),
+                _FakeSocket("Distance", "VALUE", 0.25),
+                _FakeSocket("Height", "VALUE", 0.0),
+                _FakeSocket("Normal", "VECTOR", (0.0, 0.0, 0.0)),
+            ],
+            outputs=[_FakeSocket("Normal", "VECTOR")],
+            invert=False,
+        )
+        _link(noise, "Factor", bump, "Height")
+        used_gen = []
+        handled = []
+        mod_name = exporter._build_bump_modifier(
+            mat, bump, state, bbox_min=(-1, -1, -1), bbox_max=(1, 1, 1),
+            used_generated_out=used_gen, handled_out=handled,
+        )
+        self.assertIsNotNone(mod_name)
+        self.assertTrue(used_gen)
+        self.assertTrue(handled)
+        self.assertEqual(len(state.modifiers), 1)
+        self.assertEqual(state.modifiers[0].kind, exporter.MODIFIER_RELIEF)
+        self.assertAlmostEqual(state.modifiers[0].scale, 0.1, places=6)
+        self.assertEqual(state.modifiers[0].window, 0.0)
+        self.assertFalse(state.modifiers[0].normalize)
+        # Same bump graph deduplicates via modifier_cache
+        mod_name_2 = exporter._build_bump_modifier(
+            mat, bump, state, bbox_min=(-1, -1, -1), bbox_max=(1, 1, 1),
+        )
+        self.assertEqual(mod_name_2, mod_name)
+        self.assertEqual(len(state.modifiers), 1)
+        # Invert ON flips scale sign and does NOT collide with Invert OFF
+        bump.invert = True
+        mod_inv = exporter._build_bump_modifier(
+            mat, bump, state, bbox_min=(-1, -1, -1), bbox_max=(1, 1, 1),
+        )
+        self.assertNotEqual(mod_inv, mod_name)
+        self.assertAlmostEqual(state.modifiers[1].scale, -0.1, places=6)
+        # Muted Height link returns None without warning
+        bump.inputs["Height"].links[0].is_muted = True
+        warn_before = len(state.warnings)
+        handled_muted = []
+        self.assertIsNone(exporter._build_bump_modifier(mat, bump, state, handled_out=handled_muted))
+        self.assertTrue(handled_muted)
+        self.assertEqual(len(state.warnings), warn_before)
+        # Non-finite / zero scale returns None cleanly
+        bump.inputs["Height"].links[0].is_muted = False
+        bump.inputs["Strength"].default_value = float("nan")
+        self.assertIsNone(exporter._build_bump_modifier(mat, bump, state))
+        bump.inputs["Strength"].default_value = 0.0
+        self.assertIsNone(exporter._build_bump_modifier(mat, bump, state))
 
 
 class ProceduralExprTest(unittest.TestCase):
@@ -439,11 +587,26 @@ class ProceduralExprTest(unittest.TestCase):
         self.assertFalse(res2.uses_generated)
         self.assertIn("osl_noise_texture(", res2.expression)
 
-    def test_texcoord_normal_and_from_instancer_fail_closed(self):
+    def test_texcoord_normal_camera_and_from_instancer(self):
         tc_norm = _FakeNode("ShaderNodeTexCoord", outputs=[_FakeSocket("Normal", "VECTOR")])
         dst = _FakeSocket("Base Color", "RGBA")
         dst.links.append(_FakeLink(tc_norm, tc_norm.outputs["Normal"]))
-        self.assertIsNone(procedural_expr.compile_socket_expression(dst, want_type="vec3"))
+        res_n = procedural_expr.compile_socket_expression(dst, want_type="vec3")
+        self.assertIsNotNone(res_n)
+        self.assertIn("osl_to_object_normal(N)", res_n.expression)
+
+        tc_cam = _FakeNode("ShaderNodeTexCoord", outputs=[_FakeSocket("Camera", "VECTOR")])
+        dst_c = _FakeSocket("Base Color", "RGBA")
+        dst_c.links.append(_FakeLink(tc_cam, tc_cam.outputs["Camera"]))
+        res_c = procedural_expr.compile_socket_expression(dst_c, want_type="vec3")
+        self.assertIsNotNone(res_c)
+        self.assertIn("osl_to_camera_point(P)", res_c.expression)
+
+        # Window / Reflection and from_instancer still fail closed
+        tc_refl = _FakeNode("ShaderNodeTexCoord", outputs=[_FakeSocket("Reflection", "VECTOR")])
+        dst_r = _FakeSocket("Base Color", "RGBA")
+        dst_r.links.append(_FakeLink(tc_refl, tc_refl.outputs["Reflection"]))
+        self.assertIsNone(procedural_expr.compile_socket_expression(dst_r, want_type="vec3"))
 
         tc_inst = _FakeNode(
             "ShaderNodeTexCoord",
@@ -454,7 +617,7 @@ class ProceduralExprTest(unittest.TestCase):
         dst2.links.append(_FakeLink(tc_inst, tc_inst.outputs["Generated"]))
         self.assertIsNone(procedural_expr.compile_socket_expression(dst2, want_type="vec3"))
 
-    def test_mapping_all_modes_and_linked_transform_fail_closed(self):
+    def test_mapping_all_modes_dynamic_trs_and_invalid_type(self):
         tc = _FakeNode("ShaderNodeTexCoord", outputs=[_FakeSocket("Object", "VECTOR")])
         for vtype in ("POINT", "TEXTURE", "VECTOR", "NORMAL"):
             mp = _FakeNode(
@@ -476,8 +639,8 @@ class ProceduralExprTest(unittest.TestCase):
             if vtype == "NORMAL":
                 self.assertIn("normalize(", res.expression)
 
-        # Linked Location fails closed
-        mp_bad = _FakeNode(
+        # Linked Location compiles dynamically via osl_vector_rotate; unknown vector_type fails closed
+        mp_dyn = _FakeNode(
             "ShaderNodeMapping",
             inputs=[
                 _FakeSocket("Vector", "VECTOR", (0.0, 0.0, 0.0)),
@@ -488,7 +651,19 @@ class ProceduralExprTest(unittest.TestCase):
             outputs=[_FakeSocket("Vector", "VECTOR")],
             vector_type="POINT",
         )
-        _link(tc, "Object", mp_bad, "Location")
+        _link(tc, "Object", mp_dyn, "Location")
+        dst_dyn = _FakeSocket("Base Color", "RGBA")
+        dst_dyn.links.append(_FakeLink(mp_dyn, mp_dyn.outputs["Vector"]))
+        res_dyn = procedural_expr.compile_socket_expression(dst_dyn, want_type="vec3")
+        self.assertIsNotNone(res_dyn)
+        self.assertIn("osl_vector_rotate(4, 0,", res_dyn.expression)
+
+        mp_bad = _FakeNode(
+            "ShaderNodeMapping",
+            inputs=[_FakeSocket("Vector", "VECTOR", (0.0, 0.0, 0.0))],
+            outputs=[_FakeSocket("Vector", "VECTOR")],
+            vector_type="BOGUS_TYPE",
+        )
         dst_bad = _FakeSocket("Base Color", "RGBA")
         dst_bad.links.append(_FakeLink(mp_bad, mp_bad.outputs["Vector"]))
         self.assertIsNone(procedural_expr.compile_socket_expression(dst_bad, want_type="vec3"))
@@ -503,10 +678,10 @@ class ProceduralExprTest(unittest.TestCase):
                 color_mode="RGB",
                 interpolation="LINEAR",
                 elements=[
-                    types.SimpleNamespace(position=0.2, color=(0.1, 0.2, 0.3, 1.0)),
-                    types.SimpleNamespace(position=0.5, color=(0.5, 0.5, 0.5, 1.0)),
-                    types.SimpleNamespace(position=0.5, color=(0.8, 0.2, 0.1, 1.0)),
-                    types.SimpleNamespace(position=0.9, color=(1.0, 1.0, 1.0, 1.0)),
+                    types.SimpleNamespace(position=0.2, color=(0.1, 0.2, 0.3, 0.2)),
+                    types.SimpleNamespace(position=0.5, color=(0.5, 0.5, 0.5, 0.45)),
+                    types.SimpleNamespace(position=0.5, color=(0.8, 0.2, 0.1, 0.65)),
+                    types.SimpleNamespace(position=0.9, color=(1.0, 1.0, 1.0, 0.85)),
                 ],
             ),
         )
@@ -576,10 +751,30 @@ class ProceduralExprTest(unittest.TestCase):
         self.assertIn("osl_mix_color(2,", res.expression)
         self.assertIn("pow(max(", res.expression)
 
-        # ColorRamp Alpha output fails closed
+        # ColorRamp Alpha output compiles with non-trivial stop alphas; B_SPLINE still fails closed
         dst_a = _FakeSocket("Roughness", "VALUE")
         dst_a.links.append(_FakeLink(ramp, ramp.outputs["Alpha"]))
-        self.assertIsNone(procedural_expr.compile_socket_expression(dst_a, want_type="scalar"))
+        res_a = procedural_expr.compile_socket_expression(dst_a, want_type="scalar")
+        self.assertIsNotNone(res_a)
+        self.assertIn("0.2", res_a.expression)
+        self.assertIn("0.85", res_a.expression)
+
+        ramp_bspline = _FakeNode(
+            "ShaderNodeValToRGB",
+            inputs=[_FakeSocket("Fac", "VALUE", 0.5)],
+            outputs=[_FakeSocket("Color", "RGBA")],
+            color_ramp=types.SimpleNamespace(
+                color_mode="RGB",
+                interpolation="B_SPLINE",
+                elements=[
+                    types.SimpleNamespace(position=0.0, color=(0.0, 0.0, 0.0, 1.0)),
+                    types.SimpleNamespace(position=1.0, color=(1.0, 1.0, 1.0, 1.0)),
+                ],
+            ),
+        )
+        dst_bs = _FakeSocket("Base Color", "RGBA")
+        dst_bs.links.append(_FakeLink(ramp_bspline, ramp_bspline.outputs["Color"]))
+        self.assertIsNone(procedural_expr.compile_socket_expression(dst_bs, want_type="vec3"))
 
     def test_cycle_muted_and_slot_budget_fail_closed(self):
         # Cycle
@@ -619,8 +814,13 @@ class ProceduralExprTest(unittest.TestCase):
             prev_out = "Color"
         dst3 = _FakeSocket("Base Color", "RGBA")
         dst3.links.append(_FakeLink(prev, prev.outputs[prev_out]))
-        # Raise max_depth slightly so slot budget is what trips, not max_depth
-        comp = procedural_expr._Compiler(None, None, max_depth=256)
+        # With single-use inlining + depth-splitting, a 170-node linear chain fits easily!
+        res_inlined = procedural_expr.compile_socket_expression(dst3, want_type="vec3")
+        self.assertIsNotNone(res_inlined)
+        self.assertLess(res_inlined.def_slots, 60)
+
+        # Without inlining (or on a 170-stage multi-use diamond chain), > 495 slots fails closed!
+        comp = procedural_expr._Compiler(None, None, max_depth=256, inline_single_use=False)
         with self.assertRaises(procedural_expr._UnsupportedGraph):
             comp.eval_node_output(prev, prev_out, 0)
 
@@ -759,6 +959,25 @@ class BakeEligibilityTest(unittest.TestCase):
 
         mat = _make_material(wire)
         self.assertFalse(material_bake.has_procedural_texture_nodes(mat))
+
+    def test_object_info_classifies_simple(self):
+        def wire(principled, nodes):
+            oi = _FakeNode(
+                "ShaderNodeObjectInfo",
+                inputs=[],
+                outputs=[_FakeSocket("Random", "VALUE")],
+            )
+            ramp = _FakeNode(
+                "ShaderNodeValToRGB",
+                inputs=[_FakeSocket("Factor", "VALUE", 0.5)],
+                outputs=[_FakeSocket("Color", "RGBA")],
+            )
+            nodes.extend([oi, ramp])
+            _link(oi, "Random", ramp, "Factor")
+            _link(ramp, "Color", principled, "Base Color")
+
+        mat = _make_material(wire)
+        self.assertEqual(material_bake.classify_material(mat), "simple")
 
 
 if __name__ == "__main__":
