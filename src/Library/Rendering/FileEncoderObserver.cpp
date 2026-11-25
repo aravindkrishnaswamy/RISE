@@ -267,43 +267,6 @@ namespace
 		return RISECBOR64::Value::ArrayValue(encoded);
 	}
 
-	RISECBOR64::Value ActiveFireMediaArray(
-		const std::vector<FrameStoreOutput::ActiveFireMedium>& media )
-	{
-		using RISECBOR64::Value;
-		Value::Values encoded;
-		encoded.reserve(media.size());
-		for( std::size_t i=0; i<media.size(); ++i ) {
-			if( media[i].mediaKind == "sequence_backed" ) {
-				encoded.push_back(Value::MapValue({
-					{ "binding_kind", Value::String(media[i].bindingKind) },
-					{ "binding_owner", Value::String(media[i].bindingOwner) },
-					{ "effective_blur_state", Value::String(media[i].effectiveBlurState) },
-					{ "manager_name", Value::String(media[i].managerName) },
-					{ "media_kind", Value::String(media[i].mediaKind) },
-					{ "optical_record_ids", TextArray(media[i].opticalRecordIds) },
-					{ "physical_mapping", Value::String(media[i].physicalMapping) },
-					{ "prepared_input_id", Value::String(media[i].preparedInputId) },
-					{ "prepared_state_generation", Value::Unsigned(media[i].preparedStateGeneration) },
-					{ "selected_base_frame_index", Value::Signed(media[i].selectedBaseFrameIndex) },
-					{ "sequence_id", Value::String(media[i].sequenceId) },
-					{ "source_kind", Value::String(media[i].sourceKind) },
-					{ "whole_file_digest", Value::String(media[i].wholeFileDigest) }
-				}));
-			} else {
-				encoded.push_back(Value::MapValue({
-					{ "authored_config_digest", Value::String(media[i].authoredConfigDigest) },
-					{ "binding_kind", Value::String(media[i].bindingKind) },
-					{ "binding_owner", Value::String(media[i].bindingOwner) },
-					{ "manager_name", Value::String(media[i].managerName) },
-					{ "media_kind", Value::String(media[i].mediaKind) },
-					{ "optical_record_ids", TextArray(media[i].opticalRecordIds) }
-				}));
-			}
-		}
-		return Value::ArrayValue(encoded);
-	}
-
 	bool ReadArtifact( const char* filename, RISECBOR64::Bytes& bytes )
 	{
 		std::ifstream input(filename,std::ios::binary);
@@ -768,7 +731,7 @@ namespace
 		if( !RISECBOR64::Encode(finalizedConfig,finalizedConfigBytes,&error) ) return false;
 
 		Value::Members payloadMembers = {
-			{ "active_fire_media", ActiveFireMediaArray(metadata.activeFireMedia) },
+			{ "active_fire_media", FrameStoreOutput::EncodeActiveFireMedia(metadata.activeFireMedia) },
 			{ "active_fire_optics_record_ids", TextArray(metadata.activeFireOpticsRecordIds) },
 			{ "artifact_fidelity", Value::String(artifactFidelity) },
 			{ "artifact_reason_codes", TextArray(artifactReasons) },
@@ -944,11 +907,13 @@ namespace
 				error = "fire provenance active medium has no tagged media_kind";
 				return false;
 			}
-			const bool sequence = kind->GetText() == "sequence_backed";
+			const bool missing = kind->GetText() == "sequence_unavailable_v1";
+			const bool sequence = missing || kind->GetText() == "sequence_backed";
+			const char* digestKey = missing ? "coverage_digest" : "whole_file_digest";
 			if( sequence ? !ExactKeys(encodedMedium,{ "binding_kind", "binding_owner",
 				"effective_blur_state", "manager_name", "media_kind", "optical_record_ids",
 				"physical_mapping", "prepared_input_id", "prepared_state_generation",
-				"selected_base_frame_index", "sequence_id", "source_kind", "whole_file_digest" }) :
+				"selected_base_frame_index", "sequence_id", "source_kind", digestKey }) :
 				!ExactKeys(encodedMedium,{ "authored_config_digest", "binding_kind",
 				"binding_owner", "manager_name", "media_kind", "optical_record_ids" }) ) {
 				error = "fire provenance active medium is outside its tagged schema-v1 variant";
@@ -958,7 +923,7 @@ namespace
 				"manager_name", "media_kind" };
 			if( sequence ) {
 				for( const char* key : { "effective_blur_state", "physical_mapping",
-					"prepared_input_id", "sequence_id", "source_kind", "whole_file_digest" } ) {
+					"prepared_input_id", "sequence_id", "source_kind", digestKey } ) {
 					textKeys.push_back(key);
 				}
 			} else {
@@ -981,7 +946,7 @@ namespace
 				decoded.preparedInputId = encodedMedium.Find("prepared_input_id")->GetText();
 				decoded.sequenceId = encodedMedium.Find("sequence_id")->GetText();
 				decoded.sourceKind = encodedMedium.Find("source_kind")->GetText();
-				decoded.wholeFileDigest = encodedMedium.Find("whole_file_digest")->GetText();
+				(missing ? decoded.coverageDigest : decoded.wholeFileDigest) = encodedMedium.Find(digestKey)->GetText();
 				const Value* generation = encodedMedium.Find("prepared_state_generation");
 				const Value* frameIndex = encodedMedium.Find("selected_base_frame_index");
 				if( generation->GetType() != Value::UnsignedInteger ||
@@ -1366,7 +1331,7 @@ namespace
 		if( !RISECBOR64::Encode(finalizedConfig,finalizedConfigBytes,&error) ) return false;
 
 		const Value payload = Value::MapValue({
-			{ "active_fire_media", ActiveFireMediaArray(metadata.activeFireMedia) },
+			{ "active_fire_media", FrameStoreOutput::EncodeActiveFireMedia(metadata.activeFireMedia) },
 			{ "active_fire_optics_record_ids", TextArray(metadata.activeFireOpticsRecordIds) },
 			{ "artifact_fidelity", Value::String("display_derivative") },
 			{ "artifact_reason_codes", TextArray({

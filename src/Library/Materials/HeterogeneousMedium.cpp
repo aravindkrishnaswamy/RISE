@@ -2455,8 +2455,73 @@ MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
 	}
 }
 
+// Move the complete sampling state together. Swapping twice restores the exact
+// previous generation without rebuilding an accessor, majorant or emission CDF.
+struct MultichannelHeterogeneousMedium::FrameStorage
+{
+	decltype(m_pCarbonAccessor) pCarbonAccessor{};
+	decltype(m_pTemperatureAccessor) pTemperatureAccessor{};
+	decltype(m_pCondensedAccessor) pCondensedAccessor{};
+	decltype(m_pChemAccessor) pChemAccessor{};
+	decltype(m_hasNonzeroCondensedInventory) hasNonzeroCondensedInventory{};
+	decltype(m_pAccessor) pAccessor{};
+	decltype(m_pMajorantGrid) pMajorantGrid{};
+	decltype(m_fireMajorantGeneration) fireMajorantGeneration{};
+	decltype(m_fireEmissionGeneration) fireEmissionGeneration{};
+	decltype(m_fireDerivedStructuresCurrent) fireDerivedStructuresCurrent{};
+	decltype(m_opticsEpoch) opticsEpoch{};
+	decltype(m_emissionCellAlias) emissionCellAlias{};
+	decltype(m_emissionCells) emissionCells{};
+	decltype(m_emissionBinWeights) emissionBinWeights{};
+	decltype(m_emissionBinProbabilities) emissionBinProbabilities{};
+	decltype(m_emissionBinSize) emissionBinSize{};
+	decltype(m_thermalEmissionImportance) thermalEmissionImportance{};
+	decltype(m_minPositiveThermalEmissionPdf) minPositiveThermalEmissionPdf{};
+	decltype(m_flat) flat{};
+	decltype(m_flatChem) flatChem{};
+	decltype(m_flatCellOccupied) flatCellOccupied{};
+	decltype(m_flatCellChemOccupied) flatCellChemOccupied{};
+	decltype(m_flatCurrent) flatCurrent{};
+	~FrameStorage()
+	{
+		delete pMajorantGrid;
+		safe_release(pAccessor);
+		safe_release(pCarbonAccessor);
+		safe_release(pTemperatureAccessor);
+		safe_release(pCondensedAccessor);
+		for( auto& accessor : pChemAccessor ) safe_release(accessor);
+	}
+	void Swap(MultichannelHeterogeneousMedium& medium) noexcept
+	{
+		using std::swap;
+		swap(pCarbonAccessor,medium.m_pCarbonAccessor);
+		swap(pTemperatureAccessor,medium.m_pTemperatureAccessor);
+		swap(pCondensedAccessor,medium.m_pCondensedAccessor);
+		swap(pChemAccessor,medium.m_pChemAccessor);
+		swap(hasNonzeroCondensedInventory,medium.m_hasNonzeroCondensedInventory);
+		swap(pAccessor,medium.m_pAccessor);
+		swap(pMajorantGrid,medium.m_pMajorantGrid);
+		swap(fireMajorantGeneration,medium.m_fireMajorantGeneration);
+		swap(fireEmissionGeneration,medium.m_fireEmissionGeneration);
+		swap(fireDerivedStructuresCurrent,medium.m_fireDerivedStructuresCurrent);
+		swap(opticsEpoch,medium.m_opticsEpoch);
+		swap(emissionCellAlias,medium.m_emissionCellAlias);
+		swap(emissionCells,medium.m_emissionCells);
+		swap(emissionBinWeights,medium.m_emissionBinWeights);
+		swap(emissionBinProbabilities,medium.m_emissionBinProbabilities);
+		swap(emissionBinSize,medium.m_emissionBinSize);
+		swap(thermalEmissionImportance,medium.m_thermalEmissionImportance);
+		swap(minPositiveThermalEmissionPdf,medium.m_minPositiveThermalEmissionPdf);
+		swap(flat,medium.m_flat);
+		swap(flatChem,medium.m_flatChem);
+		swap(flatCellOccupied,medium.m_flatCellOccupied);
+		swap(flatCellChemOccupied,medium.m_flatCellChemOccupied);
+		swap(flatCurrent,medium.m_flatCurrent);
+	}
+};
+
 bool MultichannelHeterogeneousMedium::InstallPreparedFireSequenceFrame(
-	const Implementation::FireSequencePreparedFrame& frame )
+	const Implementation::FireSequencePreparedFrame& frame, std::function<void()>* rollback )
 {
 	const auto carbon = frame.channels.find("carbon");
 	const auto temperature = frame.channels.find("temperature");
@@ -2479,48 +2544,35 @@ bool MultichannelHeterogeneousMedium::InstallPreparedFireSequenceFrame(
 			chemC2->second.dimensions!=carbon->second.dimensions ||
 			chemCO2->second.dimensions!=carbon->second.dimensions)) ) return false;
 
-	IVolumeAccessor* newCarbon = DenseSequenceAccessor(carbon->second);
-	IVolumeAccessor* newTemperature = DenseSequenceAccessor(temperature->second);
-	IVolumeAccessor* newCondensed = condensed == frame.channels.end() ? nullptr :
-		DenseSequenceAccessor(condensed->second);
-	IVolumeAccessor* newChem[3]={
-		allChem ? DenseSequenceAccessor(chemCH->second) : nullptr,
-		allChem ? DenseSequenceAccessor(chemC2->second) : nullptr,
-		allChem ? DenseSequenceAccessor(chemCO2->second) : nullptr };
-	if( !newCarbon || !newTemperature || (condensed != frame.channels.end() && !newCondensed) ||
-		(allChem && (!newChem[0] || !newChem[1] || !newChem[2])) ) {
-		safe_release(newCarbon); safe_release(newTemperature); safe_release(newCondensed);
-		for( unsigned int band=0; band<3u; ++band ) safe_release(newChem[band]);
-		return false;
+	// Construct the rollback closure before mutating any field. While derived
+	// tables are being built, retain every old allocation for an exact swap.
+	auto previous = std::make_shared<FrameStorage>();
+	std::function<void()> restore = [this,previous] { previous->Swap(*this); };
+	previous->Swap(*this);
+	try {
+		m_fireMajorantGeneration = previous->fireMajorantGeneration;
+		m_fireEmissionGeneration = previous->fireEmissionGeneration;
+		m_pCarbonAccessor = DenseSequenceAccessor(carbon->second);
+		m_pTemperatureAccessor = DenseSequenceAccessor(temperature->second);
+		m_pCondensedAccessor = condensed == frame.channels.end() ? nullptr : DenseSequenceAccessor(condensed->second);
+		if( allChem ) {
+			m_pChemAccessor[0] = DenseSequenceAccessor(chemCH->second);
+			m_pChemAccessor[1] = DenseSequenceAccessor(chemC2->second);
+			m_pChemAccessor[2] = DenseSequenceAccessor(chemCO2->second);
+		}
+		m_hasNonzeroCondensedInventory = condensed != frame.channels.end() && condensed->second.maximum > 0.0;
+		m_opticsEpoch = NextOpticsEpoch();
+		if( !m_pCarbonAccessor || !m_pTemperatureAccessor || (condensed != frame.channels.end() && !m_pCondensedAccessor) ||
+			(allChem && (!m_pChemAccessor[0] || !m_pChemAccessor[1] || !m_pChemAccessor[2])) ||
+			!RebuildFireDerivedStructuresForRender() ) {
+			restore();
+			return false;
+		}
+	} catch(...) {
+		restore();
+		throw;
 	}
-	IVolumeAccessor* oldCarbon = m_pCarbonAccessor;
-	IVolumeAccessor* oldTemperature = m_pTemperatureAccessor;
-	IVolumeAccessor* oldCondensed = m_pCondensedAccessor;
-	IVolumeAccessor* oldChem[3]={m_pChemAccessor[0],m_pChemAccessor[1],m_pChemAccessor[2]};
-	const bool oldCondensedInventory = m_hasNonzeroCondensedInventory;
-	m_pCarbonAccessor = newCarbon;
-	m_pTemperatureAccessor = newTemperature;
-	m_pCondensedAccessor = newCondensed;
-	for( unsigned int band=0; band<3u; ++band ) m_pChemAccessor[band]=newChem[band];
-	m_hasNonzeroCondensedInventory = condensed != frame.channels.end() &&
-		condensed->second.maximum > 0.0;
-	m_flatCurrent = false;	// accessors changed: rebuilt (or left off) by the rebuild below
-	m_opticsEpoch = NextOpticsEpoch();
-	InvalidateFireDerivedStructures();
-	if( !RebuildFireDerivedStructuresForRender() ) {
-		m_pCarbonAccessor = oldCarbon;
-		m_pTemperatureAccessor = oldTemperature;
-		m_pCondensedAccessor = oldCondensed;
-		for( unsigned int band=0; band<3u; ++band ) m_pChemAccessor[band]=oldChem[band];
-		m_hasNonzeroCondensedInventory = oldCondensedInventory;
-		m_flatCurrent = false;
-		RebuildFireDerivedStructuresForRender();
-		safe_release(newCarbon); safe_release(newTemperature); safe_release(newCondensed);
-		for( unsigned int band=0; band<3u; ++band ) safe_release(newChem[band]);
-		return false;
-	}
-	safe_release(oldCarbon); safe_release(oldTemperature); safe_release(oldCondensed);
-	for( unsigned int band=0; band<3u; ++band ) safe_release(oldChem[band]);
+	if( rollback ) *rollback = std::move(restore);
 	return true;
 }
 
@@ -2528,9 +2580,9 @@ bool MultichannelHeterogeneousMedium::BindSequencePreparationController(
 	Implementation::FireSequencePreparationController& controller,
 	const std::string& installerIdentity, std::string& error )
 {
-	return controller.SetFrameInstaller(
-		[this](const Implementation::FireSequencePreparedFrame& frame) {
-			return InstallPreparedFireSequenceFrame(frame);
+	return controller.SetReversibleFrameInstaller(
+		[this](const Implementation::FireSequencePreparedFrame& frame, std::function<void()>* rollback) {
+			return InstallPreparedFireSequenceFrame(frame,rollback);
 		},installerIdentity,error);
 }
 

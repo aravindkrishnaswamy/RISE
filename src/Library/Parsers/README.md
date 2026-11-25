@@ -209,8 +209,9 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
 | Materials | 33 | `null_boundary_material`, `lambertian_material`, `diffuse_transmission_material`, `mix_material`, `dielectric_material`, `rough_dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` (all 5 cameras accept optional `near_clip` in scene units) |
-| Geometry | 27 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry` |
+| Geometry | 28 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry`, `simulated_mesh_geometry` (a deforming mesh read from a simulation cache's mesh output -- a `cache` directory, or since M4 a producer's output by `source <simulation>.<output>` -- with deformation motion blur; docs/SIMULATION_M3B_RESULTS.md, docs/SIMULATION_M4_RESULTS.md) |
 | Hair guides | 1 | `hair_guides` |
+| Simulations | 3 | `cloth_simulation`, `fire_simulation`, `simulation_cache` (M4, `ChunkCategory::Simulation`; see "Simulation producers" below) |
 | Modifiers | 5 | `relief_modifier`, `modifier_stack`, `blended_modifier`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
 | Media | 6 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `fire_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
@@ -226,7 +227,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 183 unique chunk keywords** -- counted directly from the 183 `add(...)` registrations in `CreateAllChunkParsers()` (pinned by `tests/SceneEditorSuggestionsTest.cpp`). Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above, `scalar_painter`'s `painter NAME channel RGB` form is a channel option on `scalar_painter` (not a separate keyword), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
+**Total: 187 unique chunk keywords** -- counted directly from the 187 `add(...)` registrations in `CreateAllChunkParsers()` (pinned by `tests/SceneEditorSuggestionsTest.cpp`). Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), `scalar_painter`'s `painter NAME channel RGB` form is a channel option on `scalar_painter` (not a separate keyword), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
 
 ### Composite chunks (parse-time sugar)
 
@@ -257,6 +258,66 @@ Two consequences for anyone adding another composite chunk:
   cannot undo a chunk that produced entities in four managers. `rect_light` and
   `shape_light` are both named in that function's refusal list alongside
   `gltf_import`, so editing one falls back to a full derive.
+
+## Simulation producers (M4)
+
+A simulation is a scene element that produces time-indexed data (docs/SIMULATION_IN_RISE_PROPOSAL.md).
+Three producer chunks, `ChunkCategory::Simulation`, all **data only** (the `hair_guides` precedent):
+`Finalize` records the simulation in the Job's table (`IJob::AddSimulation`); loading a scene never
+runs a solver.  `rise-sim bake|resume|status <scene.RISEscene> [simulation ...]` bakes, resumes and
+reports them; the editor runs an interactive one live (`LiveSimulationAttachSimulation`).
+
+```text
+cloth_simulation                      # solver cloth.shell
+{
+    name            flag              # unique; no `.` (consumers write `flag.surface`)
+    cache           caches/flag       # default caches/<name> beside the scene file; `~/` and absolute too
+    mode            interactive       # every cloth.shell parameter by its solver name
+    vertices_u      31
+    frames          91
+    pin             v0 follow pole    # <selection> [depth N] [fixed|translate ..|oscillate ..|rotate ..|follow <object>]
+    follow_object   pole              # scene input: the object's keyframed transform
+    collider        sphere 0 0.3 0 0.3    # plane | sphere | box | cylinder, world space
+    collider_object ball              # scene input: the object's geometry as a moving mesh collider
+    material        denim-twill       # plus material_<field> overrides
+}
+
+fire_simulation                       # solver fire.methane (case + result-affecting options)
+{
+    name            campfire
+    tier            6
+    mode            fast
+    frame_origin_s  1.0               # state the window so the scene can key the fire before a bake
+    end_time_s      3.0
+}
+
+simulation_cache                      # an imported or pre-baked cache, no solver (preview)
+{
+    name            fabric
+    cache           ~/.cache/rise/fabric
+}
+
+simulated_mesh_geometry { name geo_flag   source flag.surface   ... }   # (braces on their own lines in a file)
+fire_medium { name flame   fidelity_mode preview   source campfire.volume   channel_carbon carbon ... }
+```
+
+- **One source of truth.** `cloth_simulation` and `fire_simulation` are generated from the solver's
+  parameter schema (`Simulation/SimulationParameterSchema.h`, registered beside the factory): each
+  schema parameter is a chunk parameter of the same name, type, default, range and units.  The
+  structured cloth fields (`material*`, `pin`, `collider`, `collider_object`, `follow_object`) are the
+  schema's chunk fields, translated by `Cloth/ClothParameterSchema.cpp`.
+- **Scene inputs** (`collider_object`, `follow_object`) are `Reference` parameters to `{Object}`, so the
+  editor draws the connection; their content enters the cache key (geometry, keyframed transform; not
+  material or name).  `source` is a `Reference` to `{Simulation}`; the `.output` suffix names an output.
+  Only a mesh output binds `simulated_mesh_geometry`, only a fire grid output binds `fire_medium`.
+- **Declaration order.** A producer is declared before its consumers (the editor's insert tier puts it
+  with geometry); scene inputs resolve after the derive, so a producer may name objects declared later.
+- **States** (`IJobPriv::DescribeSimulations`, C API `GetSimulation`): missing, baking, partial,
+  complete, stale (the cache holds another key), failed.  A stale or partial cache loads and plays; a
+  missing one gives an empty, hidden consumer with a warning, unless the consumer requests predictive
+  fidelity (then the load fails).  An edit of a producer never starts a bake.
+- **Incremental edits.** An edited producer chunk falls back to a full re-derive (the incremental path
+  does not yet capture and restore a simulation record); its consumers are re-derived with it.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 

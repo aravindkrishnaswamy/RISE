@@ -326,7 +326,15 @@ namespace RISE
 		//! `AppearanceClosureEntry::category` "just append, never reorder"
 		//! contract), so a new value goes on the END even when a tidier
 		//! home would be next to `Geometry`.
-		HairGuides
+		HairGuides,
+		//! Simulation M4: A SIMULATION PRODUCER (`cloth_simulation`,
+		//! `fire_simulation`, `simulation_cache`) -- data in a Job-side name
+		//! table (`Job::simulationsMap`), never a manager entity, the
+		//! `HairGuides` precedent.  Consumers name it by a Reference whose
+		//! `referenceCategories = {Simulation}` (`simulated_mesh_geometry`
+		//! / `fire_medium` `source <simulation>.<output>`).  APPENDED, NEVER
+		//! REORDERED (the GUIs see this enum as an int).
+		Simulation
 	};
 
 	// Base class for per-chunk parse state.  In the registry-driven

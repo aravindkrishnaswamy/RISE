@@ -43,6 +43,7 @@
 #include <exception>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -51,6 +52,16 @@
 
 namespace RISE
 {
+	namespace Implementation
+	{
+		// Simulation M3c (LiveSimulation.h).
+		class PlaybackClock;
+		class LiveSimulation;
+		struct PlaybackStatus;
+		struct LiveSimulationStatus;
+	}
+	namespace Simulation { class MeshCacheSource; struct BakeSceneSnapshot; }
+
 	//! Desktop viewport sinks intentionally display ordinary render output as
 	//! opaque, even when a no-hit pixel carries coverage alpha 0.  A negative
 	//! alpha is reserved solely for the Last Render "no completed image yet"
@@ -3707,6 +3718,112 @@ namespace RISE
 		//! the scene or another editor operation holds the commit mutex; the
 		//! caller should retain its last successful snapshot and try again.
 		bool GetHasAnimation( bool& hasAnimation ) const;
+
+		// ---- Simulation M3c: playback, baked ranges, live simulation ----
+		// (LiveSimulation.h; docs/SIMULATION_M3C_RESULTS.md).  GetHasAnimation
+		// also reports true for a scene whose only time-varying content is
+		// simulation assets (simulated meshes, fire media), and
+		// GetAnimationOptions then takes its range from their time maps when
+		// the scene declares no animation.
+
+		//! Play scene time on a controller thread through the time-scrub
+		//! path at `fps` frames per second of wall time (<= 0: the
+		//! timeline's own frame spacing), over the timeline's range, from
+		//! the current scene time (from the start when at the end).  Opens
+		//! one scrub composite until it stops.  Starts attached live
+		//! simulations; the clock never runs ahead of their latest frame.
+		bool PlaybackPlay( double fps, bool loop );
+		bool PlaybackPlayRange( double start, double end, double fps, bool loop );
+		bool PlaybackPause();				//!< also pauses live solvers
+		//! Move the playhead: while playing, the clock jumps there; while
+		//! paused, one scrub (clamped to the latest live frame).
+		bool PlaybackSeek( double t );
+		bool GetPlaybackStatus( Implementation::PlaybackStatus& status ) const;
+		//! Every time-varying asset's frames and how much is baked (reads a
+		//! partial cache's manifest).  Same non-blocking contract as
+		//! GetAnimationOptions.
+		bool GetTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges ) const;
+
+		//! Attach an in-process simulation to the simulated_mesh_geometry
+		//! `geometry`: registered solver `solverId` (interactive), parameters
+		//! a JSON object or canonical CBOR map.  Configures and steps the first
+		//! frame on the calling thread, then binds the geometry to the host's
+		//! in-memory publication under the render park.  Topology must equal
+		//! the bound mesh's.  Scrubbing past the latest published frame clamps
+		//! to it.  Scene-file binding is M4: this is the API-only path.
+		bool LiveSimulationAttach( const std::string& geometry, const std::string& solverId,
+			const std::vector<unsigned char>& parameters, std::string& error );
+		//! Stop the solver (joined) and rebind the geometry's baked cache.
+		bool LiveSimulationDetach( const std::string& geometry, std::string& error );
+		//! Restart from the initial state (published frames are dropped) and
+		//! show its first frame.
+		bool LiveSimulationReset( const std::string& geometry, std::string& error );
+		//! New parameters: a new cache key; restarts.
+		bool LiveSimulationSetParameters( const std::string& geometry,
+			const std::vector<unsigned char>& parameters, std::string& error );
+		//! Restart, also recording every frame to a new epoch of the disk
+		//! cache at `cacheDirectory` (sealed when the run finishes).
+		bool LiveSimulationRecord( const std::string& geometry, const std::string& cacheDirectory,
+			std::string& error );
+		//! False when no live simulation is attached to `geometry`, or while
+		//! a scrub holds the live state (non-blocking; poll again).
+		bool GetLiveSimulationStatus( const std::string& geometry,
+			Implementation::LiveSimulationStatus& status ) const;
+		unsigned int LiveSimulationCount() const;
+		//! Simulation M4: run the scene's simulation `simulation` live (its
+		//! declared solver, parameters and scene inputs; the inputs are
+		//! captured under the render park, detached from the scene), bound to
+		//! the simulated_mesh_geometry whose `source` names it.  No bake is
+		//! needed: an unbound consumer takes its topology from the run's
+		//! first published frame.  Detach as for LiveSimulationAttach (by the
+		//! geometry's name); an unbound consumer becomes unbound again.
+		bool LiveSimulationAttachSimulation( const std::string& simulation, std::string& error );
+		//! Simulation M4: after a scene edit, restarts every live scene
+		//! simulation whose configuration (parameters, scene-input identities)
+		//! or consumer geometry changed, with the scene's current one (a new
+		//! cache key).  ApplyAgentParamEdit calls it; a GUI calls it after its
+		//! own edits.  Starts no bake.
+		bool LiveSimulationResync( std::string& error );
+		//! Simulation M4: every declared simulation's state (IJobPriv::
+		//! DescribeSimulations).  Non-blocking like GetTimeVaryingAssets: false
+		//! while an edit or a production render holds the scene.
+		bool GetSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses, std::string& error ) const;
+
+		// ---- Simulation M5: baking (SimulationBakeManager.h; docs/SIMULATION_M5A_RESULTS.md) ----
+		//! What this document tells the process-wide bake manager: its scene
+		//! file (the Job's CST load/save identity; empty when never saved),
+		//! whether the document differs from that file (HasUnsavedChanges,
+		//! confirmed by comparing the serialized Document with the file's
+		//! bytes), and its simulations' states.  `blocking` false: false while
+		//! the scene is busy (a poll); true: waits for the scene lock (a user
+		//! request), but never behind a production render.  `checkUnsaved`
+		//! false skips the byte comparison (unsavedChanges then reports the
+		//! dirty trackers only) -- for polls that only adopt running bakes.
+		bool GetSimulationBakeSnapshot( Simulation::BakeSceneSnapshot& snapshot, bool blocking,
+			std::string& error, bool checkUnsaved = true ) const;
+		//! The change notification's other half: when the bake manager reports
+		//! new frames for this scene's caches (FramesGeneration), rebinds every
+		//! simulated_mesh_geometry bound by `source` whose cache began a new
+		//! epoch or that had no frames before (same topology only: a changed
+		//! topology needs a reload, reported in `error`), installs the frames
+		//! for the current scene time under the render park and kicks a pass --
+		//! the same install the time-scrub and playback paths do.  Geometries
+		//! with a live simulation are left alone.  Cheap when nothing landed
+		//! (`refreshed` false, no lock taken).  Call it when
+		//! RISE_API_SimulationBake_ChangeCounter moves (a ~2 Hz poll).
+		bool RefreshSimulationFrames( bool& refreshed, std::string& error );
+		//! Simulation M5: detach the live run of scene simulation `simulation`
+		//! (LiveSimulationDetach by its consumer's name).
+		bool LiveSimulationDetachSimulation( const std::string& simulation, std::string& error );
+		//! The key this document's jobs are filed under in the bake manager
+		//! (SimulationBakeManager::SceneKey of the scene file; empty when never
+		//! saved).  Non-blocking: while the scene is busy it returns the last
+		//! key it read.  `attachNeeded` is set the first time a key is seen
+		//! (the caller then Attaches a snapshot so running bakes are adopted).
+		std::string SimulationBakeSceneKey( bool* attachNeeded = nullptr ) const;
+		//! Interactive passes finished without cancellation (the clock's
+		//! coalescing signal).
+		std::uint64_t GetCompletedPassCount() const;
 
 		//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of
 		//! a named painter -- see PainterPreview.h for the full domain /
@@ -7475,6 +7592,35 @@ namespace RISE
 		// serialized under mMutex.
 		std::atomic<bool>                    mTxnOpen;
 		EditorStateSnapshot                  mTxnBaseline;        // H1: one owned baseline (history marker + dirty + selection)
+
+		// Simulation M3c (appended).  Lock order: mLiveOpMutex -> mLiveMutex
+		// -> mRenderAdmissionMutex -> mMutex; a session's own mutex and the
+		// publication's come after any of them.  mPlayback is created in the
+		// constructor and never replaced.
+		std::atomic<std::uint64_t>           mCompletedPasses{ 0 };
+		std::mutex                           mLiveOpMutex;        // serializes attach / detach / restart
+		mutable std::mutex                   mLiveMutex;          // guards mLiveSims
+		std::vector<std::unique_ptr<Implementation::LiveSimulation> > mLiveSims;
+		std::unique_ptr<Implementation::PlaybackClock> mPlayback;
+		double ClampToLiveFrames_( double t ) const;	// caller holds mLiveMutex
+		bool ShowTimeNow_( double t );
+		bool TimelineRangeLocked_( double& start, double& end, unsigned int& frames ) const;
+		bool RebindParked_( Implementation::LiveSimulation& live,
+			std::unique_ptr<Simulation::MeshCacheSource>& source, double installTime,
+			bool force, std::string& error );
+		bool RestartLive_( const std::string& geometry, const std::vector<unsigned char>* parameters,
+			const std::string* record, std::string& error );
+		// M4: a scene simulation's live run, built off the scene locks from what
+		// is captured under mMutex; and the shared tail of every attach.
+		bool PrepareSceneLive_( const std::string& simulation,
+			std::unique_ptr<Implementation::LiveSimulation>& live, std::string& error );
+		bool AttachPrepared_( std::unique_ptr<Implementation::LiveSimulation> live, std::string& error );
+		void ShutdownSimulation_();
+		// M5 (appended): the bake manager's frames generation last refreshed.
+		std::mutex                           mBakeRefreshMutex;
+		std::uint64_t                        mBakeFramesSeen = 0;
+		mutable std::mutex                   mBakeKeyMutex;
+		mutable std::string                  mBakeSceneKey, mBakeAttachedKey;
 
 		// Disable copy / move
 		SceneEditController( const SceneEditController& );

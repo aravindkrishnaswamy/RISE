@@ -650,6 +650,18 @@ namespace RISE
 		return false;
 	}
 
+	void TriangleMeshGeometryIndexed::StampSurfaceSignals( RayIntersectionGeometric& ri, const PointerTriangle* elem,
+		const Scalar range, const Vector3& shadingNormal, const Scalar a, const Scalar b ) const
+	{
+		// The same five stores as the tail of RayElementIntersection above.
+		ri.signals.pProvider = this;
+		ri.signals.ptObject  = ri.ray.PointAtLength( range );
+		ri.signals.nObject   = shadingNormal;
+		ri.signals.primId    = (int)( elem - &ptr_polygons[0] );
+		ri.signals.baryA     = a;
+		ri.signals.baryB     = b;
+	}
+
 	void TriangleMeshGeometryIndexed::SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const
 	{
 		// Convert, assume the void* is the pointer to the begining

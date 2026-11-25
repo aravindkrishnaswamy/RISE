@@ -1,5 +1,5 @@
 // Standalone launcher-policy sanitizer gate; no solver arithmetic is exercised.
-#include "../tests/FireRunHostMemory.h"
+#include "../src/Library/Simulation/Fire/FireRunHostMemory.h"
 #include <cassert>
 #include <cstdio>
 #include <limits>

@@ -302,6 +302,101 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @property (nonatomic, readonly, copy) NSString *name;
 @end
 
+// ---- Simulation M5 (docs/SIMULATION_M5B_RESULTS.md) ----
+// Plain value snapshots of the library's simulation state.  Every field is
+// copied from one C-API read (RISE_API.h "Simulation M3c" / "M4" / "M5");
+// the shell presents them and computes nothing from them.
+
+/// One time-varying asset (GetTimeVaryingAsset): a simulated mesh or a fire
+/// medium, with the range its cache covers.
+@interface RISETimeVaryingAssetInfo : NSObject
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly) NSInteger kind;     ///< 0 simulated mesh, 1 fire medium
+@property (nonatomic, readonly) NSInteger state;    ///< 0 complete, 1 partial, 2 baking, 3 live
+@property (nonatomic, readonly) BOOL predictive;
+@property (nonatomic, readonly) double start;
+@property (nonatomic, readonly) double end;
+@property (nonatomic, readonly) double availableEnd;
+@property (nonatomic, readonly) double interval;
+@property (nonatomic, readonly) unsigned long long framesAvailable;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@end
+
+/// One declared simulation (GetSimulationDetails).
+@interface RISESimulationInfo : NSObject
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly, copy) NSString *keyword;        ///< cloth_simulation / fire_simulation / simulation_cache
+@property (nonatomic, readonly, copy) NSString *solverId;       ///< "" for simulation_cache
+@property (nonatomic, readonly, copy) NSString *backend;        ///< "" when not stated
+@property (nonatomic, readonly, copy) NSString *fidelity;       ///< the cache's label, "" without a cache
+@property (nonatomic, readonly, copy) NSString *consumerGeometry; ///< first simulated_mesh_geometry bound by `source`
+/// 0 missing, 1 baking, 2 partial, 3 complete, 4 stale, 5 failed.
+@property (nonatomic, readonly) NSInteger state;
+@property (nonatomic, readonly) BOOL upstreamOutOfDate;
+@property (nonatomic, readonly) BOOL interactive;
+@property (nonatomic, readonly) unsigned long long framesAvailable;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@property (nonatomic, readonly) double startTime;
+@property (nonatomic, readonly) double interval;
+@property (nonatomic, readonly, copy) NSString *cacheDirectory;
+@property (nonatomic, readonly, copy) NSString *upstream;       ///< comma-separated
+@property (nonatomic, readonly, copy) NSString *inputs;         ///< comma-separated
+@property (nonatomic, readonly, copy) NSString *errorMessage;
+@end
+
+/// The library playback clock (GetPlaybackStatus).
+@interface RISEPlaybackStatus : NSObject
+@property (nonatomic, readonly) BOOL playing;
+@property (nonatomic, readonly) BOOL live;
+@property (nonatomic, readonly) BOOL waitingForSolver;
+@property (nonatomic, readonly) double time;          ///< the last shown scene time
+@property (nonatomic, readonly) double timeStart;
+@property (nonatomic, readonly) double timeEnd;
+@property (nonatomic, readonly) double fps;
+@property (nonatomic, readonly) unsigned long long framesShown;
+@property (nonatomic, readonly) unsigned long long framesDropped;
+@property (nonatomic, readonly) unsigned long long solverWaits;
+@property (nonatomic, readonly) unsigned long long passesCompleted;
+@property (nonatomic, readonly) double wallSeconds;
+@end
+
+/// One bake job of this document (GetSimulationBakeJob; the library bake
+/// manager, docs/SIMULATION_M5A_RESULTS.md).
+@interface RISESimulationBakeJob : NSObject
+@property (nonatomic, readonly) unsigned long long jobId;
+@property (nonatomic, readonly, copy) NSString *simulation;
+/// 0 queued, 1 waiting for GPU, 2 running, 3 stopping, 4 stopped,
+/// 5 finished, 6 failed, 7 cancelled.
+@property (nonatomic, readonly) NSInteger state;
+@property (nonatomic, readonly) BOOL resumable;
+@property (nonatomic, readonly) BOOL adopted;
+@property (nonatomic, readonly) BOOL interrupted;
+@property (nonatomic, readonly) double simulatedTime;
+@property (nonatomic, readonly) double endTime;
+@property (nonatomic, readonly) unsigned long long framesWritten;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@property (nonatomic, readonly) double wallSeconds;
+@property (nonatomic, readonly) double etaSeconds;     ///< -1 unknown
+@property (nonatomic, readonly, copy) NSString *backend;
+@property (nonatomic, readonly, copy) NSString *waitingFor;
+@property (nonatomic, readonly, copy) NSString *detail;
+@property (nonatomic, readonly, copy) NSString *errorMessage;
+@end
+
+/// One live run (GetLiveSimulationStatus), addressed by its geometry.
+@interface RISELiveSimulationStatus : NSObject
+@property (nonatomic, readonly) BOOL playing;
+@property (nonatomic, readonly) BOOL finished;
+@property (nonatomic, readonly) BOOL failed;
+@property (nonatomic, readonly) long long latestFrame;
+@property (nonatomic, readonly) double latestSceneTime;
+@property (nonatomic, readonly) double firstSceneTime;
+@property (nonatomic, readonly) double lastSceneTime;
+@property (nonatomic, readonly) unsigned long long framesPublished;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@property (nonatomic, readonly) double simulatedTime;
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -2086,6 +2181,67 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// the server.
 @property (nonatomic, readonly) NSUInteger agentHostedServerPort;
 @property (nonatomic, readonly, copy) NSString *agentHostedServerToken;
+
+#pragma mark - Simulation M5 (playback clock, baked ranges, simulations, live runs)
+//
+// Thin forwards to the RISE_API Simulation M3c/M4/M5 functions.  Status reads
+// are non-blocking and return nil while the scene is busy (keep the last
+// value and poll again).  The live-run calls that configure a solver
+// (attach, reset, record, resync) block for up to about a second: call them
+// off the main thread.  They are serialized against -shutdown, so a
+// background call never reaches a destroyed controller.
+
+/// Registers the library's built-in solvers once per process (idempotent).
++ (BOOL)registerBuiltinSolvers:(NSString * _Nullable * _Nullable)error;
+
+/// Library playback clock.  `fps` <= 0 plays at the timeline's frame spacing.
+- (BOOL)playbackPlayFps:(double)fps loop:(BOOL)loop NS_SWIFT_NAME(playbackPlay(fps:loop:));
+- (BOOL)playbackPause;
+- (BOOL)playbackSeek:(double)time;
+- (nullable RISEPlaybackStatus *)playbackStatus;
+
+/// Baked ranges for the timeline; nil while contended.
+- (nullable NSArray<RISETimeVaryingAssetInfo *> *)timeVaryingAssets;
+
+/// The scene's declared simulations; nil while the scene is busy.  An empty
+/// array means the scene declares none.
+- (nullable NSArray<RISESimulationInfo *> *)simulations;
+
+/// Live runs.  `simulation` names a scene simulation; the others address the
+/// run by its consumer geometry (RISESimulationInfo.consumerGeometry).
+- (BOOL)liveAttachSimulation:(NSString *)simulation error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveDetachGeometry:(NSString *)geometry error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveResetGeometry:(NSString *)geometry error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveRecordGeometry:(NSString *)geometry directory:(NSString *)directory
+                     error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveResync:(NSString * _Nullable * _Nullable)error;
+- (nullable RISELiveSimulationStatus *)liveStatusForGeometry:(NSString *)geometry;
+@property (nonatomic, readonly) NSUInteger liveSimulationCount;
+
+/// Bakes through the library bake manager (a rise-sim worker process per
+/// bake; the scene file on disk is what bakes).  Queue / resume / stop return
+/// NO with the library's reason (for example "save first").
+- (BOOL)simulationBake:(NSString *)simulation force:(BOOL)force
+                 error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)simulationBakeResume:(NSString *)simulation error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)simulationBakeStop:(NSString *)simulation kill:(BOOL)kill
+                     error:(NSString * _Nullable * _Nullable)error;
+/// This document's bake jobs, oldest first; nil while contended.
+- (nullable NSArray<RISESimulationBakeJob *> *)simulationBakeJobs;
+/// Process-wide counter bumped on every bake change (poll ~2 Hz).
++ (unsigned long long)simulationBakeChangeCounter;
+/// Installs newly baked frames (rebinding consumers whose cache appeared);
+/// returns YES when something was refreshed.
+- (BOOL)refreshSimulationFrames;
+
+/// Cache location policy (process-wide).  -checkCacheLocation returns YES when
+/// the writer would accept the directory; otherwise `error` holds the reason
+/// and `suggestedRoot` the narrowest root the user could choose to trust.
++ (BOOL)addTrustedCacheRoot:(NSString *)root error:(NSString * _Nullable * _Nullable)error;
++ (BOOL)checkCacheLocation:(NSString *)directory
+             suggestedRoot:(NSString * _Nullable * _Nullable)suggestedRoot
+                     error:(NSString * _Nullable * _Nullable)error;
++ (NSArray<NSString *> *)trustedCacheRoots;
 
 @end
 

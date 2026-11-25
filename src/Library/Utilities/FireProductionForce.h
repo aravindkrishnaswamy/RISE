@@ -1459,8 +1459,9 @@ namespace RISE
 	inline bool FireProductionAcceptedManifoldObservation::MatchesAcceptedResidentPayload(
 		const FireProductionResidentStepResult& value ) const
 	{
-		return available_&&bindsResidentPayload_&&residentPayloadDigest_==
-			FireProductionAcceptedManifoldPayloadDigest(value);
+		// Fast mode binds the observation by lineage only (no resident-payload digest).
+		return available_&&bindsResidentPayload_&&(FireSim::FireFastMode()||residentPayloadDigest_==
+			FireProductionAcceptedManifoldPayloadDigest(value));
 	}
 	inline bool FireProductionAcceptedManifoldObservation::MatchesAcceptedStatePayload(
 		const FireProductionProjectionShape& shape,const std::vector<float>& conservativeValues,

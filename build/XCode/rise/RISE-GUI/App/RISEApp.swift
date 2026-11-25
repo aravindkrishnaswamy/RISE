@@ -320,6 +320,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
+enum RISEApplicationMain {
+    @MainActor static func main() {
+        // Simulation M5: the library's built-in solvers (cloth.shell,
+        // fire.methane) and the cache locations the user chose to trust in
+        // earlier sessions, once per process before any scene loads.
+        SimulationBootstrap.install()
+        // The render probe runs on hosts without a WindowServer session.
+        // Entering SwiftUI.App.main() first registers with AppKit.
+        ViewportReattachProbe.runIfRequested()
+        SimulationProbes.runIfRequested()
+        RISEApp.main()
+    }
+}
+
 struct RISEApp: App {
     /// Menu-flyout fix (2026-07-16): the model is held through a plain
     /// (non-ObservableObject) holder in @State — NOT @StateObject — so the
@@ -350,13 +364,6 @@ struct RISEApp: App {
     private var themeModeRaw: String = ThemeMode.dark.rawValue
 
     init() {
-        // Headless regression probe (see ViewportReattachProbe's header
-        // doc): must run before ANYTHING else touches AppKit/theme state
-        // and must never fall through to the normal app body -- it exits
-        // the process itself.
-        ViewportReattachProbe.runIfRequested()
-        // Same "must run before anything else, exits the process itself"
-        // contract -- see GraphCanvasSmokeProbe's own header doc.
         GraphCanvasSmokeProbe.runIfRequested()
         // Quit-time save prompt: hand the delegate the SAME RenderViewModel
         // instance ContentView/the menus use (not a second one) so its

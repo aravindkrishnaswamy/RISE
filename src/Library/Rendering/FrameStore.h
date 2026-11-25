@@ -56,6 +56,7 @@
 
 namespace RISE
 {
+	namespace RISECBOR64 { class Value; }
 	// Forward declaration; full definition in IRenderObserver.h.
 	class IRenderObserver;
 
@@ -92,7 +93,10 @@ namespace RISE
 			std::string effectiveBlurState;
 			std::string preparedInputId;
 			std::uint64_t preparedStateGeneration = 0;
+			std::string coverageDigest; ///< manifest generation for an unpublished ordinal
 		};
+
+		RISECBOR64::Value EncodeActiveFireMedia(const std::vector<ActiveFireMedium>& media);
 
 		//! Bookkeeping carried through the render pipeline.  Producers
 		//! (rasterizers) populate fields they know about; consumers

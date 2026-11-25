@@ -550,11 +550,15 @@ namespace RISE
 				authorityProjection.maximumPreProjectionResidualPerS&&
 			token.physicalMaximumPostResidualPerS_==
 				authorityProjection.maximumPostProjectionResidualPerS&&
-			token.payloadDigest_==FireProductionAcceptedManifoldPayloadDigest(*this)&&
+			// Fast mode does not re-hash the just-produced payload; the checkpoint writer still
+			// verifies the accepted-state digest against the state it serializes.
+			(FireSim::FireFastMode()||
+			 token.payloadDigest_==FireProductionAcceptedManifoldPayloadDigest(*this))&&
 			token.acceptedStateDigestVersion_==2u&&
-			token.acceptedStateDigest_==FireProductionAcceptedStatePayloadDigestFast(
+			(FireSim::FireFastMode()||
+			 token.acceptedStateDigest_==FireProductionAcceptedStatePayloadDigestFast(
 				acceptedShape,conservativeValues,projection.momentumKGPerM2S,
-				projection.velocityMPerS);
+				projection.velocityMPerS));
 	}
 
 	bool PublishFireProductionAcceptedManifoldObservation(
@@ -599,12 +603,14 @@ namespace RISE
 				authorityProjection.maximumPreProjectionResidualPerS||
 			token.physicalMaximumPostResidualPerS_!=
 				authorityProjection.maximumPostProjectionResidualPerS||
-			token.payloadDigest_!=FireProductionAcceptedManifoldPayloadDigest(acceptedStep)||
+			(!FireSim::FireFastMode()&&
+			 token.payloadDigest_!=FireProductionAcceptedManifoldPayloadDigest(acceptedStep))||
 			token.acceptedStateDigestVersion_!=2u||
-			token.acceptedStateDigest_!=FireProductionAcceptedStatePayloadDigestFast(
+			(!FireSim::FireFastMode()&&
+			 token.acceptedStateDigest_!=FireProductionAcceptedStatePayloadDigestFast(
 				acceptedStep.acceptedShape,acceptedStep.conservativeValues,
 				acceptedStep.projection.momentumKGPerM2S,
-				acceptedStep.projection.velocityMPerS))
+				acceptedStep.projection.velocityMPerS)))
 			return Fail(error,"production accepted manifold token does not match diagnostics");
 		result.available_=true;
 		result.timeStepS_=acceptedStepS;

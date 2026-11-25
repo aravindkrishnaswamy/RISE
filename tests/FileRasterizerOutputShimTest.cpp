@@ -1598,6 +1598,12 @@ namespace
 		const RISECBOR64::Value* sequenceEntry = sequenceMedia &&
 			sequenceMedia->GetType() == RISECBOR64::Value::Array &&
 			sequenceMedia->GetArray().size() == 1u ? &sequenceMedia->GetArray()[0] : nullptr;
+		// Independent canonical CBOR fixture for the legacy active_fire_media array.
+		RISECBOR64::Bytes mediaBytes;
+		Check(sequenceMedia && RISECBOR64::Encode(*sequenceMedia,mediaBytes,&sequenceError) &&
+			RISECBOR64::SHA256Hex(mediaBytes) ==
+				"b6849a5876160bcef1a1f0fcd736619e77f8435bdf22cdf7d031a8ab93ad2b2b",
+			"[fire provenance] completed sequence keeps its exact legacy media bytes");
 		Check(sequenceEntry && sequenceEntry->GetMap().size() == 13u &&
 			sequenceEntry->Find("media_kind") &&
 			sequenceEntry->Find("media_kind")->GetText() == "sequence_backed" &&
@@ -1612,6 +1618,72 @@ namespace
 			"[fire provenance] sequence_backed tagged fields round-trip through authoritative sidecar verification");
 		std::remove(sequenceFile.c_str());
 		std::remove((sequenceFile+".provenance.cbor").c_str());
+		auto gap = sequenceStore->Meta();
+		gap.renderReasonCodes.insert(gap.renderReasonCodes.begin(),"frame_unavailable");
+		Check(!FrameStoreOutput::ValidateFireOutputMetadata(gap,sequenceError),
+			"[fire provenance] an available medium cannot claim a missing frame");
+		auto& missing = gap.activeFireMedia.front();
+		missing.mediaKind = "sequence_unavailable_v1";
+		missing.coverageDigest = std::string(64,'d');
+		Check(!FrameStoreOutput::ValidateFireOutputMetadata(gap,sequenceError),
+			"[fire provenance] a missing frame cannot carry a source payload digest");
+		missing.wholeFileDigest.clear();
+		gap.primaryProvenanceId.clear();
+		gap.primaryArtifactSha256.clear();
+		gap.primaryArtifactFidelity.clear();
+		sequenceStore->SetMetadata(gap);
+		const std::string gapFile = MakeTempPathWithoutExt()+"_missing_frame.exr";
+		RISECBOR64::Value gapEnvelope;
+		const bool gapDecoded = EncodeFrameStoreFileTransaction(*sequenceStore,*exr,opts,gapFile,sequenceError) &&
+			ReadFileAllBytes(gapFile,sequenceArtifact) &&
+			ReadFileAllBytes(gapFile+".provenance.cbor",sequenceSidecar) &&
+			VerifyFireProvenanceEXR(sequenceArtifact,sequenceSidecar,sequenceError) &&
+			RISECBOR64::DecodeCanonical(sequenceSidecar,gapEnvelope,&sequenceError);
+		const auto* gapPayload = gapDecoded ? gapEnvelope.Find("payload") : nullptr;
+		const auto* gapMedia = gapPayload ? gapPayload->Find("active_fire_media") : nullptr;
+		const auto* gapEntry = gapMedia && gapMedia->GetType() == RISECBOR64::Value::Array &&
+			gapMedia->GetArray().size()==1 ? &gapMedia->GetArray().front() : nullptr;
+		Check(gapEntry && gapEntry->Find("coverage_digest") &&
+			gapEntry->Find("coverage_digest")->GetText()==missing.coverageDigest &&
+			!gapEntry->Find("whole_file_digest") && gapEntry->Find("media_kind") &&
+			gapEntry->Find("media_kind")->GetText()=="sequence_unavailable_v1",
+			"[fire provenance] missing-frame EXR verifies with coverage digest");
+#ifndef NO_PNG_SUPPORT
+		const std::string gapPng = MakeTempPathWithoutExt()+"_missing_frame.png";
+		EncodeOpts gapPngOpts;
+		gapPngOpts.bpp=8;
+		gapPngOpts.colorSpace=eColorSpace_sRGB;
+		auto* gapPngEncoder = FrameEncoderRegistry::Get().ByFormatName("PNG");
+		RISECBOR64::Bytes gapPngBytes, gapPngSidecar, primaryMediaBytes, derivativeMediaBytes;
+		RISECBOR64::Value gapPngEnvelope;
+		const bool gapPngDecoded = gapPngEncoder &&
+			EncodeFrameStoreFileTransaction(*sequenceStore,*gapPngEncoder,gapPngOpts,gapPng,sequenceError) &&
+			ReadFileAllBytes(gapPng,gapPngBytes) &&
+			ReadFileAllBytes(gapPng+".provenance.cbor",gapPngSidecar) &&
+			RISECBOR64::DecodeCanonical(gapPngSidecar,gapPngEnvelope,&sequenceError);
+		const auto* derivative = gapPngDecoded ? gapPngEnvelope.Find("payload") : nullptr;
+		const auto* derivativeMedia = derivative ? derivative->Find("active_fire_media") : nullptr;
+		const auto* link = derivative ? derivative->Find("derived_from_primary") : nullptr;
+		const auto* id = gapDecoded ? gapEnvelope.Find("provenance_id") : nullptr;
+		Check(derivativeMedia && gapMedia && id && link && link->Find("provenance_id") &&
+			link->Find("provenance_id")->GetText()==id->GetText() && derivative->Find("artifact_sha256") &&
+			derivative->Find("artifact_sha256")->GetText()==RISECBOR64::SHA256Hex(gapPngBytes) &&
+			RISECBOR64::Encode(*gapMedia,primaryMediaBytes,&sequenceError) &&
+			RISECBOR64::Encode(*derivativeMedia,derivativeMediaBytes,&sequenceError) &&
+			primaryMediaBytes==derivativeMediaBytes,
+			"[fire provenance] missing-frame PNG binds its bytes, primary and exact coverage record");
+		std::remove(gapPng.c_str());
+		std::remove((gapPng+".provenance.cbor").c_str());
+#endif
+		gap.renderFidelityStatus="predictive";
+		Check(!FrameStoreOutput::ValidateFireOutputMetadata(gap,sequenceError),
+			"[fire provenance] missing frames cannot be predictive");
+		gap.renderFidelityStatus="preview";
+		gap.renderReasonCodes.erase(gap.renderReasonCodes.begin());
+		Check(!FrameStoreOutput::ValidateFireOutputMetadata(gap,sequenceError),
+			"[fire provenance] missing frames require the coverage reason");
+		std::remove(gapFile.c_str());
+		std::remove((gapFile+".provenance.cbor").c_str());
 		safe_release(sequenceStore);
 		auto encodeSelfConsistentEXR = [&]( const RISECBOR64::Value& seedPayload,
 			const EncodeOpts& actualOpts, std::vector<unsigned char>& artifact,

@@ -21,7 +21,7 @@ class OnsetEvidenceMutants(unittest.TestCase):
             return subprocess.run([str(binary)], capture_output=True).returncode
 
     def staggered(self, old=None, new=None):
-        text = (ROOT / "tests/FireProductionStaggeredColumnBudget.h").read_text()
+        text = (ROOT / "src/Library/Simulation/Fire/FireProductionStaggeredColumnBudget.h").read_text()
         if old is not None:
             self.assertEqual(text.count(old), 1)
             text = text.replace(old, new)
@@ -51,7 +51,7 @@ class OnsetEvidenceMutants(unittest.TestCase):
             "x=std::min(face%nx,dimensions[0]-1u);y=(face/nx)%ny;z=face/(nx*ny);return true;"), 1)
 
     def test_horizon_crossing_mutant_red(self):
-        text = (ROOT / "tests/FireProductionOnsetEvidence.h").read_text()
+        text = (ROOT / "src/Library/Simulation/Fire/FireProductionOnsetEvidence.h").read_text()
         main = "int main(){return FireProductionOnsetEvidence::Survived(true,true)?1:0;}"
         self.assertEqual(self.run_header(text, main), 0)
         old = "return reachedHorizon&&!crossed;"

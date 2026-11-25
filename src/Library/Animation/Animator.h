@@ -17,6 +17,7 @@
 #include "../Interfaces/IAnimator.h"
 #include "../Utilities/Reference.h"
 #include "ElementTimeline.h"
+#include <atomic>
 #include <map>
 #include <vector>
 
@@ -50,6 +51,9 @@ namespace RISE
 			AnimationList	animations;			///< Declared named animations, in scene order
 			String			activeAnimation;	///< Name of the active animation (blank => resolve to first/default)
 			bool			activeWasSet;		///< Whether an explicit active animation was chosen
+			//! Simulation M3b: the time of the last EvaluateAtTime, i.e. the
+			//! time the SHARED scene is posed at (NaN before the first call).
+			std::atomic<double>	lastEvaluatedTime;
 
 			//! Ensures a named animation exists (auto-creates with default
 			//! options).  Blank name => the implicit default animation.  The
@@ -75,6 +79,15 @@ namespace RISE
 				);
 
 			void EvaluateAtTime( const Scalar time );
+
+			//! Simulation M3b: the time the shared scene was last posed at
+			//! (every per-sample, per-pass, photon-stratum and frame pose goes
+			//! through EvaluateAtTime), or NaN if it never was.  A deforming
+			//! simulated mesh interpolates its shutter keys at this time when
+			//! the calling thread is not inside a time-indexed pass.  Written
+			//! only by the thread that poses the shared scene, read by render
+			//! threads (relaxed: the pose happens-before the pass that reads it).
+			double LastEvaluatedTime() const { return lastEvaluatedTime.load( std::memory_order_relaxed ); }
 
 			inline bool AreThereAnyKeyframedObjects(){ return (elements.size()>0); }
 
@@ -112,6 +125,11 @@ namespace RISE
 				) const;
 
 			void CollectKeyframeTimes( const Scalar t0, const Scalar t1, std::vector<Scalar>& out ) const;
+
+			//! Simulation M4: every keyframe time of ONE element in the ACTIVE
+			//! animation (appended; unsorted, may repeat).  A scene input's
+			//! identity samples the element's motion at these times.
+			void CollectElementKeyframeTimes( IKeyframable* element, std::vector<Scalar>& out ) const;
 
 			// DL-465: read-only per-thread evaluation (see IAnimator.h).
 			void GetActiveAnimatedElements( std::vector<IKeyframable*>& out ) const;

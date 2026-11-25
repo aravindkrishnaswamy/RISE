@@ -1,0 +1,183 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           simulated_cloth_drape.RISEscene                                                         #
+#   Description:    Simulation M3b: a baked cloth (cloth.shell) rendered as a deforming mesh with           #
+#                   deformation motion blur.  The M3a demonstration -- a 1 m cotton sheet pinned at two     #
+#                   corners falling over a 0.3 m sphere -- read through `simulated_mesh_geometry`; every    #
+#                   animation frame installs the cache frame for its time and, under the camera's 1/60 s    #
+#                   shutter (180 degrees at 30 fps), the shutter-open and shutter-close positions from the  #
+#                   frame velocities.                                                                       #
+#                                                                                                           #
+#   Needs a bake.   tools/simulation/render_cloth_drape.sh bakes the cache with                            #
+#                   `bin/tools/rise_sim bake cloth.shell` into ~/.cache/rise/simulation-m3b/cloth_drape     #
+#                   (a private per-user directory: the cache writer refuses group-writable ancestors, e.g.  #
+#                   a shared volume) and renders frames with and without blur.  Without the bake the scene  #
+#                   fails to load ("cache root is unavailable or not a directory").  The path is per user,  #
+#                   e.g. /Users/<you>/.cache/rise/simulation-m3b/cloth_drape, so CstDeriveGoldenTest treats  #
+#                   this scene as machine-specific and does not cover it.                                   #
+#                                                                                                           #
+#   Frames:         cloth frames are 1/30 s apart over 2 s (61 frames); animation_options below renders the #
+#                   same 61 frames.  Positions are metres, y up; the sphere is drawn 5 mm smaller than the  #
+#                   solver's collider so the 2 mm contact offset never shows the sphere through the cloth.  #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			64
+	oidn_denoise	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/simulation_m3b/cloth_drape
+	type			PNG
+	bpp				8
+	color_space		sRGB
+	multiple		TRUE
+}
+
+animation_options
+{
+	time_start		0
+	time_end		2
+	num_frames		61
+}
+
+film
+{
+	width			640
+	height			360
+}
+
+pinhole_camera
+{
+	location		1.55 1.35 2.1
+	lookat			0 0.5 0
+	up				0 1 0
+	fov				40.0
+	exposure		0.0166666666666667
+}
+
+##################################################
+# Materials
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.6 0.6 0.6
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		pnt_floor
+}
+
+uniformcolor_painter
+{
+	name			pnt_ball
+	color			0.85 0.85 0.8
+}
+
+lambertian_material
+{
+	name			mat_ball
+	reflectance		pnt_ball
+}
+
+uniformcolor_painter
+{
+	name			pnt_cloth
+	color			0.7 0.12 0.1
+}
+
+lambertian_material
+{
+	name			mat_cloth
+	reflectance		pnt_cloth
+}
+
+##################################################
+# Geometry
+##################################################
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-4.0 0.0 -4.0
+	ptb				 4.0 0.0 -4.0
+	ptc				 4.0 0.0  4.0
+	ptd				-4.0 0.0  4.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+sphere_geometry
+{
+	name			geo_ball
+	radius			0.295
+}
+
+standard_object
+{
+	name			ball
+	geometry		geo_ball
+	material		mat_ball
+	position		0 0.5 0
+}
+
+# The baked cloth.  Smooth shading from the cache's normals; double sided so
+# both faces of the sheet shade.
+simulated_mesh_geometry
+{
+	name			geo_cloth
+	cache			~/.cache/rise/simulation-m3b/cloth_drape
+	output			surface
+	motion_blur		TRUE
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			cloth
+	geometry		geo_cloth
+	material		mat_cloth
+}
+
+##################################################
+# Lights
+##################################################
+
+rect_light
+{
+	name			key
+	center			0.8 3.0 1.2
+	size			1.6 1.6
+	facing			-0.25 -1 -0.35
+	color			1.0 0.96 0.9
+	exitance		40
+}
+
+rect_light
+{
+	name			fill
+	center			-2.5 1.8 0.5
+	size			1.5 1.5
+	facing			1 -0.3 0
+	color			0.8 0.85 1.0
+	exitance		8
+}

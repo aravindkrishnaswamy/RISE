@@ -2079,8 +2079,12 @@ int main()
 			rasterizerInterface.find("LastRenderCompleted") == std::string::npos &&
 			outputInterface.find("FireArtifactRoute") == std::string::npos,
 			"fire capability queries do not extend legacy rasterizer plugin vtables" );
-		const std::string externalWriter = braceBody(jobSource,
+		const std::string externalWrapper = braceBody(jobSource,
 			"bool Job::PrepareFireRenderForExternalRasterizerResolved(");
+		const std::string externalWriter = braceBody(jobSource,
+			"bool Job::PrepareExternalFireAtTime(");
+		Check( externalWrapper.find("PrepareExternalFireAtTime(rasterizer,rasterizerKind,config,") !=
+			std::string::npos,"external rasterizer forwards its resolved configuration to timed preparation" );
 		for( const std::string& member : externalMembers ) {
 			Check( configWriter.find("external->"+member) != std::string::npos ||
 				externalWriter.find("config."+member) != std::string::npos,

@@ -40,6 +40,7 @@
 #include <typeinfo>
 #define _USE_MATH_DEFINES
 #include "Job.h"
+#include "SceneEditor/CancellableProgressCallback.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
 #include <fstream>
 #include <sstream>
@@ -49,6 +50,7 @@
 #include "Utilities/FiniteMath.h"
 #include "Utilities/RISECBOR64.h"
 #include "Utilities/FireSequence.h"
+#include "Simulation/SimulationTimeline.h"
 #include "Utilities/FireSimulationRecords.h"
 #include "Version.h"
 #include "Utilities/Transformable.h"
@@ -58,6 +60,8 @@
 #include "Geometry/GeometryUtilities.h"
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
+#include "Geometry/SimulatedMeshGeometry.h"
+#include "Animation/Animator.h"
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -1744,6 +1748,7 @@ namespace RISE
 Job::Job( )
 {
 	m_bIncrementalRepoint = false;   // slice 3: only the CST incremental loop sets it true (transiently)
+	simulationGraph.reset( new Simulation::SceneSimulationGraph() );
 	InitializeContainers();
 }
 
@@ -1802,8 +1807,9 @@ void Job::EndPreparedRequest()
 
 bool Job::PreparedProgressSafe() const
 {
-	if( !pScene || !pScene->HasTimeVaryingMedia() ||
-		!pGlobalProgress.load(std::memory_order_acquire) ) return true;
+	const auto* progress = pGlobalProgress.load(std::memory_order_acquire);
+	if( !pScene || !pScene->HasTimeVaryingMedia() || !progress ||
+		dynamic_cast<const PreparedRenderProgress*>(progress) ) return true;
 	GlobalLog()->PrintEasyError("unsafe_progress_callback");
 	return false;
 }
@@ -2111,6 +2117,12 @@ void Job::DestroyContainers()
 	// live groom can be holding a borrow: `HairGeometry`'s deferred
 	// constructor deep-copies whatever guide arrays it was handed.
 	hairGuidesMap.clear();
+
+	// Simulation M4: the declared simulations and the mesh bindings (plain
+	// data; the graph's Configure memo is content-keyed and survives).
+	simulationsMap.clear();
+	simulationOrder.clear();
+	simulatedGeometries.clear();
 }
 
 //
@@ -10703,16 +10715,10 @@ bool Job::AddFireMediumBound(
 	if( !name || !name[0] || !sequenceManifest || !sequenceManifest[0] ||
 		mediaMap.find(name) != mediaMap.end() ) return false;
 	const std::string resolved = GlobalMediaPathLocator().Find(sequenceManifest).c_str();
-	RISECBOR64::Bytes bytes;
-	if( !ReadIdentityFile(resolved,bytes) ) {
-		GlobalLog()->PrintEasyError("Job::AddFireMedium:: sequence manifest is unreadable");
-		return false;
-	}
 	std::shared_ptr<Implementation::FireSequenceManifest> manifest(
 		new Implementation::FireSequenceManifest());
 	std::string error;
-	if( !manifest->LoadCanonicalEnvelope(bytes,
-		std::filesystem::path(resolved).parent_path().string(),error) ) {
+	if( !manifest->LoadPlaybackFile(resolved,error) ) {
 		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
 		return false;
 	}
@@ -10743,7 +10749,12 @@ bool Job::AddFireMediumBound(
 	}
 	if( manifestHas("chem_CH") != boundChem || manifestHas("chem_C2") != boundChem ||
 		manifestHas("chem_CO2") != boundChem ) return false;
-	if( !manifest->PreflightAllFrames(error) ) {
+	// Preview verifies each payload on demand. Explicit eager preflight is useful
+	// for offline audits; a preview setting cannot relax predictive admission.
+	const char* preflight = std::getenv("RISE_FIRE_SEQUENCE_PREFLIGHT");
+	if( (m_firePredictiveRequested && !manifest->PreflightPredictive(error)) ||
+		(!m_firePredictiveRequested && preflight && std::strcmp(preflight,"all")==0 &&
+		 !manifest->PreflightAllFrames(error)) ) {
 		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: sequence preflight: %s",error.c_str());
 		return false;
 	}
@@ -10906,6 +10917,529 @@ Job::ActiveFireSequenceControllers( std::string& error )
 	return result;
 }
 
+// Simulation M3b: the simulated meshes some object of the scene renders (an
+// unbound geometry needs no per-frame install), with the scene's shared pose
+// clock attached for their deformation blur.
+std::vector<ITimeVaryingAssetProvider*> Job::ActiveTimeVaryingAssets()
+{
+	std::vector<ITimeVaryingAssetProvider*> result;
+	if( !pScene || !pScene->GetObjects() || !pGeomManager ) return result;
+	std::set<const IGeometry*> bound;
+	struct Objects : public IEnumCallback<IObject>
+	{
+		std::set<const IGeometry*>& geometries;
+		explicit Objects( std::set<const IGeometry*>& target ) : geometries(target) {}
+		bool operator()( const IObject& object ) override
+		{
+			if( object.GetGeometry() ) geometries.insert(object.GetGeometry());
+			return true;
+		}
+	} objects(bound);
+	pScene->GetObjects()->EnumerateObjects(objects);
+	if( bound.empty() ) return result;
+	struct Geometries : public IEnumCallback<const char*>
+	{
+		const IGeometryManager& manager;
+		const std::set<const IGeometry*>& bound;
+		std::vector<Implementation::SimulatedMeshGeometry*> found;
+		Geometries( const IGeometryManager& m, const std::set<const IGeometry*>& b ) : manager(m), bound(b) {}
+		bool operator()( const char* const& name ) override
+		{
+			IGeometry* geometry = manager.GetItem(name);
+			Implementation::SimulatedMeshGeometry* mesh =
+				dynamic_cast<Implementation::SimulatedMeshGeometry*>(geometry);
+			if( mesh && bound.count(geometry) ) found.push_back(mesh);
+			return true;
+		}
+	} geometries(*pGeomManager,bound);
+	pGeomManager->EnumerateItemNames(geometries);
+	const Implementation::Animator* clock =
+		dynamic_cast<const Implementation::Animator*>(pScene->GetAnimator());
+	for( Implementation::SimulatedMeshGeometry* mesh : geometries.found ) {
+		mesh->SetSampleClock(clock);
+		result.push_back(mesh);
+	}
+	return result;
+}
+
+bool Job::HasTimeVaryingAssets()
+{
+	return pScene && (pScene->HasTimeVaryingMedia() || !ActiveTimeVaryingAssets().empty());
+}
+
+// Simulation M3c: the timeline's view of the time-varying assets.
+bool Job::DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
+	const bool availability )
+{
+	ranges.clear();
+	if( !pScene || !pGeomManager ) return false;
+	// Simulated meshes some object renders, by geometry name.
+	std::set<const IGeometry*> bound;
+	struct Objects : public IEnumCallback<IObject>
+	{
+		std::set<const IGeometry*>& geometries;
+		explicit Objects( std::set<const IGeometry*>& target ) : geometries(target) {}
+		bool operator()( const IObject& object ) override
+		{
+			if( object.GetGeometry() ) geometries.insert(object.GetGeometry());
+			return true;
+		}
+	} objects(bound);
+	if( pScene->GetObjects() ) pScene->GetObjects()->EnumerateObjects(objects);
+	struct Names : public IEnumCallback<const char*>
+	{
+		std::vector<std::string> names;
+		bool operator()( const char* const& name ) override { names.push_back(name); return true; }
+	} names;
+	pGeomManager->EnumerateItemNames(names);
+	bool ok = true;
+	for( const std::string& name : names.names ) {
+		const Implementation::SimulatedMeshGeometry* mesh =
+			dynamic_cast<const Implementation::SimulatedMeshGeometry*>(pGeomManager->GetItem(name.c_str()));
+		if( !mesh || !bound.count(mesh) || !mesh->HasSource() ) continue;	// M4: an unbound mesh has no frames
+		Simulation::TimelineRange range;
+		std::string error;
+		if( !Simulation::DescribeMeshSource(mesh->Source(),availability,range,error) ) {
+			GlobalLog()->PrintEx(eLog_Warning,"Job::DescribeTimeVaryingAssets:: `%s`: %s",name.c_str(),error.c_str());
+			ok = false;
+			continue;
+		}
+		range.name = name;
+		ranges.push_back(std::move(range));
+	}
+	// Fire media bound to a sequence.  Their frames are the manifest's; a
+	// native cache that is still growing reports partial.
+	for( const auto& binding : fireSequenceManifests ) {
+		const Implementation::FireSequenceManifest& m = *binding.second;
+		if( !m.IsValid() || m.Frames().empty() ) continue;
+		const Implementation::FireSequenceTimeMap& map = m.TimeMap();
+		if( !(map.sceneToSimulationScale != 0.0) || !(map.frameStepSeconds > 0.0) ) continue;
+		Simulation::TimelineRange range;
+		range.kind = Simulation::TimelineRange::FireMedium;
+		for( const auto& named : mediaMap ) if( named.second == binding.first ) { range.name = named.first.c_str(); break; }
+		const double step = map.frameStepSeconds/map.sceneToSimulationScale;
+		const double a = map.sceneTimeOrigin;
+		const double b = map.sceneTimeOrigin + double(m.Frames().size()-1)*step;
+		range.start = std::min(a,b);
+		range.end = std::max(a,b);
+		range.availableEnd = range.end;
+		range.interval = std::fabs(step);
+		range.framesAvailable = range.framesTotal = m.Frames().size();
+		range.state = m.IsComplete() ? Simulation::TimelineRange::Complete : Simulation::TimelineRange::Partial;
+		range.fidelity = m.SourceQualification() == "predictive_qualified" ? "predictive" : "preview";
+		range.availabilityKnown = true;
+		ranges.push_back(std::move(range));
+	}
+	return ok;
+}
+
+namespace
+{
+	// The binding options of simulated_mesh_geometry (both forms).
+	bool ParseSimulatedMeshOptions( const char* who, const char* output,
+		const double time_offset, const double time_scale,
+		const char* end_policy, const char* missing_frame, const char* fidelity,
+		const bool motion_blur, const bool face_normals, const bool double_sided,
+		Implementation::SimulatedMeshGeometry::Options& options )
+	{
+		options.source.output = output && output[0] ? output : "surface";
+		options.source.timeOffset = time_offset;
+		options.source.timeScale = time_scale;
+		options.motionBlur = motion_blur;
+		options.faceNormals = face_normals;
+		options.doubleSided = double_sided;
+		const std::string end = end_policy ? end_policy : "cache";
+		if( end == "cache" ) options.source.end = Simulation::MeshEndPolicy::Cache;
+		else if( end == "hold" ) options.source.end = Simulation::MeshEndPolicy::Hold;
+		else if( end == "loop" ) options.source.end = Simulation::MeshEndPolicy::Loop;
+		else if( end == "error" ) options.source.end = Simulation::MeshEndPolicy::Error;
+		else {
+			GlobalLog()->PrintEx(eLog_Error,"%s:: unknown end policy `%s`",who,end.c_str());
+			return false;
+		}
+		const std::string missing = missing_frame ? missing_frame : "hold";
+		if( missing == "hold" ) options.source.missing = Simulation::MeshMissingPolicy::Hold;
+		else if( missing == "hide" ) options.source.missing = Simulation::MeshMissingPolicy::Hide;
+		else {
+			GlobalLog()->PrintEx(eLog_Error,"%s:: unknown missing-frame policy `%s`",who,missing.c_str());
+			return false;
+		}
+		const std::string mode = fidelity ? fidelity : "preview";
+		if( mode != "preview" && mode != "predictive" ) {
+			GlobalLog()->PrintEx(eLog_Error,"%s:: unknown fidelity `%s`",who,mode.c_str());
+			return false;
+		}
+		options.source.predictive = mode == "predictive";
+		return true;
+	}
+
+	// `~/` is the user's home.
+	bool ExpandHome( std::string& path )
+	{
+		if( path.size() >= 2 && path[0] == '~' && (path[1] == '/' || path[1] == '\\') ) {
+#if defined(_WIN32)
+			const char* home = std::getenv("USERPROFILE");
+#else
+			const char* home = std::getenv("HOME");
+#endif
+			if( !home || !home[0] ) return false;
+			path = std::string(home) + path.substr(1);
+		}
+		return true;
+	}
+}
+
+bool Job::AddSimulatedMeshGeometry(
+	const char* name, const char* cache, const char* output,
+	const double time_offset, const double time_scale,
+	const char* end_policy, const char* missing_frame, const char* fidelity,
+	const bool motion_blur, const bool face_normals, const bool double_sided )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !name || !name[0] || !cache || !cache[0] ) return false;
+	Implementation::SimulatedMeshGeometry::Options options;
+	if( !ParseSimulatedMeshOptions( "Job::AddSimulatedMeshGeometry", output, time_offset, time_scale,
+		end_policy, missing_frame, fidelity, motion_blur, face_normals, double_sided, options ) ) return false;
+	const std::string mode = options.source.predictive ? "predictive" : "preview";
+	// `~/` is the user's home (caches live in a private per-user directory);
+	// any other relative path goes through the media path, by its manifest.
+	std::string root = cache;
+	if( root.size() >= 2 && root[0] == '~' && (root[1] == '/' || root[1] == '\\') ) {
+		if( !ExpandHome( root ) ) {
+			GlobalLog()->PrintEasyError("Job::AddSimulatedMeshGeometry:: `~/` cache path without a home directory");
+			return false;
+		}
+	} else if( !std::filesystem::path(root).is_absolute() ) {
+		const std::string manifest = GlobalMediaPathLocator().Find((root + "/manifest.cbor").c_str()).c_str();
+		root = std::filesystem::path(manifest).parent_path().string();
+	}
+	std::string error;
+	Implementation::SimulatedMeshGeometry* geometry =
+		Implementation::SimulatedMeshGeometry::Create(root,options,error);
+	if( !geometry ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddSimulatedMeshGeometry:: `%s`: %s",name,error.c_str());
+		return false;
+	}
+	GlobalLog()->PrintNew( geometry, __FILE__, __LINE__, "simulated mesh geometry" );
+	const Simulation::CacheDescription& d = geometry->Source().Description();
+	GlobalLog()->PrintEx(eLog_Info,
+		"Job::AddSimulatedMeshGeometry:: `%s` bound to %s output `%s` (%u vertices, %u triangles, %llu frames, %s cache, %s binding)",
+		name,root.c_str(),options.source.output.c_str(),geometry->Source().VertexCount(),
+		static_cast<unsigned int>(geometry->Source().Indices().size()/3),
+		static_cast<unsigned long long>(d.count),d.fidelity.c_str(),mode.c_str());
+	const bool added = pGeomManager->AddItem(geometry,name);
+	if( added ) {
+		SimulatedGeometryRecord record;
+		record.geometry = geometry;
+		record.binding.output = options.source.output;
+		record.binding.cacheDir = root;
+		record.binding.options = options.source;
+		simulatedGeometries[name] = record;
+	}
+	safe_release(geometry);
+	return added;
+}
+
+// ---------------------------------------------------------------- Simulation M4
+
+bool Job::SetSimulationSceneDirectory( const char* directory )
+{
+	if( !directory ) return false;
+	std::error_code ec;
+	const std::filesystem::path dir = directory[0] ? std::filesystem::absolute( directory, ec ) : std::filesystem::path();
+	if( ec ) return false;
+	simulationSceneDirectory = dir.lexically_normal().string();
+	return true;
+}
+
+bool Job::ResolveSimulationCache( const std::string& name, const std::string& authored,
+	std::filesystem::path& dir, std::string& error ) const
+{
+	std::string path = authored.empty() ? std::string("caches/") + name : authored;
+	if( !ExpandHome( path ) ) { error = "`~/` cache path without a home directory"; return false; }
+	std::filesystem::path p( path );
+	if( p.is_relative() ) {
+		std::error_code ec;
+		p = simulationSceneDirectory.empty() ? std::filesystem::absolute( p, ec ) :
+			std::filesystem::path( simulationSceneDirectory ) / p;
+		if( ec ) { error = "cannot resolve cache path " + path; return false; }
+	}
+	dir = p.lexically_normal();
+	return true;
+}
+
+bool Job::AddSimulation( const SimulationDescriptor& desc )
+{
+	const auto fail = []( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddSimulation:: %s", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = message;
+		return false;
+	};
+	if( desc.name.empty() ) return fail( desc.keyword + ": a simulation needs a `name`" );
+	if( desc.name.find( '.' ) != std::string::npos )
+		return fail( desc.keyword + " `" + desc.name + "`: a simulation name may not contain `.` (it separates the output in `source`)" );
+	if( simulationsMap.count( desc.name ) ) {
+		DiagDuplicateName( "simulation", desc.name.c_str() );
+		return false;
+	}
+	Simulation::SceneSimulationSpec spec;
+	spec.keyword = desc.keyword;
+	spec.name = desc.name;
+	spec.solverId = desc.solverId;
+	spec.sceneInputs = desc.sceneInputs;
+	spec.outputs = desc.outputs;
+	std::string error;
+	if( !desc.solverId.empty() ) {
+		if( !RISECBOR64::DecodeCanonical( desc.parameters, spec.parameters, &error ) ||
+			spec.parameters.GetType() != RISECBOR64::Value::Map )
+			return fail( desc.keyword + " `" + desc.name + "`: invalid parameter record: " + error );
+	} else {
+		spec.parameters = RISECBOR64::Value::MapValue( {} );
+	}
+	if( !ResolveSimulationCache( desc.name, desc.cache, spec.cacheDir, error ) )
+		return fail( desc.keyword + " `" + desc.name + "`: " + error );
+	simulationOrder.push_back( desc.name );
+	simulationsMap[desc.name] = spec;
+	// D35: PRODUCED simulation (the table bypasses GenericManager).
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( &simulationsMap[desc.name] ) );
+	GlobalLog()->PrintEx( eLog_Info, "Job::AddSimulation:: %s `%s`%s%s, cache %s", desc.keyword.c_str(), desc.name.c_str(),
+		desc.solverId.empty() ? "" : " solver ", desc.solverId.c_str(), spec.cacheDir.string().c_str() );
+	return true;
+}
+
+bool Job::RemoveSimulation( const char* name )
+{
+	if( !name ) return false;
+	const auto it = simulationsMap.find( name );
+	if( it == simulationsMap.end() ) return false;
+	simulationsMap.erase( it );
+	simulationOrder.erase( std::remove( simulationOrder.begin(), simulationOrder.end(), std::string( name ) ),
+		simulationOrder.end() );
+	return true;
+}
+
+void Job::EnumerateSimulationNames( IEnumCallback<const char*>& cb ) const
+{
+	for( const std::string& n : simulationOrder ) {
+		const char* p = n.c_str();
+		if( !cb( p ) ) return;
+	}
+}
+
+std::vector<Simulation::SceneSimulationSpec> Job::SimulationSpecs() const
+{
+	std::vector<Simulation::SceneSimulationSpec> specs;
+	for( const std::string& n : simulationOrder ) {
+		const auto it = simulationsMap.find( n );
+		if( it != simulationsMap.end() ) specs.push_back( it->second );
+	}
+	return specs;
+}
+
+bool Job::SimulatedGeometryBindingOf( const IGeometry* geometry, Simulation::SimulatedGeometryBinding& binding ) const
+{
+	if( !geometry ) return false;
+	for( const auto& g : simulatedGeometries ) {
+		if( g.second.geometry != geometry ) continue;
+		// Still the scene's geometry under that name (not a stale record).
+		if( !pGeomManager || pGeomManager->GetItem( g.first.c_str() ) != geometry ) return false;
+		binding = g.second.binding;
+		return true;
+	}
+	return false;
+}
+
+bool Job::SimulationOfGeometry( const char* geometry, std::string& simulation, std::string& output ) const
+{
+	if( !geometry ) return false;
+	const auto it = simulatedGeometries.find( geometry );
+	if( it == simulatedGeometries.end() || it->second.binding.simulation.empty() ) return false;
+	simulation = it->second.binding.simulation;
+	output = it->second.binding.output;
+	return true;
+}
+
+bool Job::PlanSimulations( std::vector<Simulation::SceneSimulationPlan>& plans,
+	std::vector<Simulation::SceneSimulationSpec>& specs, std::string& error )
+{
+	plans.clear();
+	specs = SimulationSpecs();
+	if( specs.empty() ) return true;
+	if( !pScene ) { error = "no scene"; return false; }
+	Simulation::SceneObjectInputProvider provider( *pScene,
+		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
+	return simulationGraph->Plan( specs, provider, plans, error );
+}
+
+bool Job::DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses, std::string& error )
+{
+	statuses.clear();
+	const std::vector<Simulation::SceneSimulationSpec> specs = SimulationSpecs();
+	if( specs.empty() ) return true;
+	if( !pScene ) { error = "no scene"; return false; }
+	Simulation::SceneObjectInputProvider provider( *pScene,
+		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
+	if( !simulationGraph->Describe( specs, provider, statuses, error ) ) return false;
+	// M5: which consumer geometries show each simulation (the GUI's live
+	// controls address a live run by its geometry).
+	for( Simulation::SceneSimulationStatus& status : statuses )
+		for( const auto& g : simulatedGeometries )
+			if( g.second.binding.simulation == status.name ) status.meshConsumers.push_back( g.first );
+	return true;
+}
+
+bool Job::AddFireMediumFromSimulation(
+	const char* name, const char* source,
+	const char* channel_carbon, const char* channel_temperature,
+	const char* channel_condensed, const char* channel_reaction,
+	const char* channel_chem_ch, const char* channel_chem_c2,
+	const char* channel_chem_co2, const char* channel_velocity,
+	const bool chem_model_none )
+{
+	const auto fail = [name]( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddFireMedium:: `%s`: %s", name ? name : "", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = std::string( "fire_medium `" ) + ( name ? name : "" ) + "`: " + message;
+		return false;
+	};
+	if( !name || !name[0] || !source || !source[0] ) return false;
+	std::string sim = source, out;
+	const std::size_t dot = sim.find( '.' );
+	if( dot != std::string::npos ) { out = sim.substr( dot + 1 ); sim.resize( dot ); }
+	const auto it = simulationsMap.find( sim );
+	if( it == simulationsMap.end() )
+		return fail( "`source` names `" + sim + "`, which is not a simulation declared before this medium" );
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( &it->second ) );   // D35: RESOLVED simulation
+	const Simulation::SceneSimulationSpec& spec = it->second;
+	if( out.empty() ) out = spec.outputs.empty() ? "volume" : spec.outputs.front().first;
+	// Connection legality: only a fire-compatible grid output binds a fire medium.
+	if( !spec.outputs.empty() ) {
+		const auto o = std::find_if( spec.outputs.begin(), spec.outputs.end(),
+			[&]( const std::pair<std::string,std::string>& x ) { return x.first == out; } );
+		if( o == spec.outputs.end() ) return fail( "simulation `" + sim + "` has no output `" + out + "`" );
+		if( o->second != "grid.v1" )
+			return fail( "output `" + sim + "." + out + "` is " + o->second + "; fire_medium binds a fire grid output (grid.v1) only" );
+	}
+	std::string error;
+	const Simulation::CacheState disk = Simulation::InspectCache( spec.cacheDir, std::size_t(256) << 20, error );
+	if( disk == Simulation::CacheState::Missing ) {
+		if( m_firePredictiveRequested )
+			return fail( "simulation `" + sim + "` has no cache at " + spec.cacheDir.string() + "; a predictive fire fails closed" );
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddFireMedium:: `%s`: simulation `%s` has no cache yet (%s); the medium is empty until it is baked "
+			"(rise-sim bake <scene> %s)", name, sim.c_str(), spec.cacheDir.string().c_str(), sim.c_str() );
+		const double zero[3] = { 0, 0, 0 };
+		return AddHomogeneousMedium( name, zero, zero, "isotropic", 0.0 );
+	}
+	if( spec.solverId.empty() ) {
+		// A foreign cache: the output must be a grid carrying the fire channels.
+		Simulation::CacheSnapshot snapshot;
+		if( !Simulation::CacheSnapshot::Open( spec.cacheDir, std::size_t(256) << 20, snapshot, error ) )
+			return fail( "cache " + spec.cacheDir.string() + ": " + error );
+		const auto& outs = snapshot.Description().outputs;
+		const auto o = std::find_if( outs.begin(), outs.end(), [&]( const Simulation::CacheOutput& x ) { return x.name == out; } );
+		if( o == outs.end() ) return fail( "cache " + spec.cacheDir.string() + " has no output `" + out + "`" );
+		const auto has = [&]( const char* c ) {
+			return std::any_of( o->channels.begin(), o->channels.end(), [&]( const Simulation::CacheChannel& ch ) { return ch.name == c; } );
+		};
+		if( o->type != "grid.v1" || !has( "carbon" ) || !has( "temperature" ) )
+			return fail( "output `" + sim + "." + out + "` is not a fire grid (grid.v1 with carbon and temperature)" );
+	}
+	const std::string manifest = ( spec.cacheDir / "manifest.cbor" ).string();
+	return AddFireMediumBound( name, manifest.c_str(), channel_carbon, channel_temperature, channel_condensed,
+		channel_reaction, channel_chem_ch, channel_chem_c2, channel_chem_co2, channel_velocity, chem_model_none );
+}
+
+bool Job::AddSimulatedMeshGeometryFromSimulation(
+	const char* name, const char* simulation, const char* output,
+	const double time_offset, const double time_scale,
+	const char* end_policy, const char* missing_frame, const char* fidelity,
+	const bool motion_blur, const bool face_normals, const bool double_sided )
+{
+	const auto fail = [name]( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddSimulatedMeshGeometry:: `%s`: %s", name ? name : "", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = std::string( "simulated_mesh_geometry `" ) + ( name ? name : "" ) + "`: " + message;
+		return false;
+	};
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !name || !name[0] || !simulation || !simulation[0] ) return false;
+	// `source sim.output` or `source sim` with `output`.
+	std::string sim = simulation, out = output && output[0] ? output : "";
+	const std::size_t dot = sim.find( '.' );
+	if( dot != std::string::npos ) {
+		const std::string named = sim.substr( dot + 1 );
+		sim.resize( dot );
+		if( !out.empty() && out != named )
+			return fail( "`source " + std::string( simulation ) + "` names output `" + named + "` but `output` says `" + out + "`" );
+		out = named;
+	}
+	const auto it = simulationsMap.find( sim );
+	if( it == simulationsMap.end() )
+		return fail( "`source` names `" + sim + "`, which is not a simulation declared before this geometry" );
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( &it->second ) );   // D35: RESOLVED simulation
+	const Simulation::SceneSimulationSpec& spec = it->second;
+	if( out.empty() ) out = spec.outputs.empty() ? "surface" : spec.outputs.front().first;
+	Implementation::SimulatedMeshGeometry::Options options;
+	if( !ParseSimulatedMeshOptions( "Job::AddSimulatedMeshGeometry", out.c_str(), time_offset, time_scale,
+		end_policy, missing_frame, fidelity, motion_blur, face_normals, double_sided, options ) ) return false;
+	// Connection legality: only a mesh output binds a simulated mesh.
+	const auto meshCodec = []( const std::string& c ) { return c == "mesh.v1" || c == "mesh.v2"; };
+	if( !spec.outputs.empty() ) {
+		const auto o = std::find_if( spec.outputs.begin(), spec.outputs.end(),
+			[&]( const std::pair<std::string,std::string>& x ) { return x.first == out; } );
+		if( o == spec.outputs.end() ) {
+			std::string names;
+			for( const auto& x : spec.outputs ) names += ( names.empty() ? "" : ", " ) + x.first;
+			return fail( "simulation `" + sim + "` has no output `" + out + "` (it has: " + names + ")" );
+		}
+		if( !meshCodec( o->second ) )
+			return fail( "output `" + sim + "." + out + "` is " + o->second + "; simulated_mesh_geometry binds a mesh output (mesh.v1 or mesh.v2) only" );
+	}
+	std::string error;
+	Implementation::SimulatedMeshGeometry* geometry = nullptr;
+	const Simulation::CacheState disk = Simulation::InspectCache( spec.cacheDir, std::size_t(256) << 20, error );
+	if( disk == Simulation::CacheState::Missing ) {
+		if( options.source.predictive )
+			return fail( "simulation `" + sim + "` has no cache at " + spec.cacheDir.string() + "; a predictive binding fails closed (bake it: rise-sim bake <scene> " + sim + ")" );
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddSimulatedMeshGeometry:: `%s`: simulation `%s` has no cache yet (%s); the mesh is empty and hidden "
+			"until it is baked (rise-sim bake <scene> %s) or a live session runs it", name, sim.c_str(),
+			spec.cacheDir.string().c_str(), sim.c_str() );
+		geometry = Implementation::SimulatedMeshGeometry::CreateUnbound( options );
+	} else {
+		if( spec.solverId.empty() && spec.outputs.empty() ) {
+			// A foreign cache: check the output's codec from its manifest.
+			Simulation::CacheSnapshot snapshot;
+			if( Simulation::CacheSnapshot::Open( spec.cacheDir, std::size_t(256) << 20, snapshot, error ) ) {
+				const auto& outs = snapshot.Description().outputs;
+				const auto o = std::find_if( outs.begin(), outs.end(), [&]( const Simulation::CacheOutput& x ) { return x.name == out; } );
+				if( o == outs.end() ) return fail( "cache " + spec.cacheDir.string() + " has no output `" + out + "`" );
+				if( !meshCodec( o->type ) )
+					return fail( "output `" + sim + "." + out + "` is " + o->type + "; simulated_mesh_geometry binds a mesh output only" );
+			}
+		}
+		geometry = Implementation::SimulatedMeshGeometry::Create( spec.cacheDir.string(), options, error );
+		if( !geometry ) return fail( "simulation `" + sim + "` cache " + spec.cacheDir.string() + ": " + error );
+	}
+	GlobalLog()->PrintNew( geometry, __FILE__, __LINE__, "simulated mesh geometry" );
+	if( geometry->HasSource() )
+		GlobalLog()->PrintEx( eLog_Info, "Job::AddSimulatedMeshGeometry:: `%s` bound to simulation `%s` output `%s` (%s, %u vertices)",
+			name, sim.c_str(), out.c_str(), spec.cacheDir.string().c_str(), geometry->Source().VertexCount() );
+	const bool added = pGeomManager->AddItem( geometry, name );
+	if( added ) {
+		SimulatedGeometryRecord record;
+		record.geometry = geometry;
+		record.binding.simulation = sim;
+		record.binding.output = out;
+		record.binding.cacheDir = spec.cacheDir;
+		record.binding.options = options.source;
+		simulatedGeometries[name] = record;
+	}
+	safe_release( geometry );
+	return added;
+}
+
 bool Job::SetFireFidelityMode( const char* mode )
 {
 	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
@@ -10914,10 +11448,22 @@ bool Job::SetFireFidelityMode( const char* mode )
 		return false;
 	}
 	if( std::strcmp(mode, "preview") == 0 ) {
+		for( const auto& binding : fireSequenceManifests ) binding.second->ReleasePredictiveGeneration();
 		m_firePredictiveRequested = false;
 		return true;
 	}
 	if( std::strcmp(mode, "predictive") == 0 ) {
+		// Qualify all bindings before installing any new generation pins.
+		std::vector<std::pair<Implementation::FireSequenceManifest*,Implementation::FireSequenceManifest>> qualified;
+		for( const auto& binding : fireSequenceManifests ) {
+			auto& candidate = qualified.emplace_back(binding.second.get(),*binding.second).second;
+			std::string error;
+			if( !candidate.PreflightPredictive(error) ) {
+				GlobalLog()->PrintEx(eLog_Error,"Job::SetFireFidelityMode:: %s",error.c_str());
+				return false;
+			}
+		}
+		for( auto& item : qualified ) *item.first = std::move(item.second);
 		m_firePredictiveRequested = true;
 		return true;
 	}
@@ -14478,44 +15024,98 @@ bool Job::ShootShadowPhotons(
 
 namespace
 {
+	// A failed later medium or fidelity check rolls back every prior install.
+	class PreparedFireChanges
+	{
+		std::vector<std::function<void()>> undo_;
+	public:
+		~PreparedFireChanges() {
+			for( auto i=undo_.rbegin(); i!=undo_.rend(); ++i ) if( *i ) (*i)();
+		}
+		bool Prepare(Implementation::FireSequencePreparationController& controller,
+			const Implementation::FireSequenceRenderTimeSupport& support,std::string& error) {
+			undo_.emplace_back();
+			return controller.PrepareMediaForRender(support,false,error,&undo_.back());
+		}
+		//! Simulation M3b: a time-varying asset (a simulated mesh) joins the
+		//! same transaction; its undo restores the previously installed frame.
+		bool PrepareAsset(ITimeVaryingAssetProvider& asset,const RenderTimeSupport& support,
+			std::string& error) {
+			undo_.emplace_back();
+			return asset.PrepareAssetForRender(support,error,&undo_.back());
+		}
+		void Commit() { undo_.clear(); }
+	};
+
+	//! The per-frame preparation controller handed to the rasterizer: fire
+	//! sequence media, then (simulation M3b) every other time-varying asset
+	//! of the render -- one transaction, one freeze.
 	class FireSequencePreparationGroup : public IRenderPreparationController
 	{
 		std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > controllers_;
 		std::vector<Implementation::FireSequencePreparationController::RenderLease> leases_;
 		std::function<bool(const RenderTimeSupport&)> afterPrepare_;
+		std::vector<ITimeVaryingAssetProvider*> assets_;
+		std::vector<ITimeVaryingAssetProvider*> frozenAssets_;
+		bool assetsAtNominal_ = false;
+		bool Frozen() const { return !leases_.empty() || !frozenAssets_.empty(); }
 	public:
 		FireSequencePreparationGroup(
 			std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > controllers,
-			std::function<bool(const RenderTimeSupport&)> afterPrepare )
-			: controllers_(std::move(controllers)), afterPrepare_(std::move(afterPrepare)) {}
+			std::function<bool(const RenderTimeSupport&)> afterPrepare,
+			std::vector<ITimeVaryingAssetProvider*> assets = {} )
+			: controllers_(std::move(controllers)), afterPrepare_(std::move(afterPrepare)),
+			  assets_(std::move(assets)) {}
+		//! Simulation M3c: a still rendered through RasterizeScene (the
+		//! editor's viewport) gives no ray a sample time, so deformation keys
+		//! would only widen the mesh's boxes: assets install at the nominal
+		//! time.  Fire media keep the full shutter support.
+		void InstallAssetsAtNominal() { assetsAtNominal_ = true; }
 		bool PrepareMediaForRender(const RenderTimeSupport& support,std::string& error) override
 		{
-			if( !leases_.empty() ) { error="mutation_frozen"; return false; }
+			if( Frozen() ) { error="mutation_frozen"; return false; }
 			const Implementation::FireSequenceRenderTimeSupport fireSupport{
 				support.nominal,support.open,support.close};
+			PreparedFireChanges changes;
 			for( const auto& controller : controllers_ )
-				if( !controller->PrepareMediaForRender(fireSupport,false,error) ) return false;
+				if( !changes.Prepare(*controller,fireSupport,error) ) return false;
+			const RenderTimeSupport assetSupport = assetsAtNominal_ ?
+				RenderTimeSupport{support.nominal,support.nominal,support.nominal} : support;
+			for( ITimeVaryingAssetProvider* asset : assets_ )
+				if( !changes.PrepareAsset(*asset,assetSupport,error) ) return false;
 			if( afterPrepare_ && !afterPrepare_(support) ) {
 				error="prepared fire fidelity publication failed"; return false;
 			}
+			changes.Commit();
 			return true;
 		}
 		bool AcquireRenderFreeze(std::string& error) override
 		{
-			if( !leases_.empty() ) { error="mutation_frozen"; return false; }
+			if( Frozen() ) { error="mutation_frozen"; return false; }
 			for( const auto& controller : controllers_ ) {
 				auto lease=controller->AcquireRenderLease(error);
 				if( !lease.IsValid() ) { leases_.clear(); return false; }
 				leases_.push_back(std::move(lease));
 			}
+			for( ITimeVaryingAssetProvider* asset : assets_ ) {
+				if( !asset->AcquireAssetFreeze(error) ) {
+					std::string ignored;
+					for( ITimeVaryingAssetProvider* held : frozenAssets_ ) held->ReleaseAssetFreeze(ignored);
+					frozenAssets_.clear(); leases_.clear(); return false;
+				}
+				frozenAssets_.push_back(asset);
+			}
 			return true;
 		}
 		bool ReleaseRenderFreeze(std::string& error) override
 		{
-			bool stable=leases_.size()==controllers_.size();
+			bool stable=leases_.size()==controllers_.size() && frozenAssets_.size()==assets_.size();
 			for( const auto& lease : leases_ ) stable=lease.StateStayedFrozen() && stable;
 			leases_.clear();
-			if( !stable ) error="prepared media mutated during render";
+			std::string assetError;
+			for( ITimeVaryingAssetProvider* asset : frozenAssets_ ) stable=asset->ReleaseAssetFreeze(assetError) && stable;
+			frozenAssets_.clear();
+			if( !stable ) error=assetError.empty() ? "prepared media mutated during render" : assetError;
 			return stable;
 		}
 	};
@@ -14545,16 +15145,16 @@ bool Job::PredictRasterizationTime(
 		return false;
 	}
 	unsigned int nMs = 0xFFFFFFFFu;
-	if( pScene->HasTimeVaryingMedia() ) {
+	if( HasTimeVaryingAssets() ) {
 		std::string preparationError;
 		auto controllers=ActiveFireSequenceControllers(preparationError);
-		if( controllers.empty() ) { safe_release(pSampling); return false; }
+		if( controllers.empty() && pScene->HasTimeVaryingMedia() ) { safe_release(pSampling); return false; }
 		FireSequencePreparationGroup preparation(std::move(controllers),
 			[this](const RenderTimeSupport&) {
 				return PrepareFireRenderFidelityMetadata(false) &&
 					AuthorizeFireRasterizer(pRasterizer,
 						FireRenderPreflightAuthorization::Prediction);
-			});
+			},ActiveTimeVaryingAssets());
 		nMs=pRasterizer->PredictTimeToRasterizeScenePrepared(*pScene,*pSampling,
 			actual,Scalar(animOptions.time_start),preparation);
 	} else {
@@ -14864,6 +15464,15 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 	const char* rasterizerKind,
 	const FireExternalRenderConfig& config )
 {
+	const Scalar t = animOptions.time_start;
+	const Implementation::FireSequenceRenderTimeSupport support{t,t,t};
+	return PrepareExternalFireAtTime(rasterizer,rasterizerKind,config,&support);
+}
+
+bool Job::PrepareExternalFireAtTime(
+	IRasterizer* rasterizer, const char* rasterizerKind, const FireExternalRenderConfig& config,
+	const Implementation::FireSequenceRenderTimeSupport* support )
+{
 	ClearFireRasterizerAuthorization(rasterizer);
 	if( pScene && !SceneHasActiveFireMedium(*pScene) ) {
 		pScene->SetFireTemporalHold(false);
@@ -14893,13 +15502,11 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
 		animOptions.invert_fields,nullptr,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
-	const Implementation::FireSequenceRenderTimeSupport sequenceSupport{
-		animOptions.time_start,animOptions.time_start,animOptions.time_start};
 	const bool prepared = PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
 		false,AutoIntegratorChoice::PT,config.oidnDenoise,
 		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
-		resolvedConfig,&sequenceSupport,true);
+		resolvedConfig,support,true);
 	if( prepared ) {
 		Implementation::Rasterizer* concrete =
 			dynamic_cast<Implementation::Rasterizer*>(rasterizer);
@@ -14934,25 +15541,43 @@ bool Job::RasterizeExternalRasterizerResolved(
 	const FireExternalRenderConfig& config,
 	const Rect* region )
 {
+	return RasterizeExternalStillAtTime(rasterizer,rasterizerKind,config,region,nullptr);
+}
+
+bool Job::RasterizeExternalRasterizerAtSceneTime(
+	IRasterizer* rasterizer, const char* rasterizerKind, const FireExternalRenderConfig& config,
+	const Rect* region, const Scalar nominalTime )
+{
+	return RasterizeExternalStillAtTime(rasterizer,rasterizerKind,config,region,&nominalTime);
+}
+
+bool Job::RasterizeExternalStillAtTime(IRasterizer* rasterizer, const char* rasterizerKind,
+	const FireExternalRenderConfig& config, const Rect* region, const Scalar* selectedTime)
+{
 	PreparedRequestGuard request(*this,true);
 	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	const Scalar nominalTime = selectedTime ? *selectedTime : animOptions.time_start;
+	if( !std::isfinite(nominalTime) ) return false;
 	FrameRenderRollback renderRollback(rasterizer ? rasterizer->GetFrameStore() : nullptr);
-	if( !rasterizer || !PrepareFireRenderForExternalRasterizerResolved(
-		rasterizer,rasterizerKind,config) ) return false;
+	// RasterizeScenePrepared supplies the actual shutter window to the group.
+	if( !rasterizer || !PrepareExternalFireAtTime(
+		rasterizer,rasterizerKind,config,nullptr) ) return false;
 	renderRollback.ArmPixelStateForFire();
 	std::string preparationError;
 	auto controllers=ActiveFireSequenceControllers(preparationError);
 	if( pScene->HasTimeVaryingMedia() && controllers.empty() ) return false;
 	FireSequencePreparationGroup preparation(std::move(controllers),
 		[this,rasterizer,rasterizerKind,config](const RenderTimeSupport&) {
-			return PrepareFireRenderForExternalRasterizerResolved(
-				rasterizer,rasterizerKind,config) && AuthorizeFireRasterizer(
+			// The group has already installed the full nominal/shutter support.
+			return PrepareExternalFireAtTime(
+				rasterizer,rasterizerKind,config,nullptr) && AuthorizeFireRasterizer(
 					rasterizer,FireRenderPreflightAuthorization::Render);
-		});
+		},ActiveTimeVaryingAssets());
+	preparation.InstallAssetsAtNominal();
 	if( !AuthorizeFireRasterizer(
 		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
-	if( pScene->HasTimeVaryingMedia() ) rasterizer->RasterizeScenePrepared(
-		*pScene,Scalar(animOptions.time_start),preparation,region,nullptr);
+	if( HasTimeVaryingAssets() ) rasterizer->RasterizeScenePrepared(
+		*pScene,nominalTime,preparation,region,nullptr);
 	else rasterizer->RasterizeScene(*pScene,region,nullptr);
 	if( !FireRasterizerLastRenderCompleted(rasterizer) ) return false;
 	renderRollback.Commit();
@@ -15061,12 +15686,13 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		}
 		return true;
 	};
+	PreparedFireChanges changes;
 	if( sequenceTimeSupport ) {
 		for( const IMedium* medium : activeMedia ) {
 			const auto controller = fireSequenceControllers.find(medium);
 			if( controller == fireSequenceControllers.end() ) continue;
 			std::string error;
-			if( !controller->second->PrepareMediaForRender(*sequenceTimeSupport,false,error) ) {
+			if( !changes.Prepare(*controller->second,*sequenceTimeSupport,error) ) {
 				GlobalLog()->PrintEx(eLog_Error,"Job:: fire sequence preparation failed: %s",error.c_str());
 				return false;
 			}
@@ -15177,7 +15803,12 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			const std::shared_ptr<const Implementation::FireSequencePreparedFrame> frame =
 				sequenceController->second->PreparedFrame();
 			if( !frame ) return false;
-			item.mediaKind = "sequence_backed";
+			item.mediaKind = frame->available ? "sequence_backed" : "sequence_unavailable_v1";
+			if( !frame->available ) {
+				item.coverageDigest = frame->coverageDigest;
+				reasons.insert("frame_unavailable");
+				predictiveAllowed = false;
+			}
 			item.sequenceId = sequenceManifest->second->SequenceId();
 			item.selectedBaseFrameIndex = frame->frameIndex;
 			item.wholeFileDigest = frame->wholeFileSha256;
@@ -15345,6 +15976,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 			std::vector<std::string>(recordIds.begin(),recordIds.end()),
 			fireMediaMetadata,resolvedConfig,rendererBuild,rendererBuildId);
 	}
+	changes.Commit();
 	return true;
 }
 
@@ -15353,8 +15985,20 @@ bool Job::PrepareFireRenderFidelityMetadata(
 bool Job::Rasterize(
 	)
 {
+	return RasterizeStillAtTime(nullptr);
+}
+
+bool Job::RasterizeAtSceneTime( const Scalar nominalTime )
+{
+	return RasterizeStillAtTime(&nominalTime);
+}
+
+bool Job::RasterizeStillAtTime( const Scalar* selectedTime )
+{
 	PreparedRequestGuard request(*this,true);
 	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	const Scalar nominalTime = selectedTime ? *selectedTime : animOptions.time_start;
+	if( !std::isfinite(nominalTime) ) return false;
 	if( !pRasterizer ) {
 		// GUI scene-switch debugging (2026-08-20): this was a SILENT false --
 		// no log line anywhere, so a caller with no active rasterizer (e.g. a
@@ -15385,7 +16029,7 @@ bool Job::Rasterize(
 				animOptions.invert_fields,nullptr,nullptr,nullptr,true) &&
 				AuthorizeFireRasterizer(pRasterizer,
 					FireRenderPreflightAuthorization::Render);
-		});
+		},ActiveTimeVaryingAssets());
 
 	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
 	if( !pSeq ) return false;
@@ -15419,8 +16063,8 @@ bool Job::Rasterize(
 		return false;
 	}
 	CallbackOutputRenderScope callbackOutputs( *this );
-	if( pScene->HasTimeVaryingMedia() ) pRasterizer->RasterizeScenePrepared(
-		*pScene,Scalar(animOptions.time_start),preparation,0,pSeq);
+	if( HasTimeVaryingAssets() ) pRasterizer->RasterizeScenePrepared(
+		*pScene,nominalTime,preparation,0,pSeq);
 	else pRasterizer->RasterizeScene(*pScene,0,pSeq);
 	if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
 	metadataRollback.Commit();
@@ -15458,7 +16102,7 @@ bool Job::RasterizeAnimationOwned(
 			"Job::RasterizeAnimation: zero-frame animations are invalid");
 		return false;
 	}
-	if( pScene && pScene->HasTimeVaryingMedia() ) {
+	if( HasTimeVaryingAssets() ) {
 		FrameRenderRollback sequenceRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 		for( unsigned int frame=0; frame<num_frames; ++frame ) {
 			ResolvedRasterSequence resolved;
@@ -15470,7 +16114,7 @@ bool Job::RasterizeAnimationOwned(
 			ScopedRasterizeSequenceRelease sequenceOwner{ sequence };
 			std::string preparationError;
 			auto activeControllers=ActiveFireSequenceControllers(preparationError);
-			if( activeControllers.empty() ) return false;
+			if( activeControllers.empty() && pScene->HasTimeVaryingMedia() ) return false;
 			if( do_fields ) {
 				const double step=num_frames>1u ? (time_end-time_start)/double(num_frames-1u) : 0.0;
 				const double upper=time_start+double(frame)*step;
@@ -15497,9 +16141,17 @@ bool Job::RasterizeAnimationOwned(
 						do_fields,invert_fields,&frame,nullptr,nullptr,true) &&
 						AuthorizeFireRasterizer(pRasterizer,
 							FireRenderPreflightAuthorization::Render);
-				});
+				},ActiveTimeVaryingAssets());
 			if( !AuthorizeFireRasterizer(pRasterizer,FireRenderPreflightAuthorization::Render) ) {
 				return false;
+			}
+			if( !pScene->HasTimeVaryingMedia() ) {
+				// Simulation M3b: a prepared animation whose only time-varying
+				// inputs are simulated meshes reports progress as the ordinary
+				// path does, and never keeps a previous caller's callback (see
+				// Job::Rasterize's matching comment).
+				IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+				pRasterizer->SetProgressCallback( progress );
 			}
 			CallbackOutputRenderScope callbackOutputs( *this );
 			pRasterizer->RasterizeSceneAnimationPrepared(*pScene,time_start,time_end,
@@ -16432,6 +17084,12 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	}
 
 	std::vector<std::string> diags;
+	// Simulation M4: producer caches named by a relative path live beside the scene file.
+	{
+		std::error_code ec;
+		const std::filesystem::path sceneFile = std::filesystem::absolute( filename, ec );
+		if( !ec ) SetSimulationSceneDirectory( sceneFile.parent_path().string().c_str() );
+	}
 	// DL-323 follow-through: THE real scene load -- the only DeriveToJob caller that warns about deprecated chunk types.
 	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, nullptr, /*warnDeprecated=*/true );
 	if( !diags.empty() ) {
@@ -16483,6 +17141,7 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 	// succeeds, so a bad variant leaves the CURRENT live scene intact instead of gutting the Job (no rollback).
 	{
 		Job staging;
+		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
 		std::vector<std::string> vdiags;
 		RISE::Cst::DeriveToJob( *pCstDocument, staging, &vdiags, nullptr, variantName ? variantName : "none" );
 		if( !vdiags.empty() ) {
@@ -16955,6 +17614,7 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 		const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
 		const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
 		Job staging;
+		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
 		std::vector<std::string> gdiags;
 		++mCstDryRunCount;
 		RISE::Cst::DeriveToJob( d1, staging, &gdiags, nullptr, activeVariant );
@@ -17008,6 +17668,7 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	if( !skipDryRun )
 	{
 		Job staging;
+		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
 		std::vector<std::string> vdiags;
 		++mCstDryRunCount;
 		RISE::Cst::DeriveToJob( d1, staging, &vdiags, nullptr, activeVariant );
@@ -17872,6 +18533,7 @@ int Job::PrepareCstInsert_( const RISE::Cst::Document& base, const char* chunkTe
 			case ChunkCategory::Material:
 			case ChunkCategory::Geometry:
 			case ChunkCategory::HairGuides:   // declared before the hair_geometry that reads it
+			case ChunkCategory::Simulation:   // declared before the simulated_mesh_geometry / fire_medium bound to it
 			case ChunkCategory::Modifier:
 			case ChunkCategory::Medium:
 			case ChunkCategory::Shader:
@@ -18043,6 +18705,7 @@ bool Job::DryRunCstDocument_( const RISE::Cst::Document& doc, std::string* outFi
 	const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
 	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
 	Job staging;
+	staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
 	std::vector<std::string> vdiags;
 	++mCstDryRunCount;
 	RISE::Cst::DeriveToJob( doc, staging, &vdiags, nullptr, activeVariant );
@@ -19486,7 +20149,8 @@ bool Job::RasterizeAnimationUsingOptions(
 	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
-	if( !fireSequenceControllers.empty() ) return RasterizeAnimationOwned(aTs,aTe,aNf,aDf,aInvf);
+	if( !fireSequenceControllers.empty() || !ActiveTimeVaryingAssets().empty() )
+		return RasterizeAnimationOwned(aTs,aTe,aNf,aDf,aInvf);
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
@@ -19543,7 +20207,7 @@ bool Job::RasterizeAnimationUsingOptions(
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
-	if( pScene && pScene->HasTimeVaryingMedia() ) {
+	if( HasTimeVaryingAssets() ) {
 		if( frame >= aNf ) return false;
 		FrameRenderRollback sequenceRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 		ResolvedRasterSequence resolved;
@@ -19555,7 +20219,7 @@ bool Job::RasterizeAnimationUsingOptions(
 		ScopedRasterizeSequenceRelease sequenceOwner{ sequence };
 		std::string preparationError;
 		auto controllers=ActiveFireSequenceControllers(preparationError);
-		if( controllers.empty() ) return false;
+		if( controllers.empty() && pScene->HasTimeVaryingMedia() ) return false;
 		if( aDf ) {
 			const double step=aNf>1u ? (aTe-aTs)/double(aNf-1u) : 0.0;
 			const double upper=aTs+double(frame)*step;
@@ -19580,9 +20244,17 @@ bool Job::RasterizeAnimationUsingOptions(
 				return PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
 					&frame,nullptr,nullptr,true) && AuthorizeFireRasterizer(
 						pRasterizer,FireRenderPreflightAuthorization::Render);
-			});
+			},ActiveTimeVaryingAssets());
 		if( !AuthorizeFireRasterizer(pRasterizer,FireRenderPreflightAuthorization::Render) ) {
 			return false;
+		}
+		if( !pScene->HasTimeVaryingMedia() ) {
+			// Simulation M3b: a prepared animation whose only time-varying
+			// inputs are simulated meshes reports progress as the ordinary
+			// path does, and never keeps a previous caller's callback (see
+			// Job::Rasterize's matching comment).
+			IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+			pRasterizer->SetProgressCallback( progress );
 		}
 		CallbackOutputRenderScope callbackOutputs( *this );
 		pRasterizer->RasterizeSceneAnimationPrepared(*pScene,aTs,aTe,aNf,

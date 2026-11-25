@@ -1,0 +1,59 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           fire_campfire_scene.RISEscene                                                           #
+#   Description:    Simulation M4: a fire declared in the scene.  `fire_simulation` names fire.methane's   #
+#                   case and result-affecting options (docs/SIMULATION_M2_RESULTS.md); `fire_medium` reads  #
+#                   its `volume` output by `source`.  A scene bake passes every option explicitly, so the   #
+#                   legacy RISE_FIRE_* environment never changes it.  The scene keys the fire without        #
+#                   configuring it (one fire per process, Metal checks): stating the window                #
+#                   (frame_origin_s, end_time_s) lets it do so before the first bake.                       #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> campfire   (Metal; hours at tier 8)                 #
+#   Unbaked:        the scene loads with an empty medium named `flame` and a warning; fidelity_mode         #
+#                   predictive would refuse to load instead.                                                #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+}
+
+pinhole_camera
+{
+	location		0 0.6 2.4
+	lookat			0 0.5 0
+	up				0 1 0
+	fov				35.0
+}
+
+fire_simulation
+{
+	name			campfire
+	tier			6
+	mode			fast
+	frame_origin_s	1.0
+	end_time_s		3.0
+}
+
+fire_medium
+{
+	name				flame
+	fidelity_mode		preview
+	source				campfire.volume
+	channel_carbon		carbon
+	channel_temperature	temperature
+	chem_model			none
+}
+
+global_medium
+{
+	medium			flame
+}

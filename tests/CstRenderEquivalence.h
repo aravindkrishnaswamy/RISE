@@ -673,6 +673,27 @@ inline std::string DumpJob( Job& job )
 			o << "  " << n; const IMedium* m = job.GetMedium( n.c_str() ); if( m ) DumpMedium( o, m ); o << "\n";
 		}
 	}
+	// Simulation M4: the declared simulations (a section only when there are
+	// any, so every scene without one dumps byte for byte as before).  The
+	// parameters by digest, the cache by its leaf (the directory resolves
+	// against the scene's or the working directory, a machine fact).
+	{
+		const std::vector<RISE::Simulation::SceneSimulationSpec> specs = job.SimulationSpecs();
+		if( !specs.empty() ) {
+			o << "simulations:\n";
+			for( const auto& s : specs ) {
+				RISECBOR64::Bytes params;
+				RISECBOR64::Encode( s.parameters, params, nullptr );
+				o << "  " << s.name << " " << s.keyword << " solver=" << ( s.solverId.empty() ? "-" : s.solverId )
+				  << " params=" << RISECBOR64::SHA256Hex( params ).substr( 0, 16 )
+				  << " cache=" << s.cacheDir.filename().string() << " inputs=";
+				for( const auto& i : s.sceneInputs ) o << i << ",";
+				o << " outputs=";
+				for( const auto& out : s.outputs ) o << out.first << ":" << out.second << ",";
+				o << "\n";
+			}
+		}
+	}
 	return o.str();
 }
 

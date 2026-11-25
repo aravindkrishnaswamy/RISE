@@ -32,6 +32,8 @@
 
 #include <string>
 #include <vector>
+#include "../Simulation/SimulationTimeline.h"   // Simulation M3c: TimelineRange (std-lib only)
+namespace RISE { namespace Simulation { struct SceneSimulationStatus; } }   // M4: DescribeSimulations
 #include "../Cst/Cst.h"   // Facet 5 slice 1a: CstHeadVersion (a trivial POD returned by value below; Cst.h is std-lib-only weight)
 
 namespace RISE
@@ -454,6 +456,32 @@ namespace RISE
 			const char* rasterizerKind,
 			const FireExternalRenderConfig& config,
 			const Rect* region ) = 0;
+
+		// The editor has already posed the scene. Carry that same nominal time into
+		// the prepared media transaction. Legacy Rasterize() uses the authored start.
+		virtual bool RasterizeAtSceneTime( Scalar nominalTime ) = 0;
+		virtual bool RasterizeExternalRasterizerAtSceneTime( IRasterizer* rasterizer,
+			const char* rasterizerKind, const FireExternalRenderConfig& config,
+			const Rect* region, Scalar nominalTime ) = 0;
+
+		//! Simulation M3c: the frames of every time-varying asset some object
+		//! or the scene renders (simulated meshes, fire media), in scene time,
+		//! for the timeline.  `availability` also reads how much is baked
+		//! (a partial disk cache re-reads its manifest); without it only the
+		//! time maps.  Caller holds the scene stable (the editor's mutex).
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL.
+		virtual bool DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
+			bool availability ) = 0;
+
+		//! Simulation M4: every declared simulation with its expected cache
+		//! key against the scene, its state against its cache on disk
+		//! (missing / baking / partial / complete / stale / failed) and its
+		//! dependencies, upstream first propagated.  Configures solvers (never
+		//! runs one); memoized, so an unchanged scene configures nothing.
+		//! Caller holds the scene stable (the editor's mutex).
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL.
+		virtual bool DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses,
+			std::string& error ) = 0;
 	};
 
 

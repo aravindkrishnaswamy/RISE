@@ -22,9 +22,35 @@
 
 #include "../Interfaces/IProgressCallback.h"
 #include <atomic>
+#include <cstdint>
 
 namespace RISE
 {
+	// Prepared renders can publish progress and observe controls, but cannot
+	// call user code while scene state is frozen. The UI polls this object.
+	class PreparedRenderProgress final : public IProgressCallback
+	{
+	public:
+		bool Progress(double progress, double total) override;
+		bool IsCancelled() const override;
+		void SetTitle(const char*) override {}
+		void Reset();
+		void RequestCancel() { generation.fetch_or(1); }
+		std::uint64_t Generation() const { return generation.load() & ~std::uint64_t(1); }
+		void CancelGeneration(std::uint64_t expected) {
+			generation.compare_exchange_strong(expected, expected | 1);
+		}
+		bool CancelRequested() const { return (generation.load() & 1) != 0; }
+		void SetPaused(bool value) { paused.store(value); }
+		double Fraction() const { return fraction.load(); }
+	private:
+		// An odd state cancels the current generation. A late UI poll cannot
+		// apply its cancellation to the next request.
+		std::atomic<std::uint64_t> generation{0};
+		std::atomic<bool> paused{false};
+		std::atomic<double> fraction{0.0};
+	};
+
 	class CancellableProgressCallback : public IProgressCallback
 	{
 	public:
@@ -41,6 +67,7 @@ namespace RISE
 		//! Trip the cancel flag.  Safe to call from any thread.
 		//! Subsequent Progress() calls return false until Reset().
 		void RequestCancel();
+		PreparedRenderProgress& Prepared() { return prepared; }
 
 		//! Clear the cancel flag.  Called by the render thread at
 		//! the start of each render pass so a stale cancel from
@@ -94,6 +121,7 @@ namespace RISE
 		}
 
 	private:
+		PreparedRenderProgress prepared;
 		std::atomic<IProgressCallback*> mInner;
 		std::atomic<bool>               mCancelled;
 		mutable std::atomic<bool>       mInnerCancelled;

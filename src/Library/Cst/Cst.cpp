@@ -1672,6 +1672,7 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 		case ChunkCategory::Object:   return pJob.RemoveObject  ( name );
 		case ChunkCategory::Light:    return pJob.RemoveLight   ( name );
 		case ChunkCategory::Modifier: return pJob.RemoveModifier( name );
+		case ChunkCategory::Simulation: return pJob.RemoveSimulation( name );   // M4 (data-only table)
 		default: return false;   // Painter (mixed reversibility -- scalar_painter), Camera, Function, ...
 	}
 }
@@ -3667,6 +3668,19 @@ static bool EntityExists( IJobPriv& priv, ChunkCategory cat, const std::string& 
 			priv.EnumerateHairGuideNames( probe );
 			return probe.found;
 		}
+		case ChunkCategory::Simulation: {
+			// Simulation M4: the same manager-less probe, over the simulation table.
+			struct Probe : public IEnumCallback<const char*> {
+				const char* want; bool found;
+				Probe( const char* w ) : want( w ), found( false ) {}
+				bool operator()( const char* const& nm ) override {
+					if( nm && strcmp( nm, want ) == 0 ) { found = true; return false; }
+					return true;
+				}
+			} probe( n );
+			priv.EnumerateSimulationNames( probe );
+			return probe.found;
+		}
 		default: return true;
 	}
 }
@@ -4727,8 +4741,16 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 		} else {
 			continue;
 		}
-		for( const std::string& val : refVals ) {
-			mix( val );                                        // stamp: every reference value
+		for( const std::string& rawVal : refVals ) {
+			mix( rawVal );                                     // stamp: every reference value
+			// Simulation M4: a `source <simulation>.<output>` value references the
+			// simulation; the `.output` suffix names one of its outputs.
+			std::string val = rawVal;
+			if( std::find( pd->referenceCategories.begin(), pd->referenceCategories.end(), ChunkCategory::Simulation ) !=
+				pd->referenceCategories.end() ) {
+				const std::size_t dot = val.find( '.' );
+				if( dot != std::string::npos ) val.resize( dot );
+			}
 			if( val.empty() || val == "none" ) continue;       // explicit-none / empty: not an edge
 			NodeId target = 0;
 			// DIMENSION-PRECISE resolution for the function consumers FunctionSubNamespace maps

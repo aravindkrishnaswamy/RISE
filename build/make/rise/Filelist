@@ -44,6 +44,7 @@ SRCDRISE =\
 SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Agent/AgentChatCodecs.cpp		\
 	$(PATHLIBRARY)Agent/AgentChatLoop.cpp			\
+	$(PATHLIBRARY)Agent/AgentSimulation.cpp			\
 	$(PATHLIBRARY)Agent/AgentEvalRunner.cpp		\
 	$(PATHLIBRARY)Agent/AgentLoopbackHttpServer.cpp	\
 	$(PATHLIBRARY)Agent/AgentMcpAdapter.cpp		\
@@ -95,6 +96,37 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/FireProductionForce.cpp	\
 	$(PATHLIBRARY)Utilities/FireCase.cpp			\
 	$(PATHLIBRARY)Utilities/FireSequence.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireRunCheckpoint.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRunFrames.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRunDriver.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRun.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireSolver.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireParameterSchema.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationGrid.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationCache.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationMesh.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationField.cpp			\
+	$(PATHLIBRARY)Simulation/SimulatedMeshSource.cpp		\
+	$(PATHLIBRARY)Simulation/SimulationSolver.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationHost.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationWorker.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationTimeline.cpp		\
+	$(PATHLIBRARY)Simulation/BuiltinSolvers.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationParameterSchema.cpp	\
+	$(PATHLIBRARY)Simulation/SceneSimulation.cpp		\
+	$(PATHLIBRARY)Simulation/SceneInputs.cpp		\
+	$(PATHLIBRARY)Simulation/SceneSimulationWorker.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationProcess.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationBakeManager.cpp	\
+	$(PATHLIBRARY)Simulation/Cloth/ClothMaterial.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothLinearAlgebra.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothModel.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothParallel.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothContact.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothValidation.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothSolver.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothParameterSchema.cpp	\
+	$(PATHLIBRARY)Utilities/FireSequenceCache.cpp			\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
 	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
@@ -292,6 +324,7 @@ SRCLIBGEOMETRY = \
 	$(PATHLIBRARY)Geometry/TorusGeometry.cpp					\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometryIndexed.cpp		\
+	$(PATHLIBRARY)Geometry/SimulatedMeshGeometry.cpp		\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoader3DS.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderPLY.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW.cpp			\
@@ -505,6 +538,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/CancellableProgressCallback.cpp		\
 	$(PATHLIBRARY)SceneEditor/SceneEditor.cpp						\
 	$(PATHLIBRARY)SceneEditor/SceneEditController.cpp				\
+	$(PATHLIBRARY)SceneEditor/LiveSimulation.cpp				\
 	$(PATHLIBRARY)SceneEditor/CameraIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/ObjectIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/LightIntrospection.cpp				\

@@ -236,6 +236,25 @@ namespace RISE
 			//! Computes the triangle areas and the CDF
 			void ComputeAreas(bool positionsChanged = true, bool graphProofReusable = false, bool refusalProofReusable = false);
 
+			//! UpdateVerticesLean's half of ComputeAreas: areas, CDF, face
+			//! normals and the SMS orientation audit, then every open-sheet /
+			//! watertight certificate cleared to UNCERTIFIED.
+			void ComputeAreasUncertified();
+			void ClearSurfaceCertificates();
+
+			//! Rebuilds pPtrBVH from ptr_polygons (the SAH-degradation fallback
+			//! UpdateVertices inlines; used by UpdateVerticesLean).
+			void RebuildBVHFromPolygons();
+
+			//! The surface-signal stamp of a mesh hit -- provider, object-space
+			//! point and shading normal, triangle and barycentrics -- exactly as
+			//! RayElementIntersection writes it, for SimulatedMeshGeometry's
+			//! interpolating element test (simulation M3b).  Defined beside
+			//! RayElementIntersection so the signal channel keeps its closed set
+			//! of writers (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 5.1).
+			void StampSurfaceSignals( RayIntersectionGeometric& ri, const PointerTriangle* elem,
+				const Scalar range, const Vector3& shadingNormal, const Scalar a, const Scalar b ) const;
+
 			//! LAZY per-vertex signal bakes (occlusion / thickness), one
 			//! table per (kind, radius).  `mutable` + the cache's own mutex
 			//! is the sanctioned ARCHITECTURE.md §Known Exceptions pattern
@@ -659,6 +678,25 @@ namespace RISE
 			//! §4.6 for the full design.
 			unsigned int UpdateVertices( const VerticesListType& newVertices,
 			                             const NormalsListType&  newNormals ) override;
+
+			//! Simulation M3b: the per-frame install for a FIXED-TOPOLOGY
+			//! deforming mesh (SimulatedMeshGeometry), under the same
+			//! between-frames contract as UpdateVertices.  It overwrites the
+			//! positions and normals, recomputes the triangle areas / CDF /
+			//! face normals / SMS orientation audit when `recomputeAreas`
+			//! (needed by area sampling and GetArea), bumps the shape
+			//! revision, drops the signal bakes and refits the BVH (rebuilding
+			//! it past the 2x SAH guard, as UpdateVertices does) -- without the
+			//! Info-level refit logging, and WITHOUT the open-sheet /
+			//! watertight certificates (the position weld and its sort, which
+			//! dominate UpdateVertices on a mesh whose every coordinate moves).
+			//! The mesh is left UNCERTIFIED instead (neither watertight nor a
+			//! provably open sheet): the conservative state every consumer of
+			//! those certificates already handles.  Existing callers keep
+			//! UpdateVertices, unchanged.  Returns as UpdateVertices does.
+			unsigned int UpdateVerticesLean( const VerticesListType& newVertices,
+			                                 const NormalsListType&  newNormals,
+			                                 const bool recomputeAreas );
 
 			void ComputeVertexNormals() override;
 

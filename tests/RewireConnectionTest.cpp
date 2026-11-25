@@ -1529,10 +1529,14 @@ static void Part6_OccurrenceScopingSweep()
 		"6: NO addressable chunk kind declares a repeatable pure-Reference param -- "
 		"occurrence-addressed rewire has no reachable case, as RewireConnection's header states "
 		"(if this fails, that scoping note is now WRONG and needs an end-to-end occurrence test)" );
-	Check( knownUnaddressable == 2,
-		"6: ...and the two that exist at all (standard_shader.shaderop, modifier_stack.modifier) "
+	// Re-derived 2026-11-23 (simulation M4): cloth_simulation.follow_object and
+	// cloth_simulation.collider_object are repeatable References to objects on
+	// ChunkCategory::Simulation, which is not an addressable rewire category.
+	Check( knownUnaddressable == 4,
+		"6: ...and the four that exist at all (standard_shader.shaderop, modifier_stack.modifier, "
+		"cloth_simulation.follow_object, cloth_simulation.collider_object) "
 		"are on unaddressable categories, so the claim is a real narrowing, not a vacuous one "
-		"(if this fails, a third repeatable pure-Reference param appeared -- or one of the two "
+		"(if this fails, another repeatable pure-Reference param appeared -- or one of these "
 		"became addressable -- and this count needs re-deriving, not just bumping)" );
 
 	// ---- mirror assertion (P3, S19 review round 1) ---------------------

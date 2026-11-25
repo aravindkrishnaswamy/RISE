@@ -34,7 +34,8 @@ class FullWindow(unittest.TestCase):
                 self.assertFalse(output.exists(), name + " touched the output before refusal")
 
     def test_complete_history_gate_and_each_deleted_clause_mutant(self):
-        source = (ROOT / "tests/FireSequenceTest.cpp").read_text()
+        # M2: the capstone moved from tests/FireSequenceTest.cpp to src/Library/Simulation/Fire.
+        source = (ROOT / "src/Library/Simulation/Fire/FireRun.cpp").read_text()
         start = source.index("\tbool ProductionTemporalHistoriesComplete(")
         end = source.index("\n\tbool ProductionTemporalFramesComplete(", start)
         body = source[start:end]
@@ -66,8 +67,8 @@ class FullWindow(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, name == "actual", name)
         # Guard against testing a disconnected helper while the writer still
         # silently takes min(history sizes), the historical failure mode.
-        begin = source.index("\tint RunProductionTemporalCapstoneChild(")
-        finish = source.index("\n#if defined(RISE_ENABLE_OPENVDB)\n\tbool OwnerCostPrefix", begin)
+        begin = source.index("\tint RunProductionTemporalCapstone(")
+        finish = source.index("\n\t// r270: rebuilds a finished capstone", begin)
         caller = source[begin:finish]
         self.assertIn("!ProductionTemporalHistoriesComplete(result))return 98;", caller)
         self.assertNotIn("std::min({result.acceptedTimeStepHistoryS", caller)

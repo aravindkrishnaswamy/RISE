@@ -853,6 +853,8 @@ struct ContentView: View {
     private func rightPanel(_ vb: RISEViewportBridge) -> some View {
         VStack(spacing: 0) {
             OutlinerView(bridge: vb, refreshTrigger: $propertyRefresh)
+            // Simulation M5: only shown when the scene declares simulations.
+            SimulationsPanel(model: viewModel.simulations)
             EnvironmentPanel(bridge: vb, refreshTrigger: $propertyRefresh)
             NamedViewsPanel(bridge: vb, refreshTrigger: $propertyRefresh)
             PropertiesPanel(bridge: vb, refreshTrigger: $propertyRefresh)

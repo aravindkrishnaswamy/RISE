@@ -122,6 +122,7 @@ namespace RISE
 					case ChunkCategory::Animation:        return "animation";
 					case ChunkCategory::SceneVariant:     return "scene_variant";
 					case ChunkCategory::HairGuides:       return "hair_guides";
+					case ChunkCategory::Simulation:       return "simulation";
 				}
 				return "unknown";
 			}

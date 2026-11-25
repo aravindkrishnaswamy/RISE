@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-HEADER = ROOT / "tests/FireProductionOwnerConvergenceProbe.h"
+HEADER = ROOT / "src/Library/Simulation/Fire/FireProductionOwnerConvergenceProbe.h"
 
 FIXTURE = r'''
 #include <iostream>

@@ -528,25 +528,32 @@ namespace RISE
 				HashUInt64(candidate.beginningStateIdentity_,request.shape.ny);
 				HashUInt64(candidate.beginningStateIdentity_,request.shape.nz);
 				HashFloat(candidate.beginningStateIdentity_,request.shape.cellWidthM);
+				// Fast mode: identities are lineage tokens (the attempt identity already digests
+				// the beginning state), not byte-wise content hashes of the full grids.
+				const bool fastIdentities=FireFastMode();
+				if(fastIdentities)HashUInt64(candidate.beginningStateIdentity_,request.attemptIdentity);
+				else{
 				HashFloatValues(candidate.beginningStateIdentity_,
 					request.beginningConservativeValues);
-				HashFloatValues(candidate.beginningStateIdentity_,canonicalTemperatureK);
+				HashFloatValues(candidate.beginningStateIdentity_,canonicalTemperatureK);}
 				candidate.beginningTemperatureK_=std::move(canonicalTemperatureK);
 				candidate.reactionControlIdentity_=UINT64_C(14695981039346656037);
 				HashDomain(candidate.reactionControlIdentity_,
 					"RISE canonical frozen source reaction control v2");
+				if(fastIdentities)HashUInt64(candidate.reactionControlIdentity_,request.attemptIdentity);
+				else{
 				HashDoubleValues(candidate.reactionControlIdentity_,request.mixingTimeS);
 				HashByteValues(candidate.reactionControlIdentity_,request.pilotCommandMask);
 				HashDoubleValues(candidate.reactionControlIdentity_,
 					request.sourceEvaluationTemperatureK);
 				HashFloatValues(candidate.reactionControlIdentity_,eligibilityValues);
-				HashByteValues(candidate.reactionControlIdentity_,request.sourceBoundaryContactMask);
+				HashByteValues(candidate.reactionControlIdentity_,request.sourceBoundaryContactMask);}
 				HashUInt64(candidate.reactionControlIdentity_,request.pilotEstablished?1u:0u);
 				HashDouble(candidate.reactionControlIdentity_,
 					fireCase.derived.maximumAcceptedTemperatureK);
 				HashDouble(candidate.reactionControlIdentity_,
 					fireCase.derived.pilotExpansionVolumeRatioCap);
-				for(const MethaneReactionStep& reaction:reactions){
+				if(!fastIdentities)for(const MethaneReactionStep& reaction:reactions){
 					HashDouble(candidate.reactionControlIdentity_,reaction.pilotSetpointTemperatureK);
 					HashUInt64(candidate.reactionControlIdentity_,reaction.primaryEligible?1u:0u);
 				}
@@ -574,8 +581,9 @@ namespace RISE
 				if(floorRadiation){
 					HashDomain(candidate.sourceInputIdentity_,"RISE canonical frozen source floor input v1");
 					HashDouble(candidate.sourceInputIdentity_,fireCase.derived.floorEmissivity);
+					if(!fastIdentities){
 					HashByteValues(candidate.sourceInputIdentity_,request.floorAbsorbingFaceMask);
-					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);
+					HashFloatValues(candidate.sourceInputIdentity_,request.floorTangentialSpeedMPerS);}
 				}
 				if(inertPlume){
 					HashDomain(candidate.sourceInputIdentity_,"RISE canonical frozen source r271 inert plume v1");

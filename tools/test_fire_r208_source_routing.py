@@ -6,7 +6,18 @@ import unittest
 from pathlib import Path
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "tests/FireSequenceTest.cpp"
+ROOT = Path(__file__).resolve().parents[1]
+# M2: the production driver moved from tests/FireSequenceTest.cpp to src/Library/Simulation/Fire.
+SOURCES = [ROOT / "tests/FireSequenceTest.cpp", *sorted((ROOT / "src/Library/Simulation/Fire").glob("FireRun*.h")),
+           *sorted((ROOT / "src/Library/Simulation/Fire").glob("FireRun*.cpp"))]
+
+
+class _CombinedSource:
+    def read_text(self):
+        return "\n".join(path.read_text() for path in SOURCES)
+
+
+SOURCE = _CombinedSource()
 
 
 def body_after(text, marker):
@@ -69,7 +80,7 @@ class SourceRouting(unittest.TestCase):
         source = SOURCE.read_text()
         for old, new in (("request.cellSourceIncrement=projectedHeunSource.SourceDelta();",
                           "request.cellSourceIncrement=ReconstructSource();"),
-                         ("}else if(persistence.forceZeroSourceForTest){", "}if(persistence.forceZeroSourceForTest){")):
+                         ("}else if(persistence.Test().forceZeroSourceForTest){", "}if(persistence.Test().forceZeroSourceForTest){")):
             changed = source.replace(old, new)
             self.assertNotEqual(changed, source)
             self.assertFalse(routing_is_single_source(changed))

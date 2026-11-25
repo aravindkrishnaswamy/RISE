@@ -82,30 +82,7 @@ namespace FireProductionDyadicCalibration
 			RISECBOR64::SHA256Hex(aerosol),RISECBOR64::SHA256Hex(chem)},record,error);
 	}
 
-	bool AmbientAndInjected(MethaneCellState& ambient,MethaneCellState& injected,
-		std::string& error)
-	{
-		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
-		auto close=[&](MethaneCellState& state,const std::vector<double>& mass,
-			const bool tagged){
-			state=MethaneCellState();state.temperatureK=300.0;double inverseWeight=0.0;
-			for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
-				state.constituent[species]=mass[species];
-				if(species<MethaneCarbon){const FireThermochemistrySpecies* record=
-					fuel.FindSpecies(fuel.SpeciesOrder()[species].c_str());
-					if(record)inverseWeight+=mass[species]/record->molecularWeightKGPerKMol;}
-			}
-			if(!(inverseWeight>0.0))return false;
-			const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*
-				state.temperatureK*inverseWeight);
-			for(double& value:state.constituent)value*=density;
-			state.rhoTotalZ=tagged?state.TotalDensity():0.0;
-			return fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(state),
-				state.temperatureK,state.sensibleEnergyJPerM3,&error);
-		};
-		return close(ambient,fuel.AmbientMassFractions(),false)&&
-			close(injected,fuel.InjectedMassFractions(),true);
-	}
+	using RISE::FireRun::ProductionStep::AmbientAndInjected;
 
 	double AnalyticVelocity(const unsigned int component,const double x,const double y,
 		const double z,const double lx,const double ly,const double lz,const double amplitude)
@@ -759,220 +736,11 @@ namespace FireProductionDyadicCalibration
 		return accepted?0:199;
 	}
 
-	inline bool ResidentStepRequestsExactlyEqual(
-		const RISE::FireProductionResidentStepRequest& a,
-		const RISE::FireProductionResidentStepRequest& b)
-	{
-		auto sameShape=[](const RISE::FireProductionProjectionShape& x,
-			const RISE::FireProductionProjectionShape& y){return x.nx==y.nx&&x.ny==y.ny&&
-			x.nz==y.nz&&x.cellWidthM==y.cellWidthM;};
-		return sameShape(a.force.shape,b.force.shape)&&
-			a.force.timeStepS==b.force.timeStepS&&
-			a.force.ambientDensityKGPerM3==b.force.ambientDensityKGPerM3&&
-			a.force.vremanCoefficient==b.force.vremanCoefficient&&
-			a.force.gravityMPerS2==b.force.gravityMPerS2&&a.force.boundary==b.force.boundary&&
-			a.force.cellGasDensityKGPerM3==b.force.cellGasDensityKGPerM3&&
-			a.force.molecularKinematicViscosityM2PerS==
-				b.force.molecularKinematicViscosityM2PerS&&
-			a.force.faceDensityKGPerM3==b.force.faceDensityKGPerM3&&
-			a.force.beginningMomentumKGPerM2S==b.force.beginningMomentumKGPerM2S&&
-			sameShape(a.cellTransport.shape,b.cellTransport.shape)&&
-			a.cellTransport.componentCount==b.cellTransport.componentCount&&
-			a.cellTransport.timeStepS==b.cellTransport.timeStepS&&
-			a.cellTransport.boundary==b.cellTransport.boundary&&
-			a.cellTransport.conservativeValues==b.cellTransport.conservativeValues&&
-			a.cellTransport.frozenVelocityMPerS==b.cellTransport.frozenVelocityMPerS&&
-			a.cellTransport.ambientValues==b.cellTransport.ambientValues&&
-			sameShape(a.dualTransport.shape,b.dualTransport.shape)&&
-			a.dualTransport.timeStepS==b.dualTransport.timeStepS&&
-			a.dualTransport.ambientDensityKGPerM3==b.dualTransport.ambientDensityKGPerM3&&
-			a.dualTransport.boundary==b.dualTransport.boundary&&
-			a.dualTransport.beginningFaceDensity==b.dualTransport.beginningFaceDensity&&
-			a.dualTransport.beginningMomentum==b.dualTransport.beginningMomentum&&
-			a.dualTransport.frozenVelocityMPerS==b.dualTransport.frozenVelocityMPerS&&
-			a.cellSourceIncrement==b.cellSourceIncrement&&
-			a.momentumSourceIncrement==b.momentumSourceIncrement&&
-			a.divergenceTargetPerS==b.divergenceTargetPerS&&
-			a.restorationDivergenceTargetPerS==b.restorationDivergenceTargetPerS&&
-			a.beginningManifoldDeviationPerCell==b.beginningManifoldDeviationPerCell&&
-			a.physicalOpenProjectionVCycleCount==b.physicalOpenProjectionVCycleCount&&
-			a.monitorManifoldDiagnostics==b.monitorManifoldDiagnostics&&
-			a.enforceManifoldPlateau==b.enforceManifoldPlateau&&
-			a.restoreManifoldOutliers==b.restoreManifoldOutliers;
-	}
+	using RISE::FireRun::ProductionStep::ResidentStepRequestsExactlyEqual;
 
-	bool BuildProductionRequest(const MethaneRunCheckpoint& state,
-		const std::vector<double>& divergenceTarget,const double timeStepS,
-		RISE::FireProductionResidentStepRequest& request,std::string& error,
-		const unsigned int workerCount,
-		const std::vector<CellTransportEvaluation>* reusableTransport,
-		const std::vector<unsigned char>* invalidReusableTransport)
-	{
-		request=RISE::FireProductionResidentStepRequest();
-		const std::size_t cells=state.states.size();
-		if(cells!=state.dimensions[0]*state.dimensions[1]*state.dimensions[2]||
-			divergenceTarget.size()!=cells||
-			(reusableTransport&&reusableTransport->size()!=cells)||
-			(invalidReusableTransport&&(!reusableTransport||
-				invalidReusableTransport->size()!=cells)))return false;
-		MethaneCellState ambient,injected;if(!AmbientAndInjected(ambient,injected,error))return false;
-		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
-		const FireSimulationTransportRecord transport=FireSimulationTransportRecord::OpenV1();
-		request.force.shape.nx=state.dimensions[0];request.force.shape.ny=state.dimensions[1];
-		request.force.shape.nz=state.dimensions[2];
-		request.force.shape.cellWidthM=static_cast<float>(state.cellWidthM);
-		request.force.timeStepS=static_cast<float>(timeStepS);
-		request.force.ambientDensityKGPerM3=static_cast<float>(ambient.GasDensity());
-		request.force.vremanCoefficient=0.07f;
-		request.force.gravityMPerS2={{0.0f,0.0f,-static_cast<float>(Gravity)}};
-		request.force.boundary.fill(RISE::FireProductionProjectionPressureOpen);
-		request.force.cellGasDensityKGPerM3.resize(cells);
-		request.force.molecularKinematicViscosityM2PerS.resize(cells);
-		request.cellTransport.shape=request.force.shape;request.cellTransport.componentCount=9u;
-		request.cellTransport.timeStepS=request.force.timeStepS;
-		request.cellTransport.boundary=request.force.boundary;
-		request.cellTransport.conservativeValues.resize(9u*cells);
-		const ConservativeVector ambientVector=ToConservativeVector(ambient);
-		request.cellTransport.ambientValues.resize(9u);
-		for(std::size_t component=0u;component<9u;++component)
-			request.cellTransport.ambientValues[component]=static_cast<float>(ambientVector[component]);
-		request.divergenceTargetPerS.resize(cells);
-		request.restorationDivergenceTargetPerS.resize(cells);
-		request.beginningManifoldDeviationPerCell.resize(cells);
-		if(cells>static_cast<std::size_t>(std::numeric_limits<unsigned int>::max())){
-			error="production request cell count exceeds the worker partition range";return false;
-		}
-		const unsigned int workers=std::max(1u,std::min(workerCount,
-			static_cast<unsigned int>(cells)));
-		const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
-		std::vector<std::size_t> failureCell(workers,noFailure);
-		std::vector<std::string> failureMessage(workers);
-		auto buildCellRange=[&](const unsigned int worker){
-			const std::size_t first=cells*worker/workers,last=cells*(worker+1u)/workers;
-			for(std::size_t cell=first;cell<last;++cell){
-			std::string cellError;
-			const ConservativeVector conservative=ToConservativeVector(state.states[cell]);
-			const double gas=state.states[cell].GasDensity();CellMolecularTransportEvaluation molecular;
-			if(!(gas>0.0)){
-				failureCell[worker]=cell;
-				failureMessage[worker]="production request gas density is nonpositive";break;
-			}
-			const bool reusable=reusableTransport&&(!invalidReusableTransport||
-				(*invalidReusableTransport)[cell]==0u);
-			if(reusable){
-				molecular.molecularViscosityPaS=(*reusableTransport)[cell].molecularViscosityPaS;
-			}else if(!EvaluateCellMolecularTransport(state.states[cell],fuel,transport,
-				state.states[cell].producerPrecision,molecular,&cellError)){
-				failureCell[worker]=cell;failureMessage[worker]=cellError;break;}
-			request.force.molecularKinematicViscosityM2PerS[cell]=
-				static_cast<float>(molecular.molecularViscosityPaS/gas);
-			for(std::size_t component=0u;component<9u;++component)
-				request.cellTransport.conservativeValues[component*cells+cell]=
-					static_cast<float>(conservative[component]);
-			float packedGas=request.cellTransport.conservativeValues[cells+cell];
-			for(std::size_t component=2u;component<=6u;++component)
-				packedGas+=request.cellTransport.conservativeValues[component*cells+cell];
-			request.force.cellGasDensityKGPerM3[cell]=packedGas;
-			double volumeRatio=0.0;
-			if(!AcceptedConservativeVolumeRatio(conservative,fuel,
-				state.states[cell].producerPrecision,volumeRatio,&cellError)){
-				failureCell[worker]=cell;failureMessage[worker]=cellError;break;}
-			request.divergenceTargetPerS[cell]=static_cast<float>(divergenceTarget[cell]);
-			request.beginningManifoldDeviationPerCell[cell]=volumeRatio-1.0;
-			request.restorationDivergenceTargetPerS[cell]=static_cast<float>(
-				(volumeRatio-1.0)/static_cast<double>(request.force.timeStepS));
-			}
-		};
-		if(workers==1u)buildCellRange(0u);
-		else FireWorkerPool().Run(workers,buildCellRange);
-		std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
-		for(unsigned int worker=0u;worker<workers;++worker)if(failureCell[worker]<firstFailure){
-			firstFailure=failureCell[worker];failedWorker=worker;}
-		if(firstFailure!=noFailure){error=failureMessage[failedWorker];return false;}
-		request.dualTransport.shape=request.force.shape;
-		request.dualTransport.timeStepS=request.force.timeStepS;
-		request.dualTransport.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
-		request.dualTransport.boundary=request.force.boundary;
-		auto cellIndex=[&](const std::size_t x,const std::size_t y,const std::size_t z){
-			return (z*state.dimensions[1]+y)*state.dimensions[0]+x;};
-		for(unsigned int axis=0u;axis<3u;++axis){
-			const std::size_t nx=state.dimensions[0],ny=state.dimensions[1],nz=state.dimensions[2];
-			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
-				ez=axis==2u?nz+1u:nz,faces=ex*ey*ez;
-			if(state.momentum.component[axis].size()!=faces||
-				state.velocity.component[axis].size()!=faces)return false;
-			request.force.faceDensityKGPerM3[axis].resize(faces);
-			request.force.beginningMomentumKGPerM2S[axis].resize(faces);
-			request.cellTransport.frozenVelocityMPerS[axis].resize(faces);
-			ParallelFireSlices(ez,workerCount,[&](const std::size_t z){for(std::size_t y=0u;y<ey;++y)
-				for(std::size_t x=0u;x<ex;++x){
-					const std::size_t face=(z*ey+y)*ex+x;
-					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
-					const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
-					std::array<std::size_t,3> low={{x,y,z}},high=low;
-					if(coordinate>0u&&coordinate<extent)low[axis]=coordinate-1u;
-					else {low[axis]=coordinate==0u?0u:extent-1u;high[axis]=low[axis];}
-					const float lowDensity=request.force.cellGasDensityKGPerM3[
-						cellIndex(low[0],low[1],low[2])];
-					float density=0.0f;
-					if(coordinate==0u||coordinate==extent)density=0.5f*lowDensity+
-						0.5f*request.force.ambientDensityKGPerM3;
-					else {high[axis]=coordinate;density=0.5f*lowDensity+0.5f*
-						request.force.cellGasDensityKGPerM3[cellIndex(high[0],high[1],high[2])];}
-					request.force.faceDensityKGPerM3[axis][face]=density;
-					request.force.beginningMomentumKGPerM2S[axis][face]=
-						static_cast<float>(state.momentum.component[axis][face]);
-					request.cellTransport.frozenVelocityMPerS[axis][face]=
-						static_cast<float>(state.velocity.component[axis][face]);
-				}});
-			request.dualTransport.beginningFaceDensity[axis]=request.force.faceDensityKGPerM3[axis];
-			request.dualTransport.beginningMomentum[axis]=request.force.beginningMomentumKGPerM2S[axis];
-			request.dualTransport.frozenVelocityMPerS[axis]=request.cellTransport.frozenVelocityMPerS[axis];
-			request.momentumSourceIncrement[axis].assign(faces,0.0f);
-		}
-		request.cellSourceIncrement.assign(9u*cells,0.0f);
-		return RISE::ValidateFireProductionFrozenForceRequest(request.force,&error)&&
-			RISE::ValidateFireProductionCellPalindromeRequest(request.cellTransport,&error)&&
-			RISE::ValidateFireProductionDualMomentumRequest(request.dualTransport,&error);
-	}
+	using RISE::FireRun::ProductionStep::BuildProductionRequest;
 
-	bool ApplyProductionResultUnchecked(const RISE::FireProductionResidentStepResult& production,
-		MethaneRunCheckpoint& state,std::string& error,
-		const bool enforceOracleEOSValidityDetector=true,
-		const unsigned int temperatureWorkerCount=1u)
-	{
-		const std::size_t cells=state.states.size();if(production.conservativeValues.size()!=9u*cells)
-			return false;
-		if(production.conservativeProducerPrecision!=FireStateProducerPrecision::Binary32)
-			return Fail(&error,"production resident state lacks binary32 producer metadata");
-		std::vector<ConservativeVector> conservative(cells);
-		for(std::size_t cell=0u;cell<cells;++cell){
-			for(std::size_t component=0u;component<9u;++component)
-				conservative[cell][component]=production.conservativeValues[component*cells+cell];
-			state.states[cell]=FromConservativeVector(conservative[cell],
-				production.conservativeProducerPrecision);
-		}
-		std::vector<double> temperature;
-		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
-		if(enforceOracleEOSValidityDetector){
-			if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
-				fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,
-				temperatureWorkerCount)||
-				temperature.size()!=cells)return false;
-		}else{
-			if(!InvertPeriodicTemperaturesWithinBounds(conservative,fuel,fuel.TemperatureMinK(),
-				fuel.TemperatureMaxK(),production.conservativeProducerPrecision,temperature,&error,
-				temperatureWorkerCount,false)||temperature.size()!=cells)return false;
-		}
-		for(std::size_t cell=0u;cell<cells;++cell)state.states[cell].temperatureK=temperature[cell];
-		for(unsigned int axis=0u;axis<3u;++axis){
-			state.momentum.component[axis].assign(production.projection.momentumKGPerM2S[axis].begin(),
-				production.projection.momentumKGPerM2S[axis].end());
-			state.velocity.component[axis].assign(production.projection.velocityMPerS[axis].begin(),
-				production.projection.velocityMPerS[axis].end());
-		}
-		return true;
-	}
+	using RISE::FireRun::ProductionStep::ApplyProductionResultUnchecked;
 
 	bool ApplyProductionMirrorResult(const FireProductionCalibration::ResidentStep64Result& production,
 		MethaneRunCheckpoint& state,std::string& error)
@@ -1323,20 +1091,7 @@ namespace FireProductionDyadicCalibration
 			acceptedMatrix?1:0);
 		return acceptedMatrix?192:193;
 	}
-	bool ApplyAcceptedProductionResult(const RISE::FireProductionResidentStepResult& production,
-		const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
-		MethaneRunCheckpoint& state,std::string& error,
-		const unsigned int temperatureWorkerCount=1u)
-	{
-		if(!acceptedObservation.MatchesAcceptedResidentPayload(production))
-			return Fail(&error,"accepted manifold observation no longer matches resident payload");
-		// The 1e-3 pressure-deviation check in the binary64 core is an oracle
-		// validity detector, not a production thermochemistry-domain consumer.
-		// Accepted production publication retains the r60 conservative envelope
-		// and table-bounded temperature inversion without inheriting that detector.
-		return ApplyProductionResultUnchecked(production,state,error,false,
-			temperatureWorkerCount);
-	}
+	using RISE::FireRun::ProductionStep::ApplyAcceptedProductionResult;
 
 	struct ProductionAffineResidual
 	{

@@ -67,6 +67,10 @@ __pycache__/
 # pre-Phase-3 worktrees.
 **/.gltf_cache/
 
+# Simulation M4: scene simulation caches (`cache` defaults to caches/<name> beside
+# the scene file).  Bulk outputs stay outside git.
+scenes/**/caches/
+
 # CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out,
 # rise-android/_out_jni for the cross-compiled JNI .so).
 /build/cmake/*/_out*

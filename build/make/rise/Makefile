@@ -274,14 +274,20 @@ $(TESTOBJ_DIR)%.o : ../../../%.mm
 	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
 
 # Library files with their own compile flags (see the per-file rules near the
-# end of this file) keep them in the test copy: the fire production operators
-# and the Cycles procedural ports (OslNoise, OslVoronoi, OslColor, OslMath,
-# OslVector) compile without fast-math or FP contraction (FireCase's rule only
-# drops LTO, which the test copy does anyway).
+# end of this file) keep them in the test copy: the fire production operators,
+# the simulation solvers, and the Cycles procedural ports (OslNoise, OslVoronoi,
+# OslColor, OslMath, OslVector, OslShaderNodes) compile without fast-math or FP
+# contraction (FireCase's rule only drops LTO, which the test copy does anyway).
 TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvection.o FireProductionProjection.o \
 	FireProductionTransport.o FireProductionSource.o FireProductionForce.o \
 	OslNoise.o OslVoronoi.o OslColor.o OslMath.o OslVector.o OslShaderNodes.o)
+# M2 track B: the fire run driver moved out of tests/FireSequenceTest.cpp.
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
+	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o FireSolver.o)
+# M3a: the cloth solver (strict IEEE arithmetic for reproducible checkpoints and evidence).
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, \
+	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -357,7 +363,7 @@ $(LIBRISE_A) : $(OBJLIB) $(ARCHIVE_BUILD_DEFS)
 	@rm -f $(LIBRISE_A)
 	@ar rcs $(LIBRISE_A) $(OBJLIB)
 
-rise : $(OBJLIB) $(PATHSRCS)commandconsole.o
+rise : $(OBJLIB) $(PATHSRCS)commandconsole.o | $(PATHTOOLDEST)simulation_cache_import $(PATHTOOLDEST)rise_sim
 	@echo Linking $(PATHDEST)rise
 	@$(CXX)	$(CPPFLAGS) -o $(PATHDEST)rise $(PATHSRCS)commandconsole.o $(OBJLIB) $(LDLIBS)
 
@@ -478,7 +484,7 @@ $(PATHTESTDEST)FireProductionCalibrationTest : check-fire-production-fp64 check-
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireProductionCalibrationTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS)
 
-$(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB)
+$(PATHTESTDEST)FireSequenceTest : check-fire-production-fp64 check-fire-production-trace $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) | $(PATHTOOLDEST)simulation_cache_import
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)FireSequenceTest.o $(FIREPRODUCTIONFP64OBJECTS) $(FIREPRODUCTIONTRACEOBJECTS) $(OBJLIB) $(LDLIBS) $(FIREPREVIEWLIBS)
@@ -494,7 +500,7 @@ ifdef IS_MACOS_BUILD
 		echo 'calibration owner unexpectedly contains a production Metal implementation'; rm -f $@; exit 1; fi
 endif
 
-$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
+$(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP) | $(PATHTOOLDEST)simulation_cache_import
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(call TEST_CPPFLAGS_FOR,$*) -o $@ $(PATHTESTS)$*.o $(call TEST_ARCHIVE_FOR,$*) $(LDLIBS)
@@ -503,7 +509,7 @@ $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_TEST_A) $(TEST_MODE_STAMP)
 # the pattern rule above, so they do not wait on, or relink for, the test
 # library).
 ifneq ($(strip $(LTO_TESTS)),)
-$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A) $(TEST_MODE_STAMP)
+$(addprefix $(PATHTESTDEST),$(LTO_TESTS)) : $(PATHTESTDEST)% : $(PATHTESTS)%.o $(LIBRISE_A) $(TEST_MODE_STAMP) | $(PATHTOOLDEST)simulation_cache_import
 	@mkdir -p $(PATHTESTDEST)
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(ARCHIVE_LINK_LIBRISE) $(LDLIBS)
@@ -625,6 +631,33 @@ $(PATHLIBRARY)Utilities/FireProductionProjectionMac.o : $(PATHLIBRARY)Utilities/
 $(PATHLIBRARY)Utilities/FireProductionForceMac.o : $(PATHLIBRARY)Utilities/FireProductionForceMac.mm
 	@echo "Compiling (safe fp32 ObjC++): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
+
+# M2 track B: the production fire driver moved out of tests/FireSequenceTest.cpp
+# keeps that translation unit's flags exactly (no fast-math, no FP contraction),
+# so its accepted states and frames stay byte-identical.
+$(PATHLIBRARY)Simulation/Fire/FireRunCheckpoint.o : $(PATHLIBRARY)Simulation/Fire/FireRunCheckpoint.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHLIBRARY)Simulation/Fire/FireRunFrames.o : $(PATHLIBRARY)Simulation/Fire/FireRunFrames.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHLIBRARY)Simulation/Fire/FireRunDriver.o : $(PATHLIBRARY)Simulation/Fire/FireRunDriver.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+$(PATHLIBRARY)Simulation/Fire/FireRun.o : $(PATHLIBRARY)Simulation/Fire/FireRun.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+# M2 track C: the fire solver adapter shares the driver's frame-clock arithmetic.
+$(PATHLIBRARY)Simulation/Fire/FireSolver.o : $(PATHLIBRARY)Simulation/Fire/FireSolver.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+# M3a: the cloth solver runs without fast-math or FP contraction, so its
+# checkpoints, frames and evidence digests do not depend on the compiler's
+# reassociation choices.
+CLOTH_STRICT_OBJS = $(addprefix $(PATHLIBRARY)Simulation/Cloth/, ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
+$(CLOTH_STRICT_OBJS) : $(PATHLIBRARY)Simulation/Cloth/%.o : $(PATHLIBRARY)Simulation/Cloth/%.cpp
+	@echo "Compiling (strict cloth solver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 .cpp.o:
 	@echo Compiling: $<

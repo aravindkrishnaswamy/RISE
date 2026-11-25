@@ -1265,7 +1265,74 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					Dispatch(encoder,context.clearValues,count);[encoder endEncoding];
 				}
 				std::uint32_t executedCycles=0u;std::uint64_t executedSweeps=0u;
-				for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
+				// RISE_FIRE_FAST_MODE=1: stop the fixed V-cycle schedule as soon as the projected
+				// velocity meets the unchanged validation band (same post-residual kernel, same band
+				// predicate, never looser). Checked after cycle 11 and every 2 cycles to the fixed count;
+				// the final residual and identity below are then re-encoded exactly as before.
+				const bool adaptiveCycles=FireSim::FireFastAdaptiveVCycles()&&resident&&hasOpenBoundary&&!restoration&&
+					cycleCount>=13u&&request.outputClassificationMode!=
+						FireProductionProjectionDeriveEndpointOpenClassification;
+				const float adaptiveLength=shape.cellWidthM*static_cast<float>(
+					std::max(shape.nx,std::max(shape.ny,shape.nz)));
+				auto encodeAdaptiveCheck=[&](id<MTLCommandBuffer> checkCommand)->bool{
+					for( unsigned int axis=0;axis<3u;++axis ) {
+						const MetalAxisParameters axisParameters={axis,0u,0u,0u};
+						if( !Begin(checkCommand,encoder,error,"fast-mode face correction") ) return false;
+						[encoder setBuffer:provisional[axis] offset:provisionalOffset[axis] atIndex:0];[encoder setBuffer:stored[axis] offset:0 atIndex:1];
+						[encoder setBuffer:fineLevel.pressure offset:0 atIndex:2];[encoder setBuffer:boundaryPressure offset:0 atIndex:3];
+						[encoder setBuffer:momentum[axis] offset:0 atIndex:4];[encoder setBuffer:velocity[axis] offset:0 atIndex:5];
+						[encoder setBuffer:fineLevel.parameters offset:0 atIndex:6];[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:7];
+						[encoder setBuffer:burner?burner:target offset:0 atIndex:8];
+						Dispatch(encoder,context.correctFaces,FireProductionProjectionFaceCount(shape,axis));[encoder endEncoding];
+					}
+					if( !Begin(checkCommand,encoder,error,"fast-mode post residual") ) return false;
+					for( unsigned int axis=0;axis<3u;++axis ) [encoder setBuffer:velocity[axis] offset:0 atIndex:axis];
+					[encoder setBuffer:target offset:0 atIndex:3];[encoder setBuffer:fineLevel.residual offset:0 atIndex:4];
+					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:5];
+					for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:provisional[axis]
+						offset:provisionalOffset[axis] atIndex:6u+axis];
+					for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:stored[axis]
+						offset:0 atIndex:9u+axis];
+					[encoder setBuffer:burner?burner:target offset:0 atIndex:12];
+					Dispatch(encoder,context.postResidual,cells);[encoder endEncoding];
+					if( !EncodeReduction(context,checkCommand,fineLevel.residual,cells,scratch,diagnostics,1u,true,error) ) return false;
+					if( !Begin(checkCommand,encoder,error,"fast-mode validation metrics") ) return false;
+					for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:provisional[axis]
+						offset:provisionalOffset[axis] atIndex:axis];
+					for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:stored[axis]
+						offset:0 atIndex:3u+axis];
+					for( unsigned int axis=0u;axis<3u;++axis ) [encoder setBuffer:velocity[axis]
+						offset:0 atIndex:6u+axis];
+					[encoder setBuffer:inflow offset:0 atIndex:9];
+					[encoder setBuffer:fineLevel.residual offset:0 atIndex:10];
+					[encoder setBuffer:fineLevel.temporary offset:0 atIndex:11];
+					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:12];
+					Dispatch(encoder,context.validationMetrics,cells);[encoder endEncoding];
+					return EncodeReduction(context,checkCommand,fineLevel.residual,cells,scratch,diagnostics,
+						2u,true,error);};
+				if( adaptiveCycles ) while( executedCycles<cycleCount ) {
+					if( !EncodeVCycle(context,command,hierarchy,0u,scratch,diagnostics,
+						executedSweeps,error) ) return false;
+					if( fp->nullspace!=0u&&!EncodeRemoveMean(context,command,fineLevel.pressure,cells,scratch,
+						diagnostics,std::numeric_limits<std::uint32_t>::max(),error) ) return false;
+					++executedCycles;
+					if( executedCycles>=11u&&executedCycles<cycleCount&&(executedCycles-11u)%2u==0u ) {
+						if( !encodeAdaptiveCheck(command) ) return false;
+						CommitProjectionCommand(command);[command waitUntilCompleted];
+						if( [command status]!=MTLCommandBufferStatusCompleted ) {
+							if( error ) *error=MetalError("production fire projection command failed",[command error]);return false;}
+						metadataDeviceElapsedMS+=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+						const float* checked=static_cast<const float*>(ProjectionBufferContents(
+							diagnostics,ProjectionDiagnosticAccess));
+						bool checkPassed=false;
+						const bool checkBand=FireProductionProjectionResidualWithinBand(checked[1],checked[2],
+							adaptiveLength,checkPassed);
+						command=[context.queue commandBuffer];
+						if( !command ) {if( error ) *error="production fire projection command allocation failed";return false;}
+						if( checkBand&&checkPassed ) break;
+					}
+				}
+				else for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
 					if( !EncodeVCycle(context,command,hierarchy,0u,scratch,diagnostics,
 						executedSweeps,error) ) return false;
 					if( fp->nullspace!=0u&&!EncodeRemoveMean(context,command,fineLevel.pressure,cells,scratch,

@@ -301,6 +301,27 @@ public:
 
 }  // namespace
 
+static void TestPreparedRenderProgress()
+{
+	CountingProgress external;
+	CancellableProgressCallback coordinator(&external);
+	auto& prepared = coordinator.Prepared();
+	Check(prepared.Progress(3, 8) && prepared.Fraction() == 0.375 && external.nCalls == 0,
+		"prepared render publishes progress without calling external code");
+	prepared.SetPaused(true);
+	coordinator.RequestCancel();
+	Check(prepared.IsCancelled() && !prepared.Progress(4, 8) && coordinator.WasCancellationObserved(),
+		"coordinator cancellation releases a paused prepared render");
+	const auto oldGeneration = prepared.Generation();
+	coordinator.Reset();
+	prepared.CancelGeneration(oldGeneration);
+	Check(!prepared.IsCancelled() && prepared.Fraction() == 0 && prepared.Progress(1, 2),
+		"a new render starts with fresh progress and controls");
+	prepared.RequestCancel();
+	Check(coordinator.WasCancellationObserved() && external.nCalls == 0,
+		"UI cancellation reaches the coordinator without running the external callback");
+}
+
 static void TestCancellableProgressBasic()
 {
 	std::cout << "Testing CancellableProgressCallback..." << std::endl;
@@ -371,6 +392,7 @@ int main()
 	TestEditHistoryDirtyTracking();
 	TestEditHistoryCapacity();
 	TestEditHistoryByteBudget();
+	TestPreparedRenderProgress();
 	TestCancellableProgressBasic();
 	TestCancellableProgressInnerVeto();
 	TestCancellableProgressNullInner();

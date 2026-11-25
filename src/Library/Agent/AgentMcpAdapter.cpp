@@ -2504,6 +2504,126 @@ namespace RISE
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
+				// Simulation M5: the bake and live-simulation verbs
+				// (AgentSimulation.h; docs/gui/MCP_TOOL_SURFACE.md sec. 4.4a).
+				// sim_list/sim_status/sim_wait are read-safe (no note).  The five
+				// control verbs start or stop processes or drive the viewport, so
+				// the dispatcher refuses them under Read AND Propose (they are on
+				// neither allowlist): kAutonomyReadNote under Read, and under
+				// Propose a note of the scaffold-note form, which carries neither
+				// magic substring AgentAutonomyPolicyTest's counters key on.
+				auto simControlNote = [&]( const std::string& tool ) {
+					return readOnly ? kAutonomyReadNote :
+						proposeOnly ? "[UNAVAILABLE at --agent-autonomy=propose: " + tool + " is not on the "
+							"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+							"--agent-autonomy=commit to use it)] " : std::string();
+				};
+				{
+					tools.push_back( MakeTool( "sim_list",
+						"List the scene's simulations (cloth_simulation, fire_simulation, simulation_cache "
+						"chunks) with their state against their caches. Returns {ok,scene,unsavedChanges,"
+						"liveSupported,simulations:[{name,keyword,solver,state,upstreamOutOfDate,keyStatus,"
+						"expectedKey,cacheKey,fidelity,cacheDir,interactive,backend,framesAvailable,"
+						"framesTotal,startTime,interval,endTime,upstream,inputs,error?,job?}]}. `state` is "
+						"missing / baking / partial / complete / stale / failed. `keyStatus` compares the key "
+						"the scene asks for with the cache's: current, stale, missing (no cache) or unknown "
+						"(not computable yet: an upstream simulation is not baked, or the solver's key is "
+						"known only after a bake). `job` is the newest bake job of that simulation, same "
+						"shape as sim_status's. READ-ONLY; also adopts bakes still running from an earlier "
+						"session so they appear as jobs.",
+						ObjectProp( "", JsonValue::MakeObject(), std::vector<std::string>() ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "simulation", StringProp( "The simulation to bake (its `name`). Exactly one of `simulation` and `all`." ) );
+					props.set( "all", BoolProp( "OPTIONAL. true: bake every simulation that has a solver." ) );
+					props.set( "staleOnly", BoolProp( "OPTIONAL, with all:true: only the simulations that are not complete with their current key (\"bake all stale\")." ) );
+					props.set( "force", BoolProp( "OPTIONAL. Rebake the named simulation(s) even when complete (not their upstreams)." ) );
+					tools.push_back( MakeTool( "sim_bake",
+						simControlNote( "sim_bake" ) + "Bake a simulation into its cache in the BACKGROUND: a separate rise-sim process "
+						"runs on the scene FILE, so the bake survives this session and never changes the "
+						"loaded scene. Upstream simulations that are not complete are baked first. A partial "
+						"cache of the current key is continued (this is also how a stopped bake resumes); a "
+						"stale one is rebaked. Returns at once with {ok,jobId,jobIds,jobs}: poll sim_status "
+						"or block on sim_wait with `jobId`. SAVE RULE: the bake reads the file on disk, so a "
+						"document with unsaved changes that affect the simulation is refused (ok:false, "
+						"\"save first\" -- at once, or as the job's error when the worker finds the file "
+						"plans another key). One GPU bake runs at a time on this machine (a later one "
+						"reports state waiting-gpu); CPU bakes run a few at a time. Needs commit autonomy; "
+						"works headless.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "jobId", NumberProp( "OPTIONAL. A jobId from sim_bake. Omit to list every bake job of this scene." ) );
+					tools.push_back( MakeTool( "sim_status",
+						"A bake job's state. With jobId: {found,job}; without: {jobs:[...]} for this scene. "
+						"job = {jobId,simulation,state,terminal,resumable,adopted,interrupted,resume,force,"
+						"solver,backend,cacheDir,simulatedTime,endTime,framesWritten,framesTotal,progress,"
+						"wallSeconds,etaSeconds,pid,dependsOn,waitingFor?,detail?,error?,log?}. `state`: "
+						"queued (waitingFor says why), waiting-gpu, running, stopping, stopped, finished, "
+						"failed, cancelled. `resumable`: stopped or failed with a partial cache -- sim_bake "
+						"the same simulation to continue it. etaSeconds is null when unknown. READ-ONLY.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "jobId", NumberProp( "A jobId from sim_bake." ) );
+					props.set( "timeoutMs", NumberProp( "OPTIONAL wait bound in milliseconds, CLAMPED to [0,60000]. Default 5000. 0 polls once without blocking." ) );
+					std::vector<std::string> required; required.push_back( "jobId" );
+					tools.push_back( MakeTool( "sim_wait",
+						"Block up to timeoutMs for a bake job to end (finished, stopped, failed or "
+						"cancelled). Returns {completed,found,job}: completed is true iff it ended within "
+						"the timeout. A long bake needs several calls; read job.progress and "
+						"job.etaSeconds between them. READ-ONLY.",
+						ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "jobId", NumberProp( "The job to stop (or give `simulation`)." ) );
+					props.set( "simulation", StringProp( "The simulation whose queued or running bake to stop." ) );
+					props.set( "kill", BoolProp( "OPTIONAL, default false. true ends the worker at once with NO checkpoint (a resume then continues from the last periodic checkpoint). Use only when a normal stop does not end it." ) );
+					tools.push_back( MakeTool( "sim_cancel",
+						simControlNote( "sim_cancel" ) + "Stop a bake. A queued job is cancelled. A running one stops at its next safe point, "
+						"writes a checkpoint and ends `stopped` with resumable:true -- sim_bake the same "
+						"simulation later to continue exactly where it stopped. Returns {cancelled,found,"
+						"job,message?}; cancelled is true when the request was accepted (the job then goes "
+						"stopping -> stopped: sim_wait for it). Needs commit autonomy.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "simulation", StringProp( "The simulation to run live in the viewport." ) );
+					props.set( "fps", NumberProp( "OPTIONAL playback rate; 0 or omitted: the timeline's frame spacing." ) );
+					std::vector<std::string> required; required.push_back( "simulation" );
+					tools.push_back( MakeTool( "sim_live_start",
+						simControlNote( "sim_live_start" ) + "Run an interactive simulation (cloth in interactive mode) LIVE in the app's "
+						"viewport and start playback: the solver steps in the app, no cache is written. "
+						"Returns {ok,supported,message?}. Needs the in-app viewport: in headless rise "
+						"--agent-stdio / --mcp it returns supported:false (bake with sim_bake instead). "
+						"Needs commit autonomy.",
+						ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "simulation", StringProp( "The simulation started with sim_live_start." ) );
+					std::vector<std::string> required; required.push_back( "simulation" );
+					tools.push_back( MakeTool( "sim_live_stop",
+						simControlNote( "sim_live_stop" ) + "Pause playback and detach a live simulation; the viewport shows the baked cache "
+						"again. Returns {ok,supported,message?}; supported:false when headless.",
+						ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "time", NumberProp( "Scene time in seconds." ) );
+					std::vector<std::string> required; required.push_back( "time" );
+					tools.push_back( MakeTool( "sim_seek",
+						simControlNote( "sim_seek" ) + "Move the viewport's playhead to a scene time (clamped to the latest live frame "
+						"when a live simulation runs). Returns {ok,supported,time,message?}: time is the "
+						"time shown. supported:false when headless.",
+						ObjectProp( "", props, required ) ) );
+				}
+
 				// read_image
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -2790,7 +2910,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 41 tool names this adapter recognizes --
+			//! The tool names this adapter recognizes (AgentMcpAdapterTest pins the count) --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -2827,6 +2947,10 @@ namespace RISE
 					"add_fuzz",                // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): MUTATING, the fuzz-shell verb
 					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
+					// Simulation M5 (2026-11-23): read-safe sim_list/sim_status/sim_wait;
+					// sim_bake/sim_cancel/sim_live_start/sim_live_stop/sim_seek need commit.
+					"sim_list", "sim_status", "sim_wait", "sim_bake", "sim_cancel",
+					"sim_live_start", "sim_live_stop", "sim_seek",
 					"read_image", "read_viewport", "query_object_at",
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
 					"light_scene",       // Arc 81 (2026-08-12): MUTATING, the clean-room lighting pass

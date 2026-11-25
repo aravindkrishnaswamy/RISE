@@ -5160,7 +5160,13 @@ int main( int argc, char** argv )
 		SameFloatVectorBytes(transitionOpenCPU.sharedLimiterAlpha,
 			transitionOpenGPU.sharedLimiterAlpha),
 		"r127 Metal donor transition is byte-identical to the strict fp32 CPU topology inside both joins");
-	Check(SameFloatBytes(openCPU.faceFluxes[RemapFluxIndex(open,0u,0u,0u)],
+	// A failed remap publishes no flux vector. Keep the exact-byte check a
+	// failing assertion when either backend did not produce the requested face.
+	const auto lastOpenFace=RemapFluxIndex(open,1u,0u,0u);
+	const auto lastNegativeFace=RemapFluxIndex(openNegative,1u,0u,openNegative.lineLength);
+	Check(openCPU.faceFluxes.size()>lastOpenFace && openGPU.faceFluxes.size()>lastOpenFace &&
+		openNegativeCPU.faceFluxes.size()>lastNegativeFace && openNegativeGPU.faceFluxes.size()>lastNegativeFace &&
+		SameFloatBytes(openCPU.faceFluxes[RemapFluxIndex(open,0u,0u,0u)],
 			openGPU.faceFluxes[RemapFluxIndex(open,0u,0u,0u)])&&
 		SameFloatBytes(openCPU.faceFluxes[RemapFluxIndex(open,1u,0u,0u)],
 			openGPU.faceFluxes[RemapFluxIndex(open,1u,0u,0u)])&&

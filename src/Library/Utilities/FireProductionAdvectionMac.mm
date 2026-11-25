@@ -21,6 +21,7 @@
 #include "FireProductionTransport.h"
 #include "RISECBOR64.h"
 #include "FireCase.h"
+#include "FireFastMode.h"
 #include "ThreadPool.h"
 #include "../Interfaces/IOptions.h"
 
@@ -4110,6 +4111,203 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				return walled.c_str();
 			}
 
+			// RISE_FIRE_FAST_MODE=1 only: uncertified binary32 replacements for the EOS candidate and target-term
+			// kernels. Appended to the library source only in fast mode, so the certified library is unchanged.
+			// Same buffers, outputs and physical refusal bits; no interval bounds, correct-rounding proofs,
+			// obligation words or two-path hulls. Cancellation-prone sums use compensated (double-float) binary32.
+			static const char* FastModeSource()
+			{
+				return R"METAL(
+struct FMDF {float hi;float lo;};
+inline FMDF fm_df(float a){FMDF r={a,0.0f};return r;}
+inline FMDF fm_quick(float a,float b){float s=a+b;FMDF r={s,b-(s-a)};return r;}
+inline FMDF fm_two_sum(float a,float b){float s=a+b,v=s-a;FMDF r={s,(a-(s-v))+(b-v)};return r;}
+inline FMDF fm_add(FMDF x,FMDF y){FMDF s=fm_two_sum(x.hi,y.hi);return fm_quick(s.hi,s.lo+x.lo+y.lo);}
+inline FMDF fm_addf(FMDF x,float y){FMDF s=fm_two_sum(x.hi,y);return fm_quick(s.hi,s.lo+x.lo);}
+inline FMDF fm_neg(FMDF x){FMDF r={-x.hi,-x.lo};return r;}
+inline FMDF fm_mul(FMDF x,FMDF y){float p=x.hi*y.hi,e=fma(x.hi,y.hi,-p);e=fma(x.hi,y.lo,e);e=fma(x.lo,y.hi,e);
+ return fm_quick(p,e);}
+inline FMDF fm_mulf(FMDF x,float y){float p=x.hi*y,e=fma(x.hi,y,-p);e=fma(x.lo,y,e);return fm_quick(p,e);}
+inline FMDF fm_div(FMDF x,FMDF y){float q=x.hi/y.hi;FMDF r=fm_add(x,fm_neg(fm_mulf(y,q)));
+ return fm_quick(q,(r.hi+r.lo)/y.hi);}
+inline FMDF fm_divf(FMDF x,float y){return fm_div(x,fm_df(y));}
+inline FMDF fm_load(device const float* t,uint o){return fm_quick(t[o],t[o+1u]+t[o+2u]);}
+inline FMDF fm_entry(EOSDD e){return fm_quick(e.hi,e.lo+e.tail);}
+inline FMDF fm_log(float x){int e=0;float m=frexp(x,e);if(m<0.70710678f){m*=2.0f;e-=1;}
+ FMDF y=fm_div(fm_two_sum(m,-1.0f),fm_two_sum(m,1.0f)),y2=fm_mul(y,y),term=y,sum=y;
+ for(uint odd=3u;odd<=21u;odd+=2u){term=fm_mul(term,y2);sum=fm_add(sum,fm_divf(term,float(odd)));}
+ FMDF ln2={0.693147182464599609375f,-1.9046542121259336e-9f};
+ return fm_add(fm_mulf(sum,2.0f),fm_mulf(ln2,float(e)));}
+inline bool fm_segment(device const float* t,uint species,float T,thread uint& offset){
+ uint base=96u*species,segments=uint(t[base+3u]);
+ for(uint segment=0u;segment<segments;++segment){uint c=base+4u+30u*segment;
+  float lower=(T-t[c])-t[c+1u],upper=(T-t[c+3u])-t[c+4u];
+  if(lower>=0.0f&&(upper<0.0f||(segment+1u==segments&&upper==0.0f))){offset=c;return true;}}
+ return false;}
+struct FMBasis {FMDF inverse,logT,half2,third3,quarter4,fifth5;float T;};
+inline FMBasis fm_basis(float T){FMBasis b;b.T=T;b.inverse=fm_div(fm_df(1.0f),fm_df(T));
+ b.logT=fm_log(T);FMDF t2=fm_mulf(fm_df(T),T),t3=fm_mulf(t2,T),t4=fm_mulf(t3,T),t5=fm_mulf(t4,T);
+ b.half2=fm_mulf(t2,0.5f);b.third3=fm_divf(t3,3.0f);b.quarter4=fm_mulf(t4,0.25f);b.fifth5=fm_divf(t5,5.0f);
+ return b;}
+// Species enthalpy (J/kg, compensated) and heat capacity (J/(kg K), binary32) on the selected segment.
+inline FMDF fm_enthalpy(device const float* t,uint species,uint o,thread const FMBasis& b){
+ FMDF primitive=fm_neg(fm_mul(fm_load(t,o+6u),b.inverse));
+ primitive=fm_add(primitive,fm_mul(fm_load(t,o+9u),b.logT));
+ primitive=fm_add(primitive,fm_mulf(fm_load(t,o+12u),b.T));
+ primitive=fm_add(primitive,fm_mul(fm_load(t,o+15u),b.half2));
+ primitive=fm_add(primitive,fm_mul(fm_load(t,o+18u),b.third3));
+ primitive=fm_add(primitive,fm_mul(fm_load(t,o+21u),b.quarter4));
+ primitive=fm_add(primitive,fm_mul(fm_load(t,o+24u),b.fifth5));
+ FMDF scale=fm_div(fm_load(t,7u*96u),fm_load(t,96u*species));
+ return fm_add(fm_mul(scale,primitive),fm_load(t,o+27u));}
+inline float fm_cp(device const float* t,uint species,uint o,float T){float inv=1.0f/T;
+ float value=t[o+6u]*inv*inv+t[o+9u]*inv+t[o+12u]+T*(t[o+15u]+T*(t[o+18u]+T*(t[o+21u]+T*t[o+24u])));
+ return t[7u*96u]/t[96u*species]*value;}
+inline bool fm_within(float residual,float scale,float feasibility){
+ return residual<=feasibility*(scale<1.0f?1.0f:scale);}
+kernel void evaluate_resident_eos_candidate_fast(device const float* candidate [[buffer(0)]],
+ device const float* thermo [[buffer(1)]],device const float* eosThermo [[buffer(2)]],
+ device const ulong* candidateIdentity [[buffer(3)]],device float* temperature [[buffer(4)]],
+ device float* pressureRatio [[buffer(5)]],device float* deviation [[buffer(6)]],
+ device atomic_uint* failure [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
+ constant EOSParams& p [[buffer(9)]],device atomic_uint* firstFailureCell [[buffer(10)]],
+ device uint* failureTerm [[buffer(11)]],device const EOSDD* endpoints [[buffer(12)]],
+ device const float* cachedState [[buffer(13)]],device const float* cachedTemperature [[buffer(14)]],
+ constant EOSParams* cachedParameters [[buffer(15)]],device const ulong* cachedIdentity [[buffer(16)]],
+ uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;
+ float v[9];bool admissible=candidateIdentity[0]!=0ul;
+ for(uint c=0u;c<9u;++c){v[c]=candidate[c*p.cells+gid];admissible=admissible&&isfinite(v[c]);}
+ if(!admissible){atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);return;}
+ // Physical admissibility: the certified path's envelopes, evaluated in binary32.
+ float total=0.0f,massScale=abs(v[0]);FMDF closure=fm_df(v[0]);
+ for(uint s=0u;s<7u;++s){total+=v[s+1u];massScale+=abs(v[s+1u]);closure=fm_addf(closure,-v[s+1u]);}
+ admissible=total>0.0f&&fm_within(-v[0],massScale,p.feasibility)&&
+  fm_within(closure.hi+closure.lo,massScale,p.feasibility);
+ for(uint s=0u;s<7u;++s)admissible=admissible&&fm_within(-v[s+1u],massScale,p.feasibility);
+ FMDF lowerEnergy=fm_df(0.0f),upperEnergy=fm_df(0.0f);float energyScale=abs(v[8]);
+ for(uint s=0u;s<7u;++s){FMDF lowerTerm=fm_mulf(fm_entry(endpoints[2u*s]),v[s+1u]),
+   upperTerm=fm_mulf(fm_entry(endpoints[2u*s+1u]),v[s+1u]);
+  lowerEnergy=fm_add(lowerEnergy,lowerTerm);upperEnergy=fm_add(upperEnergy,upperTerm);
+  energyScale+=abs(lowerTerm.hi)+abs(upperTerm.hi);}
+ admissible=admissible&&fm_within(fm_addf(lowerEnergy,-v[8]).hi,energyScale,p.feasibility)&&
+  fm_within(-fm_addf(upperEnergy,-v[8]).hi,energyScale,p.feasibility);
+ for(uint row=0u;row<p.affineRowCount;++row){FMDF residual=fm_df(0.0f);float scale=0.0f;
+  for(uint column=0u;column<8u;++column){FMDF term=fm_mulf(fm_load(eosThermo,7u*96u+6u+3u*(row*8u+column)),v[column]);
+   residual=fm_add(residual,term);scale+=abs(term.hi);}
+  admissible=admissible&&fm_within(abs(residual.hi),scale,p.feasibility);}
+ if(!admissible){atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);return;}
+ if(cachedIdentity!=nullptr&&cachedIdentity[0]==0ul){
+  atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);return;}
+ float T=0.0f;bool cached=cachedTemperature!=nullptr&&cachedIdentity!=nullptr&&cachedIdentity[0]!=0ul&&
+  eos_exact_cached_input(candidate,cachedState,p,cachedParameters,gid);
+ if(cached)T=cachedTemperature[gid];
+ else{float tolerance=p.feasibility*(energyScale<1.0f?1.0f:energyScale);
+  if(fm_addf(lowerEnergy,tolerance-v[8]).hi>=0.0f)T=p.Tmin;
+  else if(fm_addf(upperEnergy,-tolerance-v[8]).hi<=0.0f){
+   atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);return;}
+  else{// Bracket with the 10-level bisection prefix table, then Newton on sum(rho_k h_k(T)) = E.
+   uint lowerBits=as_type<uint>(p.Tmin),upperBits=as_type<uint>(p.Tmax),node=0u;
+   float lowerE=lowerEnergy.hi,upperE=upperEnergy.hi;
+   for(uint level=0u;level<10u&&upperBits-lowerBits>1u;++level){uint middle=lowerBits+(upperBits-lowerBits)/2u;
+    uint base=14u+8u*node;if(endpoints[base+7u].hi!=1.0f||as_type<uint>(endpoints[base+7u].tail)!=middle)break;
+    FMDF energy=fm_df(0.0f);for(uint s=0u;s<7u;++s)energy=fm_add(energy,fm_mulf(fm_entry(endpoints[base+s]),v[s+1u]));
+    bool below=fm_addf(energy,-v[8]).hi<0.0f;node=2u*node+(below?2u:1u);
+    if(below){lowerBits=middle;lowerE=energy.hi;}else{upperBits=middle;upperE=energy.hi;}}
+   float lowerT=as_type<float>(lowerBits),upperT=as_type<float>(upperBits);
+   T=upperE>lowerE?lowerT+(v[8]-lowerE)*((upperT-lowerT)/(upperE-lowerE)):0.5f*(lowerT+upperT);
+   T=clamp(T,lowerT,upperT);bool converged=false;
+   for(uint iteration=0u;iteration<8u&&!converged;++iteration){FMBasis b=fm_basis(T);FMDF energy=fm_df(-v[8]);
+    float capacity=0.0f;bool valid=true;
+    for(uint s=0u;s<7u;++s){uint o=0u;if(!fm_segment(eosThermo,s,T,o)){valid=false;break;}
+     energy=fm_add(energy,fm_mulf(fm_enthalpy(eosThermo,s,o,b),v[s+1u]));capacity+=v[s+1u]*fm_cp(eosThermo,s,o,T);}
+    if(!valid||!(capacity>0.0f))break;
+    float next=clamp(T-(energy.hi+energy.lo)/capacity,p.Tmin,p.Tmax);
+    converged=abs(next-T)<=eos_local_spacing(T);T=next;}
+   if(!converged||!isfinite(T)||T<p.Tmin||T>=p.Tmax){
+    atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);return;}}}
+ float gas=0.0f;FMDF molar=fm_df(0.0f);
+ for(uint s=0u;s<6u;++s){float density=max(0.0f,v[s+1u]);gas+=density;
+  molar=fm_add(molar,fm_div(fm_df(density),fm_load(eosThermo,96u*s)));}
+ if(!(gas>0.0f)||!(molar.hi>0.0f)){atomic_fetch_or_explicit(failure,256u,memory_order_relaxed);return;}
+ FMDF ratioDF=fm_div(fm_mulf(fm_mul(fm_load(eosThermo,7u*96u),molar),T),fm_load(eosThermo,7u*96u+3u));
+ float ratio=ratioDF.hi,absoluteDeviation=abs(ratio-1.0f);
+ if(!isfinite(ratio)||!(ratio>0.0f)||!isfinite(absoluteDeviation)){
+  failureTerm[gid]=(!isfinite(ratio)||!(ratio>0.0f))?4u:8u;
+  atomic_fetch_min_explicit(firstFailureCell,gid,memory_order_relaxed);
+  atomic_fetch_or_explicit(failure,512u,memory_order_relaxed);return;}
+ temperature[gid]=T;temperature[p.cells+gid]=T;
+ pressureRatio[gid]=ratio;pressureRatio[p.cells+gid]=ratio;deviation[gid]=absoluteDeviation;
+ if(!(absoluteDeviation<=p.dynamicsBound))atomic_fetch_or_explicit(failure,1024u,memory_order_relaxed);}
+kernel void evaluate_resident_target_terms_fast(device const float* state [[buffer(0)]],
+ device const float* temperature [[buffer(1)]],device const float* physicalMass [[buffer(2)]],
+ device const float* physicalEnergy [[buffer(3)]],device const float* eosThermo [[buffer(4)]],
+ device const float* sourceTarget [[buffer(5)]],device const float* pressureRatio [[buffer(6)]],
+ device const float* absoluteDeviation [[buffer(7)]],
+ device const ulong* transportIdentity [[buffer(8)]],device const ulong* tangentPhysicalIdentity [[buffer(9)]],
+ device const ulong* candidateIdentity [[buffer(10)]],device const ulong* eosIdentity [[buffer(11)]],
+ device float* tangent [[buffer(12)]],device float* source [[buffer(13)]],
+ device float* absoluteDiagnostic [[buffer(14)]],device float* monitoredAbsolute [[buffer(15)]],
+ device float* assembled [[buffer(16)]],device atomic_uint* failure [[buffer(17)]],
+ device atomic_uint* obligations [[buffer(18)]],constant TargetParams& p [[buffer(19)]],
+ device const ulong* sourceIdentity [[buffer(20)]],device const FrozenSourceParams* frozen [[buffer(21)]],
+ constant TransportParams& transportParameters [[buffer(22)]],constant EOSFCTParams& fctParameters [[buffer(23)]],
+ constant EOSParams& eosParameters [[buffer(24)]],device const ulong* candidatePhysicalIdentity [[buffer(25)]],
+ device float* baseAssembled [[buffer(26)]],device float* tangentRadius [[buffer(27)]],
+ device float* assembledRadius [[buffer(28)]],device const float* alternateTemperature [[buffer(29)]],
+ uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;
+ bool metadataMatches=p.nx==transportParameters.nx&&p.ny==transportParameters.ny&&
+  p.nz==transportParameters.nz&&p.cells==transportParameters.cells&&p.nx==fctParameters.nx&&
+  p.ny==fctParameters.ny&&p.nz==fctParameters.nz&&p.cells==fctParameters.cells&&p.cells==eosParameters.cells&&
+  as_type<uint>(p.dx)==as_type<uint>(transportParameters.dx)&&as_type<uint>(p.dx)==as_type<uint>(fctParameters.dx)&&
+  as_type<uint>(p.dt)==as_type<uint>(fctParameters.dt)&&as_type<uint>(p.dt)==as_type<uint>(eosParameters.timeStepS)&&
+  p.attempt==transportParameters.attempt&&p.attempt==eosParameters.attempt&&p.cells==frozen[0].cells&&
+  p.attempt==frozen[0].attempt&&p.sourcePacket==frozen[0].sourcePacket&&p.policyVersion==0x72313730u;
+ for(uint axis=0u;axis<3u;++axis)metadataMatches=metadataMatches&&p.faceOffset[axis]==transportParameters.faceOffset[axis];
+ for(uint side=0u;side<6u;++side)metadataMatches=metadataMatches&&p.boundary[side]==transportParameters.boundary[side]&&
+  p.boundary[side]==fctParameters.boundary[side];
+ if(transportIdentity[0]==0ul||tangentPhysicalIdentity[0]==0ul||candidatePhysicalIdentity[0]==0ul||
+  candidateIdentity[0]==0ul||eosIdentity[0]==0ul||sourceIdentity[0]==0ul||!metadataMatches){
+  atomic_fetch_or_explicit(failure,2048u,memory_order_relaxed);return;}
+ uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny),massStride=p.faceOffset[2]+p.nx*p.ny*(p.nz+1u);
+ FMDF rate[9];float terms[9][6];for(uint c=0u;c<9u;++c)rate[c]=fm_df(0.0f);
+ for(uint axis=0u;axis<3u;++axis){uint left=target_face(p,axis,x,y,z),
+   right=target_face(p,axis,x+(axis==0u),y+(axis==1u),z+(axis==2u));
+  for(uint c=0u;c<8u;++c){float l=physicalMass[c*massStride+left],r=physicalMass[c*massStride+right];
+   terms[c][2u*axis]=l;terms[c][2u*axis+1u]=-r;rate[c]=fm_addf(fm_addf(rate[c],l),-r);}
+  float l=physicalEnergy[left],r=physicalEnergy[right];terms[8][2u*axis]=l;terms[8][2u*axis+1u]=-r;
+  rate[8]=fm_addf(fm_addf(rate[8],l),-r);}
+ bool bitZero=true;for(uint c=0u;c<9u;++c)bitZero=bitZero&&eos_six_term_sum_is_exact_zero(terms[c]);
+ for(uint c=0u;c<9u;++c)rate[c]=fm_divf(rate[c],p.dx);
+ float T=temperature[gid];FMBasis b=fm_basis(T);bool valid=true;float capacity=0.0f,inverseWeight=0.0f;
+ FMDF energyRate=rate[8],speciesRate=fm_df(0.0f);
+ for(uint s=0u;s<7u;++s){uint o=0u;if(!fm_segment(eosThermo,s,T,o)){valid=false;break;}
+  float density=max(0.0f,state[(s+1u)*p.cells+gid]);capacity+=density*fm_cp(eosThermo,s,o,T);
+  energyRate=fm_add(energyRate,fm_neg(fm_mul(fm_enthalpy(eosThermo,s,o,b),rate[s+1u])));
+  if(s<6u){FMDF weight=fm_load(eosThermo,96u*s);inverseWeight+=density/weight.hi;
+   speciesRate=fm_add(speciesRate,fm_div(rate[s+1u],weight));}}
+ if(!valid){atomic_fetch_or_explicit(failure,32768u,memory_order_relaxed);return;}
+ FMDF value=fm_add(fm_divf(energyRate,capacity*T),fm_divf(speciesRate,inverseWeight));
+ if(bitZero)value=fm_df(0.0f);
+ float tangentValue=value.hi;
+ if(!isfinite(tangentValue)||!isfinite(value.lo)){atomic_fetch_or_explicit(failure,65536u,memory_order_relaxed);
+  tangent[gid]=NAN;return;}
+ float signedDeviation=pressureRatio[gid]-1.0f,magnitude=abs(signedDeviation),tail=0.0f;
+ if(magnitude>p.tailThreshold){tail=(magnitude-p.tailThreshold)/p.dt;if(signedDeviation>0.0f)tail=-tail;}
+ float diagnosticValue=(pressureRatio[gid]-1.0f)/p.dt;
+ if(!isfinite(tail)){atomic_fetch_or_explicit(failure,262144u,memory_order_relaxed);return;}
+ if(!isfinite(diagnosticValue)||!isfinite(sourceTarget[gid])){
+  atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}
+ tangentRadius[gid]=bitZero?0.0f:eos_up_mul(0.5f,eos_local_spacing(tangentValue));
+ tangent[gid]=tangentValue;source[gid]=sourceTarget[gid];
+ absoluteDiagnostic[gid]=diagnosticValue;monitoredAbsolute[gid]=tail;
+ FMDF baseDF=fm_addf(value,sourceTarget[gid]);float baseValue=baseDF.hi;
+ FMDF combinedDF=fm_addf(baseDF,tail);float combined=combinedDF.hi;
+ if(!isfinite(baseValue)||!isfinite(combined)){atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}
+ baseAssembled[gid]=baseValue==0.0f?0.0f:baseValue;assembled[gid]=combined;
+ assembledRadius[gid]=eos_up_mul(0.5f,eos_local_spacing(combined));}
+)METAL";
+			}
+
 			explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),queue(nil),evaluate(nil),identify(nil),
 				physicalFlux(nil),advectivePair(nil),finalizeAdvective(nil),composePair(nil),validatePhysical(nil),
 				identifyPhysical(nil),identifyEOSCandidate(nil),
@@ -4129,6 +4327,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				ResidentContextConstructionAttempts[stageTokens?1u:0u].fetch_add(1u,std::memory_order_relaxed);
 				productionStageTokens=stageTokens;
 				compiledSource=std::string("#define RISE_STAGE_TOKENS ")+(stageTokens?"1\n":"0\n")+Source();
+				const bool fastMode=FireSim::FireFastMode();
+				if(fastMode)compiledSource+=FastModeSource();
 				// Qualification and production compile the same arithmetic. Only
 				// diagnostic obligation writes get a constant-folded no-op in the
 				// latter; failure/admissibility atomics are never redirected.
@@ -4164,12 +4364,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					identifyEOSCandidate=pipeline("identify_resident_eos_candidate");
 					buildEOSEndpoints=pipeline("build_eos_endpoint_table");
 					buildEOSDeepPrefix=pipeline("build_eos_deep_prefix_table");
-					evaluateEOSCandidate=pipeline("evaluate_resident_eos_candidate");
+					evaluateEOSCandidate=pipeline(fastMode?"evaluate_resident_eos_candidate_fast":"evaluate_resident_eos_candidate");
 					finalizeEOSCandidate=pipeline("finalize_resident_eos_candidate");
 					identifyEOS=pipeline("identify_resident_eos");
 					produceFrozenSource=pipeline("produce_resident_frozen_source");
 					identifyFrozenSource=pipeline("identify_resident_frozen_source");
-					evaluateTargetTerms=pipeline("evaluate_resident_target_terms");
+					evaluateTargetTerms=pipeline(fastMode?"evaluate_resident_target_terms_fast":"evaluate_resident_target_terms");
 					finalizeTarget=pipeline("finalize_resident_target");
 					identifyTarget=pipeline("identify_resident_target");
 					identifyProjectionConsumer=pipeline("issue_resident_projection_consumer");
@@ -7581,6 +7781,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		// lookup is word-identical to the inline evaluation it replaces. The table is
 		// built once per process for each distinct (device, thermochemistry, Tmin, Tmax).
 		constexpr std::uint32_t EOSPrefixTableNodes=(UINT32_C(1)<<24u)-1u;
+		// Fast mode brackets its Newton EOS with the 10-level prefix only (1023 nodes,
+		// about 130 kB), shared like the certified 24-level table but without its 2.2 GB.
+		inline std::uint32_t SharedEOSPrefixTableNodes()
+		{
+			return FireSim::FireFastMode()?1023u:EOSPrefixTableNodes;
+		}
 		constexpr std::size_t EOSPrefixTableBytes(const std::uint32_t nodes)
 		{
 			return (14u+static_cast<std::size_t>(nodes)*8u)*4u*sizeof(float);
@@ -8025,7 +8231,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					cache.maximumTemperatureBits==maximumBits&&std::memcmp(cache.thermochemistry.data(),
 						eosThermoHost_.data(),sizeof(float)*eosThermoHost_.size())==0){
 					eosPrefixTable_=cache.table;return true;}
-				const std::uint32_t nodes=EOSPrefixTableNodes;
+				const std::uint32_t nodes=SharedEOSPrefixTableNodes();
 				id<MTLBuffer> table=[context_.device newBufferWithLength:EOSPrefixTableBytes(nodes)
 					options:MTLResourceStorageModePrivate];
 				id<MTLBuffer> scratch=[context_.device newBufferWithLength:2u*sizeof(std::uint32_t)
@@ -8048,6 +8254,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				[encoder setBuffer:scratch offset:sizeof(std::uint32_t) atIndex:4];
 				[encoder setBytes:&nodes length:sizeof(nodes) atIndex:5];
 				Dispatch(encoder,context_.buildEOSEndpoints,14u+1023u);[encoder endEncoding];
+				if(nodes>1023u){
 				encoder=[command computeCommandEncoder];
 				if(!encoder){if(error)*error="projected-Heun EOS prefix table encoder failed";return false;}
 				[encoder setComputePipelineState:context_.buildEOSDeepPrefix];
@@ -8055,7 +8262,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				[encoder setBuffer:eosParameters_[stage] offset:0 atIndex:1];
 				[encoder setBuffer:table offset:0 atIndex:2];
 				[encoder setBytes:&nodes length:sizeof(nodes) atIndex:3];
-				Dispatch(encoder,context_.buildEOSDeepPrefix,nodes-1023u);[encoder endEncoding];
+				Dispatch(encoder,context_.buildEOSDeepPrefix,nodes-1023u);[encoder endEncoding];}
 				[command commit];[command waitUntilCompleted];
 				if([command status]!=MTLCommandBufferStatusCompleted){
 					if(error)*error=MetalError("projected-Heun EOS prefix table build failed",[command error]);
@@ -9044,7 +9251,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					output.eos->reuseCandidate=eosReuseParent_->candidate.get();}
 				if(!eosPrefixTable_&&!AcquireEOSPrefixTable(stage,error))return false;
 				output.eos->sharedPrefixTable=eosPrefixTable_;
-				output.eos->sharedPrefixNodes=EOSPrefixTableNodes;
+				output.eos->sharedPrefixNodes=SharedEOSPrefixTableNodes();
 				if(!EncodeResidentEOSAuthority(context_,command,thermo_,eosThermo_,eosParameters_[stage],
 					failure_,eosObligations_,*output.transport,candidatePhysical,*output.candidate,
 					eosMetadata_,*output.eos,error))return false;
@@ -12276,7 +12483,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			computed.physicalProjection.maximumPreProjectionResidualPerS;
 		computed.acceptedManifoldToken_.physicalMaximumPostResidualPerS_=
 			computed.physicalProjection.maximumPostProjectionResidualPerS;
-		computed.acceptedManifoldToken_.payloadDigest_=
+		// Fast mode keeps the accepted-state digest (checkpoints verify it) but not the full
+		// resident-payload digest, which only re-authenticates just-produced diagnostics.
+		computed.acceptedManifoldToken_.payloadDigest_=FireSim::FireFastMode()?UINT64_C(1):
 			FireProductionAcceptedManifoldPayloadDigest(computed);
 		computed.acceptedManifoldToken_.acceptedStateDigest_=FireProductionAcceptedStatePayloadDigestFast(
 			shape,computed.conservativeValues,computed.projection.momentumKGPerM2S,
