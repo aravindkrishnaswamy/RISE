@@ -1297,6 +1297,13 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 					"SceneEditor:: `%s` is a container node (no geometry), so it takes no material; "
 					"bind the material to a child that has geometry", edit.objectName.c_str() );
 				ok = false;
+			} else if( mat && mat->IsUnresolvedMix() && ( obj.GetInteriorMedium() ||
+				( dynamic_cast<const Implementation::Object*>( &obj ) &&
+				  dynamic_cast<const Implementation::Object*>( &obj )->HasMediumInheritingCsgConsumer() ) ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor:: `%s` carries or inherits an interior_medium and cannot be assigned a mix_material",
+					edit.objectName.c_str() );
+				ok = false;
 			} else if( mat ) {
 				// P1-4: capture the PRIOR binding before the swap so we can
 				// detect an emitter-set change and bump the light-topology
@@ -1361,8 +1368,21 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 			obj.ClearInteriorMedium();
 			BumpSceneLightGeneration();
 		} else if( mJob ) {
+			struct MixScan : public IEnumCallback<IMaterial> {
+				bool found = false;
+				bool operator()( const IMaterial& m ) override {
+					if( m.IsUnresolvedMix() ) { found = true; return false; }
+					return true;
+				}
+			} mixScan;
+			obj.EnumerateEffectiveMaterials( mixScan );
 			const IMedium* med = mJob->GetMedium( edit.propertyValue.c_str() );
-			if( med ) {
+			if( mixScan.found ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor:: `%s` uses a mix_material and cannot host an interior_medium",
+					edit.objectName.c_str() );
+				ok = false;
+			} else if( med ) {
 				obj.AssignInteriorMedium( *med );
 				BumpSceneLightGeneration();
 			}

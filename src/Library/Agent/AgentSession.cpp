@@ -6715,11 +6715,14 @@ namespace RISE
 			//!
 			//! One exclusion: a number in an `osl_` builtin's INTEGER-LITERAL
 			//! slot (a node's dimension count, fractal type, normalize flag,
-			//! Voronoi feature or metric, Mix blend mode or clamp flag --
-			//! ExpressionOslBuiltins.h) is not counted.  Those slots refuse a
+			//! Voronoi feature or metric, Mix blend mode or clamp flag,
+			//! Safe Math / Vector Math / Clamp / Map Range / Vector Rotate
+			//! op/type/clamp/invert flags -- ExpressionOslBuiltins.h) is
+			//! not counted.  Those slots refuse a
 			//! param, so advising the author to promote them would advise a
-			//! compile error; without this, a translated `osl_noise_texture(...)`
-			//! or `osl_mix_color(...)` call with a few other numbers would trip
+			//! compile error; without this, a translated `osl_noise_texture(...)`,
+			//! `osl_mix_color(...)`, `osl_math(...)` or `osl_vector_rotate(...)`
+			//! call with a few other numbers would trip
 			//! the gate on its literal slots alone.
 			int CountDistinctNumericLiterals_( const std::string& text )
 			{

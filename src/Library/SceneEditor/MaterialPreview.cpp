@@ -24,6 +24,7 @@
 #include "../Utilities/Optics.h"
 #include "../Utilities/ThinFilm.h"
 #include "../Materials/GGXMaterial.h"
+#include "../Materials/MixMaterial.h"
 #include "../Painters/BlackBodyPainter.h"
 #include <algorithm>
 #include <cmath>
@@ -268,6 +269,7 @@ namespace
 	{
 		RayIntersectionGeometric ri( ray, nullRasterizerState );
 		ri.bHit = true;
+		ri.bIsCameraRay = true;
 		ri.rast.x = px;
 		ri.rast.y = py;
 		ri.range = Point3Ops::Distance( ray.origin, hitPt );
@@ -297,6 +299,8 @@ namespace
 		}
 		const Vector3 V = Vector3Ops::Normalize( Vector3Ops::Cross( N, U ) );
 		ri.onb = OrthonormalBasis3D( U, V, N );
+		ri.bHasShadingTangent = true;
+		ri.vShadingTangent = U;
 
 		ri.txFootprint.widthValid  = true;
 		ri.txFootprint.worldWidth  = Scalar( 0 );
@@ -370,17 +374,37 @@ namespace
 		} );
 	}
 
-	//! Shade any hit point on the preview sphere.
-	RISEPel ShadeSphereHit(
+	//! Shade any hit point on the preview sphere using a pre-built geometric hit.
+	RISEPel ShadeSphereHitWithRI(
 		const IMaterial& mat,
-		const Ray& ray,
+		const RayIntersectionGeometric& ri,
 		const Point3& hitPt,
-		const Vector3& N,
-		unsigned int px,
-		unsigned int py )
+		const RISEPel& bg )
 	{
-		const RayIntersectionGeometric ri = MakeSphereIntersection( ray, hitPt, N, px, py );
-		const Vector3 V = Vector3Ops::Normalize( -ray.Dir() );
+		if( const Implementation::MixMaterial* mix = dynamic_cast<const Implementation::MixMaterial*>( &mat ) ) {
+			const unsigned int n = mix->GetChildCount();
+			std::vector<Scalar> weights( n, Scalar( 0 ) );
+			Scalar wClear = Scalar( 0 );
+			mix->EvaluateWeights( ri, weights.data(), wClear );
+			const Scalar ownAlpha = ClampScalar( mix->IMaterial::AlphaCoverage( ri ), Scalar( 0 ), Scalar( 1 ) );
+			RISEPel total = bg * ( Scalar( 1 ) - ownAlpha + ownAlpha * wClear );
+			for( unsigned int i = 0; i < n; ++i ) {
+				if( !( weights[i] > Scalar( 0 ) ) ) continue;
+				const Implementation::MixMaterialChild& ch = mix->GetChild( i );
+				if( !ch.pMaterial ) continue; // `none` absorber leaf contributes black
+				const Scalar childAlpha = ClampScalar( ch.pMaterial->AlphaCoverage( ri ), Scalar( 0 ), Scalar( 1 ) );
+				RayIntersectionGeometric childRi( ri );
+				if( ch.pModifier ) {
+					ch.pModifier->Modify( childRi );
+				}
+				const RISEPel childColor = ShadeSphereHitWithRI( *ch.pMaterial, childRi, hitPt, bg );
+				total = total + ( childColor * childAlpha + bg * ( Scalar( 1 ) - childAlpha ) ) * ( weights[i] * ownAlpha );
+			}
+			return SanitizePel( total );
+		}
+
+		const Vector3 N = ri.vNormal;
+		const Vector3 V = Vector3Ops::Normalize( -ri.ray.Dir() );
 		const Scalar ndv = ClampScalar( Vector3Ops::Dot( N, V ), Scalar( 0 ), Scalar( 1 ) );
 
 		RISEPel total( 0, 0, 0 );
@@ -413,7 +437,7 @@ namespace
 			const Scalar nDotKey  = ClampScalar( Vector3Ops::Dot( N, keyDir ),  Scalar( 0 ), Scalar( 1 ) );
 			const Scalar nDotFill = ClampScalar( Vector3Ops::Dot( N, fillDir ), Scalar( 0 ), Scalar( 1 ) );
 			const Scalar nDotRim  = ClampScalar( Vector3Ops::Dot( N, rimDir ),  Scalar( 0 ), Scalar( 1 ) );
-			const bool canTransmit = mat.CouldLightPassThrough();
+			const bool canTransmit = mat.CouldLightPassThrough() || mat.ScattersFullSphere();
 
 			const RISEPel keyTint( 1.04, 0.99, 0.92 );
 			const RISEPel fillTint( 0.82, 0.90, 1.05 );
@@ -489,6 +513,20 @@ namespace
 
 		return SanitizePel( total );
 	}
+
+	//! Shade any hit point on the preview sphere.
+	RISEPel ShadeSphereHit(
+		const IMaterial& mat,
+		const Ray& ray,
+		const Point3& hitPt,
+		const Vector3& N,
+		unsigned int px,
+		unsigned int py,
+		const RISEPel& bg )
+	{
+		const RayIntersectionGeometric ri = MakeSphereIntersection( ray, hitPt, N, px, py );
+		return ShadeSphereHitWithRI( mat, ri, hitPt, bg );
+	}
 }
 
 MaterialPreview::Result MaterialPreview::RenderMaterialPreview(
@@ -555,7 +593,7 @@ MaterialPreview::Result MaterialPreview::RenderMaterialPreview(
 					N = Vector3Ops::Normalize( Vector3( closestPt.x, closestPt.y, Scalar( 0.05 ) ) );
 					hitPt = Point3( N.x * kSphereRadius, N.y * kSphereRadius, N.z * kSphereRadius );
 				}
-				const RISEPel sphereColor = ShadeSphereHit( *pMat, ray, hitPt, N, x, y );
+				const RISEPel sphereColor = ShadeSphereHit( *pMat, ray, hitPt, N, x, y, bg );
 				pixelColor = bg * ( Scalar( 1.0 ) - coverage ) + sphereColor * coverage;
 			}
 

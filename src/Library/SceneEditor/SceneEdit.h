@@ -54,6 +54,7 @@ namespace RISE
 		//! Captured here so the clone matches the source even after
 		//! the Film's pixelAR has moved.
 		double       pixelAR;
+		double       nearClip;
 
 		// Pinhole / ThinLens.
 		double       iso;
@@ -82,7 +83,7 @@ namespace RISE
 		CameraSnapshot()
 		: type( Pinhole )
 		, exposure( 0 ), scanningRate( 0 ), pixelRate( 0 )
-		, pixelAR( 1.0 )
+		, pixelAR( 1.0 ), nearClip( 0 )
 		, iso( 0 ), fov( 0 )
 		, sensorSize( 0 ), focalLength( 0 ), fstop( 0 ), focusDistance( 0 )
 		, sceneUnitMeters( 1 )

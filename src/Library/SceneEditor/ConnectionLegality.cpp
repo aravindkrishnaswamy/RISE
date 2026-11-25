@@ -373,6 +373,17 @@ namespace RISE
 					return { false, Fmt( "%s: parameter `%s` requires a %s chunk (got `%s`)",
 						targetKeyword.c_str(), paramName.c_str(), PipeName( ParameterPipe::Material ), candidateKeyword.c_str() ) };
 				}
+				if( candidateKeyword == "mix_material" &&
+				    ( targetKeyword == "composite_material" ||
+				      targetKeyword == "lambertian_luminaire_material" ||
+				      targetKeyword == "phong_luminaire_material" ||
+				      targetKeyword == "coated_material" ||
+				      targetKeyword == "fabric_material" ||
+				      targetKeyword == "mix_material" ) ) {
+					return { false, Fmt(
+						"%s: parameter `%s` cannot wrap `mix_material` (unresolved mix materials may only be assigned directly to objects)",
+						targetKeyword.c_str(), paramName.c_str() ) };
+				}
 				return { true, std::string() };
 			case ParameterPipe::Function1D:
 				if( candidateKeyword != "piecewise_linear_function" ) {
@@ -420,16 +431,22 @@ namespace RISE
 			return true;
 		}
 
-		//! True iff `chunkNode` (a Chunk node) has an authored `values` param
-		//! line -- the one statically-visible per-channel `scalar_painter`
-		//! form (RGBScalarPainter). See ConnectionLegality.h's "what this does
-		//! not do" note for the forms this deliberately does not chase.
+		//! True iff `chunkNode` (a Chunk node) is a statically-visible
+		//! per-channel `scalar_painter` form (`values` -> RGBScalarPainter, or
+		//! `painter` + `channel RGB` -> PainterRGBScalarPainter).
 		bool ChunkHasValuesParam( const Cst::NodeRef& chunkNode )
 		{
 			if( !chunkNode ) return false;
+			bool hasPainter = false;
 			for( size_t i = 0; i < chunkNode->kids.size(); ++i ) {
 				const Cst::NodeRef& k = chunkNode->kids[i];
-				if( k && k->kind == Cst::NodeKind::Param && k->role == "values" ) return true;
+				if( k && k->kind == Cst::NodeKind::Param ) {
+					if( k->role == "values" ) return true;
+					if( k->role == "painter" ) hasPainter = true;
+				}
+			}
+			if( hasPainter && Cst::ParamValueAsParsed( chunkNode, "channel" ) == "RGB" ) {
+				return true;
 			}
 			return false;
 		}

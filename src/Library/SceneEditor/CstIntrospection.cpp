@@ -664,6 +664,10 @@ std::vector<CameraProperty> CstIntrospection::Inspect(
 					{
 						if( dc->item && RISE::Cst::ParamOccurrenceCount( dc->item, "values" ) > 0 )
 							sourceHasValues = true;
+						if( !sourceHasValues && dc->item
+							&& RISE::Cst::ParamOccurrenceCount( dc->item, "painter" ) > 0
+							&& RISE::Cst::ParamValueAsParsed( dc->item, "channel" ) == "RGB" )
+							sourceHasValues = true;
 						if( !sourceHasValues && spm )
 						{
 							if( IScalarPainter* sp = spm->GetItem( n.c_str() ) )
