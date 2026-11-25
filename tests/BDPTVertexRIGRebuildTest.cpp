@@ -94,6 +94,10 @@ static bool IsClose( Scalar a, Scalar b, Scalar eps = 1e-9 )
 static const char kProviderTagByte = 'p';
 static const char kSceneTagByte    = 's';
 static const char kSelfTagByte     = 'o';
+static const char kW2OTagByte      = 'w';
+static const char kO2WTagByte      = 'm';
+static const char kCameraTagByte   = 'c';
+static const char kObjInfoTagByte  = 'i';
 
 static const ISurfaceSignalProvider* const kProviderSentinel =
 	reinterpret_cast<const ISurfaceSignalProvider*>( &kProviderTagByte );
@@ -101,6 +105,14 @@ static const IObjectManager* const kSceneSentinel =
 	reinterpret_cast<const IObjectManager*>( &kSceneTagByte );
 static const IObject* const kSelfSentinel =
 	reinterpret_cast<const IObject*>( &kSelfTagByte );
+static const Matrix4* const kW2OSentinel =
+	reinterpret_cast<const Matrix4*>( &kW2OTagByte );
+static const Matrix4* const kO2WSentinel =
+	reinterpret_cast<const Matrix4*>( &kO2WTagByte );
+static const ICamera* const kCameraSentinel =
+	reinterpret_cast<const ICamera*>( &kCameraTagByte );
+static const ObjectInfoData* const kObjInfoSentinel =
+	reinterpret_cast<const ObjectInfoData*>( &kObjInfoTagByte );
 
 //////////////////////////////////////////////////////////////////////
 // FillSurfaceStateSentinels
@@ -184,6 +196,13 @@ static BDPTVertex MakeSentinelSurfaceVertex()
 	v.txFootprint.objectWidth = 3.12;
 	v.txFootprint.valid       = true;
 	v.txFootprint.widthValid  = true;
+
+	// ---- Group 7 space transforms & per-object Cycles Object Info pointers.
+	v.pmxWorldToObject        = kW2OSentinel;
+	v.pmxObjectToWorld        = kO2WSentinel;
+	v.pCamera                 = kCameraSentinel;
+	v.pObjectInfo             = kObjInfoSentinel;
+	v.bIsCameraRay            = true;
 
 	return v;
 }
@@ -418,6 +437,18 @@ void TestPopulateRIG_AllFields()
 		"txFootprint.valid should mirror vertex.txFootprint.valid" );
 	Check( ri.txFootprint.widthValid == true,
 		"txFootprint.widthValid should mirror vertex.txFootprint.widthValid" );
+
+	// ---- Group 7 space transforms & ObjectInfo pointers
+	Check( ri.pmxWorldToObject == kW2OSentinel,
+		"pmxWorldToObject should mirror vertex.pmxWorldToObject" );
+	Check( ri.pmxObjectToWorld == kO2WSentinel,
+		"pmxObjectToWorld should mirror vertex.pmxObjectToWorld" );
+	Check( ri.pCamera == kCameraSentinel,
+		"pCamera should mirror vertex.pCamera" );
+	Check( ri.pObjectInfo == kObjInfoSentinel,
+		"pObjectInfo should mirror vertex.pObjectInfo" );
+	Check( ri.bIsCameraRay == true,
+		"bIsCameraRay should mirror vertex.bIsCameraRay" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -480,6 +511,11 @@ void TestPopulateRIG_DefaultsAlsoCopy()
 	ri.txFootprint.objectWidth    = 9.99;
 	ri.txFootprint.valid          = true;
 	ri.txFootprint.widthValid     = true;
+	ri.pmxWorldToObject           = kW2OSentinel;
+	ri.pmxObjectToWorld           = kO2WSentinel;
+	ri.pCamera                    = kCameraSentinel;
+	ri.pObjectInfo                = kObjInfoSentinel;
+	ri.bIsCameraRay               = true;
 
 	PathVertexEval::PopulateRIGFromVertex( v, ri );
 
@@ -536,6 +572,14 @@ void TestPopulateRIG_DefaultsAlsoCopy()
 		   ri.txFootprint.widthValid == false,
 		"txFootprint should be overwritten with the vertex's default "
 		"(zero widths, both validity flags false)" );
+
+	Check( ri.pmxWorldToObject == 0 &&
+		   ri.pmxObjectToWorld == 0 &&
+		   ri.pCamera == 0 &&
+		   ri.pObjectInfo == 0 &&
+		   ri.bIsCameraRay == false,
+		"Group 7 space-transform, ObjectInfo pointers, and bIsCameraRay should be overwritten "
+		"with the vertex's defaults" );
 }
 
 //////////////////////////////////////////////////////////////////////

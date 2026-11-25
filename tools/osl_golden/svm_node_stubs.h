@@ -64,4 +64,27 @@ ccl_device_forceinline void svm_unpack_node_uchar4(const uint i,
   *w = ((i >> 24) & 0xFF);
 }
 
+template<typename T> inline T stack_load(const ccl_private float *stack, const uint a);
+template<> inline float stack_load<float>(const ccl_private float *stack, const uint a)
+{
+  return stack_load_float(stack, a);
+}
+template<> inline float3 stack_load<float3>(const ccl_private float *stack, const uint a)
+{
+  return stack_load_float3(stack, a);
+}
+
+template<typename T>
+inline void stack_store(ccl_private float *stack, const uint a, const T f);
+template<>
+inline void stack_store<float>(ccl_private float *stack, const uint a, const float f)
+{
+  stack_store_float(stack, a, f);
+}
+template<>
+inline void stack_store<float3>(ccl_private float *stack, const uint a, const float3 f)
+{
+  stack_store_float3(stack, a, f);
+}
+
 CCL_NAMESPACE_END

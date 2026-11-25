@@ -872,14 +872,32 @@ static void TestMemoWorthinessGate()
 	// was MEASURED at 3.35x more user CPU on a sampling scene and
 	// rejected.  53.6 kB decimal across 18 workers, still a rounding
 	// error against a worker's stack.
+	// 3840 SINCE GROUP 7 LIVE SPACE TRANSFORMS + OBJECT INFO + OSL_AO (2026-11-23):
+	// `osl_to_*` / `osl_camera_to_world_*` / `osl_object_*` / `osl_ao` / `osl_backfacing` /
+	// `osl_shading_normal` / `osl_particle_random` read the hit's object matrices, pose
+	// epochs, live camera frame, geometric normal + arrival facing + true backfacing +
+	// pre-modifier normal N0, and per-object ObjectInfoData (7 floats = 28 bytes, with
+	// `geomBackfacing` and `particleRand` packed into the alignment hole), so
+	// SpaceTransformHitKey stays 208 bytes + `usesSpaceTransform` gate bool
+	// (216 bytes aligned per L2 way x 4 ways = +864 bytes: 2976 + 864 = 3840 bytes,
+	// still under 4096).
+	// 4016 SINCE WAVE C AO CACHE CONSOLIDATION (2026-11-25):
+	// Folded the 1-way AmbientOcclusion cache (AOCacheKey 168 B + aoVal 8 B, with aoValid
+	// fitting in existing padding after `bool enabled` = 176 B) out of SurfaceSignalProximity.h's
+	// hidden non-trivial thread_local into ExpressionMemo::Tables so every render worker's
+	// memo/AO TLS budget is trivially default-constructible, reset in Refresh(), and tracked
+	// under one 4096-byte roof: 3840 + 176 = 4016 bytes <= 4096.
 	const std::size_t bytes = ExpressionMemo::BytesPerThread();
 	std::cout << "    bytes of thread-local memo per render worker: " << bytes
 		<< "  (1408 when the memo shipped, 1440 since the `pipe` key field, 1824 since the"
 		   " four cross-object SignalHitKey fields, 2432 since kL1Ways went 4 -> 8 for"
-		   " `interior`, 2976 since DL-25's PainterSampleHitKey; ceiling 4096)" << std::endl;
+		   " `interior`, 2976 since DL-25's PainterSampleHitKey, 3840 since Group 7's"
+		   " SpaceTransformHitKey + ObjectInfo + osl_ao, 4016 since Wave C's 1-way AOCacheKey;"
+		   " ceiling 4096)" << std::endl;
 	Check( bytes <= 4096, "(g) the per-thread memo stays under the 4096-byte ceiling" );
-	Check( bytes == 2976, "(g) MONEY -- and it is EXACTLY 2976 bytes at kL1Ways = 8 with DL-25's "
-		"PainterSampleHitKey in the L2 key (got " + std::to_string( bytes ) + ")" );
+	Check( bytes == 4016, "(g) MONEY -- and it is EXACTLY 4016 bytes at kL1Ways = 8 with DL-25's "
+		"PainterSampleHitKey, Group 7's SpaceTransformHitKey + ObjectInfo + osl_ao, and Wave C's "
+		"1-way AOCacheKey in Tables (got " + std::to_string( bytes ) + ")" );
 }
 
 //======================================================================
@@ -2689,6 +2707,84 @@ static void TestSignedZeroKeySeparation()
 			m.sampleHit.dudx = nz;
 			Check( !pkBase.Equals( m ) && !m.Equals( pkBase ),
 				"(q) ProgramKey.sampleHit.dudx: +0.0 and -0.0 compare unequal" );
+		}
+		// SpaceTransformHitKey: all 12 camera-frame double fields.
+		{
+			ExpressionMemo::ProgramKey stBase = pkBase;
+			stBase.usesSpaceTransform = true;
+			stBase.spaceHit.pWorldToObject = 0;
+			stBase.spaceHit.pObjectToWorld = 0;
+			stBase.spaceHit.hasCamera = true;
+			stBase.spaceHit.geomOpposesArrival = -1;
+			stBase.spaceHit.camOx = stBase.spaceHit.camOy = stBase.spaceHit.camOz = 0.0;
+			stBase.spaceHit.camRx = stBase.spaceHit.camRy = stBase.spaceHit.camRz = 0.0;
+			stBase.spaceHit.camUx = stBase.spaceHit.camUy = stBase.spaceHit.camUz = 0.0;
+			stBase.spaceHit.camFx = stBase.spaceHit.camFy = stBase.spaceHit.camFz = 0.0;
+			stBase.spaceHit.gnx = stBase.spaceHit.gny = stBase.spaceHit.gnz = 0.0;
+			stBase.spaceHit.n0x = stBase.spaceHit.n0y = stBase.spaceHit.n0z = 0.0;
+			struct StField { double ExpressionMemo::SpaceTransformHitKey::*ptr; const char* name; };
+			const StField stFields[] = {
+				{ &ExpressionMemo::SpaceTransformHitKey::camOx, "camOx" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camOy, "camOy" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camOz, "camOz" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camRx, "camRx" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camRy, "camRy" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camRz, "camRz" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camUx, "camUx" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camUy, "camUy" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camUz, "camUz" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camFx, "camFx" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camFy, "camFy" },
+				{ &ExpressionMemo::SpaceTransformHitKey::camFz, "camFz" },
+				{ &ExpressionMemo::SpaceTransformHitKey::gnx,   "gnx" },
+				{ &ExpressionMemo::SpaceTransformHitKey::gny,   "gny" },
+				{ &ExpressionMemo::SpaceTransformHitKey::gnz,   "gnz" },
+				{ &ExpressionMemo::SpaceTransformHitKey::n0x,   "n0x" },
+				{ &ExpressionMemo::SpaceTransformHitKey::n0y,   "n0y" },
+				{ &ExpressionMemo::SpaceTransformHitKey::n0z,   "n0z" },
+			};
+			for( size_t i = 0; i < sizeof( stFields ) / sizeof( stFields[0] ); ++i ) {
+				ExpressionMemo::ProgramKey m = stBase;
+				m.spaceHit.*( stFields[i].ptr ) = nz;
+				const std::string tag = std::string( "(q) SpaceTransformHitKey." ) + stFields[i].name;
+				Check( !stBase.Equals( m ) && !m.Equals( stBase ) && m.Equals( m ),
+					tag + ": +0.0 and -0.0 compare unequal symmetrically" );
+			}
+			// geomOpposesArrival separation (-1 vs +1) and geomBackfacing separation (false vs true)
+			{
+				ExpressionMemo::ProgramKey m = stBase;
+				m.spaceHit.geomOpposesArrival = 1;
+				Check( !stBase.Equals( m ) && !m.Equals( stBase ) && m.Equals( m ),
+					"(q) SpaceTransformHitKey.geomOpposesArrival separates -1 vs +1" );
+			}
+			{
+				ExpressionMemo::ProgramKey m = stBase;
+				m.spaceHit.geomBackfacing = !stBase.spaceHit.geomBackfacing;
+				Check( !stBase.Equals( m ) && !m.Equals( stBase ) && m.Equals( m ),
+					"(q) SpaceTransformHitKey.geomBackfacing separates false vs true" );
+			}
+			// And all 7 ObjectInfoData float fields (+0.0f vs -0.0f).
+			const float nzf = -0.0f;
+			stBase.spaceHit.objR = stBase.spaceHit.objG = stBase.spaceHit.objB = 0.0f;
+			stBase.spaceHit.objA = stBase.spaceHit.objIdx = stBase.spaceHit.objRand = 0.0f;
+			stBase.spaceHit.particleRand = 0.0f;
+			struct StFloatField { float ExpressionMemo::SpaceTransformHitKey::*ptr; const char* name; };
+			const StFloatField stFloatFields[] = {
+				{ &ExpressionMemo::SpaceTransformHitKey::objR, "objR" },
+				{ &ExpressionMemo::SpaceTransformHitKey::objG, "objG" },
+				{ &ExpressionMemo::SpaceTransformHitKey::objB, "objB" },
+				{ &ExpressionMemo::SpaceTransformHitKey::objA, "objA" },
+				{ &ExpressionMemo::SpaceTransformHitKey::objIdx, "objIdx" },
+				{ &ExpressionMemo::SpaceTransformHitKey::objRand, "objRand" },
+				{ &ExpressionMemo::SpaceTransformHitKey::particleRand, "particleRand" },
+			};
+			for( size_t i = 0; i < sizeof( stFloatFields ) / sizeof( stFloatFields[0] ); ++i ) {
+				ExpressionMemo::ProgramKey m = stBase;
+				m.spaceHit.*( stFloatFields[i].ptr ) = nzf;
+				const std::string tag = std::string( "(q) SpaceTransformHitKey." ) + stFloatFields[i].name;
+				Check( !stBase.Equals( m ) && !m.Equals( stBase ) && m.Equals( m ),
+					tag + ": +0.0f and -0.0f compare unequal symmetrically" );
+			}
 		}
 	}
 }
