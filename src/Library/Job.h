@@ -1668,6 +1668,23 @@ namespace RISE
 			const char* model
 			);
 
+		//! Adds a physically-based bounded N-ary mix material (`mix_material`).
+		bool AddMixMaterial(
+			const char* name,
+			const char* const* children,
+			const char* const* weights,
+			const char* const* modifiers,
+			const unsigned int numChildren,
+			const char* passthroughWeight
+			);
+
+		//! Adds a thin two-sided diffuse reflection + diffuse transmission material.
+		bool AddDiffuseTransmissionMaterial(
+			const char* name,
+			const char* reflectance,
+			const char* transmittance
+			);
+
 		//! Adds Schlick material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddSchlickMaterial(
@@ -2387,6 +2404,22 @@ namespace RISE
 			const char* name,										///< [in] Name of the modifier stack
 			const char** modifierNames,								///< [in] Names of the member modifiers, in authored (application) order
 			const unsigned int count								///< [in] Number of members; 0 is rejected
+			);
+
+		//! Creates a weighted blend of two previously-registered modifiers.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddBlendedModifier(
+			const char* name,										///< [in] Name of the blended modifier
+			const char* modAName,									///< [in] Modifier at weight 0 (null/empty/"none" = unperturbed normal)
+			const char* modBName,									///< [in] Modifier at weight 1 (null/empty/"none" = unperturbed normal)
+			const char* weight										///< [in] Blend weight scalar painter name or inline float literal
+			);
+
+		//! Sets the planar near-clip distance (in scene units; 0 disables) on a named or active camera.
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetCameraNearClip(
+			const char* name,										///< [in] Camera name, or null/empty for active camera
+			const double nearClip									///< [in] Near-clip distance in scene units (>= 0)
 			);
 
 		//

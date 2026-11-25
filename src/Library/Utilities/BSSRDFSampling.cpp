@@ -25,7 +25,8 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	const IObject* pObject,
 	const IMaterial* pMaterial,
 	ISampler& sampler,
-	const Scalar nm
+	const Scalar nm,
+	const IRayIntersectionModifier* pExitLeafModifier
 	)
 {
 	SampleResult result;
@@ -157,6 +158,10 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		Point3 ptObjIntersec;
 		RISEPel vColor;
 		bool bHasVertexColor;
+		const Matrix4* pmxWorldToObject = 0;
+		const Matrix4* pmxObjectToWorld = 0;
+		const ICamera* pCamera = 0;
+		const ObjectInfoData* pObjectInfo = 0;
 	};
 	std::vector<ProbeHit> hits;
 	hits.reserve( 8 );
@@ -191,19 +196,33 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 			// Entry material owns the optical proposal, but coverage belongs
             // to this actual endpoint (CSG may inherit a different material).
+            // Round 3 P1-4: on a MixMaterial, apply mix pass-through coverage
+            // at the entry point composed with the exit leaf's own alpha, and
+            // inherit the exit leaf's modifier when set.
+            // Slice 3 R1 A-P2-4: populate signals & pCamera before coverage and
+            // before pEffectiveMod->Modify so procedural modifiers / weights
+            // using proximity(), osl_ao(), or camera transforms see live context.
+            probeRI.geometric.rast = ri.rast;
+            probeRI.geometric.pCamera = ri.pCamera;
+            probeRI.geometric.signals.pScene = ri.signals.pScene;
+            probeRI.geometric.signals.pSelf = pObject;
+            probeRI.geometric.signals.ptWorld = probeRI.geometric.ptIntersection;
             Scalar coverage = 1;
-            if( probeRI.pMaterial && probeRI.pMaterial->GetAlphaMode() != eAlphaOpaque ) {
-                // Supply scene/raster context only to coverage. Preserve the raw
-                // probe record and existing modifier/proposal inputs.
-                RayIntersectionGeometric alphaRI(probeRI.geometric);
-                alphaRI.rast = ri.rast;
-                alphaRI.signals.pScene = ri.signals.pScene;
-                alphaRI.signals.pSelf = pObject;
-                alphaRI.signals.ptWorld = alphaRI.ptIntersection;
-                coverage = probeRI.pMaterial->AlphaCoverage(alphaRI);
+            if( ( probeRI.pMaterial && probeRI.pMaterial->HasAlphaCoverage() ) ||
+                ( pMaterial && pMaterial->GetAlphaMode() != eAlphaOpaque ) )
+            {
+                if( probeRI.pMaterial && probeRI.pMaterial->IsUnresolvedMix() ) {
+                    const Scalar mixCov = probeRI.pMaterial->AlphaCoverage( probeRI.geometric );
+                    const Scalar leafCov = ( pMaterial && pMaterial->GetAlphaMode() != eAlphaOpaque )
+                        ? pMaterial->AlphaCoverage( probeRI.geometric ) : Scalar( 1 );
+                    coverage = mixCov * leafCov;
+                } else if( probeRI.pMaterial && probeRI.pMaterial->HasAlphaCoverage() ) {
+                    coverage = probeRI.pMaterial->AlphaCoverage( probeRI.geometric );
+                }
             }
-            if( probeRI.pModifier ) {
-				probeRI.pModifier->Modify( probeRI.geometric );
+            const IRayIntersectionModifier* pEffectiveMod = pExitLeafModifier ? pExitLeafModifier : probeRI.pModifier;
+            if( pEffectiveMod ) {
+				pEffectiveMod->Modify( probeRI.geometric );
 			}
 
 			ProbeHit h;
@@ -221,6 +240,10 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			h.ptObjIntersec = probeRI.geometric.ptObjIntersec;
 			h.vColor = probeRI.geometric.vColor;
 			h.bHasVertexColor = probeRI.geometric.bHasVertexColor;
+			h.pmxWorldToObject = probeRI.geometric.pmxWorldToObject;
+			h.pmxObjectToWorld = probeRI.geometric.pmxObjectToWorld;
+			h.pCamera = probeRI.geometric.pCamera;
+			h.pObjectInfo = probeRI.geometric.pObjectInfo;
 
 			// Cross-object signals triple (DL-22):
 			// Stamped with exactly the values ObjectManager::IntersectRay stamps:
@@ -558,6 +581,10 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	result.ptObjIntersec = hits[sel].ptObjIntersec;
 	result.vColor = hits[sel].vColor;
 	result.bHasVertexColor = hits[sel].bHasVertexColor;
+	result.pmxWorldToObject = hits[sel].pmxWorldToObject ? hits[sel].pmxWorldToObject : ri.pmxWorldToObject;
+	result.pmxObjectToWorld = hits[sel].pmxObjectToWorld ? hits[sel].pmxObjectToWorld : ri.pmxObjectToWorld;
+	result.pCamera = hits[sel].pCamera ? hits[sel].pCamera : ri.pCamera;
+	result.pObjectInfo = hits[sel].pObjectInfo ? hits[sel].pObjectInfo : ri.pObjectInfo;
 	result.scatteredRay = Ray( result.entryPoint, cosineDir );
 	result.cosinePdf = cosTheta * INV_PI;
 	result.pdfSurface = pdfSurface;
@@ -577,7 +604,8 @@ bool BSSRDFSampling::IntersectContactRay(
 	const IObjectManager& objects,
 	const IObject* pTarget,
 	const IObject* pSource,
-	RayIntersection& ri
+	RayIntersection& ri,
+	ISampler* pSampler
 	)
 {
 	const Ray ray = ri.geometric.ray;
@@ -604,8 +632,29 @@ bool BSSRDFSampling::IntersectContactRay(
 			r_max( cosHit, Scalar( 0.05 ) );
 		const Scalar t = ri.geometric.range;
 		if( t >= Scalar( 0.5 ) * delta && t <= delta + reach ) {
-			ri.pContactPartner = pSource;
-			return true;
+			// Slice 3 R1 A-P1-6: if the contact partner carries a MixMaterial
+			// or alpha coverage, re-resolve using the active sampler (Round 3 §3)
+			// and apply the HitCoverage() alpha test so a transparent touching
+			// sheet passes through instead of becoming an opaque black absorber.
+			if( pSampler && ri.pUnresolvedMix ) {
+				ri.pModifier = ri.pPreMixModifier;
+				ri.pUnresolvedMix->ResolveMixHit( ri, pSampler );
+			}
+			const Scalar cov = ri.HitCoverage();
+			ri.acceptedAlphaCoverage = cov;
+			// Slice 3 R2 P1-1: during deterministic contact discovery
+			// (`pSampler == nullptr`), do not reject a touching MixMaterial
+			// partner solely because its deterministic fallback draw landed on
+			// a zero-alpha cutout leaf.  Gate discovery on `ri.mixCoverage > 0`
+			// and defer per-leaf selection + alpha testing to the actual
+			// `pSampler != nullptr` contact launch.
+			const bool accepted = pSampler
+				? ( cov >= Scalar( 1 ) || ( cov > Scalar( 0 ) && pSampler->GetAlpha1D() < cov ) )
+				: ( ri.pUnresolvedMix ? ( ri.mixCoverage > Scalar( 0 ) ) : ( cov > Scalar( 0 ) ) );
+			if( accepted ) {
+				ri.pContactPartner = pSource;
+				return true;
+			}
 		}
 	}
 	ri = RayIntersection( ray, rast );
@@ -621,11 +670,14 @@ bool BSSRDFSampling::IntersectContact(
 	const Point3& p,
 	const Vector3& dir,
 	const RasterizerState& rast,
-	RayIntersection& ri
+	RayIntersection& ri,
+	ISampler* pSampler
 	)
 {
+	const ICamera* prevCam = ri.geometric.pCamera;
 	ri = RayIntersection( ContactRay( p, dir ), rast );
-	return IntersectContactRay( objects, pTarget, pSource, ri );
+	ri.geometric.pCamera = prevCam;
+	return IntersectContactRay( objects, pTarget, pSource, ri, pSampler );
 }
 
 namespace
@@ -787,7 +839,7 @@ const IObject* BSSRDFSampling::FindSurfaceContact(
 	for( unsigned int k = 0; k < nCand; ++k ) {
 		if( bSSSTargetsOnly ) {
 			const IMaterial* pMat = cand[k]->GetMaterial();
-			if( !pMat || !( pMat->GetDiffusionProfile() || pMat->GetRandomWalkSSSParams() ) ) {
+			if( !pMat || !pMat->HasSubsurfaceLeaf() ) {
 				continue;
 			}
 		}

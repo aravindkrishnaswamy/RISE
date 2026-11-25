@@ -214,6 +214,34 @@ namespace RISE
         virtual void AddShaderDirection(const Vector3& direction) = 0;
     };
 
+	//! Named per-corner RGBA attribute storage (arbitrary geometry attributes
+	//! such as Blender `mesh.attributes`, Geometry Nodes fields, extra color
+	//! layers, float/vector/color attributes).  Stored flat as 4 linear floats
+	//! per triangle corner (`triIndex * 3 + k` for `k in {0, 1, 2}`) so sharp
+	//! face-corner / UV / crease attribute seams are preserved losslessly.
+	//! Separate sub-interface preserves every v1..v4 virtual layout.
+	class ITriangleMeshGeometryIndexed5 : public virtual ITriangleMeshGeometryIndexed4
+	{
+	protected:
+		ITriangleMeshGeometryIndexed5(){};
+		virtual ~ITriangleMeshGeometryIndexed5(){};
+
+	public:
+		//! Attaches or overwrites a named per-corner RGBA attribute.
+		//! `cornerRGBA` must contain `numCorners * 4` floats in triangle-corner
+		//! order (`triIndex * 3 + k`, `k in {0,1,2}`).
+		//! \return true on success, false if `name` is null/empty, `numCorners`
+		//!         is 0, or `cornerRGBA` is null.
+		virtual bool AddNamedCornerAttribute(
+			const char* name,
+			const float* cornerRGBA,
+			unsigned int numCorners
+			) = 0;
+
+		/// \return Number of stored named per-corner attributes.
+		virtual unsigned int numNamedCornerAttributes() const = 0;
+	};
+
 }
 
 #endif

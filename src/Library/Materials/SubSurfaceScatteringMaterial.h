@@ -56,6 +56,8 @@ namespace RISE
 			//! was constructed once with `ior`; per-slot live edit on
 			//! the diffusion profile is out of scope).
 			const IScalarPainter*					pIORPainter;
+			const IScalarPainter*					pAbsorptionPainter;
+			const IScalarPainter*					pScatteringPainter;
 			const Scalar							surfaceRoughness;
 
 			virtual ~SubSurfaceScatteringMaterial()
@@ -64,6 +66,8 @@ namespace RISE
 				safe_release( pSPF );
 				safe_release( pProfile );
 				safe_release( pIORPainter );
+				safe_release( pAbsorptionPainter );
+				safe_release( pScatteringPainter );
 			}
 
 		public:
@@ -75,9 +79,13 @@ namespace RISE
 				const Scalar roughness
 				) :
 			pIORPainter( &ior ),
+			pAbsorptionPainter( &absorption ),
+			pScatteringPainter( &scattering ),
 			surfaceRoughness( roughness )
 			{
 				pIORPainter->addref();
+				pAbsorptionPainter->addref();
+				pScatteringPainter->addref();
 				pBSDF = new SubSurfaceScatteringBSDF( ior, g, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
@@ -157,6 +165,14 @@ namespace RISE
 				pBSDF->SetIOR( v );
 				pSPF->SetIOR( v );
 				pProfile->SetIOR( v );
+			}
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					( pIORPainter ? pIORPainter->GetPathDependence() : 0u ) |
+					( pAbsorptionPainter ? pAbsorptionPainter->GetPathDependence() : 0u ) |
+					( pScatteringPainter ? pScatteringPainter->GetPathDependence() : 0u );
 			}
 		};
 	}

@@ -64,6 +64,13 @@ namespace RISE
 			inline const IScalarPainter& GetRoughness() const { return pBRDF->GetRoughness(); }
 			inline void SetColor( const IPainter& v )         { pBRDF->SetColor( v );     pSPF->SetColor( v ); }
 			inline void SetRoughness( const IScalarPainter& v ){ pBRDF->SetRoughness( v ); pSPF->SetRoughness( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetColor().GetPathDependence() |
+					pBRDF->GetRoughness().GetPathDependence();
+			}
 		};
 	}
 }

@@ -72,6 +72,14 @@ namespace RISE
 				}
 				return false;
 			}
+			unsigned int GetPathDependence() const
+			{
+				unsigned int mask = border.GetPathDependence();
+				for( GeneratorsList::const_iterator it = generators.begin(), e = generators.end(); it != e; ++it ) {
+					if( it->second ) { mask |= it->second->GetPathDependence(); }
+				}
+				return mask;
+			}
 		};
 	}
 }

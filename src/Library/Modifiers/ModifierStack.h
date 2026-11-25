@@ -80,7 +80,15 @@ namespace RISE
 				const unsigned int count							///< [in] Number of members; > 0
 				);
 
-			void Modify( RayIntersectionGeometric& ri ) const;
+			void Modify( RayIntersectionGeometric& ri ) const override;
+			unsigned int GetPathDependence() const override
+			{
+				unsigned int mask = 0u;
+				for( size_t i = 0; i < members.size(); ++i ) {
+					if( members[i] ) mask |= members[i]->GetPathDependence();
+				}
+				return mask;
+			}
 
 			//! Structural introspection (CstDeriveGoldenTest's DumpJob
 			//! composition digest): the ordered member list.

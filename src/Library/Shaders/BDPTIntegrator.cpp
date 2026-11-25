@@ -140,17 +140,19 @@ namespace
 	{
 		if( !pAOV || pAOV->primaryDepthCaptured ) return;
 		pAOV->primaryDepthCaptured = true;
-		pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		Scalar depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		if( ri.geometric.bHit && ri.geometric.pCamera ) {
+			depth += BDPTCameraUtilities::ComputeNearClipDistance( *ri.geometric.pCamera, ri.geometric.ray.Dir() );
+		}
+		pAOV->depth = depth;
 		if( !ri.geometric.bHit || rc.aovPrefilterMode != OidnPrefilter::Fast ) return;
 
 		RayIntersectionGeometric aovGeom( ri.geometric );
-		if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
-		pAOV->normal = aovGeom.vNormal;
-		pAOV->albedo = ( rc.hasPathTracingVariantConfig && rc.pathTracingClayOverride )
-			? RISEPel( 0.5, 0.5, 0.5 )
-			: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-				? ri.pMaterial->GetBSDF()->albedo( aovGeom )
-				: RISEPel( 1, 1, 1 ) );
+		if( ri.pModifier && !ri.pUnresolvedMix ) ri.pModifier->Modify( aovGeom );
+		EvaluateMaterialAOVGuides( ri, aovGeom, false, 0, pAOV->albedo, pAOV->normal );
+		if( rc.hasPathTracingVariantConfig && rc.pathTracingClayOverride ) {
+			pAOV->albedo = RISEPel( 0.5, 0.5, 0.5 );
+		}
 		pAOV->valid = true;
 	}
 
@@ -165,12 +167,13 @@ namespace
 		// This runs while the real trace-time intersection and incoming ray
 		// are still available. Reconstructing them later from camera->vertex
 		// is wrong after a reflection, refraction, medium event, or BSSRDF.
-		pAOV->normal = ri.geometric.vNormal;
-		pAOV->albedo = ( rc.hasPathTracingVariantConfig && rc.pathTracingClayOverride )
-			? RISEPel( 0.5, 0.5, 0.5 )
-			: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-				? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-				: RISEPel( 1, 1, 1 ) );
+		// Round 3 P1-1 / P1-6: expected-value guides on mix hits and black
+		// albedo on absorbers.
+		const bool bClay = ( rc.hasPathTracingVariantConfig && rc.pathTracingClayOverride );
+		EvaluateMaterialAOVGuides( ri, ri.geometric, false, 0, pAOV->albedo, pAOV->normal );
+		if( bClay ) {
+			pAOV->albedo = RISEPel( 0.5, 0.5, 0.5 );
+		}
 		pAOV->valid = true;
 	}
 
@@ -1943,9 +1946,10 @@ namespace {
 			// VCM's first-segment `ConvertEyeSubpath` step) reconstruct from
 			// `eyeVerts[0].position`.
 			if( pCamera ) {
+				const Scalar tNear = BDPTCameraUtilities::ComputeNearClipDistance( *pCamera, cameraRay.Dir() );
 				v.position = ( BDPTCameraUtilities::HasFiniteAperture( *pCamera ) ||
 					BDPTCameraUtilities::IsDeltaDirection( *pCamera ) ) ?
-					cameraRay.origin : pCamera->GetLocation();
+					cameraRay.PointAtLength( -tNear ) : pCamera->GetLocation();
 			}
 
 			v.normal = cameraRay.Dir();
@@ -2030,10 +2034,12 @@ namespace {
 		// Opaque scenes skip in O(1) (`!cat.hasTrackableMedia`); scenes with
 		// closed dielectrics pay one +Z probe when the camera is in free space.
 		if( pCamera ) {
-			// Seed from the CAMERA VERTEX, which on a finite-aperture
-			// camera is the sampled lens point rather than the lens
-			// centre (debt 28) -- the walk physically starts there.
-			IORStackSeeding::SeedFromPoint( iorStack, vertices[0].position, scene, NmOrZero<Tag>(tag) );
+			// Option A near_clip: seed containment from `cameraRay.origin`
+			// (the clipped start of the primary segment, matching PT / RayCaster /
+			// AOVBuffers) so cutaway views slicing into a dielectric or bounded
+			// medium start inside that medium.  Identical to vertices[0].position
+			// when near_clip == 0.
+			IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene, NmOrZero<Tag>(tag) );
 		}
 		// DL-09: the camera endpoint's graded medium and index, for a t==1
 		// connection's (n_camera/n_light)^2 factor.
@@ -2105,11 +2111,12 @@ namespace {
 			// (from behind the shared face); one that does not meet it at the
 			// launch point falls back to the ordinary scene cast.
 			RayIntersection ri( currentRay, nullRasterizerState );
+			ri.geometric.pCamera = scene.GetCamera();
 			bool bWalkContactHit = false;
 			if( pWalkContactTarget ) {
 				bWalkContactHit = BSSRDFSampling::IntersectContact( *scene.GetObjects(),
 					pWalkContactTarget, pWalkContactSource, walkContactPoint, currentRay.Dir(),
-					nullRasterizerState, ri );
+					nullRasterizerState, ri, &sampler );
 				pWalkContactTarget = 0;
 				pWalkContactSource = 0;
 				if( !bWalkContactHit ) {
@@ -2128,6 +2135,8 @@ namespace {
 					vertices.back().position = ri.geometric.ray.origin;
 				}
 			} else {
+				ri.geometric.bIsCameraRay = ( depth == 0 );
+				ri.geometric.pCamera = scene.GetCamera();
 				scene.GetObjects()->IntersectRaySampled( ri, sampler );
 			}
 			if( depth == 0 ) CaptureBDPTPrimaryAOV( rc, ri, pPrimaryAOV );
@@ -2335,7 +2344,12 @@ namespace {
 						// free-flight sampling probability density is proportional
 						// to sigma_t, while surface "acceptance" is proportional to
 						// the projected area (|cos|/dist^2).
-						const Scalar distSqMed = t_m * t_m;
+						// Option A near_clip: when vertices.back() is the unclipped CAMERA
+						// vertex, compute squared distance from eyeVerts[0].position rather
+						// than clipped t_m so mv.pdfFwd and eyeVerts[0].pdfRev match t==1.
+						const Scalar distSqMed = ( !vertices.empty() && vertices.back().type == BDPTVertex::CAMERA )
+							? Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( mv.position, vertices.back().position ) )
+							: ( t_m * t_m );
 						mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
 							pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
 						mv.pdfRev = 0;
@@ -2706,8 +2720,14 @@ namespace {
 			v.derivatives = ri.geometric.derivatives;
 			v.signals = ri.geometric.signals;
 			v.txFootprint = ri.geometric.txFootprint;
+			v.pmxWorldToObject = ri.geometric.pmxWorldToObject;
+			v.pmxObjectToWorld = ri.geometric.pmxObjectToWorld;
+			v.pCamera = ri.geometric.pCamera;
+			v.pObjectInfo = ri.geometric.pObjectInfo;
+			v.bIsCameraRay = ri.geometric.bIsCameraRay;
 			v.pMaterial = ri.pMaterial;
             v.acceptedAlphaCoverage = ri.acceptedAlphaCoverage;
+            v.mixConnectible = ri.mixConnectible;
 			v.pObject = ri.pObject;
 			v.pLight = 0;
 			v.pLuminary = 0;
@@ -2723,8 +2743,13 @@ namespace {
 			}
 			GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 
-			// Convert pdfFwdPrev from solid angle to area measure
-			const Scalar distSq = ri.geometric.range * ri.geometric.range;
+			// Convert pdfFwdPrev from solid angle to area measure.
+			// Option A near_clip: when vertices.back() is the unclipped CAMERA
+			// vertex, use the unclipped distance from eyeVerts[0].position so
+			// eyeVerts[1].pdfFwd and eyeVerts[0].pdfRev match t==1 and VCM.
+			const Scalar distSq = ( !vertices.empty() && vertices.back().type == BDPTVertex::CAMERA )
+				? Vector3Ops::SquaredModulus( Vector3Ops::mkVector3( v.position, vertices.back().position ) )
+				: ( ri.geometric.range * ri.geometric.range );
 			// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
 			// the area-element parameterisation depends on the actual face
 			// orientation, not the Phong-perturbed shading normal
@@ -2753,7 +2778,16 @@ namespace {
 			}
 	#endif
 
+			// Round 3 P1-1: set connectibility BEFORE early exits so an absorber
+			// leaf (null material or null SPF/BSDF) NEVER stays at the default
+			// `isConnectible = true` and over-brightens VCM merges by 1/q.
+			if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
+				GlobalLog()->PrintSourceError( "BDPTIntegrator:: unresolved MixMaterial reached eye subpath shading", __FILE__, __LINE__ );
+			}
+			v.isConnectible = ( ri.pMaterial != 0 && ri.pMaterial->GetBSDF() != 0 && ri.pMaterial->GetSPF() != 0 );
+
 			if( !ri.pMaterial ) {
+				CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
 				vertices.push_back( v );
 				break;
 			}
@@ -2923,7 +2957,8 @@ namespace {
 						// Reject its selected branch without reallocating Fresnel mass.
 						if( eyeTranslucentBounces >= stabilityConfig.maxTranslucentBounce ) break;
 						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
-							ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
+							ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ),
+							( ri.bMaterialFromMix && ri.pModifier != ri.pPreMixModifier ) ? ri.pModifier : 0 );
 
 							if( bssrdf.valid )
 							{
@@ -2948,6 +2983,7 @@ namespace {
 							entryV.position = bssrdf.entryPoint;
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
+							entryV.bGeomNormalOpposesArrival = true;
 							entryV.onb = bssrdf.entryONB;
 							// DL-22: forward live derivatives, signals, texture coordinates,
 							// and vertex color from BSSRDFSampling::SampleResult.
@@ -2960,6 +2996,10 @@ namespace {
 							entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryV.vColor = bssrdf.vColor;
 							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
+							entryV.pmxWorldToObject = bssrdf.pmxWorldToObject;
+							entryV.pmxObjectToWorld = bssrdf.pmxObjectToWorld;
+							entryV.pCamera = bssrdf.pCamera ? bssrdf.pCamera : scene.GetCamera();
+							entryV.pObjectInfo = bssrdf.pObjectInfo;
 							entryV.pMaterial = ri.pMaterial;
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 							entryV.pObject = ri.pObject;
@@ -3081,7 +3121,8 @@ namespace {
 						BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
 							ri.geometric, ri.pObject,
 							pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-							pRW->g, pRW->ior, pRW->maxBounces, rwSampler, NmOrZero<Tag>( tag ), pRW->maxDepth );
+							pRW->g, pRW->ior, pRW->maxBounces, rwSampler, NmOrZero<Tag>( tag ), pRW->maxDepth,
+							ri.pMaterial, ( ri.bMaterialFromMix && ri.pModifier != ri.pPreMixModifier ) ? ri.pModifier : 0 );
 
 							if( bssrdf.valid )
 							{
@@ -3111,6 +3152,7 @@ namespace {
 							entryV.position = bssrdf.entryPoint;
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
+							entryV.bGeomNormalOpposesArrival = true;
 							entryV.onb = bssrdf.entryONB;
 							// DL-22: forward live derivatives, signals, texture coordinates,
 							// and vertex color from RandomWalkSSS::SampleExit.
@@ -3123,6 +3165,10 @@ namespace {
 							entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryV.vColor = bssrdf.vColor;
 							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
+							entryV.pmxWorldToObject = bssrdf.pmxWorldToObject;
+							entryV.pmxObjectToWorld = bssrdf.pmxObjectToWorld;
+							entryV.pCamera = bssrdf.pCamera ? bssrdf.pCamera : scene.GetCamera();
+							entryV.pObjectInfo = bssrdf.pObjectInfo;
 							entryV.pMaterial = bssrdf.ExitMaterial( ri.pMaterial );	// DL-370: the body the walk left
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 							entryV.pObject = bssrdf.ExitObject( ri.pObject );
@@ -4558,20 +4604,30 @@ ConnectAndEvaluateImplCore(
 				camera, lightEnd.position, apertureSample_t0, rasterPos ) ) {
 			return result;
 		}
-
-		// Check visibility from camera to light vertex using standard shadow ray.
-		const Point3 camPos = apertureSample_t0.point;
-		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+		if( !BDPTCameraUtilities::IsPointPastNearClip( camera, lightEnd.position ) ) {
 			return result;
 		}
 
 		// Compute the camera importance
+		const Point3 camPos = apertureSample_t0.point;
 		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, lightEnd.position );
 		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
 		if( dist < BDPT_RAY_EPSILON ) {
 			return result;
 		}
 		dirToCam = dirToCam * (1.0 / dist);
+		const Scalar tNear_t0 = BDPTCameraUtilities::ComputeNearClipDistance( camera, -dirToCam );
+		if( tNear_t0 >= dist - BDPT_RAY_EPSILON ) {
+			return result;
+		}
+		const Point3 camVisEnd_t0 = ( tNear_t0 > Scalar( 0 ) )
+			? Point3Ops::mkPoint3( camPos, ( -dirToCam ) * tNear_t0 )
+			: camPos;
+
+		// Check visibility from near-clip boundary to light vertex using standard shadow ray.
+		if( !ConnectionIsVisible( caster, camVisEnd_t0, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+			return result;
+		}
 
 		Ray camRay( camPos, -dirToCam );
 		const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
@@ -4684,16 +4740,23 @@ ConnectAndEvaluateImplCore(
 		}
 
 		const Point3 camPos = apertureSample_t0.point;
-		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+		if( !BDPTCameraUtilities::IsPointPastNearClip( camera, lightEnd.position ) ) {
 			return result;
 		}
-
 		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, lightEnd.position );
 		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
 		if( dist < BDPT_RAY_EPSILON ) {
 			return result;
 		}
 		dirToCam = dirToCam * (1.0 / dist);
+		const Scalar tNear = BDPTCameraUtilities::ComputeNearClipDistance( camera, -dirToCam );
+		if( tNear >= dist - BDPT_RAY_EPSILON ) {
+			return result;
+		}
+		const Point3 camVisEnd = BDPTCameraUtilities::ApplyNearClipToConnectionEndpoint( camera, camPos, -dirToCam );
+		if( !ConnectionIsVisible( caster, camVisEnd, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+			return result;
+		}
 
 		Ray camRay( camPos, -dirToCam );
 		const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
@@ -5246,23 +5309,33 @@ ConnectAndEvaluateImplCore(
 				camera, lightEnd.position, apertureSample, rasterPos ) ) {
 			return result;
 		}
-
-		// This strategy is only valid for a direct camera connection.
-		// Refractive blockers must be sampled as explicit specular eye
-		// vertices; treating them as transparent here produces invalid
-		// splats and severe caustic fireflies.
-		const Point3 camPos = apertureSample.point;
-		if( !ConnectionIsVisible( caster, lightEnd.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+		if( !BDPTCameraUtilities::IsPointPastNearClip( camera, lightEnd.position ) ) {
 			return result;
 		}
 
 		// Direction from light vertex to camera
+		const Point3 camPos = apertureSample.point;
 		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, lightEnd.position );
 		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
 		if( dist < BDPT_RAY_EPSILON ) {
 			return result;
 		}
 		dirToCam = dirToCam * (1.0 / dist);
+		const Scalar tNear = BDPTCameraUtilities::ComputeNearClipDistance( camera, -dirToCam );
+		if( tNear >= dist - BDPT_RAY_EPSILON ) {
+			return result;
+		}
+		const Point3 camVisEnd = ( tNear > Scalar( 0 ) )
+			? Point3Ops::mkPoint3( camPos, ( -dirToCam ) * tNear )
+			: camPos;
+
+		// This strategy is only valid for a direct camera connection.
+		// Refractive blockers must be sampled as explicit specular eye
+		// vertices; treating them as transparent here produces invalid
+		// splats and severe caustic fireflies.
+		if( !ConnectionIsVisible( caster, lightEnd.position, camVisEnd, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+			return result;
+		}
 
 		// Camera importance
 		Ray camRay( camPos, -dirToCam );
@@ -5334,12 +5407,10 @@ ConnectAndEvaluateImplCore(
 				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
-			// DL-354: this branch was unreachable until (1,1) was routed
-			// here, and it never applied the connection's medium
-			// transmittance -- the camera ray hitting the same emitter
-			// (s == 0) does, so a fogged view of a visible emitter would
-			// have been over-bright by the (1,1) share.
-			const V Tr_conn_11 = EvalConnTr<Tag>( self, lightEnd.position, camPos, scene, caster,
+			// Option A near_clip: integrate medium transmittance over the same
+			// clipped segment (lightEnd.position -> camVisEnd) that eye rays and
+			// boundaryHits traverse, keeping unclipped camPos for dist/G/We.
+			const V Tr_conn_11 = EvalConnTr<Tag>( self, lightEnd.position, camVisEnd, scene, caster,
 				lightEnd.pMediumObject, lightEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 			// Contribution association preserved per tag (Pel parenthesises the
@@ -5396,8 +5467,9 @@ ConnectAndEvaluateImplCore(
 			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
-		// Connection transmittance through participating media
-		const V Tr_conn_t1 = EvalConnTr<Tag>( self, lightEnd.position, camPos, scene, caster,
+		// Connection transmittance through participating media (Option A
+		// near_clip: integrate to camVisEnd matching eye rays & boundaryHits).
+		const V Tr_conn_t1 = EvalConnTr<Tag>( self, lightEnd.position, camVisEnd, scene, caster,
 			lightEnd.pMediumObject, lightEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 		result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight * Tr_conn_t1 * (G * We);
@@ -7146,7 +7218,7 @@ unsigned int GenerateLightSubpathImpl(
 				// same texel the RGB hero (`ls.Le`) did; `Po`, ungated and
 				// ray-free, is `ls.ptObjIntersec` (`(0,0,0)` for a delta
 				// light, an env sample and a CSG-composite luminary).
-				LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
+				LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec, ls.pLuminary, scene.GetCamera() );
 				// THE NM HERO twin of LightSampler's own emission record
 				// (slice S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
 				// §5).  `ls.surface` was probed ONCE inside `SampleLight`
@@ -7190,6 +7262,9 @@ unsigned int GenerateLightSubpathImpl(
 		// matters: both fields hold the one normal the sampler produced and
 		// the pdf was expressed against.
 		v.geomNormal = ls.normal;
+		// Emitted face normal already points toward the emitting hemisphere
+		// (matches LightSampler::FillEmitterRecord's arrivalGeomFacing = -1).
+		v.bGeomNormalOpposesArrival = true;
 		v.onb.CreateFromW( ls.normal );
 		v.pMaterial = 0;
 		v.pObject = 0;
@@ -7232,6 +7307,12 @@ unsigned int GenerateLightSubpathImpl(
 		// exactly what this vertex carried before -- whenever there is no
 		// single object frame to map into.
 		v.ptObjIntersec = ls.ptObjIntersec;
+		if( ls.pLuminary ) {
+			v.pObjectInfo = ls.pLuminary->GetObjectInfo();
+			v.pmxWorldToObject = ls.pLuminary->GetFinalInverseTransformMatrixPtr();
+			v.pmxObjectToWorld = ls.pLuminary->GetFinalTransformMatrixPtr();
+		}
+		v.pCamera = scene.GetCamera();
 		// DL-44: same ungated treatment for the sampled UV.  Read by
 		// `PathVertexEval::PopulateRIGFromVertex`'s consumers of this
 		// vertex -- `LuminaryRadiance` (BDPT's own s=0/t=1 splat and s=1
@@ -7341,7 +7422,7 @@ unsigned int GenerateLightSubpathImpl(
 						// field-for-field, by construction) so a hero-live /
 						// companion-neutral split cannot reappear -- the
 						// spectral form of the defect slice S3 closed.
-						LightSampler::FillEmitterRecord( rigW, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
+						LightSampler::FillEmitterRecord( rigW, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec, ls.pLuminary, scene.GetCamera() );
 						LightSampler::ApplyEmitterSurface( rigW, ls.surface );
 						LeW = pEm->emittedRadianceNM(
 							rigW, ls.direction, ls.normal, pSwlHWSS->lambda[w] );
@@ -7408,11 +7489,12 @@ unsigned int GenerateLightSubpathImpl(
 		// (from behind the shared face); one that does not meet it at the
 		// launch point falls back to the ordinary scene cast.
 		RayIntersection ri( currentRay, nullRasterizerState );
+		ri.geometric.pCamera = scene.GetCamera();
 		bool bWalkContactHit = false;
 		if( pWalkContactTarget ) {
 			bWalkContactHit = BSSRDFSampling::IntersectContact( *scene.GetObjects(),
 				pWalkContactTarget, pWalkContactSource, walkContactPoint, currentRay.Dir(),
-				nullRasterizerState, ri );
+				nullRasterizerState, ri, &sampler );
 			pWalkContactTarget = 0;
 			pWalkContactSource = 0;
 			if( !bWalkContactHit ) {
@@ -7431,6 +7513,7 @@ unsigned int GenerateLightSubpathImpl(
 				vertices.back().position = ri.geometric.ray.origin;
 			}
 		} else {
+			ri.geometric.pCamera = scene.GetCamera();
 			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 		}
 
@@ -7691,8 +7774,13 @@ unsigned int GenerateLightSubpathImpl(
 		v.derivatives = ri.geometric.derivatives;
 		v.signals = ri.geometric.signals;
 		v.txFootprint = ri.geometric.txFootprint;
+		v.pmxWorldToObject = ri.geometric.pmxWorldToObject;
+		v.pmxObjectToWorld = ri.geometric.pmxObjectToWorld;
+		v.pCamera = ri.geometric.pCamera;
+		v.pObjectInfo = ri.geometric.pObjectInfo;
 		v.pMaterial = ri.pMaterial;
             v.acceptedAlphaCoverage = ri.acceptedAlphaCoverage;
+            v.mixConnectible = ri.mixConnectible;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
@@ -7753,6 +7841,14 @@ unsigned int GenerateLightSubpathImpl(
 			v.guidingEta = v.mediumIOR > NEARZERO ? v.mediumIOR : 1.0;
 		}
 #endif
+
+		// Round 3 P1-1: set connectibility BEFORE early exits so an absorber
+		// leaf NEVER stays `isConnectible = true` and gets deposited into the
+		// VCM photon map with weight 1/(a*q).
+		if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
+			GlobalLog()->PrintSourceError( "BDPTIntegrator:: unresolved MixMaterial reached light subpath shading", __FILE__, __LINE__ );
+		}
+		v.isConnectible = ( ri.pMaterial != 0 && ri.pMaterial->GetBSDF() != 0 && ri.pMaterial->GetSPF() != 0 );
 
 		if( !ri.pMaterial ) {
 			vertices.push_back( v );
@@ -7911,7 +8007,8 @@ unsigned int GenerateLightSubpathImpl(
 					if( translucentBounces >= stabilityConfig.maxTranslucentBounce ) break;
 					// Chose subsurface transmission (probability Ft)
 					BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
+						ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ),
+						( ri.bMaterialFromMix && ri.pModifier != ri.pPreMixModifier ) ? ri.pModifier : 0 );
 
 					if( bssrdf.valid )
 					{
@@ -7939,6 +8036,7 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;
+						entryV.bGeomNormalOpposesArrival = true;
 						entryV.onb = bssrdf.entryONB;
 						// DL-22: forward live derivatives, signals, texture coordinates,
 						// and vertex color from BSSRDFSampling::SampleResult.
@@ -7951,6 +8049,10 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 						entryV.vColor = bssrdf.vColor;
 						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
+						entryV.pmxWorldToObject = bssrdf.pmxWorldToObject;
+						entryV.pmxObjectToWorld = bssrdf.pmxObjectToWorld;
+						entryV.pCamera = bssrdf.pCamera ? bssrdf.pCamera : scene.GetCamera();
+						entryV.pObjectInfo = bssrdf.pObjectInfo;
 						entryV.pMaterial = ri.pMaterial;
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 						entryV.pObject = ri.pObject;
@@ -8073,7 +8175,8 @@ unsigned int GenerateLightSubpathImpl(
 					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
 						ri.geometric, ri.pObject,
 						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, NmOrZero<Tag>( tag ), pRW->maxDepth );
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, NmOrZero<Tag>( tag ), pRW->maxDepth,
+						ri.pMaterial, ( ri.bMaterialFromMix && ri.pModifier != ri.pPreMixModifier ) ? ri.pModifier : 0 );
 
 					if( bssrdf.valid )
 					{
@@ -8104,6 +8207,7 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;
+						entryV.bGeomNormalOpposesArrival = true;
 						entryV.onb = bssrdf.entryONB;
 						// DL-22: forward live derivatives, signals, texture coordinates,
 						// and vertex color from RandomWalkSSS::SampleExit.
@@ -8116,6 +8220,10 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 						entryV.vColor = bssrdf.vColor;
 						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
+						entryV.pmxWorldToObject = bssrdf.pmxWorldToObject;
+						entryV.pmxObjectToWorld = bssrdf.pmxObjectToWorld;
+						entryV.pCamera = bssrdf.pCamera ? bssrdf.pCamera : scene.GetCamera();
+						entryV.pObjectInfo = bssrdf.pObjectInfo;
 						entryV.pMaterial = bssrdf.ExitMaterial( ri.pMaterial );	// DL-370: the body the walk left
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 						entryV.pObject = bssrdf.ExitObject( ri.pObject );

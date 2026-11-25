@@ -46,6 +46,12 @@
 
 #include "ISurfaceSignalProvider.h"
 #include "IObjectManager.h"
+#include "../Utilities/OrthonormalBasis3D.h"
+#include "../Utilities/Transformable.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 
 namespace RISE
 {
@@ -192,6 +198,222 @@ namespace RISE
 
 		ExpressionMemo::L1Insert( key, out );
 		return out;
+	}
+
+	//! Ray-traced ambient occlusion (`osl_ao(distance, samples, normal, flags)`).
+	//! Traces `samples` (clamped [1, 128]) cosine-weighted low-discrepancy
+	//! (Hammersley + 2D Cranley-Patterson hash) hemisphere rays from the hit's
+	//! centre world point (`ptWorld`), returning the unoccluded fraction in
+	//! [0, 1].
+	//!
+	//! * Scene-wide (`only_local == false`): uses `pScene->IntersectShadowRay`
+	//!   (honours `visible` + `casts_shadows`, evaluates no shaders, tests both
+	//!   front and back faces so `inside == true` hits interior walls).
+	//! * Local (`only_local == true`): uses `pSelf->IntersectRay_IntersectionOnly`
+	//!   (ignores `casts_shadows`, matching Cycles `scene_intersect_local`,
+	//!   Round 3 P2-4).
+	//! * Relief taps: `ptWorld` is the centre hit's world point (untouched by
+	//!   `ReliefModifier`), so `osl_ao` alone has zero spurious bump gradient
+	//!   while `Color * osl_ao(...)` preserves Color's gradient (MIX §III.3).
+	inline Scalar SurfaceSignalInfo::AmbientOcclusion(
+		const Scalar distanceWorld,
+		const int numSamples,
+		const Vector3& customNormal,
+		const int flags,
+		const Vector3& shadingNormal,
+		const Vector3& geomNormal,
+		const bool geomOpposesArrival
+		) const
+	{
+		// Per-thread re-entrancy guard (MIX §III.3): never recurse if a future
+		// traversal path ever evaluated a painter during a shadow query.
+		bool& inAO = SurfaceSignalInAmbientOcclusion();
+		if( inAO ) {
+			return Scalar( 1 );
+		}
+		struct ScopeGuard
+		{
+			bool& flag;
+			explicit ScopeGuard( bool& f ) : flag( f ) { flag = true; }
+			~ScopeGuard() { flag = false; }
+		} guard( inAO );
+
+		const bool bInside       = ( flags & 1 ) != 0;
+		const bool bOnlyLocal    = ( flags & 2 ) != 0;
+		const bool bCustomNormal = ( flags & 4 ) != 0;
+
+		if( !pScene || !pSelf || numSamples < 1 ) {
+			return Scalar( 1 );
+		}
+		if( !RISE::IsFiniteDouble( static_cast<double>( distanceWorld ) ) || !( distanceWorld > Scalar( 0 ) ) ) {
+			return Scalar( 1 );
+		}
+		if( !RISE::IsFiniteDouble( static_cast<double>( ptWorld.x ) ) ||
+			!RISE::IsFiniteDouble( static_cast<double>( ptWorld.y ) ) ||
+			!RISE::IsFiniteDouble( static_cast<double>( ptWorld.z ) ) )
+		{
+			return Scalar( 1 );
+		}
+
+		const int N = ( numSamples > 128 ) ? 128 : numSamples;
+
+		auto safeNorm = []( const Vector3& v ) -> Vector3 {
+			const Scalar l2 = v.x * v.x + v.y * v.y + v.z * v.z;
+			if( !( l2 > Scalar( 1e-24 ) ) || !RISE::IsFiniteDouble( static_cast<double>( l2 ) ) ) {
+				return Vector3( 0, 0, 0 );
+			}
+			const Scalar inv = Scalar( 1 ) / std::sqrt( l2 );
+			return Vector3( v.x * inv, v.y * inv, v.z * inv );
+		};
+
+		const Vector3 ngUnit = safeNorm( geomNormal );
+		const bool hasNg = ( ngUnit.x != Scalar( 0 ) || ngUnit.y != Scalar( 0 ) || ngUnit.z != Scalar( 0 ) );
+
+		Vector3 hemiN;
+		if( bCustomNormal ) {
+			hemiN = safeNorm( customNormal );
+		} else {
+			hemiN = safeNorm( shadingNormal );
+			if( hasNg ) {
+				// Orient default shading normal to the side the ray arrived from
+				// (Cycles sd->N convention, MIX §III.3); fall back to geometric
+				// face side if shadingNormal is degenerate.
+				const Vector3 faceSide = geomOpposesArrival ? ngUnit : -ngUnit;
+				if( hemiN.x == Scalar( 0 ) && hemiN.y == Scalar( 0 ) && hemiN.z == Scalar( 0 ) ) {
+					hemiN = faceSide;
+				} else if( Vector3Ops::Dot( hemiN, faceSide ) < Scalar( 0 ) ) {
+					hemiN = -hemiN;
+				}
+			}
+		}
+		if( hemiN.x == Scalar( 0 ) && hemiN.y == Scalar( 0 ) && hemiN.z == Scalar( 0 ) ) {
+			return Scalar( 1 );
+		}
+		if( bInside ) {
+			hemiN = -hemiN;
+		}
+
+		// Offset ray origin slightly along the geometric normal oriented into
+		// `hemiN` (falling back to the arrival side when customNormal is
+		// near-tangent to the geometric plane, or `hemiN` when no geometric
+		// normal is present).  Combined with `ScopedSelfPrimExclusion` for
+		// indexed meshes, `1e-7 * posScale` clears `SURFACE_INTERSEC_ERROR`
+		// cleanly without jumping over thin contact gaps at large coordinates.
+		Vector3 offsetDir = hemiN;
+		if( hasNg ) {
+			const Scalar ngDot = Vector3Ops::Dot( ngUnit, hemiN );
+			if( std::fabs( ngDot ) > Scalar( 1e-3 ) ) {
+				offsetDir = ( ngDot > Scalar( 0 ) ) ? ngUnit : -ngUnit;
+			} else {
+				offsetDir = geomOpposesArrival ? ngUnit : -ngUnit;
+			}
+		}
+		const Scalar posScale = Scalar( 1 ) + std::fabs( ptWorld.x ) + std::fabs( ptWorld.y ) + std::fabs( ptWorld.z );
+		const Scalar eps = std::min( distanceWorld * Scalar( 1e-3 ), Scalar( 1e-7 ) * posScale );
+		const Point3 rayOrigin = Point3Ops::mkPoint3( ptWorld, offsetDir * eps );
+		// Cap rayMaxDist to prevent float narrowing / non-uniform scale overflow in BVH.
+		const Scalar rayMaxDist = std::min( distanceWorld - eps, Scalar( 1e30 ) );
+		if( !( rayMaxDist > Scalar( 0 ) ) ) {
+			return Scalar( 1 );
+		}
+
+		// Per-thread 1-way AO cache inside ExpressionMemo::Tables (MIX §III.3):
+		// eliminates 4x redundant ray-tracing inside ReliefModifier taps and
+		// N-x reuse when one AO node feeds multiple material slots at the same
+		// hit while staying trivially default-constructible and within the
+		// 4,096 B per-thread ExpressionMemo TLS budget.
+		ExpressionMemo::AOCacheKey aoKey;
+		aoKey.pScene = (const void*)pScene;
+		aoKey.pSelf  = (const void*)pSelf;
+		aoKey.pProvider = (const void*)pProvider;
+		aoKey.globalPoseEpoch = Implementation::Transformable::GlobalTransformPoseEpoch();
+		aoKey.threadPoseEpoch = Implementation::Transformable::ThreadTransformPoseEpoch();
+		aoKey.primId = primId;
+		aoKey.numSamples = N;
+		aoKey.flags = flags;
+		aoKey.wx = (double)ptWorld.x; aoKey.wy = (double)ptWorld.y; aoKey.wz = (double)ptWorld.z;
+		aoKey.ox = (double)ptObject.x; aoKey.oy = (double)ptObject.y; aoKey.oz = (double)ptObject.z;
+		aoKey.time = (double)time;
+		aoKey.dist = (double)distanceWorld;
+		aoKey.hnx = (double)hemiN.x; aoKey.hny = (double)hemiN.y; aoKey.hnz = (double)hemiN.z;
+		aoKey.odx = (double)offsetDir.x; aoKey.ody = (double)offsetDir.y; aoKey.odz = (double)offsetDir.z;
+		Scalar cachedAO = Scalar( 0 );
+		if( ExpressionMemo::AOFind( aoKey, cachedAO ) ) {
+			return cachedAO;
+		}
+
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( hemiN );
+
+		// Deterministic 2D Cranley-Patterson shift hashed from (ptWorld, ptObject,
+		// time, flags) -- zero ASLR pointer dependence, and stays invariant across
+		// ReliefModifier taps (which leave `signals` untouched).
+		// Canonicalize -0.0 -> +0.0 on the raw integer bit pattern AFTER memcpy
+		// so `-fno-signed-zeros` (`-ffast-math`) cannot elide the branch.
+		auto canonBits = []( double x ) -> std::uint64_t {
+			std::uint64_t u = 0;
+			std::memcpy( &u, &x, sizeof( u ) );
+			if( ( u & 0x7FFFFFFFFFFFFFFFULL ) == 0ULL ) u = 0ULL;
+			return u;
+		};
+		auto mix64 = []( std::uint64_t z ) -> std::uint64_t {
+			z = ( z ^ ( z >> 30 ) ) * 0xbf58476d1ce4e5b9ULL;
+			z = ( z ^ ( z >> 27 ) ) * 0x94d049bb133111ebULL;
+			return z ^ ( z >> 31 );
+		};
+		std::uint64_t h = 0x9e3779b97f4a7c15ULL ^ static_cast<std::uint64_t>( flags );
+		h = mix64( h ^ canonBits( static_cast<double>( ptWorld.x ) ) );
+		h = mix64( h ^ canonBits( static_cast<double>( ptWorld.y ) ) );
+		h = mix64( h ^ canonBits( static_cast<double>( ptWorld.z ) ) );
+		h = mix64( h ^ canonBits( static_cast<double>( ptObject.x ) ) );
+		h = mix64( h ^ canonBits( static_cast<double>( ptObject.y ) ) );
+		h = mix64( h ^ canonBits( static_cast<double>( ptObject.z ) ) );
+		h = mix64( h ^ canonBits( static_cast<double>( time ) ) );
+		const std::uint64_t h2 = mix64( h ^ 0x517cc1b727220a95ULL );
+		const Scalar jitterX = static_cast<Scalar>( ( h >> 11 ) * ( 1.0 / 9007199254740992.0 ) );
+		const Scalar jitterY = static_cast<Scalar>( ( h2 >> 11 ) * ( 1.0 / 9007199254740992.0 ) );
+
+		// Exclude originating mesh triangle (pSelf, pProvider, primId) from
+		// self-intersection so smooth-shaded coarse meshes and tilted custom
+		// normals never self-shadow against their own face (Cycles ray.self.prim).
+		const ScopedSelfPrimExclusion primExclusion( pSelf, pProvider, primId );
+
+		int unoccluded = 0;
+		const Scalar invN = Scalar( 1 ) / static_cast<Scalar>( N );
+		for( int i = 0; i < N; ++i ) {
+			Scalar u1 = ( static_cast<Scalar>( i ) + Scalar( 0.5 ) ) * invN + jitterX;
+			if( u1 >= Scalar( 1 ) ) u1 -= Scalar( 1 );
+
+			// Radical inverse base 2 (Van der Corput) for 2D Hammersley set
+			std::uint32_t bits = static_cast<std::uint32_t>( i );
+			bits = ( bits << 16u ) | ( bits >> 16u );
+			bits = ( ( bits & 0x55555555u ) << 1u ) | ( ( bits & 0xAAAAAAAAu ) >> 1u );
+			bits = ( ( bits & 0x33333333u ) << 2u ) | ( ( bits & 0xCCCCCCCCu ) >> 2u );
+			bits = ( ( bits & 0x0F0F0F0Fu ) << 4u ) | ( ( bits & 0xF0F0F0F0u ) >> 4u );
+			bits = ( ( bits & 0x00FF00FFu ) << 8u ) | ( ( bits & 0xFF00FF00u ) >> 8u );
+			Scalar u2 = static_cast<Scalar>( bits ) * Scalar( 2.3283064365386963e-10 ) + jitterY;
+			if( u2 >= Scalar( 1 ) ) u2 -= Scalar( 1 );
+
+			const Scalar r = std::sqrt( u1 );
+			const Scalar phi = TWO_PI * u2;
+			const Scalar lx = r * std::cos( phi );
+			const Scalar ly = r * std::sin( phi );
+			const Scalar lz = std::sqrt( std::max( Scalar( 0 ), Scalar( 1 ) - u1 ) );
+
+			const Vector3 dir = Vector3Ops::Normalize(
+				onb.u() * lx + onb.v() * ly + onb.w() * lz );
+			const Ray aoRay( rayOrigin, dir );
+			const bool occluded = bOnlyLocal
+				? pSelf->IntersectRay_IntersectionOnly( aoRay, rayMaxDist, true, true )
+				: pScene->IntersectShadowRay( aoRay, rayMaxDist, true, true );
+			if( !occluded ) {
+				++unoccluded;
+			}
+		}
+
+		const Scalar result = static_cast<Scalar>( unoccluded ) * invN;
+		ExpressionMemo::AOInsert( aoKey, result );
+		return result;
 	}
 }
 

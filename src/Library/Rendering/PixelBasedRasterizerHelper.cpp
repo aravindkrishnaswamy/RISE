@@ -212,6 +212,9 @@ bool PixelBasedRasterizerHelper::AppendEvaluatedCameraState(
 			Value::Float(camera.GetExposureCompensationEV()));
 		SetRecordMember(currentCamera,"exposure_time",
 			Value::Float(camera.GetExposureTime()));
+		const CameraCommon* camCommon = dynamic_cast<const CameraCommon*>(&camera);
+		SetRecordMember(currentCamera,"near_clip",
+			Value::Float(camCommon ? camCommon->GetNearClip() : 0.0));
 		SetRecordMember(currentCamera,"pixel_rate",
 			Value::Float(camera.GetPixelRate()));
 		SetRecordMember(currentCamera,"scanning_rate",
@@ -1427,6 +1430,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// world-space bounding boxes before any multi-threaded rendering begins.
 	pScene.GetObjects()->PrepareForRendering();
 
+	if( !ValidateSceneForRasterizer( pScene ) ) {
+		return;
+	}
+
 	// Build any pending photon maps (deferred from scene parse).  Safe window:
 	// after PrepareForRendering but before any worker thread spawns — matches
 	// the irradiance-cache pre-pass precedent below.  Idempotent: consumed
@@ -1695,6 +1702,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 	else
 	{
+		if( pProgressFunc ) {
+			pProgressFunc->SetTitle( "Rasterizing Scene: " );
+		}
 		mainPassCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 	}
 	}
@@ -1781,6 +1791,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		// outputs under the normal filename.  Non-file outputs no-op and
 		// wait for the denoised final via FlushDenoisedToOutputs.
 		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
+		if( pProgressFunc ) {
+			pProgressFunc->SetTitle( "Denoising: " );
+		}
 		{
 			// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 			// ApplyDenoise reads `*pImage` row-by-row and overwrites
@@ -2253,6 +2266,9 @@ bool PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		ContinuationFlag perPassCandidate( mPerPassShutterTimeCandidate,
 			framedata.exposure > 0 && framedata.pixelRate == 0 && framedata.scanningRate == 0 &&
 			!pScene.FireTemporalHold() );
+		if( !ValidateSceneForRasterizer( pScene ) ) {
+			return false;
+		}
 		PreRenderSetup( pScene, pRect );
 	}
 

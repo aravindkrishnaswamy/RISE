@@ -138,6 +138,7 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) { (void)name; (void)value; return 0; };
 			void SetIntermediateValue( const IKeyframeParameter& val ) { (void)val; };
 			void RegenerateData( ) {};
+			unsigned int GetPathDependence() const { return source.GetPathDependence(); }
 		};
 	}
 }

@@ -802,6 +802,7 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
     m_bOpenSignedVolumeNegative=false;
 	InvalidateTopologyProofCaches();
 	safe_release( pPtrBVH );
+	pNamedCornerAttributes.clear();
 	areas.clear();
 	areasCDF.clear();
 	// Stale topology, same reasoning as the bakes below: a re-fed mesh's
@@ -1793,14 +1794,52 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	{
 		IndexTriangleListType::const_iterator	i, e;
 		std::size_t rejected = 0;
+		std::vector<std::size_t> keptSrcTris;
+		if( !pNamedCornerAttributes.empty() ) {
+			keptSrcTris.reserve( indexedtris.size() );
+		}
 
-		for( i=indexedtris.begin(), e=indexedtris.end(); i!=e; i++ )
+		std::size_t srcIdx = 0;
+		for( i=indexedtris.begin(), e=indexedtris.end(); i!=e; i++, ++srcIdx )
 		{
 			PointerTriangle		myTri;
 			if( MakePointerTriangle( i->iVertices, i->iNormals, i->iCoords, myTri ) ) {
 				ptr_polygons.push_back( myTri );
+				if( !pNamedCornerAttributes.empty() ) {
+					keptSrcTris.push_back( srcIdx );
+				}
 			} else {
 				++rejected;
+			}
+		}
+
+		if( !pNamedCornerAttributes.empty() ) {
+			const std::size_t expectedFloats = indexedtris.size() * 12;
+			for( std::size_t a = 0; a < pNamedCornerAttributes.size(); ) {
+				NamedCornerAttribute& attr = pNamedCornerAttributes[a];
+				if( attr.rgba.size() != expectedFloats ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"TriangleMeshGeometryIndexed::DoneIndexedTriangles:: dropping named corner attribute `%s` "
+						"(%u corners != %u expected for %u triangles)",
+						attr.name.c_str(),
+						static_cast<unsigned int>( attr.rgba.size() / 4 ),
+						static_cast<unsigned int>( indexedtris.size() * 3 ),
+						static_cast<unsigned int>( indexedtris.size() ) );
+					pNamedCornerAttributes.erase( pNamedCornerAttributes.begin() + static_cast<std::ptrdiff_t>( a ) );
+				} else if( rejected ) {
+					std::vector<float> compacted;
+					compacted.reserve( keptSrcTris.size() * 12 );
+					for( std::size_t k = 0; k < keptSrcTris.size(); ++k ) {
+						const std::size_t base = keptSrcTris[k] * 12;
+						compacted.insert( compacted.end(),
+							attr.rgba.begin() + static_cast<std::ptrdiff_t>( base ),
+							attr.rgba.begin() + static_cast<std::ptrdiff_t>( base + 12 ) );
+					}
+					attr.rgba.swap( compacted );
+					++a;
+				} else {
+					++a;
+				}
 			}
 		}
 
@@ -2957,6 +2996,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	bUseFaceNormals = !!buffer.getChar();
 
 	pShaderDirections.clear(); // live-only payload cannot survive topology deserialization
+	pNamedCornerAttributes.clear();
 	InvalidateTopologyProofCaches();
 	pPoints.clear();
 	pNormals.clear();
@@ -3772,4 +3812,135 @@ bool TriangleMeshGeometryIndexed::ComputeConvexity( const SurfaceSignalInfo& hit
 	const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const
 {
 	return LookupBakedSignal( MeshSignalBake::eConvexity, hit, radiusFraction, bRadiusIsConstant, outValue );
+}
+
+bool TriangleMeshGeometryIndexed::AddNamedCornerAttribute(
+	const char* name,
+	const float* cornerRGBA,
+	const unsigned int numCorners )
+{
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"TriangleMeshGeometryIndexed::AddNamedCornerAttribute must not run concurrently with rendering" );
+	if( !name || !name[0] || !cornerRGBA || numCorners == 0 || ( numCorners % 3 ) != 0 ) {
+		return false;
+	}
+	if( static_cast<std::size_t>( numCorners ) > std::numeric_limits<std::size_t>::max() / 4 ) {
+		return false;
+	}
+	if( !ptr_polygons.empty() && static_cast<std::size_t>( numCorners ) != ptr_polygons.size() * 3 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"TriangleMeshGeometryIndexed::AddNamedCornerAttribute:: `%s` has %u corners, expected %u for %u finalized triangles",
+			name, numCorners,
+			static_cast<unsigned int>( ptr_polygons.size() * 3 ),
+			static_cast<unsigned int>( ptr_polygons.size() ) );
+		return false;
+	}
+	const std::size_t floatCount = static_cast<std::size_t>( numCorners ) * 4;
+	std::vector<float> sanitized( floatCount );
+	for( std::size_t k = 0; k < floatCount; ++k ) {
+		const float v = cornerRGBA[k];
+		sanitized[k] = RISE::IsFiniteDouble( static_cast<double>( v ) ) ? v : 0.0f;
+	}
+	const std::string key( name );
+	for( std::size_t i = 0; i < pNamedCornerAttributes.size(); ++i ) {
+		if( pNamedCornerAttributes[i].name == key ) {
+			pNamedCornerAttributes[i].rgba.swap( sanitized );
+			if( !ptr_polygons.empty() ) {
+				ExpressionMemo::Invalidate();
+			}
+			return true;
+		}
+	}
+	NamedCornerAttribute attr;
+	attr.name = key;
+	attr.rgba.swap( sanitized );
+	pNamedCornerAttributes.push_back( std::move( attr ) );
+	if( !ptr_polygons.empty() ) {
+		ExpressionMemo::Invalidate();
+	}
+	return true;
+}
+
+bool TriangleMeshGeometryIndexed::EvaluateNamedAttribute(
+	const SurfaceSignalInfo& hit,
+	const char* name,
+	Scalar outRGBA[4],
+	const Point3* pQueryObjPos ) const
+{
+	if( !name || !name[0] || pNamedCornerAttributes.empty() ) {
+		return false;
+	}
+	if( hit.primId < 0 || static_cast<std::size_t>( hit.primId ) >= ptr_polygons.size() ) {
+		return false;
+	}
+	const NamedCornerAttribute* pAttr = 0;
+	for( std::size_t i = 0; i < pNamedCornerAttributes.size(); ++i ) {
+		if( pNamedCornerAttributes[i].name == name ) {
+			pAttr = &pNamedCornerAttributes[i];
+			break;
+		}
+	}
+	if( !pAttr ) {
+		return false;
+	}
+	const std::size_t base = static_cast<std::size_t>( hit.primId ) * 12;
+	if( base + 12 > pAttr->rgba.size() ) {
+		return false;
+	}
+
+	Scalar a = hit.baryA;
+	Scalar b = hit.baryB;
+	if( pQueryObjPos ) {
+		const PointerTriangle& tri = ptr_polygons[ static_cast<std::size_t>( hit.primId ) ];
+		const Point3& v0 = *tri.pVertices[0];
+		const Point3& v1 = *tri.pVertices[1];
+		const Point3& v2 = *tri.pVertices[2];
+		const Vector3 e1 = Vector3Ops::mkVector3( v1, v0 );
+		const Vector3 e2 = Vector3Ops::mkVector3( v2, v0 );
+		const Scalar d00 = Vector3Ops::Dot( e1, e1 );
+		const Scalar d01 = Vector3Ops::Dot( e1, e2 );
+		const Scalar d11 = Vector3Ops::Dot( e2, e2 );
+		// Compute squared parallelogram area via Cross(e1, e2) instead of
+		// d00*d11 - d01*d01 so collinear/sliver triangles do not suffer
+		// 1 - cos^2(theta) catastrophic cancellation; gate at 1e-12 matching
+		// ReliefModifier::RELIEF_UV_SOLVE_REL_EPS.
+		const Vector3 cross = Vector3Ops::Cross( e1, e2 );
+		const Scalar denom = Vector3Ops::Dot( cross, cross );
+		if( RISE::IsFiniteDouble( static_cast<double>( d00 ) ) &&
+			RISE::IsFiniteDouble( static_cast<double>( d11 ) ) &&
+			RISE::IsFiniteDouble( static_cast<double>( denom ) ) &&
+			d00 > Scalar( 0 ) && d11 > Scalar( 0 ) &&
+			denom > Scalar( 1e-12 ) * d00 * d11 )
+		{
+			const Vector3 dp = Vector3Ops::mkVector3( *pQueryObjPos, v0 );
+			const Scalar d20 = Vector3Ops::Dot( dp, e1 );
+			const Scalar d21 = Vector3Ops::Dot( dp, e2 );
+			const Scalar invDenom = Scalar( 1 ) / denom;
+			const Scalar aProj = ( d11 * d20 - d01 * d21 ) * invDenom;
+			const Scalar bProj = ( d00 * d21 - d01 * d20 ) * invDenom;
+			if( RISE::IsFiniteDouble( static_cast<double>( aProj ) ) &&
+				RISE::IsFiniteDouble( static_cast<double>( bProj ) ) )
+			{
+				a = aProj;
+				b = bProj;
+			}
+		}
+	}
+	if( !RISE::IsFiniteDouble( static_cast<double>( a ) ) ||
+		!RISE::IsFiniteDouble( static_cast<double>( b ) ) )
+	{
+		return false;
+	}
+
+	const float* const c0 = &pAttr->rgba[ base + 0 ];
+	const float* const c1 = &pAttr->rgba[ base + 4 ];
+	const float* const c2 = &pAttr->rgba[ base + 8 ];
+	for( int ch = 0; ch < 4; ++ch ) {
+		const Scalar v0 = static_cast<Scalar>( c0[ch] );
+		const Scalar v1 = static_cast<Scalar>( c1[ch] );
+		const Scalar v2 = static_cast<Scalar>( c2[ch] );
+		const Scalar val = v0 + ( v1 - v0 ) * a + ( v2 - v0 ) * b;
+		outRGBA[ch] = RISE::IsFiniteDouble( static_cast<double>( val ) ) ? val : Scalar( 0 );
+	}
+	return true;
 }

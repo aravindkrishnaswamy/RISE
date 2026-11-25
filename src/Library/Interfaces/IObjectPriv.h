@@ -187,6 +187,13 @@ namespace RISE
 		virtual void RemoveConsumer() = 0;
 		//! True while at least one composite is consuming this object.
 		virtual bool IsConsumed() const = 0;
+
+		//! Per-object / per-instance Cycles Object Info attributes (color,
+		//! alpha, object pass index, random).  Appended at the tail of
+		//! IObjectPriv so existing vtable slots are unchanged.  The getter
+		//! lives on IObject::GetObjectInfo() so const IObject* consumers
+		//! (LightSampler, BDPT/VCM) can read it without downcasting.
+		virtual void SetObjectInfo( const ObjectInfoData& /*info*/ ) {}
 	};
 }
 

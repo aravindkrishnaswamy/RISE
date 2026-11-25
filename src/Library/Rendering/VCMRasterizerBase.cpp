@@ -53,6 +53,7 @@
 #include "../Shaders/BDPTVertex.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IObjectManager.h"
+#include "../Managers/ObjectManager.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"
 #include "../Interfaces/ILog.h"
@@ -125,6 +126,23 @@ VCMRasterizerBase::~VCMRasterizerBase()
 	pLightVertexStore = 0;
 	// pSplatFilm and pScratchImage are released by the
 	// BidirectionalRasterizerBase destructor.
+}
+
+bool VCMRasterizerBase::ValidateSceneForRasterizer( const IScene& pScene ) const
+{
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		const unsigned int pdMask = pObjMgr->ComputeScenePathDependence( &offender );
+		if( pdMask != 0u ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"VCMRasterizerBase:: Refusing scene with non-physical path/view-dependent inputs or "
+				"spatially varying subsurface mix weights (first object '%s', mask=0x%x). "
+				"Use pathtracing_pel_rasterizer or pathtracing_spectral_rasterizer.",
+				offender.c_str(), pdMask );
+			return false;
+		}
+	}
+	return true;
 }
 
 namespace

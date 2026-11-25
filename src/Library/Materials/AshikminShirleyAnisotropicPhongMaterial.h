@@ -77,6 +77,15 @@ namespace RISE
 			inline void SetNv( const IScalarPainter& v ) { pBRDF->SetNv( v ); pSPF->SetNv( v ); }
 			inline void SetRd( const IPainter& v )       { pBRDF->SetRd( v ); pSPF->SetRd( v ); }
 			inline void SetRs( const IPainter& v )       { pBRDF->SetRs( v ); pSPF->SetRs( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetNu().GetPathDependence() |
+					pBRDF->GetNv().GetPathDependence() |
+					pBRDF->GetRd().GetPathDependence() |
+					pBRDF->GetRs().GetPathDependence();
+			}
 		};
 	}
 }

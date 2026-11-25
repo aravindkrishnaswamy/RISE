@@ -80,6 +80,15 @@ namespace RISE
 			inline void SetSpecular( const IPainter& v )     { pBRDF->SetSpecular( v ); pSPF->SetSpecular( v ); }
 			inline void SetAlphaX( const IScalarPainter& v ) { pBRDF->SetAlphaX( v );   pSPF->SetAlphaX( v ); }
 			inline void SetAlphaY( const IScalarPainter& v ) { pBRDF->SetAlphaY( v );   pSPF->SetAlphaY( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetDiffuse().GetPathDependence() |
+					pBRDF->GetSpecular().GetPathDependence() |
+					pBRDF->GetAlphaX().GetPathDependence() |
+					pBRDF->GetAlphaY().GetPathDependence();
+			}
 		};
 	}
 }

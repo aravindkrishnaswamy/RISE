@@ -1571,11 +1571,16 @@ void VCMIntegrator::ConvertLightSubpath(
 			lv.pMaterial  = v.pMaterial;
 			lv.pObject    = v.pObject;
 			lv.throughput = v.throughput;
-            // The camera endpoint already realizes surface coverage. The
-            // photon store estimates incident flux CONDITIONED on that endpoint,
-            // so undo only this photon's deposit-acceptance probability. The
-            // continuing light subpath and shared MIS partition remain unchanged.
-            lv.throughput = lv.throughput * (1 / v.acceptedAlphaCoverage);
+            // The camera endpoint already realizes surface coverage and mix
+            // leaf selection.  The photon store estimates incident flux
+            // CONDITIONED on that endpoint, so undo this photon's deposit
+            // probability `a * q` once (Round 3 P1-1).  The continuing light
+            // subpath and shared MIS partition remain unchanged.
+            const Scalar depositProb = v.acceptedAlphaCoverage * v.mixConnectible;
+            if( depositProb <= NEARZERO ) {
+                continue;
+            }
+            lv.throughput = lv.throughput * ( Scalar( 1 ) / depositProb );
 			// Cache the NM-merge spectrum at deposit time -- see
 			// LightVertex::throughputSpectrum's comment
 			// (VCMLightVertex.h) and LightThroughputSpectrum's comment
@@ -2233,7 +2238,7 @@ namespace
 					// templated over `Tag`, so one call fixes both
 					// `EvaluateNEE` (Pel) and `EvaluateNEENM`.  `Po` is
 					// ungated and ray-free (`LightSampler::EmitterObjectPoint`).
-					LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
+					LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec, ls.pLuminary, scene.GetCamera() );
 					// THE FOURTH `ApplyEmitterSurface` consumer of
 					// `SampleLight`'s one probed payload (slice S3,
 					// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5): VCM's
@@ -2695,8 +2700,7 @@ namespace
 					camera, v.position, apertureSample, rasterPos ) ) {
 				continue;
 			}
-
-			if( !VCMIsVisible( caster, v.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+			if( !BDPTCameraUtilities::IsPointPastNearClip( camera, v.position ) ) {
 				continue;
 			}
 
@@ -2706,6 +2710,17 @@ namespace
 				continue;
 			}
 			dirToCam = dirToCam * ( Scalar( 1 ) / dist );
+			const Scalar tNear = BDPTCameraUtilities::ComputeNearClipDistance( camera, -dirToCam );
+			if( tNear >= dist - VCM_RAY_EPSILON ) {
+				continue;
+			}
+			const Point3 camVisEnd = ( tNear > Scalar( 0 ) )
+				? Point3Ops::mkPoint3( camPos, ( -dirToCam ) * tNear )
+				: camPos;
+
+			if( !VCMIsVisible( caster, v.position, camVisEnd, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
+				continue;
+			}
 			const Scalar distSq = dist * dist;
 
 			Ray camRay( camPos, -dirToCam );
@@ -2840,7 +2855,7 @@ namespace
 			// ray starts there and traverses outward to the camera.
 			const typename Traits::value_type Tr_conn_splat =
 				EvalConnectionTr<Tag>(
-					bdpt, v.position, camPos,
+					bdpt, v.position, camVisEnd,
 					scene, caster,
 					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 

@@ -454,6 +454,34 @@ namespace RISE
 		bool IsDeltaDirection(
 			const ICamera& cam						///< [in] Camera
 			);
+
+		/// Option A camera near-clip helpers (dispatched via CameraCommon without
+		/// growing the ICamera vtable):
+		/// - `ComputeNearClipDistance`: distance along unit `rayDir` from the
+		///   unclipped camera origin/aperture to the near-clip boundary
+		///   (`nearClip / cosTheta` for planar cameras, `nearClip` for fisheye,
+		///   0 when near-clip is disabled).
+		/// - `IsPointPastNearClip`: true iff `worldPoint` is at or beyond the
+		///   camera's near-clip boundary (prevents t==1 ghost splats of clipped
+		///   geometry).
+		/// - `ApplyNearClipToConnectionEndpoint`: returns the point on the
+		///   near-clip boundary along `dirFromCam` starting from `camPos` so
+		///   t==1 visibility tests skip geometry in `(0, tNear)` just as eye rays do.
+		Scalar ComputeNearClipDistance(
+			const ICamera& cam,
+			const Vector3& rayDir
+			);
+
+		bool IsPointPastNearClip(
+			const ICamera& cam,
+			const Point3& worldPoint
+			);
+
+		Point3 ApplyNearClipToConnectionEndpoint(
+			const ICamera& cam,
+			const Point3& camPos,
+			const Vector3& dirFromCam
+			);
 	}
 }
 

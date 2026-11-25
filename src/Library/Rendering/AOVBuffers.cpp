@@ -27,6 +27,7 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/IORStackSeeding.h"
+#include "../Cameras/CameraUtilities.h"
 #include <algorithm>
 
 using namespace RISE;
@@ -325,15 +326,15 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 						if( aov.primaryDepthCaptured ) sampleDepth = aov.depth;
 					} else {
 						RayIntersection ri( ray, rast );
+						ri.geometric.bIsCameraRay = true;
+						ri.geometric.pCamera = scene.GetCamera();
 						IndependentSampler alphaSampler(rc.random);
                         pObjects->IntersectRaySampled( ri, alphaSampler );
 						if( ri.geometric.bHit ) {
-							if( ri.pModifier ) ri.pModifier->Modify( ri.geometric );
-							sampleNormal = ri.geometric.vNormal;
-							sampleDepth = ri.geometric.range;
-							sampleAlbedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-								: RISEPel( 1, 1, 1 );
+							if( ri.pModifier && !ri.pUnresolvedMix ) ri.pModifier->Modify( ri.geometric );
+							sampleDepth = ri.geometric.range +
+								BDPTCameraUtilities::ComputeNearClipDistance( *pCamera, ray.Dir() );
+							EvaluateMaterialAOVGuides( ri, ri.geometric, false, 0, sampleAlbedo, sampleNormal );
 						}
 					}
 				}

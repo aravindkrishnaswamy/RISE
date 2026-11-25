@@ -238,7 +238,7 @@ namespace RISE
 					IPainter* p = nullptr;
 					std::string err;
 					if( !painterResolver->ResolveColorPainter( colorNames[i], p, err ) ) {
-						return fail( context + ": sample(`" + colorNames[i] + "`): " + err );
+						return fail( context + ": sample/sample_alpha/sample_uv(`" + colorNames[i] + "`): " + err );
 					}
 					// DL-165 (docs/DEBT_LEDGER.md): sample() evaluates ONLY
 					// IPainter::GetColor -- a painter that carries a genuine,
@@ -249,15 +249,14 @@ namespace RISE
 					// spectrum collapsed to RGB here and then RE-UPLIFTED
 					// through the Jakob-Hanika LUT by whatever spectral
 					// consumer this expression feeds -- a DIFFERENT curve,
-					// silently, and `GetAlpha` dropped on top. Refuse
-					// outright (DL-32's hard-fail-the-chunk convention)
-					// rather than let the mismatch through: an author who
-					// needs that painter's real spectrum binds it DIRECTLY
+					// silently. Refuse outright (DL-32's hard-fail-the-chunk
+					// convention) rather than let the mismatch through: an author
+					// who needs that painter's real spectrum binds it DIRECTLY
 					// to a colour slot instead of sampling it.
 					if( p->IsSpectrallyDefined() ) {
-						return fail( context + ": sample(`" + colorNames[i] + "`) refused -- `" + colorNames[i] +
-							"` is spectrally defined (a genuine SPD, not an RGB colour): sample() reads only "
-							"GetColor() and would collapse that spectrum to RGB and re-uplift a DIFFERENT curve "
+						return fail( context + ": sample/sample_alpha/sample_uv(`" + colorNames[i] + "`) refused -- `" + colorNames[i] +
+							"` is spectrally defined (a genuine SPD, not an RGB colour): sample*() reads RGB/alpha "
+							"and would collapse that spectrum to RGB and re-uplift a DIFFERENT curve "
 							"through the Jakob-Hanika LUT; bind `" + colorNames[i] + "` DIRECTLY to a colour "
 							"slot instead of sampling it (see docs/DEBT_LEDGER.md DL-165)" );
 					}
@@ -417,6 +416,11 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
 			void SetIntermediateValue( const IKeyframeParameter& val ) override;
 			void RegenerateData() override {}
+
+			//! DL-292: forwarded by PainterChannelScalarPainter / PainterRGBScalarPainter.
+			bool ReadsWorldPosition() const override { return m_prog.ReadsWorldPosition(); }
+			//! Part 0: forward path dependence from OSL builtins and sampled child painters.
+			unsigned int GetPathDependence() const override { return m_prog.GetPathDependence(); }
 		};
 
 		//! scalar_painter { expression ... } -- the PHYSICAL-SCALAR pipe.
@@ -497,7 +501,7 @@ namespace RISE
 				if( prog.UsesContextVar( ExpressionProgram::kContextSlotFw ) ||
 					prog.UsesContextVar( ExpressionProgram::kContextSlotFwo ) ) return false;
 				if( prog.UsesSurfaceCurvature() ) return false;
-				if( prog.UsesSurfaceSignals() || prog.UsesPainterSample() ) return false;
+				if( prog.UsesSurfaceSignals() || prog.UsesPainterSample() || prog.UsesSpaceTransform() ) return false;
 				return true;
 			}
 
@@ -569,11 +573,13 @@ namespace RISE
 						return false;
 					}
 				}
-				return !m_prog.UsesSurfaceSignals() && !m_prog.UsesPainterSample();
+				return !m_prog.UsesSurfaceSignals() && !m_prog.UsesPainterSample() && !m_prog.UsesSpaceTransform();
 			}
 
 			//! DL-292 (IScalarPainter::ReadsWorldPosition).
-			bool ReadsWorldPosition() const override { return m_prog.UsesContextVar( ExpressionProgram::kContextSlotP ); }
+			bool ReadsWorldPosition() const override { return m_prog.ReadsWorldPosition(); }
+			//! Part 0: forward path dependence from OSL builtins and sampled child painters.
+			unsigned int GetPathDependence() const override { return m_prog.GetPathDependence(); }
 		};
 	}
 }

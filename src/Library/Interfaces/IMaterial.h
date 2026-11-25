@@ -26,6 +26,7 @@ namespace RISE
 	class IBSDF;
 	class IEmitter;
 	class ISubSurfaceDiffusionProfile;
+	class RayIntersection;
 	class RayIntersectionGeometric;
 	class IORStack;
 	class IContinuationClosurePel;
@@ -119,6 +120,8 @@ namespace RISE
 		const IScalarPainter* alphaPainter_;
 		AlphaMode alphaMode_;
 		Scalar alphaCutoff_;
+		static void AdjustAlphaMaterialCount( int delta );
+		static void AdjustMixMaterialCount( int delta );
 
 	public:
 
@@ -353,14 +356,76 @@ namespace RISE
         //! DL-214: surface coverage, independent of scattering and wavelength.
         //! Construction-time mutation only. Opaque is the default on every material.
         void SetAlpha(const IScalarPainter* painter, AlphaMode mode, Scalar cutoff);
-        Scalar AlphaCoverage(const RayIntersectionGeometric& ri) const;
+        virtual Scalar AlphaCoverage(const RayIntersectionGeometric& ri) const;
+        virtual bool HasAlphaCoverage() const { return alphaMode_ != eAlphaOpaque; }
         bool AcceptAlpha(const RayIntersectionGeometric& ri, ISampler& sampler) const;
         static bool AnyAlphaMaterials();
+        static bool AnyMixMaterials();
         AlphaMode GetAlphaMode() const { return alphaMode_; }
         Scalar GetAlphaCutoff() const { return alphaCutoff_; }
         const IScalarPainter* GetAlphaPainter() const { return alphaPainter_; }
 
+        //! True iff this material is an unresolved `MixMaterial` awaiting
+        //! post-traversal leaf resolution (`ObjectManager::IntersectRay*`).
+        virtual bool IsUnresolvedMix() const { return false; }
+
+        //! True iff this material tracks closed-body interior containment on
+        //! `IORStack` (dielectrics, refractors, translucent, composite, null
+        //! medium boundary, tissue).  Refused as children of `MixMaterial`
+        //! because a ray could enter through one leaf and exit through another.
+        virtual bool TracksInteriorContainment() const { return false; }
+
+        //! True iff this material (or any leaf of a `MixMaterial`) carries
+        //! subsurface scattering (diffusion profile or random-walk SSS).
+        virtual bool HasSubsurfaceLeaf() const
+        {
+            return GetDiffusionProfile() != 0 || GetRandomWalkSSSParams() != 0;
+        }
+
+        //! True iff this material (or any leaf of a `MixMaterial`) uses
+        //! random-walk subsurface scattering (used by DL-409 zero-volume check).
+        virtual bool HasRandomWalkSSSLeaf() const
+        {
+            return GetRandomWalkSSSParams() != 0;
+        }
+
+        //! Post-traversal stochastic leaf resolution on `MixMaterial`.
+        //! No-op on ordinary materials.
+        virtual void ResolveMixHit( RayIntersection& ri, ISampler* pSampler ) const {}
+
+        //! Round 3 P1-6: expected-value denoiser albedo & normal guides over
+        //! mix leaves (each leaf's own modifier applied to pre-modifier N0).
+        //! No-op on ordinary materials.
+        virtual void EvaluateExpectedGuides(
+            const RayIntersection& ri,
+            const bool bClayOverride,
+            const IBSDF* pClayBRDF,
+            RISEPel& outAlbedo,
+            Vector3& outNormal
+            ) const {}
+
+        //! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): non-zero bitmask
+        //! of `PathDependence::Flags` when this material (its painters, alpha
+        //! painter, wrapped children, or spatially varying SSS mix weight)
+        //! depends on non-physical path/view state or requires PT-only transport.
+        virtual unsigned int GetPathDependence() const;
+
 	};
+
+	//! Shared denoiser guide helper (Round 3 P1-1 & P1-6):
+	//! - On a hit resolved from a `MixMaterial` (`ri.pUnresolvedMix != 0`),
+	//!   computes noise-free expected albedo and expected normal across all leaves.
+	//! - Otherwise, uses `geom.vNormal` and the resolved material's BSDF albedo,
+	//!   reporting black `(0,0,0)` for an absorber (no BSDF and no SPF) and
+	//!   white `(1,1,1)` only for delta/specular/transparent surfaces (no BSDF, has SPF).
+	void EvaluateMaterialAOVGuides(
+		const RayIntersection& ri,
+		const RayIntersectionGeometric& geom,
+		const bool bClayOverride,
+		const IBSDF* pClayBRDF,
+		RISEPel& outAlbedo,
+		Vector3& outNormal
+		);
 }
 
 #include "IBSDF.h"

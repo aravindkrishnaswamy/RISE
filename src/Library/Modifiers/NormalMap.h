@@ -61,7 +61,8 @@ namespace RISE
 			const IPainter& GetPainter() const { return pNormalMap; }
 			Scalar GetScale() const { return dScale; }
 
-			void Modify( RayIntersectionGeometric& ri ) const;
+			void Modify( RayIntersectionGeometric& ri ) const override;
+			unsigned int GetPathDependence() const override { return pNormalMap.GetPathDependence(); }
 		};
 	}
 }

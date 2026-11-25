@@ -107,6 +107,15 @@ namespace RISE
 			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
 			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
 			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pSPF->GetDiffuseReflectance().GetPathDependence() |
+					pSPF->GetTransmittance().GetPathDependence() |
+					pSPF->GetIOR().GetPathDependence() |
+					pSPF->GetScattering().GetPathDependence();
+			}
 		};
 	}
 }

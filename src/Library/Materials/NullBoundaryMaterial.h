@@ -33,6 +33,7 @@ namespace RISE
 			IBSDF* GetBSDF() const override;
 			ISPF* GetSPF() const override;
 			IEmitter* GetEmitter() const override;
+			bool TracksInteriorContainment() const override { return true; }
 		};
 
 		//! Exact-type predicate shared by every transport surface.  A

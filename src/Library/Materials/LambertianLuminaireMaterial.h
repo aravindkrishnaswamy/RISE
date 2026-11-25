@@ -70,6 +70,7 @@ namespace RISE
 			//! so refractive, volumetric, SSS, graded-index, and full-sphere luminaires
 			//! participate identically in IORStackSeeding, SMS, NEE, and MIS.
 			inline bool CouldLightPassThrough() const override { return pMaterial.CouldLightPassThrough(); }
+			inline bool TracksInteriorContainment() const override { return pMaterial.TracksInteriorContainment(); }
 			inline bool IsVolumetric() const override { return pMaterial.IsVolumetric(); }
 			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const override { return pMaterial.GetDiffusionProfile(); }
 			inline const RandomWalkSSSParams* GetRandomWalkSSSParams() const override { return pMaterial.GetRandomWalkSSSParams(); }
@@ -80,6 +81,12 @@ namespace RISE
 			inline Scalar Pdf( const Vector3& wo, const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const override { return pMaterial.Pdf( wo, ri, ior_stack ); }
 			inline Scalar PdfNM( const Vector3& wo, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack& ior_stack ) const override { return pMaterial.PdfNM( wo, ri, nm, ior_stack ); }
 			inline bool ScattersFullSphere() const override { return pMaterial.ScattersFullSphere(); }
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() |
+					pMaterial.GetPathDependence() |
+					( pEmitter ? pEmitter->GetRadEx().GetPathDependence() : 0u );
+			}
 
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter

@@ -23,6 +23,7 @@
 #include "../Acceleration/AccelerationConfig.h"
 #include <atomic>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace RISE
@@ -40,7 +41,7 @@ namespace RISE
 		//! starts with an empty cache), while object chunks are re-pointed
 		//! IN PLACE and would have kept a stale bake (§7.2's named trap).
 		class TriangleMeshGeometryIndexed :
-			public virtual ITriangleMeshGeometryIndexed4,
+			public virtual ITriangleMeshGeometryIndexed5,
 			public virtual Geometry,
 			public virtual TreeElementProcessor<const PointerTriangle*>,
 			public ISurfaceSignalProvider,
@@ -87,6 +88,15 @@ namespace RISE
 			//! Indexed via face's iCoords[k] — same indices as primary UVs.
 			//! Empty when absent.  Same persistence note as pTangents.
 			MyCoordsList			pTexCoords1;
+			//! Optional named per-corner RGBA attributes (v5 interface).
+			//! Flat array of 4 linear floats per triangle corner (`triIdx*3 + k`).
+			//! Live-only state (not persisted in .risemesh).
+			struct NamedCornerAttribute
+			{
+				std::string			name;
+				std::vector<float>	rgba;		///< numCorners * 4 floats
+			};
+			std::vector<NamedCornerAttribute>	pNamedCornerAttributes;
 			MyPointerTriangleList	ptr_polygons;		// The list of pointer triangles
 
 			bool					bDoubleSided;		// Are the polygons all double sided?
@@ -574,6 +584,15 @@ namespace RISE
 			bool ComputeConvexity( const SurfaceSignalInfo& hit,
 				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
 
+			//! ISurfaceSignalProvider -- evaluates a named per-corner RGBA
+			//! attribute at `hit` (barycentrically interpolated over `hit.primId`,
+			//! or re-projected onto the triangle plane when `pQueryObjPos != 0`).
+			bool EvaluateNamedAttribute(
+				const SurfaceSignalInfo& hit,
+				const char* name,
+				Scalar outRGBA[4],
+				const Point3* pQueryObjPos = 0 ) const override;
+
 			//! MeshSignalBake::ISelfOccluder -- boolean any-hit against THIS
 			//! mesh's own triangles, through its own BVH.  Used only during a
 			//! bake build; sees nothing but this mesh (design doc §8).
@@ -618,6 +637,10 @@ namespace RISE
 			void AddTexCoords1( const TexCoordsListType& coords ) override;
 			unsigned int numTexCoords1() const override { return static_cast<unsigned int>(pTexCoords1.size()); }
 			TexCoordsListType const& getTexCoords1() const override { return pTexCoords1; }
+
+			// ITriangleMeshGeometryIndexed5 — named per-corner RGBA attributes.
+			bool AddNamedCornerAttribute( const char* name, const float* cornerRGBA, unsigned int numCorners ) override;
+			unsigned int numNamedCornerAttributes() const override { return static_cast<unsigned int>(pNamedCornerAttributes.size()); }
 
 			void DoneIndexedTriangles( ) override;				// I'm done feeding you a bunch of indexed triangles
 

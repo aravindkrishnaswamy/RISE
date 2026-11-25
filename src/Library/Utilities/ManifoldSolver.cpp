@@ -1961,40 +1961,36 @@ namespace
 	// DL-347: a sampled emission point must be re-evaluated toward the
 	// solved chain. Its sampled light-subpath direction is unrelated.
 	inline RayIntersectionGeometric SMSEmitterContext(
-		const LightSample& sample, const Vector3& out, Vector3& normal )
+		const LightSample& sample, const Vector3& out, Vector3& normal, const ICamera* pCamera )
 	{
 		normal = EmitterSides::FaceToward(
 			LightSampler::LuminaryIsTwoSided( sample.pLuminary ), sample.normal, out );
 		RayIntersectionGeometric rig( Ray( sample.position, out ), nullRasterizerState );
-		rig.bHit = true;
-		rig.ptIntersection = sample.position;
-		rig.vNormal = normal;
-		rig.vGeomNormal = normal;
-		rig.ptCoord = sample.ptCoord;
-		rig.ptObjIntersec = sample.ptObjIntersec;
-		rig.onb.CreateFromW( normal );
+		LightSampler::FillEmitterRecord(
+			rig, sample.position, normal, sample.ptCoord, sample.ptObjIntersec,
+			sample.pLuminary, pCamera );
 		LightSampler::ApplyEmitterSurface( rig, sample.surface );
 		return rig;
 	}
 
-	inline RISEPel SMSAreaLe( const LightSample& sample, const Vector3& out )
+	inline RISEPel SMSAreaLe( const LightSample& sample, const Vector3& out, const ICamera* pCamera )
 	{
 		if( !sample.pLuminary ) return sample.Le;
 		if( !sample.pLuminary->GetMaterial() ) return RISEPel( 0, 0, 0 );
 		const IEmitter* emitter = sample.pLuminary->GetMaterial()->GetEmitter();
 		if( !emitter ) return RISEPel( 0, 0, 0 );
 		Vector3 normal;
-		const auto rig = SMSEmitterContext( sample, out, normal );
+		const auto rig = SMSEmitterContext( sample, out, normal, pCamera );
 		return emitter->emittedRadiance( rig, out, normal );
 	}
 
-	inline Scalar SMSAreaLeNM( const LightSample& sample, const Vector3& out, const Scalar nm )
+	inline Scalar SMSAreaLeNM( const LightSample& sample, const Vector3& out, const Scalar nm, const ICamera* pCamera )
 	{
 		if( !sample.pLuminary || !sample.pLuminary->GetMaterial() ) return 0;
 		const IEmitter* emitter = sample.pLuminary->GetMaterial()->GetEmitter();
 		if( !emitter ) return 0;
 		Vector3 normal;
-		const auto rig = SMSEmitterContext( sample, out, normal );
+		const auto rig = SMSEmitterContext( sample, out, normal, pCamera );
 		return emitter->emittedRadianceNM( rig, out, normal, nm );
 	}
 
@@ -5199,6 +5195,15 @@ namespace {
 				return true;   // continue enumeration
 			}
 
+			// Part 0 containment: exclude specular casters whose material or
+			// modifier depends on non-physical path/view state (SMS rebuilds
+			// chain vertices with bIsCameraRay=false and re-aimed directions).
+			if( pMat->GetPathDependence() != 0u ||
+				( obj.GetModifier() && obj.GetModifier()->GetPathDependence() != 0u ) )
+			{
+				return true;
+			}
+
 			// Probe at several deterministic prands.  A `SwitchPel`-style
 			// painter that keys off (u, v) and reports `isSpecular` only
 			// in some patches must still classify the object as a caster
@@ -5468,6 +5473,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 
 		Ray ray( offsetOrigin, dir );
 		RayIntersection ri( ray, nullRasterizerState );
+		ri.geometric.pCamera = scene.GetCamera();
 
 		// Scene-wide intersection via the acceleration structure
 		pObjMgr->IntersectRaySampled(ri, sampler);
@@ -5545,9 +5551,9 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			}
 		}
 
-		// Check if the hit material is specular
+		// Check if the hit material is specular (MIX §I.3: mix leaves are never SMS casters)
 		const IMaterial* pMat = ri.pMaterial;
-		if( !pMat )
+		if( !pMat || ri.bMaterialFromMix )
 		{
 			break;
 		}
@@ -8014,7 +8020,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return false;
-		actualLe = SMSAreaLe( lightSample, dirSpecToLight );
+		actualLe = SMSAreaLe( lightSample, dirSpecToLight, caster.GetAttachedScene() ? caster.GetAttachedScene()->GetCamera() : 0 );
 		if( ColorMath::MaxValue(actualLe) <= 0 ) return false;
 	}
 	(void)cosAtLight;   // Implicit in detDvDy via (I - wo⊗wo) projection.
@@ -8149,7 +8155,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return false;
-		Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm )
+		Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm, caster.GetAttachedScene() ? caster.GetAttachedScene()->GetCamera() : 0 )
 			: SMSLeNM( lightSample.Le, nm );
 		if( Le <= 0 ) return false;
 	}
@@ -8425,7 +8431,7 @@ void ManifoldSolver::FinalizeExtendedRootInto(const Point3& start,const Vector3&
         scene.GetObjects()->IntersectRay(hit,true,true,false);
         if(emitter) {
             visible=hit.geometric.bHit && hit.pObject==emitter
-                && hit.pMaterial==emitter->GetMaterial()
+                && (hit.pMaterial==emitter->GetMaterial() || hit.pUnresolvedMix==emitter->GetMaterial())
                 && Point3Ops::Distance(SMSReferenceSurfacePoint(*hit.pObject,hit.geometric),end)<=tolerance;
         } else if(hit.geometric.bHit && hit.geometric.range < Point3Ops::Distance(ray.origin,end)-tolerance)
             visible = false;
@@ -9079,7 +9085,7 @@ RISEPel ManifoldSolver::EvaluateExtendedAreaReference(const Point3& pos,const Ve
                 const Scalar f=nm>0?bsdf->valueStatefulNM(incoming,receiver,nm,&root.startingStack)
                     :bsdf->valueStateful(incoming,receiver,&root.startingStack)[component];
                 const Vector3 lightToChain=Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,y));
-                const Scalar le=nm>0?SMSAreaLeNM(light,lightToChain,nm):SMSAreaLe(light,lightToChain)[component];
+                const Scalar le=nm>0?SMSAreaLeNM(light,lightToChain,nm,scene.GetCamera()):SMSAreaLe(light,lightToChain,scene.GetCamera())[component];
                 ManifoldSolver native(config,true,&root.vertices,SMSDomainWavelength(root.domain));
                 const Scalar geometry=std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming))/(distance*distance)
                     *native.ComputeLightToFirstVertexJacobianDet(chain,pos,y,light.normal);
@@ -9884,7 +9890,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			actualLe = SMSAreaLe( lightSample, dirSpecToLight );
+			actualLe = SMSAreaLe( lightSample, dirSpecToLight, caster.GetAttachedScene() ? caster.GetAttachedScene()->GetCamera() : 0 );
 			if( ColorMath::MaxValue(actualLe) <= 0 ) continue;
 		}
 		// DL-419: the walk pays every chain segment's medium transmittance.
@@ -11611,7 +11617,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm )
+			Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm, caster.GetAttachedScene() ? caster.GetAttachedScene()->GetCamera() : 0 )
 			: SMSLeNM( lightSample.Le, nm );
 			if( Le <= 0 ) continue;
 		}
@@ -12050,6 +12056,7 @@ namespace
 		{
 			Ray ray( curOrigin, dir );
 			RayIntersection ri( ray, nullRasterizerState );
+			ri.geometric.pCamera = pScene->GetCamera();
 			// Do not sample endpoint coverage beyond this finite visibility
             // interval; final endpoint acceptance is handled exactly once.
             pObjMgr->IntersectRaySampled(ri, sampler, true, true, false, distRemaining);
@@ -12059,7 +12066,7 @@ namespace
 
 			const IMaterial* pMat = ri.pMaterial;
 			bool isPureSpecular = false;
-			if( pMat ) {
+			if( pMat && !ri.bMaterialFromMix ) {
 				IORStack dummyStack( 1.0 );
 				SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, dummyStack );
 				isPureSpecular = specInfo.isSpecular;
@@ -12110,7 +12117,7 @@ bool ManifoldSolver::CheckChainVisibility(
         const auto& v=chain[i];
         // Newton can move a seed across an inherited CSG material boundary.
         // Validate retained records in alpha scenes, even an opaque seed.
-        if (!sceneAlpha && (!v.pMaterial || v.pMaterial->GetAlphaMode()==eAlphaOpaque)) continue;
+        if (!sceneAlpha && (!v.pMaterial || !v.pMaterial->HasAlphaCoverage())) continue;
         // Visibility consumes the physical hit that produced the solved
         // endpoint. A second normal probe can hit a different SDF/CSG face.
         // Publicly fabricated or moved vertices have no such certificate.
@@ -12119,13 +12126,14 @@ bool ManifoldSolver::CheckChainVisibility(
         const Point3 prev=i?chain[i-1].position:shadingPoint;
         hit.geometric.ray=Ray(prev,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,prev)));
         hit.geometric.range=Point3Ops::Distance(prev,v.position);
-        if (hit.pMaterial && hit.pMaterial->GetAlphaMode()!=eAlphaOpaque) {
-            RayIntersectionGeometric alphaRI(hit.geometric);
-            alphaRI.ptIntersection = v.position;
-            alphaRI.signals.pScene = caster.GetAttachedScene() ? caster.GetAttachedScene()->GetObjects() : nullptr;
-            alphaRI.signals.pSelf = v.pObject;
-            alphaRI.signals.ptWorld = v.position;
-            if (!hit.pMaterial->AcceptAlpha(alphaRI,sampler)) return false;
+        const bool hasMixCov = ( hit.mixCoverage < Scalar(1) );
+        if (hasMixCov || (hit.pMaterial && hit.pMaterial->HasAlphaCoverage())) {
+            hit.geometric.ptIntersection = v.position;
+            hit.geometric.signals.pScene = caster.GetAttachedScene() ? caster.GetAttachedScene()->GetObjects() : nullptr;
+            hit.geometric.signals.pSelf = v.pObject;
+            hit.geometric.signals.ptWorld = v.position;
+            const Scalar cov = hit.HitCoverage();
+            if (!(cov >= Scalar(1)) && !(cov > Scalar(0) && sampler.GetAlpha1D() < cov)) return false;
         }
     }
 

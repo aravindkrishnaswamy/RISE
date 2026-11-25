@@ -71,6 +71,7 @@ namespace RISE
 			// them are unphysical.  Light transport through translucent objects
 			// is handled correctly by the eye/light subpath tracing.
 			inline bool CouldLightPassThrough() const { return false; };
+			inline bool TracksInteriorContainment() const { return true; };
 
 			// DL-46: TranslucentSPF::Scatter/ScatterNM classify entry vs.
 			// exit purely from `ior_stack.containsCurrent()` -- exactly
@@ -148,6 +149,16 @@ namespace RISE
 			inline void SetExtinction( const IScalarPainter& v ) { pBRDF->SetExtinction( v ); pSPF->SetExtinction( v ); }
 			inline void SetN( const IScalarPainter& v )          { pBRDF->SetN( v );        pSPF->SetN( v ); }
 			inline void SetScat( const IScalarPainter& v )       { pBRDF->SetScat( v );     pSPF->SetScat( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pSPF->GetRefFront().GetPathDependence() |
+					pSPF->GetTrans().GetPathDependence() |
+					pSPF->GetExtinction().GetPathDependence() |
+					pSPF->GetN().GetPathDependence() |
+					pSPF->GetScat().GetPathDependence();
+			}
 		};
 	}
 }

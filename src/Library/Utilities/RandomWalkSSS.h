@@ -113,7 +113,9 @@ namespace RISE
 			const unsigned int maxBounces,
 			ISampler& sampler,
 			const Scalar nm,
-			const Scalar maxDepth = 0
+			const Scalar maxDepth = 0,
+			const IMaterial* pExitLeafMaterial = 0,
+			const IRayIntersectionModifier* pExitLeafModifier = 0
 			);
 	}
 }

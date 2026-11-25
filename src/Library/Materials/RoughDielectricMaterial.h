@@ -56,6 +56,7 @@ public:
     ISPF* GetSPF() const override { return surface; }
     IEmitter* GetEmitter() const override { return nullptr; }
     bool CouldLightPassThrough() const override { return true; }
+    bool TracksInteriorContainment() const override { return true; }
     bool ScattersFullSphere() const override { return true; }
     unsigned int ConnectionScatterTypes() const override { return (1u << ScatteredRay::eRayReflection) | (1u << ScatteredRay::eRayRefraction); }
     bool HasConnectionTypeSplit() const override { return true; }
@@ -67,6 +68,13 @@ public:
     void SetIOR(const IScalarPainter& v) { surface->SetIOR(v); }
     void SetAlphaX(const IScalarPainter& v) { surface->SetAlphaX(v); }
     void SetAlphaY(const IScalarPainter& v) { surface->SetAlphaY(v); }
+    unsigned int GetPathDependence() const override
+    {
+        return IMaterial::GetPathDependence() |
+            surface->GetIOR().GetPathDependence() |
+            surface->GetAlphaX().GetPathDependence() |
+            surface->GetAlphaY().GetPathDependence();
+    }
 };
 
 // Current HWSS walkers carry one IOR stack and one radiance eta factor.

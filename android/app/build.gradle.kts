@@ -130,7 +130,7 @@ val syncRiseAssets = tasks.register<Sync>("syncRiseAssets") {
 // Third-party licence notices
 //
 // librise_jni.so compiles in stb, cgltf, mt19937, the Sobol' direction
-// numbers, the Cycles noise, Voronoi and colour ports, the Unicode NFC tables, libpng
+// numbers, the Cycles procedural ports (noise, Voronoi, colour, math, vector), the Unicode NFC tables, libpng
 // and zlib, and the APK ships the NDK's libc++_shared.so.  The in-repo notices
 // are listed once, in licenses/third_party_notices.tsv (lines tagged
 // "android" or "all"); the LLVM notice covering libc++ comes from the NDK the

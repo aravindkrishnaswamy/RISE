@@ -104,6 +104,9 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/OslNoise.cpp			\
 	$(PATHLIBRARY)Utilities/OslVoronoi.cpp			\
 	$(PATHLIBRARY)Utilities/OslColor.cpp			\
+	$(PATHLIBRARY)Utilities/OslMath.cpp				\
+	$(PATHLIBRARY)Utilities/OslVector.cpp			\
+	$(PATHLIBRARY)Utilities/OslShaderNodes.cpp		\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
 	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
@@ -218,6 +221,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
 	$(PATHLIBRARY)Materials/DataDrivenSPF.cpp									\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
+	$(PATHLIBRARY)Materials/DiffuseTransmissionMaterial.cpp							\
+	$(PATHLIBRARY)Materials/MixMaterial.cpp											\
 	$(PATHLIBRARY)Materials/RoughDielectricMaterial.cpp								\
 	$(PATHLIBRARY)Utilities/RoughDielectricEnergy.cpp								\
 	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
@@ -443,6 +448,7 @@ SRCLIBSCENEMANAGEMENT =\
 # Intersection modifiers
 SRCLIBMODIFIERS =\
 	$(PATHLIBRARY)Modifiers/GlintModifier.cpp					\
+	$(PATHLIBRARY)Modifiers/BlendedModifier.cpp				\
 	$(PATHLIBRARY)Modifiers/ModifierStack.cpp					\
 	$(PATHLIBRARY)Modifiers/NormalMap.cpp					\
 	$(PATHLIBRARY)Modifiers/ReliefModifier.cpp

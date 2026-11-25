@@ -158,13 +158,17 @@
 //              translated Blender node graph renders the same pattern.
 //              They have their own signature table, ids and dispatch
 //              (ExpressionOslBuiltins.h, Compiled::kOsl / kOslV3) and
-//              are listed there; so far gradient noise, fractal
-//              noise, the Noise Texture node, White Noise, the
-//              Voronoi Texture node, RGB/HSV/HSL colour conversions
-//              and Mix Color.  Unlike fbm() the noise/Voronoi ones
-//              never fade octaves by footprint, and some arguments
-//              must be integer literals.  They are pure functions, so
-//              they compile with context vars off too.
+//              are listed there: gradient noise, fractal noise, the
+//              Noise Texture node, White Noise, the Voronoi Texture
+//              node, RGB/HSV/HSL colour conversions, Mix Color, Safe
+//              Math / Vector Math / Clamp / Map Range, componentwise
+//              vec3 ops and Vector Rotate, live object/world/camera
+//              space transforms, and per-object Object Info attributes
+//              (`osl_object_color/alpha/index/random`).  Unlike fbm() the noise/Voronoi ones
+//              never fade octaves by footprint, and mode/flag arguments
+//              must be integer literals.  Groups 1-6 are pure functions
+//              and compile with context vars off too; Group 7 space
+//              transforms and Object Info require context vars enabled.
 //
 //  Designed for displacement bakes (compiled once, ~10^5 evals at parse
 //  time) and small procedural textures.  Not a hot per-sample path
@@ -194,6 +198,8 @@
 #include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
 #include "../Interfaces/IPainter.h"		// DL-25: sample(name)'s dispatch target (also pulls in RayIntersectionGeometric.h)
 #include "../Interfaces/IScalarPainter.h"	// DL-25: sample_scalar(name)'s dispatch target -- IScalarPainter, never GetColorNM (no JH uplift)
+#include "../Interfaces/ICamera.h"		// Group 7: live camera frame for osl_to_camera_* / osl_camera_to_world_* memo key
+#include "../Utilities/Transformable.h"	// Group 7: global/thread transform-pose epochs for SpaceTransformHitKey
 #include "ExpressionOslBuiltins.h"	// the `osl_` builtins: their own table, ids and dispatch (Compiled::kOsl / kOslV3)
 
 namespace RISE
@@ -369,7 +375,12 @@ namespace RISE
 					// OslBuiltins id (its own id space) and `arity` the
 					// scalars popped, exactly as for kFunc / kFuncV3.
 					kOsl,				//!< osl_ builtin returning scalar
-					kOslV3				//!< osl_ builtin returning vec3
+					kOslV3,				//!< osl_ builtin returning vec3
+					kMeshAttr3,			//!< mesh_attr3("name") -> vec3 linear RGB from hit geometry
+					kMeshAttrAlpha,		//!< mesh_attr_alpha("name") -> scalar alpha from hit geometry
+					kSampleAlpha,		//!< sample_alpha(painter) -> scalar IPainter::GetAlpha at hit
+					kSampleUv,			//!< sample_uv(painter, u, v) -> vec3 IPainter::GetColor at overridden UV
+					kSampleUvAlpha		//!< sample_uv_alpha(painter, u, v) -> scalar IPainter::GetAlpha at overridden UV
 				};
 				//! `arity` = scalars popped, meaningful (and required) for
 				//! kFunc/kFuncV3/kRamp/kOsl/kOslV3 only -- every other op's stack effect
@@ -732,7 +743,7 @@ namespace RISE
 				// compile into a context-vars-disabled program in the first place, but a
 				// context-vars-enabled one reached through THIS overload still gets its
 				// real bound refs -- see BoundPainterRefs's doc comment.)
-				RunAny( m_final, env, out, 0, m_boundRefs.get(), 0 );
+				RunAny( m_final, env, out, 0, m_boundRefs.get(), 0, &m_meshAttrNames );
 				return out[0];
 			}
 
@@ -743,7 +754,7 @@ namespace RISE
 				Scalar env[ kMaxSlots ];
 				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), -1, ctx.pHit );
 				Scalar out[3];
-				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit );
+				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit, &m_meshAttrNames );
 				return out[0];
 			}
 
@@ -756,7 +767,7 @@ namespace RISE
 				Scalar env[ kMaxSlots ];
 				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), -1, ctx.pHit );
 				Scalar out[3];
-				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit );
+				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit, &m_meshAttrNames );
 				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
 				return Vector3( out[0], out[0], out[0] );
 			}
@@ -766,9 +777,9 @@ namespace RISE
 			unsigned long long ProgramId() const { return m_id; }
 
 			//! Is this program worth an L2 memo entry?  Decided ONCE, at
-			//! compile time, because the memo's own key comparison is 36
-			//! exact compares for a non-sampling body
-			//! (ExpressionMemo::ProgramKey::kFieldsNonSampling; 52 is the
+			//! compile time, because the memo's own key comparison is 37
+			//! exact compares for a non-sampling, non-space-transform body
+			//! (ExpressionMemo::ProgramKey::kFieldsNonSampling; 85 is the
 			//! worst case, `kFields`) and a body like `u*v` is cheaper to
 			//! re-run than to look up.
 			//!
@@ -841,8 +852,81 @@ namespace RISE
 				// sentinel would hide the split rather than state it.  See
 				// ExpressionMemo::PainterSampleHitKey for the enumeration
 				// of the set and for the census that keeps it honest.
-				k.usesPainterSample = UsesPainterSample();
+				k.usesPainterSample = UsesPainterSample() || UsesViewRay();
 				k.sampleHit = MakeSampleHitKey( k.usesPainterSample ? ctx.pHit : 0 );
+				// Also populate spaceHit when sampling a child painter: `sample()`
+				// forwards `ctx.pHit` verbatim, so a child ExpressionPainter may
+				// call Group 7 space transforms even if this outer body does not.
+				k.usesSpaceTransform = UsesSpaceTransform() || k.usesPainterSample;
+				k.spaceHit = MakeSpaceTransformHitKey( k.usesSpaceTransform ? ctx.pHit : 0 );
+			}
+
+			//! Space-transform half of the L2 memo key (Group 7).
+			static ExpressionMemo::SpaceTransformHitKey MakeSpaceTransformHitKey( const RayIntersectionGeometric* pHit )
+			{
+				ExpressionMemo::SpaceTransformHitKey k;
+				k.globalPoseEpoch = pHit ? Transformable::GlobalTransformPoseEpoch() : 0ull;
+				k.threadPoseEpoch = pHit ? Transformable::ThreadTransformPoseEpoch() : 0ull;
+				if( !pHit ) {
+					k.pWorldToObject = 0;
+					k.pObjectToWorld = 0;
+					k.hasCamera = false;
+					k.geomOpposesArrival = 0;
+					k.geomBackfacing = false;
+					k.isCameraRay = false;
+					k.camOx = k.camOy = k.camOz = 0.0;
+					k.camRx = k.camRy = k.camRz = 0.0;
+					k.camUx = k.camUy = k.camUz = 0.0;
+					k.camFx = k.camFy = k.camFz = 0.0;
+					k.gnx = k.gny = k.gnz = 0.0;
+					k.n0x = k.n0y = k.n0z = 0.0;
+					k.objR = k.objG = k.objB = k.objA = 0.0f;
+					k.objIdx = k.objRand = k.particleRand = 0.0f;
+					return k;
+				}
+				k.pWorldToObject = (const void*)pHit->pmxWorldToObject;
+				k.pObjectToWorld = (const void*)pHit->pmxObjectToWorld;
+				const bool opposesArrival = pHit->GeomNormalOpposesArrival();
+				k.geomOpposesArrival = opposesArrival ? -1 : 1;
+				k.geomBackfacing = pHit->HasTrueGeomSide()
+					&& ( pHit->bGeomNormalOrientedToRay ? opposesArrival : !opposesArrival );
+				k.isCameraRay = pHit->bIsCameraRay;
+				k.gnx = (double)pHit->vGeomNormal.x;
+				k.gny = (double)pHit->vGeomNormal.y;
+				k.gnz = (double)pHit->vGeomNormal.z;
+				const Vector3 n0 = pHit->bHasNormalMapFrame ? pHit->normalMapOnb.w()
+					: ( pHit->bHasCoatDecodeOnb ? pHit->coatDecodeOnb.w() : pHit->vNormal );
+				k.n0x = (double)n0.x;
+				k.n0y = (double)n0.y;
+				k.n0z = (double)n0.z;
+				Point3 origin;
+				Vector3 right, up, forward;
+				if( OslBuiltins::QueryCameraFrame( pHit->pCamera, origin, right, up, forward ) ) {
+					k.hasCamera = true;
+					k.camOx = (double)origin.x;  k.camOy = (double)origin.y;  k.camOz = (double)origin.z;
+					k.camRx = (double)right.x;   k.camRy = (double)right.y;   k.camRz = (double)right.z;
+					k.camUx = (double)up.x;      k.camUy = (double)up.y;      k.camUz = (double)up.z;
+					k.camFx = (double)forward.x; k.camFy = (double)forward.y; k.camFz = (double)forward.z;
+				} else {
+					k.hasCamera = false;
+					k.camOx = k.camOy = k.camOz = 0.0;
+					k.camRx = k.camRy = k.camRz = 0.0;
+					k.camUx = k.camUy = k.camUz = 0.0;
+					k.camFx = k.camFy = k.camFz = 0.0;
+				}
+				if( pHit->pObjectInfo ) {
+					k.objR = pHit->pObjectInfo->color[0];
+					k.objG = pHit->pObjectInfo->color[1];
+					k.objB = pHit->pObjectInfo->color[2];
+					k.objA = pHit->pObjectInfo->alpha;
+					k.objIdx = pHit->pObjectInfo->objectIndex;
+					k.objRand = pHit->pObjectInfo->random;
+					k.particleRand = pHit->pObjectInfo->particleRandom;
+				} else {
+					k.objR = k.objG = k.objB = k.objA = 0.0f;
+					k.objIdx = k.objRand = k.particleRand = 0.0f;
+				}
+				return k;
 			}
 
 			//! The painter-sample half of the key above, split out so the
@@ -912,18 +996,20 @@ namespace RISE
 			}
 
 			//! Does this program call `occlusion()`, `thickness()`,
-			//! `convexity()`, `proximity()` or `interior()` anywhere -- final
-			//! expression or any `def` stage?  Resolved at COMPILE time, same
-			//! as UsesContextVar.  `m_signalCalls` (populated below) carries
-			//! all five; this is simply "is that list non-empty".
-			//!
-			//! Unlike UsesSurfaceCurvature this is NOT wired to a cost gate:
-			//! the per-hit provider install is a pointer plus six scalars and
-			//! the estimators are lazy by construction, so there is nothing
-			//! to gate (see SurfaceSignalInfo's own doc for the full
-			//! argument).  It exists for introspection and for Phase 3's bake
-			//! trigger, which genuinely does need to know up front.
-			bool UsesSurfaceSignals() const { return !m_signalCalls.empty(); }
+			//! `convexity()`, `proximity()`, `interior()`, named mesh
+			//! attribute builtins (`mesh_attr3()` / `mesh_attr_alpha()`), or
+			//! scene-signal OSL builtins (`osl_ao()`) anywhere -- final
+			//! expression or any `def` stage?  Drives `SurfaceSignalDemand`
+			//! (`LightSampler::EmitterProbeWanted()`) and marks
+			//! `ExpressionScalarPainter` position-dependent.
+			bool UsesSurfaceSignals() const { return !m_signalCalls.empty() || !m_meshAttrNames.empty() || m_usesSceneSignals; }
+
+			//! Does this program call `mesh_attr3(...)` or `mesh_attr_alpha(...)`?
+			bool UsesMeshAttributes() const { return !m_meshAttrNames.empty(); }
+
+			//! Distinct named geometry attributes referenced by this program,
+			//! in first-reference order.
+			const std::vector<std::string>& MeshAttributeNames() const { return m_meshAttrNames; }
 
 			//! Does this program call EITHER CROSS-OBJECT signal --
 			//! `proximity()` or `interior()`?  Resolved at COMPILE time from
@@ -974,6 +1060,56 @@ namespace RISE
 			//! needs a painter-manager resolver at all before calling
 			//! BindPainterRefs.
 			bool UsesPainterSample() const { return !m_colorPainterRefNames.empty() || !m_scalarPainterRefNames.empty(); }
+
+			//! Does this program call any Group 7 live space-transform builtin
+			//! (`osl_to_object_*`, `osl_to_world_*`, `osl_to_camera_*`,
+			//! `osl_camera_to_world_*`)?  Resolved at compile time.
+			bool UsesSpaceTransform() const { return m_usesSpaceTransform; }
+			bool UsesViewRay() const { return m_usesViewRay; }
+
+			//! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): non-zero bitmask
+			//! of `PathDependence::Flags` when this expression or any painter it
+			//! samples depends on non-physical path/view state.
+			unsigned int GetPathDependence() const
+			{
+				unsigned int mask = m_pathDependence;
+				if( m_boundRefs ) {
+					for( size_t i = 0; i < m_boundRefs->color.size(); ++i ) {
+						if( m_boundRefs->color[i] ) {
+							mask |= m_boundRefs->color[i]->GetPathDependence();
+						}
+					}
+					for( size_t i = 0; i < m_boundRefs->scalar.size(); ++i ) {
+						if( m_boundRefs->scalar[i] ) {
+							mask |= m_boundRefs->scalar[i]->GetPathDependence();
+						}
+					}
+				}
+				return mask;
+			}
+
+			//! DL-292: true iff this expression reads world position `P`, calls a
+			//! world-position-producing space transform (`osl_to_world_point`), or
+			//! samples any child painter that reads world position.
+			bool ReadsWorldPosition() const
+			{
+				if( UsesContextVar( kContextSlotP ) || m_readsWorldPosition ) {
+					return true;
+				}
+				if( m_boundRefs ) {
+					for( size_t i = 0; i < m_boundRefs->color.size(); ++i ) {
+						if( m_boundRefs->color[i] && m_boundRefs->color[i]->ReadsWorldPosition() ) {
+							return true;
+						}
+					}
+					for( size_t i = 0; i < m_boundRefs->scalar.size(); ++i ) {
+						if( m_boundRefs->scalar[i] && m_boundRefs->scalar[i]->ReadsWorldPosition() ) {
+							return true;
+						}
+					}
+				}
+				return false;
+			}
 
 			//! Has BindPainterRefs already run (successfully) on this
 			//! program?  A program with no `sample`/`sample_scalar` calls at
@@ -1105,7 +1241,7 @@ namespace RISE
 			{
 			public:
 				Builder() : m_errorOffset(-1), m_hasBuilderError(false), m_contextVarsEnabled(false),
-					m_ctxUsed(0)
+					m_usesSpaceTransform(false), m_usesSceneSignals(false), m_usesViewRay(false), m_readsWorldPosition(false), m_pathDependence(0u), m_ctxUsed(0)
 				{
 					// Reserve the fixed context-variable slots (u=0, v=1,
 					// P=2..4, Po=5..7, N=8..10, fw=11, time=12, curv=13,
@@ -1230,6 +1366,7 @@ namespace RISE
 					// see BindPainterRefs's own doc comment.
 					out.m_colorPainterRefNames = m_colorPainterRefNames;
 					out.m_scalarPainterRefNames = m_scalarPainterRefNames;
+					out.m_meshAttrNames = m_meshAttrNames;
 					out.m_initEnv.assign( m_names.size(), Scalar(0) );
 					for( std::map<int,Scalar>::const_iterator it = m_init.begin(); it != m_init.end(); ++it ) {
 						out.m_initEnv[ it->first ] = it->second;
@@ -1241,6 +1378,11 @@ namespace RISE
 					// failure return above, so an invalid program keeps id 0
 					// and is never memoised.
 					out.m_id = ExpressionMemo::NewProgramId();
+					out.m_usesSpaceTransform = m_usesSpaceTransform;
+					out.m_usesSceneSignals = m_usesSceneSignals;
+					out.m_usesViewRay = m_usesViewRay;
+					out.m_readsWorldPosition = m_readsWorldPosition;
+					out.m_pathDependence = m_pathDependence;
 					out.m_memoWorthy = ComputeMemoWorthiness( out );
 					out.m_valid = true;
 					return true;
@@ -1260,19 +1402,18 @@ namespace RISE
 				//!   * it is simply LONG -- more instructions than the key
 				//!     comparison has fields to ACTUALLY compare for a body
 				//!     like this one.  That count is
-				//!     ExpressionMemo::ProgramKey::kFieldsNonSampling (36:
-				//!     18 own fields, plus `usesPainterSample`, plus the
-				//!     signal channel's 17), taken from the comparison
-				//!     itself rather than restated here so the two cannot
-				//!     drift.  At or above it the lookup cannot be the more
-				//!     expensive half even for a body of pure arithmetic.
+				//!     ExpressionMemo::ProgramKey::kFieldsNonSampling (37:
+				//!     18 own fields, plus `usesPainterSample`, plus
+				//!     `usesSpaceTransform`, plus the signal channel's 17),
+				//!     taken from the comparison itself rather than restated
+				//!     here so the two cannot drift.  At or above it the
+				//!     lookup cannot be the more expensive half even for a
+				//!     body of pure arithmetic.
 				//!
-				//!     ⚠ NOT `kFields` (52).  That is the key's WORST-CASE
+				//!     ⚠ NOT `kFields` (85).  That is the key's WORST-CASE
 				//!     width, and it includes the 16 painter-sample compares
-				//!     `ProgramKey::Equals` SHORT-CIRCUITS for any body that
-				//!     does not call `sample()` -- which every body reaching
-				//!     this clause is, since the sample() test above already
-				//!     returned.  Thresholding on 52 silently de-memoised
+				//!     and 32 space-transform/object-info/ao compares `ProgramKey::Equals`
+				//!     SHORT-CIRCUITS for any body that uses neither.  Thresholding on 52 silently de-memoised
 				//!     every pure-arithmetic body of 36..51 instructions
 				//!     when DL-25 widened the key; caught by that slice's
 				//!     round-3 review (P2-2) and pinned by
@@ -1321,7 +1462,8 @@ namespace RISE
 							// An `osl_` call qualifies when its signature says
 							// it is expensive (the gradient and fractal noise
 							// and Voronoi builtins do; white noise, colour
-							// conversions and Mix Color do not).
+							// conversions, Mix Color, safe math, componentwise
+							// vec3/rotations and space transforms do not).
 							if( in.op == Compiled::kOsl || in.op == Compiled::kOslV3 ) {
 								const OslBuiltins::Sig* os = OslBuiltins::FindById( in.fn );
 								if( os && os->memoWorthy ) return true;
@@ -1380,7 +1522,7 @@ namespace RISE
 				//! whole call) within the scanned string, so a caller can excise or
 				//! replace just the name (a rename) without re-deriving the call's
 				//! surrounding syntax.
-				struct SampleRef { bool isScalar; std::string painterName; size_t identOff; size_t identLen; };
+				struct SampleRef { bool isScalar; std::string fnName; std::string painterName; size_t identOff; size_t identLen; };
 
 				//! Scan `expr` for every `sample(<ident>)` / `sample_scalar(<ident>)`
 				//! call using the SAME tokenizer `ParseSampleCall` consumes at
@@ -1409,12 +1551,17 @@ namespace RISE
 					const bool ok = b.Tokenize( expr, toks );
 					for( size_t i = 0; i + 3 < toks.size(); ++i ) {
 						if( toks[i].t != Tok::Ident ) continue;
-						if( toks[i].s != "sample" && toks[i].s != "sample_scalar" ) continue;
+						const std::string& fn = toks[i].s;
+						const bool oneArg = ( fn == "sample" || fn == "sample_scalar" || fn == "sample_alpha" );
+						const bool uvArg  = ( fn == "sample_uv" || fn == "sample_uv_alpha" );
+						if( !oneArg && !uvArg ) continue;
 						if( toks[i+1].t != Tok::LP ) continue;
 						if( toks[i+2].t != Tok::Ident ) continue;
-						if( toks[i+3].t != Tok::RP ) continue;
+						if( oneArg && toks[i+3].t != Tok::RP ) continue;
+						if( uvArg && toks[i+3].t != Tok::Comma ) continue;
 						SampleRef r;
-						r.isScalar = ( toks[i].s == "sample_scalar" );
+						r.isScalar = ( fn == "sample_scalar" );
+						r.fnName = fn;
 						r.painterName = toks[i+2].s;
 						r.identOff = toks[i+2].off;
 						r.identLen = toks[i+2].s.size();
@@ -1449,13 +1596,16 @@ namespace RISE
 					size_t last = 0;
 					for( size_t i = 0; i + 3 < toks.size(); ++i ) {
 						if( toks[i].t != Tok::Ident ) continue;
-						const bool thisIsScalar = ( toks[i].s == "sample_scalar" );
-						const bool thisIsColor  = ( toks[i].s == "sample" );
-						if( !thisIsScalar && !thisIsColor ) continue;
+						const std::string& fn = toks[i].s;
+						const bool thisIsScalar = ( fn == "sample_scalar" );
+						const bool thisIsOneColor = ( fn == "sample" || fn == "sample_alpha" );
+						const bool thisIsUvColor = ( fn == "sample_uv" || fn == "sample_uv_alpha" );
+						if( !thisIsScalar && !thisIsOneColor && !thisIsUvColor ) continue;
 						if( thisIsScalar != isScalar ) continue;
 						if( toks[i+1].t != Tok::LP ) continue;
 						if( toks[i+2].t != Tok::Ident ) continue;
-						if( toks[i+3].t != Tok::RP ) continue;
+						if( ( thisIsScalar || thisIsOneColor ) && toks[i+3].t != Tok::RP ) continue;
+						if( thisIsUvColor && toks[i+3].t != Tok::Comma ) continue;
 						if( toks[i+2].s != oldName ) continue;
 						out.append( expr, last, toks[i+2].off - last );
 						out.append( newName );
@@ -1475,6 +1625,11 @@ namespace RISE
 				ptrdiff_t m_errorOffset;
 				bool m_hasBuilderError;	// sticky: once true, Finalize always fails (P1-A dup-name guard)
 				bool m_contextVarsEnabled;	// see EnableContextVars() doc comment
+				bool m_usesSpaceTransform;	// true iff any compiled body called a Group 7 space-transform / hit-context builtin
+				bool m_usesSceneSignals;	// true iff any compiled body called a scene-signal OSL builtin (e.g. osl_ao)
+				bool m_usesViewRay;			// true iff any compiled body called a view-ray OSL builtin (osl_layer_weight / osl_fresnel)
+				bool m_readsWorldPosition;	// DL-292: true iff any compiled body called a world-position-producing builtin (osl_to_world_point)
+				unsigned int m_pathDependence;	// Part 0 bitmask of PathDependence::Flags from OSL builtins
 				//! Bit i set == some body compiled by THIS builder resolved the
 				//! context var whose FIRST env slot is i.  Written only by
 				//! ParseAtom's context branch; copied into the program by Finalize
@@ -1501,6 +1656,8 @@ namespace RISE
 				std::map<std::string,int> m_colorPainterRefIndex;
 				std::vector<std::string> m_scalarPainterRefNames;
 				std::map<std::string,int> m_scalarPainterRefIndex;
+				std::vector<std::string> m_meshAttrNames;
+				std::map<std::string,int> m_meshAttrIndex;
 
 				//! Dedupe-and-register one `sample(name)` / `sample_scalar(name)`
 				//! reference into the given (names, index) pair, returning its
@@ -1671,7 +1828,7 @@ namespace RISE
 				//////////////////////////////////////////////////
 				// Recursive-descent parser -> postfix emit
 				//////////////////////////////////////////////////
-				struct Tok { enum T { Num, Ident, Op, LP, RP, Comma, Dot, End } t; Scalar num; std::string s; size_t off; };
+				struct Tok { enum T { Num, Ident, Str, Op, LP, RP, Comma, Dot, End } t; Scalar num; std::string s; size_t off; };
 
 				bool Tokenize( const std::string& e, std::vector<Tok>& out )
 				{
@@ -1679,6 +1836,44 @@ namespace RISE
 					while( i < n ) {
 						const char c = e[i];
 						if( c == ' ' || c == '\t' || c == '\n' || c == '\r' ) { ++i; continue; }
+						if( c == '"' ) {
+							const size_t startOff = i++;
+							std::string s;
+							bool closed = false;
+							auto hexVal = []( char ch ) -> int {
+								if( ch >= '0' && ch <= '9' ) return ch - '0';
+								if( ch >= 'a' && ch <= 'f' ) return 10 + ( ch - 'a' );
+								if( ch >= 'A' && ch <= 'F' ) return 10 + ( ch - 'A' );
+								return -1;
+							};
+							while( i < n ) {
+								const char ch = e[i++];
+								if( ch == '"' ) { closed = true; break; }
+								if( ch == '\\' ) {
+									if( i >= n ) { SetError( "unterminated escape in string literal", (ptrdiff_t)startOff ); return false; }
+									const char esc = e[i++];
+									if( esc == '"' || esc == '\\' ) { s.push_back( esc ); }
+									else if( esc == 't' ) { s.push_back( '\t' ); }
+									else if( esc == 'x' ) {
+										if( i + 1 >= n ) { SetError( "incomplete \\xHH escape in string literal", (ptrdiff_t)(i - 2) ); return false; }
+										const int hi = hexVal( e[i] );
+										const int lo = hexVal( e[i + 1] );
+										if( hi < 0 || lo < 0 ) { SetError( "invalid hex digits in \\xHH escape", (ptrdiff_t)(i - 2) ); return false; }
+										const unsigned char byte = static_cast<unsigned char>( ( hi << 4 ) | lo );
+										if( byte == 0 ) { SetError( "\\x00 NUL byte is not allowed in string literal", (ptrdiff_t)(i - 2) ); return false; }
+										s.push_back( static_cast<char>( byte ) );
+										i += 2;
+									}
+									else { SetError( "unknown escape sequence in string literal (supported: \\\", \\\\, \\t, \\xHH)", (ptrdiff_t)(i - 2) ); return false; }
+								} else {
+									s.push_back( ch );
+								}
+							}
+							if( !closed ) { SetError( "unterminated string literal", (ptrdiff_t)startOff ); return false; }
+							Tok t; t.t = Tok::Str; t.s = std::move( s ); t.off = startOff;
+							out.push_back( t );
+							continue;
+						}
 						if( c == '.' && i+1 < n && ( ( e[i+1]>='a'&&e[i+1]<='z' ) || ( e[i+1]>='A'&&e[i+1]<='Z' ) ) ) {
 							Tok t; t.t = Tok::Dot; t.off = i; out.push_back( t ); ++i; continue;
 						}
@@ -1758,6 +1953,11 @@ namespace RISE
 						case Compiled::kRamp: sp += ( in.fn - in.arity ); break;
 						case Compiled::kOsl: sp += ( 1 - in.arity ); break;
 						case Compiled::kOslV3: sp += ( 3 - in.arity ); break;
+						case Compiled::kMeshAttr3: sp += 3; break;
+						case Compiled::kMeshAttrAlpha: sp += 1; break;
+						case Compiled::kSampleAlpha: sp += 1; break;
+						case Compiled::kSampleUv: sp += 1; break;
+						case Compiled::kSampleUvAlpha: sp -= 1; break;
 						default: sp -= 1; break;	// binary scalar ops
 						}
 						// A negative sp here means SOME opcode's declared stack effect
@@ -2160,6 +2360,21 @@ namespace RISE
 							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
 							st.resize( st.size() - (size_t)in.arity );
 							const int w = ( in.op == Compiled::kOslV3 ) ? 3 : 1;
+							for( int k = 0; k < w; ++k ) st.push_back( LinScalar() );
+						} break;
+						case Compiled::kMeshAttr3:
+						case Compiled::kMeshAttrAlpha:
+						case Compiled::kSampleAlpha:
+						{
+							const int w = ( in.op == Compiled::kMeshAttr3 ) ? 3 : 1;
+							for( int k = 0; k < w; ++k ) st.push_back( LinScalar() );
+						} break;
+						case Compiled::kSampleUv:
+						case Compiled::kSampleUvAlpha:
+						{
+							if( st.size() < 2 ) return false;
+							st.resize( st.size() - 2 );
+							const int w = ( in.op == Compiled::kSampleUv ) ? 3 : 1;
 							for( int k = 0; k < w; ++k ) st.push_back( LinScalar() );
 						} break;
 						default:
@@ -2578,7 +2793,11 @@ namespace RISE
 					if( name == "vec3" ) return ParseVec3Ctor( nameOff, outType );
 					if( name == "ramp" ) return ParseRampCall( nameOff, outType );
 					if( name == "mix" )  return ParseMixCall( nameOff, outType );
-					if( name == "sample" || name == "sample_scalar" ) return ParseSampleCall( name, nameOff, outType );
+					if( name == "sample" || name == "sample_scalar" || name == "sample_alpha"
+						|| name == "sample_uv" || name == "sample_uv_alpha" ) {
+						return ParseSampleCall( name, nameOff, outType );
+					}
+					if( name == "mesh_attr3" || name == "mesh_attr_alpha" ) return ParseMeshAttrCall( name, nameOff, outType );
 
 					const FnSig* sig = FindSig( name );
 					if( !sig ) {
@@ -2818,6 +3037,10 @@ namespace RISE
 				bool ParseOslCall( const OslBuiltins::Sig& sig, size_t nameOff, VType& outType )
 				{
 					const std::string name( sig.name );
+					if( sig.needsHitContext && !m_contextVarsEnabled ) {
+						SetError( name + "() requires surface context variables", (ptrdiff_t)nameOff );
+						return false;
+					}
 					int got = 0;
 					if( Cur().t != Tok::RP ) {
 						for( ;; ) {
@@ -2843,6 +3066,12 @@ namespace RISE
 								if( !isLit || lit != std::floor( lit ) || lit < Scalar( lo ) || lit > Scalar( hi ) ) {
 									SetError( name + "() argument " + std::to_string( got + 1 ) + " must be an integer literal from "
 										+ std::to_string( lo ) + " to " + std::to_string( hi ), (ptrdiff_t)argOff );
+									return false;
+								}
+								// L3: reject scalar-only Vector Math ops (7=Dot, 8=Distance, 9=Length) in vector-returning osl_vmath().
+								if( name == "osl_vmath" && got == 0 && ( lit == Scalar( 7 ) || lit == Scalar( 8 ) || lit == Scalar( 9 ) ) ) {
+									SetError( "osl_vmath() op " + std::to_string( static_cast<int>( lit ) ) +
+										" is a scalar operation; use osl_vmath_scalar() instead", (ptrdiff_t)argOff );
 									return false;
 								}
 							}
@@ -2873,6 +3102,21 @@ namespace RISE
 					if( got != sig.nArgs ) { SetError( name + "() expects " + std::to_string( sig.nArgs ) + " argument(s)", (ptrdiff_t)nameOff ); return false; }
 					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "()", (ptrdiff_t)CurOff() ); return false; }
 					Advance();
+					if( sig.needsHitContext ) {
+						m_usesSpaceTransform = true;
+					}
+					if( sig.needsSceneSignals ) {
+						m_usesSceneSignals = true;
+					}
+					if( sig.needsViewRay ) {
+						m_usesViewRay = true;
+					}
+					if( sig.readsWorldPosition ) {
+						m_readsWorldPosition = true;
+					}
+					if( sig.pathDependence != 0u ) {
+						m_pathDependence |= sig.pathDependence;
+					}
 					Compiled::Instr in;
 					in.op = sig.retVec3 ? Compiled::kOslV3 : Compiled::kOsl;
 					in.val = Scalar(1); in.valo = Scalar(0); in.idx = -1;
@@ -2995,6 +3239,9 @@ namespace RISE
 				bool ParseSampleCall( const std::string& name, size_t nameOff, VType& outType )
 				{
 					const bool isScalar = ( name == "sample_scalar" );
+					const bool isAlpha  = ( name == "sample_alpha" );
+					const bool isUv     = ( name == "sample_uv" );
+					const bool isUvAlpha = ( name == "sample_uv_alpha" );
 					if( !m_contextVarsEnabled ) {
 						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
 							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
@@ -3009,15 +3256,82 @@ namespace RISE
 					}
 					const std::string painterName = Cur().s;
 					Advance();
+					if( isUv || isUvAlpha ) {
+						const std::string expectUvMsg = name + "() expects (painter_name, u, v)";
+						if( !Expect( Tok::Comma, expectUvMsg.c_str(), nameOff ) ) return false;
+						const size_t uOff = CurOff();
+						VType tu;
+						if( !ParseCmp( tu ) ) return false;
+						if( tu != kScalar ) { SetError( name + "() argument 2 (u) must be scalar", (ptrdiff_t)uOff ); return false; }
+						if( !Expect( Tok::Comma, expectUvMsg.c_str(), nameOff ) ) return false;
+						const size_t vOff = CurOff();
+						VType tv;
+						if( !ParseCmp( tv ) ) return false;
+						if( tv != kScalar ) { SetError( name + "() argument 3 (v) must be scalar", (ptrdiff_t)vOff ); return false; }
+						if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "() -- expected (painter_name, u, v)", (ptrdiff_t)CurOff() ); return false; }
+						Advance();
+						const int refIdx = RegisterPainterRef( m_colorPainterRefNames, m_colorPainterRefIndex, painterName );
+						Compiled::Instr in;
+						in.op = isUv ? Compiled::kSampleUv : Compiled::kSampleUvAlpha;
+						in.val = 0; in.valo = 0;
+						in.idx = refIdx; in.fn = 0; in.arity = 2;
+						m_emit->code.push_back( in );
+						outType = isUv ? kVec3 : kScalar;
+						return true;
+					}
 					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "() -- exactly one argument expected", (ptrdiff_t)CurOff() ); return false; }
 					Advance();
 					const int refIdx = isScalar
 						? RegisterPainterRef( m_scalarPainterRefNames, m_scalarPainterRefIndex, painterName )
 						: RegisterPainterRef( m_colorPainterRefNames, m_colorPainterRefIndex, painterName );
+					if( isAlpha ) {
+						Compiled::Instr in;
+						in.op = Compiled::kSampleAlpha;
+						in.val = 0; in.valo = 0;
+						in.idx = refIdx; in.fn = 0; in.arity = 0;
+						m_emit->code.push_back( in );
+						outType = kScalar;
+						return true;
+					}
 					EmitFuncCall( isScalar ? ExpressionProgram::kFnSamplePainterScalar : ExpressionProgram::kFnSamplePainter,
 						/*arity=*/0, /*isVec3=*/!isScalar );
 					m_emit->code.back().idx = refIdx;
 					outType = isScalar ? kScalar : kVec3;
+					return true;
+				}
+
+				//! Named geometry-attribute query: `mesh_attr3("name") -> vec3`
+				//! and `mesh_attr_alpha("name") -> scalar`.  Reads per-corner
+				//! linear RGBA from the hit geometry's ISurfaceSignalProvider.
+				bool ParseMeshAttrCall( const std::string& name, size_t nameOff, VType& outType )
+				{
+					const bool isAlpha = ( name == "mesh_attr_alpha" );
+					if( !m_contextVarsEnabled ) {
+						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
+							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
+							(ptrdiff_t)nameOff );
+						return false;
+					}
+					if( Cur().t != Tok::Str || Cur().s.empty() ) {
+						SetError( name + "() expects a non-empty quoted attribute name, e.g. `" + name + "(\"distance\")`",
+							(ptrdiff_t)CurOff() );
+						return false;
+					}
+					const std::string attrName = Cur().s;
+					Advance();
+					if( Cur().t != Tok::RP ) {
+						SetError( "missing ) in " + name + "() -- exactly one quoted attribute name expected",
+							(ptrdiff_t)CurOff() );
+						return false;
+					}
+					Advance();
+					const int attrIdx = RegisterPainterRef( m_meshAttrNames, m_meshAttrIndex, attrName );
+					Compiled::Instr in;
+					in.op = isAlpha ? Compiled::kMeshAttrAlpha : Compiled::kMeshAttr3;
+					in.val = 0; in.valo = 0;
+					in.idx = attrIdx; in.fn = 0; in.arity = 0;
+					m_emit->code.push_back( in );
+					outType = isAlpha ? kScalar : kVec3;
 					return true;
 				}
 
@@ -3129,6 +3443,7 @@ namespace RISE
 			//! comment for why a shared_ptr, not a raw pointer, owns them.
 			std::vector<std::string> m_colorPainterRefNames;
 			std::vector<std::string> m_scalarPainterRefNames;
+			std::vector<std::string> m_meshAttrNames;
 			std::shared_ptr<BoundPainterRefs> m_boundRefs;
 			std::vector<Scalar> m_initEnv;
 			std::vector<Compiled> m_defs;
@@ -3142,13 +3457,23 @@ namespace RISE
 			unsigned long long m_id;
 			//! Compile-time L2-memo worthiness.  See MemoWorthy().
 			bool m_memoWorthy;
+			//! True iff any compiled body called a Group 7 space-transform / hit-context builtin.
+			bool m_usesSpaceTransform;
+			//! True iff any compiled body called a scene-signal OSL builtin (e.g. osl_ao).
+			bool m_usesSceneSignals;
+			//! True iff any compiled body called a view-ray OSL builtin (e.g. osl_layer_weight / osl_fresnel).
+			bool m_usesViewRay;
+			//! DL-292: true iff any compiled body called a world-position-producing OSL builtin (osl_to_world_point).
+			bool m_readsWorldPosition;
+			//! Part 0 bitmask of PathDependence::Flags from OSL builtins in this program.
+			unsigned int m_pathDependence;
 
 			ExpressionProgram() :
 				m_uSlot(0), m_vSlot(1), m_PSlot(kContextSlotP), m_PoSlot(kContextSlotPo), m_NSlot(8),
 				m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotTime),
 				m_curvSlot(kContextSlotCurv), m_curvRSlot(kContextSlotCurvR), m_fwoSlot(kContextSlotFwo),
 				m_ctxUsedMask(0),
-				m_valid(false), m_errorOffset(-1), m_id(0), m_memoWorthy(false)
+				m_valid(false), m_errorOffset(-1), m_id(0), m_memoWorthy(false), m_usesSpaceTransform(false), m_usesSceneSignals(false), m_usesViewRay(false), m_readsWorldPosition(false), m_pathDependence(0u)
 			{}
 			friend class Builder;
 
@@ -3177,7 +3502,7 @@ namespace RISE
 					? (size_t)stopAfterDef + 1 : m_defs.size();
 				for( size_t i = 0; i < defLimit; ++i ) {
 					Scalar out[3];
-					RunAny( m_defs[i], env, out, pSignals, pPainterRefs, pHit );
+					RunAny( m_defs[i], env, out, pSignals, pPainterRefs, pHit, &m_meshAttrNames );
 					const int w = ( m_defs[i].type == kVec3 ) ? 3 : 1;
 					for( int c = 0; c < w; ++c ) env[ m_defs[i].writeSlot + c ] = out[c];
 				}
@@ -3589,7 +3914,8 @@ namespace RISE
 			// Runs a compiled program on `env`, writing its result (1 or 3
 			// scalars, per c.type) into `out[0..]`.
 			static void RunAny( const Compiled& c, const Scalar* env, Scalar* out, const SurfaceSignalInfo* pSignals,
-				const BoundPainterRefs* pPainterRefs = nullptr, const RayIntersectionGeometric* pHit = nullptr )
+				const BoundPainterRefs* pPainterRefs = nullptr, const RayIntersectionGeometric* pHit = nullptr,
+				const std::vector<std::string>* pMeshAttrNames = nullptr )
 			{
 				Scalar stack[ kStackCap ];
 				int sp = 0;
@@ -3724,16 +4050,101 @@ namespace RISE
 					{
 						sp -= in.arity;
 						Scalar r[3];
-						OslBuiltins::Call( in.fn, &stack[sp], r );
+						const Vector3 fallbackN( env[8], env[9], env[10] );
+						OslBuiltins::Call( in.fn, &stack[sp], r, pHit, pSignals, &fallbackN );
 						stack[sp++] = r[0];
 					} break;
 					case Compiled::kOslV3:
 					{
 						sp -= in.arity;
 						Scalar r[3];
-						OslBuiltins::Call( in.fn, &stack[sp], r );
+						const Vector3 fallbackN( env[8], env[9], env[10] );
+						OslBuiltins::Call( in.fn, &stack[sp], r, pHit, pSignals, &fallbackN );
 						stack[sp] = r[0]; stack[sp+1] = r[1]; stack[sp+2] = r[2];
 						sp += 3;
+					} break;
+					case Compiled::kMeshAttr3:
+					case Compiled::kMeshAttrAlpha:
+					{
+						Scalar rgba[4] = { Scalar(0), Scalar(0), Scalar(0), Scalar(0) };
+						if( pSignals && pMeshAttrNames && in.idx >= 0 && (size_t)in.idx < pMeshAttrNames->size() ) {
+							const Point3* pQueryObjPos = 0;
+							Point3 queryObj;
+							if( pHit && ( pHit->vReliefObjStep.x != Scalar(0) ||
+								pHit->vReliefObjStep.y != Scalar(0) ||
+								pHit->vReliefObjStep.z != Scalar(0) ) )
+							{
+								queryObj = Point3Ops::mkPoint3( pSignals->ptObject, pHit->vReliefObjStep );
+								pQueryObjPos = &queryObj;
+							}
+							pSignals->NamedAttribute( (*pMeshAttrNames)[(size_t)in.idx].c_str(), rgba, pQueryObjPos );
+						}
+						if( in.op == Compiled::kMeshAttr3 ) {
+							stack[sp] = rgba[0]; stack[sp+1] = rgba[1]; stack[sp+2] = rgba[2];
+							sp += 3;
+						} else {
+							stack[sp++] = rgba[3];
+						}
+					} break;
+					case Compiled::kSampleAlpha:
+					{
+						Scalar alpha = Scalar(1);
+						if( pPainterRefs && in.idx >= 0 && (std::size_t)in.idx < pPainterRefs->color.size() ) {
+							IPainter* p = pPainterRefs->color[ (std::size_t)in.idx ];
+							if( p ) {
+								const SampleGuard guard( p );
+								if( guard.Entered() ) {
+									const Scalar a = pHit ? p->GetAlpha( *pHit ) : p->GetAlpha( BuildSyntheticRi( env ) );
+									alpha = IsFinite( a ) ? a : Scalar(0);
+								}
+							}
+						}
+						stack[sp++] = alpha;
+					} break;
+					case Compiled::kSampleUv:
+					case Compiled::kSampleUvAlpha:
+					{
+						const Scalar sv = stack[sp - 1];
+						const Scalar su = stack[sp - 2];
+						sp -= 2;
+						const Scalar uSafe = IsFinite( su ) ? su : Scalar(0);
+						const Scalar vSafe = IsFinite( sv ) ? sv : Scalar(0);
+						if( in.op == Compiled::kSampleUv ) {
+							Scalar r0 = Scalar(0), r1 = Scalar(0), r2 = Scalar(0);
+							if( pPainterRefs && in.idx >= 0 && (std::size_t)in.idx < pPainterRefs->color.size() ) {
+								IPainter* p = pPainterRefs->color[ (std::size_t)in.idx ];
+								if( p ) {
+									const SampleGuard guard( p );
+									if( guard.Entered() ) {
+										RayIntersectionGeometric riUv = pHit ? *pHit : BuildSyntheticRi( env );
+										riUv.ptCoord = Point2( uSafe, vSafe );
+										riUv.txFootprint.valid = false;
+										const RISEPel col = p->GetColor( riUv );
+										r0 = IsFinite( col[0] ) ? col[0] : Scalar(0);
+										r1 = IsFinite( col[1] ) ? col[1] : Scalar(0);
+										r2 = IsFinite( col[2] ) ? col[2] : Scalar(0);
+									}
+								}
+							}
+							stack[sp] = r0; stack[sp+1] = r1; stack[sp+2] = r2;
+							sp += 3;
+						} else {
+							Scalar alpha = Scalar(1);
+							if( pPainterRefs && in.idx >= 0 && (std::size_t)in.idx < pPainterRefs->color.size() ) {
+								IPainter* p = pPainterRefs->color[ (std::size_t)in.idx ];
+								if( p ) {
+									const SampleGuard guard( p );
+									if( guard.Entered() ) {
+										RayIntersectionGeometric riUv = pHit ? *pHit : BuildSyntheticRi( env );
+										riUv.ptCoord = Point2( uSafe, vSafe );
+										riUv.txFootprint.valid = false;
+										const Scalar a = p->GetAlpha( riUv );
+										alpha = IsFinite( a ) ? a : Scalar(0);
+									}
+								}
+							}
+							stack[sp++] = alpha;
+						}
 					} break;
 					}
 				}

@@ -168,6 +168,7 @@ namespace RISE
 			//! recurses -- see IPainter::IsSpectrallyDefined's own doc comment
 			//! for the full rationale and which composites do NOT recurse.
 			bool IsSpectrallyDefined() const { return source.IsSpectrallyDefined(); }
+			unsigned int GetPathDependence() const { return source.GetPathDependence(); }
 		};
 	}
 }

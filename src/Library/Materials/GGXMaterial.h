@@ -173,6 +173,24 @@ namespace RISE
 			inline void SetFilmIOR( const IScalarPainter& v )        { pBRDF->SetFilmIOR( v );        pSPF->SetFilmIOR( v ); }
 			inline void SetFilmExtinction( const IScalarPainter& v ) { pBRDF->SetFilmExtinction( v ); pSPF->SetFilmExtinction( v ); }
 			inline void SetFilmThickness( const IScalarPainter& v )  { pBRDF->SetFilmThickness( v );  pSPF->SetFilmThickness( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				unsigned int mask = IMaterial::GetPathDependence() |
+					pBRDF->GetDiffuse().GetPathDependence() |
+					pBRDF->GetSpecular().GetPathDependence() |
+					pBRDF->GetAlphaX().GetPathDependence() |
+					pBRDF->GetAlphaY().GetPathDependence() |
+					pBRDF->GetIOR().GetPathDependence() |
+					pBRDF->GetExtinction().GetPathDependence();
+				if( pBRDF->GetFilmIOR() ) mask |= pBRDF->GetFilmIOR()->GetPathDependence();
+				if( pBRDF->GetFilmExtinction() ) mask |= pBRDF->GetFilmExtinction()->GetPathDependence();
+				if( pBRDF->GetFilmThickness() ) mask |= pBRDF->GetFilmThickness()->GetPathDependence();
+				if( pBRDF->GetTangentRotation() ) mask |= pBRDF->GetTangentRotation()->GetPathDependence();
+				if( pBRDF->GetTangentRotationScalar() ) mask |= pBRDF->GetTangentRotationScalar()->GetPathDependence();
+				if( pEmitter ) mask |= pEmitter->GetRadEx().GetPathDependence();
+				return mask;
+			}
 		};
 	}
 }

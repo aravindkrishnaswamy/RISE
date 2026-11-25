@@ -339,6 +339,15 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\OslColor.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\OslMath.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\OslVector.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\OslShaderNodes.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Reference.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -813,6 +822,12 @@
     <ClCompile Include="..\..\..\src\Library\Materials\DielectricSPF.cpp">
       <Filter>Materials\Dielectrics</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\DiffuseTransmissionMaterial.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\MixMaterial.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.cpp">
       <Filter>Materials\Dielectrics</Filter>
     </ClCompile>
@@ -1111,6 +1126,9 @@
       <Filter>Job</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Modifiers\GlintModifier.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\BlendedModifier.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Modifiers\ModifierStack.cpp">
@@ -1621,6 +1639,15 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\OslColor.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\OslMath.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\OslVector.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\OslShaderNodes.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\SurfaceCurvature.h">
@@ -2385,6 +2412,12 @@
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricSPF.h">
       <Filter>Materials\Dielectrics</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DiffuseTransmissionMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\MixMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\RoughDielectricMaterial.h">
       <Filter>Materials\Dielectrics</Filter>
     </ClInclude>
@@ -3028,6 +3061,9 @@
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierFrame.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\BlendedModifier.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierStack.h">

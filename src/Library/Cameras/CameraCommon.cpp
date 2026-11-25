@@ -18,7 +18,9 @@
 #include <string_view>
 #include "../Utilities/FiniteMath.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Interfaces/ILog.h"
+#include "../Utilities/ExpressionMemo.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -43,7 +45,8 @@ CameraCommon::CameraCommon(
   pixelRate( pixelRate_ ),
   orientation( orientation_ ),
   target_orientation( target_orientation_ ),
-  from_onb( false )
+  from_onb( false ),
+  nearClip( Scalar( 0 ) )
 {
 }
 
@@ -59,7 +62,8 @@ CameraCommon::CameraCommon(
   exposureTime( exposure_ ),
   scanningRate( scanningRate_ ),
   pixelRate( pixelRate_ ),
-  from_onb( true )
+  from_onb( true ),
+  nearClip( Scalar( 0 ) )
 {
 }
 
@@ -181,4 +185,11 @@ void CameraCommon::RegenerateData( )
 {
 	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Recompute( frame.GetWidth(), frame.GetHeight() );
+	// Skip global atomic invalidation during per-sample TimeIndexed motion
+	// blur posing (SpaceTransformHitKey captures the live camera frame by
+	// value per thread, so per-sample poses never collide without global
+	// contention).
+	if( !TimeIndexed::tlsSlots ) {
+		ExpressionMemo::Invalidate();
+	}
 }

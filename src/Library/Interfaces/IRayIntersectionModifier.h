@@ -65,6 +65,11 @@ namespace RISE
 		virtual void Modify( 
 			RayIntersectionGeometric& ri				///< [in/out] The geometric intersection information to modify
 			) const = 0;
+
+		//! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): non-zero bitmask
+		//! of `PathDependence::Flags` when this modifier (or any painter / child
+		//! modifier it wraps) depends on non-physical path/view state.  Default 0.
+		virtual unsigned int GetPathDependence() const { return 0u; }
 	};
 }
 

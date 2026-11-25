@@ -54,6 +54,7 @@ namespace RISE
 			inline IEmitter* GetEmitter() const {	return 0; };
 
 			inline bool CouldLightPassThrough() const { return true; };
+			inline bool TracksInteriorContainment() const { return true; };
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -100,6 +101,14 @@ namespace RISE
 			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
 			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
 			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pSPF->GetTransmittance().GetPathDependence() |
+					pSPF->GetIOR().GetPathDependence() |
+					pSPF->GetScattering().GetPathDependence();
+			}
 		};
 	}
 }

@@ -35,6 +35,7 @@
 #include "../Interfaces/IPainter.h"
 #include "../Interfaces/IScalarPainter.h"
 #include "../Intersection/RayIntersectionGeometric.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -102,6 +103,85 @@ namespace RISE
 			// MultiplyScalarPainter, same as TextureScalarPainter.
 
 			bool HasPerChannelVariation() const override { return false; }
+			bool ReadsWorldPosition() const override { return source.ReadsWorldPosition(); }
+			unsigned int GetPathDependence() const override { return source.GetPathDependence(); }
+		};
+
+		//! Full 3-channel RGB bridge from any IPainter to IScalarPainter
+		//! (`scalar_painter { painter NAME channel RGB scale S bias B }`
+		//! and `RISE_API_CreatePainterRGBScalarPainter`).
+		//!
+		//! Unlike `PainterChannelScalarPainter` (which replicates one selected
+		//! channel across all 3 lanes), `PainterRGBScalarPainter` evaluates
+		//! `source.GetColor(ri)` and forwards `(bias + scale*R, bias + scale*G,
+		//! bias + scale*B)` as a per-channel `ScalarTriple` — enabling spatially
+		//! varying tinted physical-scalar slots such as dielectric `tau`.
+		//!
+		//! `GetValueAtNM` uses the same nominal-wavelength piecewise-linear
+		//! interpolation as `RGBScalarPainter` (B=450 nm, G=550 nm, R=650 nm,
+		//! clamped outside `[450, 650]`).  Same post-colourspace caveat as
+		//! `PainterChannelScalarPainter`.
+		class PainterRGBScalarPainter :
+			public virtual IScalarPainter,
+			public virtual Reference
+		{
+		protected:
+			const IPainter& source;
+			const Scalar    scale;
+			const Scalar    bias;
+
+			static constexpr Scalar kNmR = Scalar( 650.0 );
+			static constexpr Scalar kNmG = Scalar( 550.0 );
+			static constexpr Scalar kNmB = Scalar( 450.0 );
+
+			virtual ~PainterRGBScalarPainter()
+			{
+				source.release();
+			}
+
+		public:
+			PainterRGBScalarPainter( const IPainter& source_, const Scalar scale_, const Scalar bias_ )
+				: source( source_ ), scale( scale_ ), bias( bias_ )
+			{
+				source.addref();
+			}
+
+			const IPainter& GetSource() const { return source; }
+			Scalar GetScale() const { return scale; }
+			Scalar GetBias() const { return bias; }
+
+			ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+			{
+				const RISEPel c = source.GetColor( ri );
+				const Scalar r = bias + scale * c[0];
+				const Scalar g = bias + scale * c[1];
+				const Scalar b = bias + scale * c[2];
+				return ScalarTriple(
+					RISE::IsFiniteDouble( static_cast<double>( r ) ) ? r : Scalar( 0 ),
+					RISE::IsFiniteDouble( static_cast<double>( g ) ) ? g : Scalar( 0 ),
+					RISE::IsFiniteDouble( static_cast<double>( b ) ) ? b : Scalar( 0 ) );
+			}
+
+			Scalar GetValueAtNM( const RayIntersectionGeometric& ri, Scalar nm ) const override
+			{
+				const ScalarTriple v = GetValuesAt( ri );
+				if( !RISE::IsFiniteDouble( static_cast<double>( nm ) ) ) {
+					return v.v[1];
+				}
+				if( nm <= kNmB ) return v.v[2];
+				if( nm >= kNmR ) return v.v[0];
+				if( nm <= kNmG ) {
+					const Scalar t = ( nm - kNmB ) / ( kNmG - kNmB );
+					return v.v[2] + t * ( v.v[1] - v.v[2] );
+				} else {
+					const Scalar t = ( nm - kNmG ) / ( kNmR - kNmG );
+					return v.v[1] + t * ( v.v[0] - v.v[1] );
+				}
+			}
+
+			bool HasPerChannelVariation() const override { return true; }
+			bool ReadsWorldPosition() const override { return source.ReadsWorldPosition(); }
+			unsigned int GetPathDependence() const override { return source.GetPathDependence(); }
 		};
 	}
 }

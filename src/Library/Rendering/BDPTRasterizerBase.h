@@ -70,6 +70,7 @@ namespace RISE
 			/// Requires pCaster->AttachScene to have run.  The Pel /
 			/// Spectral subclasses' diamond disambiguators forward here.
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
+			virtual bool ValidateSceneForRasterizer( const IScene& pScene ) const;
 
 		public:
 			BDPTRasterizerBase(

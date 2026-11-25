@@ -22,6 +22,31 @@
 
 namespace RISE
 {
+	class ICamera;
+
+	//! Per-object / per-instance Cycles Object Info attributes (Phase 1
+	//! object attributes): RGB color, alpha, pass index, and per-instance
+	//! random number in [0, 1].  Default all-zeros matches Cycles'
+	//! OBJECT_NONE fallback when unset; Blender bridge populates from
+	//! `object.color`, `object.pass_index`, and `object_instance.random_id`.
+	struct ObjectInfoData
+	{
+		float	color[3];
+		float	alpha;
+		float	objectIndex;
+		float	random;
+		float	particleRandom;
+
+		ObjectInfoData() :
+			alpha( 0.0f ),
+			objectIndex( 0.0f ),
+			random( 0.0f ),
+			particleRandom( 0.0f )
+		{
+			color[0] = color[1] = color[2] = 0.0f;
+		}
+	};
+
 	//! Surface derivative data produced at intersection time.
 	//! Populated by geometries that know the hit-local parameters
 	//! (e.g., triangle mesh: the hit triangle + barycentric coords).
@@ -871,6 +896,35 @@ namespace RISE
 		//! zero-distance root is rejected by `minimumSurfaceRange`, and a
 		//! genuinely distinct face inside that band must be kept.
 		bool						bExactBoundaryOrigin;
+		//! Per-cast input: true iff this ray is a primary camera ray (preserved
+		//! across transparent/alpha/passthrough skips via PropagateCastInputs;
+		//! false on shadow rays and secondary scatter bounces).  Read by
+		//! `osl_is_camera_ray()` and keyed in `SpaceTransformHitKey::isCameraRay`.
+		//! Packed adjacent to `bExactBoundaryOrigin` to avoid 8 B tail padding.
+		bool						bIsCameraRay;
+		//! Object-space tangent/bitangent stencil step stamped ONLY by
+		//! `ReliefModifier::Modify`'s surface-domain 4-tap loop (0 on every
+		//! non-relief hit).  Used by `mesh_attr3`/`mesh_attr_alpha` to project
+		//! `signals.ptObject + vReliefObjStep` onto the hit triangle plane
+		//! without misfiring on `SURFACE_INTERSEC_ERROR`, `MappingPainter`, or
+		//! CSG luminaries.
+		Vector3						vReliefObjStep;
+		//! Companion to `pmxWorldToObject`: object->world matrix
+		//! (`&Object::m_mxFinalTrans`) stamped by `Object::IntersectRay`
+		//! and cleared by `CSGObject::IntersectRay`.  Declared at the tail
+		//! to preserve Fire-r40 offsets of all earlier fields.
+		const Matrix4*				pmxObjectToWorld;
+		//! Per-cast input: non-owning pointer to the active scene camera,
+		//! stamped by scene ray-casting entry points (`pScene->GetCamera()`)
+		//! and carried through traversal via `PropagateCastInputs`.  Null
+		//! outside scene traversal unless set by a caller.  Read live by the
+		//! expression VM's camera space-transform builtins.
+		const ICamera*				pCamera;
+		//! Borrowed pointer to the hit object's `ObjectInfoData` (color,
+		//! alpha, object index, per-instance random).  Stamped by
+		//! `Object::IntersectRay` / `CSGObject::IntersectRay` and read by
+		//! the expression VM's `osl_object_*` builtins.
+		const ObjectInfoData*		pObjectInfo;
 
 		//! Copies the per-cast INPUT fields -- values stamped by the
 		//! integrator/caster BEFORE intersection and consumed AFTER --
@@ -888,6 +942,8 @@ namespace RISE
 			bWantsWireEdgeInfo = src.bWantsWireEdgeInfo;
 			minimumSurfaceRange = src.minimumSurfaceRange;
 			bExactBoundaryOrigin = src.bExactBoundaryOrigin;
+			bIsCameraRay = src.bIsCameraRay;
+			pCamera = src.pCamera;
 		}
 
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
@@ -919,7 +975,12 @@ namespace RISE
 		  surfaceRange( RISE_INFINITY ),
 		  surfaceRange2( RISE_INFINITY ),
 		  minimumSurfaceRange( -1.0 ),
-		  bExactBoundaryOrigin( false )
+		  bExactBoundaryOrigin( false ),
+		  bIsCameraRay( false ),
+		  vReliefObjStep( 0, 0, 0 ),
+		  pmxObjectToWorld( 0 ),
+		  pCamera( 0 ),
+		  pObjectInfo( 0 )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -976,7 +1037,12 @@ namespace RISE
 		  surfaceRange( r.surfaceRange ),
 		  surfaceRange2( r.surfaceRange2 ),
 		  minimumSurfaceRange( r.minimumSurfaceRange ),
-		  bExactBoundaryOrigin( r.bExactBoundaryOrigin )
+		  bExactBoundaryOrigin( r.bExactBoundaryOrigin ),
+		  bIsCameraRay( r.bIsCameraRay ),
+		  vReliefObjStep( r.vReliefObjStep ),
+		  pmxObjectToWorld( r.pmxObjectToWorld ),
+		  pCamera( r.pCamera ),
+		  pObjectInfo( r.pObjectInfo )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -994,6 +1060,8 @@ namespace RISE
 			surfaceRange2 = r.surfaceRange2;
 			minimumSurfaceRange = r.minimumSurfaceRange;
 			bExactBoundaryOrigin = r.bExactBoundaryOrigin;
+			vReliefObjStep = r.vReliefObjStep;
+			bIsCameraRay = r.bIsCameraRay;
 			vNormal = r.vNormal;
 			vNormal2 = r.vNormal2;
 			vGeomNormal = r.vGeomNormal;
@@ -1015,6 +1083,9 @@ namespace RISE
 			ptObjIntersec = r.ptObjIntersec;
 			ptObjExit = r.ptObjExit;
 			pmxWorldToObject = r.pmxWorldToObject;
+			pmxObjectToWorld = r.pmxObjectToWorld;
+			pCamera = r.pCamera;
+			pObjectInfo = r.pObjectInfo;
 			onb = r.onb;
 			glossyFilterWidth = r.glossyFilterWidth;
 			ambientIOR = r.ambientIOR;

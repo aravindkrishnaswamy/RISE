@@ -48,8 +48,8 @@ BUILD_FILES = {
 EXTERNAL_EXTLIB = {"oidn"}
 
 # Source files with a third-party copyright or licence line, and the
-# manifest package that carries their notice.  OslNoise, OslVoronoi and
-# OslColor are ported from Cycles.
+# manifest package that carries their notice.  OslNoise, OslVoronoi,
+# OslColor, OslMath and OslVector are ported from Cycles.
 SOURCE_NOTICES = {
     "src/Library/Sampling/SobolDirectionNumbers.cpp": "Sobol-Joe-Kuo",
     "src/Library/Utilities/MersenneTwister.cpp": "mt19937",
@@ -61,6 +61,12 @@ SOURCE_NOTICES = {
     "src/Library/Utilities/OslVoronoi.h": "Cycles",
     "src/Library/Utilities/OslColor.cpp": "Cycles",
     "src/Library/Utilities/OslColor.h": "Cycles",
+    "src/Library/Utilities/OslMath.cpp": "Cycles",
+    "src/Library/Utilities/OslMath.h": "Cycles",
+    "src/Library/Utilities/OslVector.cpp": "Cycles",
+    "src/Library/Utilities/OslVector.h": "Cycles",
+    "src/Library/Utilities/OslShaderNodes.cpp": "Cycles",
+    "src/Library/Utilities/OslShaderNodes.h": "Cycles",
 }
 # Third-party code whose terms a notice cannot satisfy; see "Not covered
 # by these notices" in licenses/README.md.

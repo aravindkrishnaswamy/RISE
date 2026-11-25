@@ -28,6 +28,7 @@ namespace RISE
 		{
 		protected:
 			BioSpecSkinSPF*	pSPF;
+			unsigned int	pathDependence;
 
 			virtual ~BioSpecSkinMaterial()
 			{
@@ -57,7 +58,27 @@ namespace RISE
 				const IScalarPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
 				const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 				) : 
-			pSPF( 0 )
+			pSPF( 0 ),
+			pathDependence(
+				thickness_SC_.GetPathDependence() |
+				thickness_epidermis_.GetPathDependence() |
+				thickness_papillary_dermis_.GetPathDependence() |
+				thickness_reticular_dermis_.GetPathDependence() |
+				ior_SC_.GetPathDependence() |
+				ior_epidermis_.GetPathDependence() |
+				ior_papillary_dermis_.GetPathDependence() |
+				ior_reticular_dermis_.GetPathDependence() |
+				concentration_eumelanin_.GetPathDependence() |
+				concentration_pheomelanin_.GetPathDependence() |
+				melanosomes_in_epidermis_.GetPathDependence() |
+				hb_ratio_.GetPathDependence() |
+				whole_blood_in_papillary_dermis_.GetPathDependence() |
+				whole_blood_in_reticular_dermis_.GetPathDependence() |
+				bilirubin_concentration_.GetPathDependence() |
+				betacarotene_concentration_SC_.GetPathDependence() |
+				betacarotene_concentration_epidermis_.GetPathDependence() |
+				betacarotene_concentration_dermis_.GetPathDependence() |
+				folds_aspect_ratio_.GetPathDependence() )
 			{
 				pSPF = new BioSpecSkinSPF(
 					thickness_SC_,
@@ -96,6 +117,11 @@ namespace RISE
 			IEmitter* GetEmitter() const
 			{
 				return 0;
+			}
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() | pathDependence;
 			}
 		};
 	}

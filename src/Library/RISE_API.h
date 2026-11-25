@@ -1300,6 +1300,31 @@ namespace RISE
 								const bool energy_preserving		///< [in] true: EON; false: classic
 								);
 
+	//! Creates a physically-based bounded N-ary mix material (`mix_material`).
+	//! Weights are response coefficients (sum <= 1; shortfall absorbs; sum > 1
+	//! divides by sum and logs once).  `pChildren[i]` may be NULL for an
+	//! explicit black absorber (`none`); `pModifiers` or `pModifiers[i]` may
+	//! be NULL; `pPassthroughWeight` may be NULL.  Refuses nested mixes and
+	//! containment-tracking / refracting leaves.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMixMaterial(
+								IMaterial** ppi,								///< [out] Pointer to receive the material
+								const IMaterial* const* pChildren,				///< [in] Array of child materials (nullable entry = none)
+								const IScalarPainter* const* pWeights,			///< [in] Array of scalar weight painters (required non-null)
+								const IRayIntersectionModifier* const* pModifiers, ///< [in] Optional per-child modifiers (array or entries nullable)
+								const unsigned int numChildren,					///< [in] Number of child entries (>= 1)
+								const IScalarPainter* pPassthroughWeight		///< [in] Optional pass-through weight scalar painter
+								);
+
+	//! Creates a thin two-sided diffuse reflection + diffuse transmission material
+	//! (`diffuse_transmission_material`).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDiffuseTransmissionMaterial(
+								IMaterial** ppi,				///< [out] Pointer to receive the material
+								const IPainter& reflectance,	///< [in] Diffuse reflectance painter
+								const IPainter& transmittance	///< [in] Diffuse transmittance painter
+								);
+
 	//! Creates a Schlick material.
 	//! `roughness` and `isotropy` are physical scalars carried by
 	//! `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
@@ -2343,6 +2368,18 @@ namespace RISE
 								Scalar               bias			///< [in] additive offset
 								);
 
+	//! Creates a 3-channel RGB bridge from any IPainter to IScalarPainter
+	//! (`scalar_painter { painter ... channel RGB }`).  Forwards all three RGB
+	//! channels of `source.GetColor(ri)` remapped as `bias + scale * c[i]`,
+	//! with `RGBScalarPainter`'s 450/550/650 nm piecewise-linear spectral
+	//! interpolation for `GetValueAtNM`.
+	bool RISE_API_CreatePainterRGBScalarPainter(
+								IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+								const IPainter&      source,		///< [in] Any colour painter (addref'd)
+								Scalar               scale,		///< [in] multiplier on each RGB channel
+								Scalar               bias			///< [in] additive offset on each RGB channel
+								);
+
 	//! Creates a camera manager
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCameraManager(
@@ -2511,6 +2548,18 @@ namespace RISE
 								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
 								const IRayIntersectionModifier* const* mods,	///< [in] Member modifiers, in authored (application) order; each addref'd
 								const unsigned int count						///< [in] Number of members; 0 is rejected
+								);
+
+	//! Creates a blended_modifier: weighted blend of two ray-intersection
+	//! modifiers (`modA` at weight 0, `modB` at weight 1; either may be null
+	//! for the unperturbed surface normal, at least one must be non-null).
+	//! See Modifiers/BlendedModifier.h.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBlendedModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to receive the modifier
+								const IRayIntersectionModifier* pModA,		///< [in] Modifier at weight 0 (nullable = unperturbed normal)
+								const IRayIntersectionModifier* pModB,		///< [in] Modifier at weight 1 (nullable = unperturbed normal)
+								const IScalarPainter& weight				///< [in] Scalar blend factor in [0, 1]
 								);
 
 

@@ -80,6 +80,16 @@ namespace RISE
 			inline void SetMasking( const IScalarPainter& v )  { pBRDF->SetMasking( v );    pSPF->SetMasking( v ); }
 			inline void SetIOR( const IScalarPainter& v )      { pBRDF->SetIOR( v );        pSPF->SetIOR( v ); }
 			inline void SetExtinction( const IScalarPainter& v ){ pBRDF->SetExtinction( v ); pSPF->SetExtinction( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetDiffuse().GetPathDependence() |
+					pBRDF->GetSpecular().GetPathDependence() |
+					pBRDF->GetMasking().GetPathDependence() |
+					pBRDF->GetIOR().GetPathDependence() |
+					pBRDF->GetExtinction().GetPathDependence();
+			}
 		};
 	}
 }

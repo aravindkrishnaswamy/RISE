@@ -206,6 +206,30 @@ namespace RISE
 			inline void SetWeftKd( const IScalarPainter& v )        { pBRDF->SetWeftKd( v ); }
 			inline void SetWeftTilt( const IScalarPainter& v )      { pBRDF->SetWeftTilt( v ); }
 			inline void SetWeftTransmit( const IScalarPainter& v )  { pBRDF->SetWeftTransmit( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetWeaveScale().GetPathDependence() |
+					pBRDF->GetWeaveRotation().GetPathDependence() |
+					pBRDF->GetWeftSkew().GetPathDependence() |
+					( pBRDF->GetCoverage() ? pBRDF->GetCoverage()->GetPathDependence() : 0u ) |
+					pBRDF->GetGap().GetPathDependence() |
+					pBRDF->GetWarpColor().GetPathDependence() |
+					pBRDF->GetWarpIOR().GetPathDependence() |
+					pBRDF->GetWarpWidth().GetPathDependence() |
+					pBRDF->GetWarpAzimuth().GetPathDependence() |
+					pBRDF->GetWarpKd().GetPathDependence() |
+					pBRDF->GetWarpTilt().GetPathDependence() |
+					pBRDF->GetWarpTransmit().GetPathDependence() |
+					pBRDF->GetWeftColor().GetPathDependence() |
+					pBRDF->GetWeftIOR().GetPathDependence() |
+					pBRDF->GetWeftWidth().GetPathDependence() |
+					pBRDF->GetWeftAzimuth().GetPathDependence() |
+					pBRDF->GetWeftKd().GetPathDependence() |
+					pBRDF->GetWeftTilt().GetPathDependence() |
+					pBRDF->GetWeftTransmit().GetPathDependence();
+			}
 		};
 	}
 }

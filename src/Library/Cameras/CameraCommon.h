@@ -17,7 +17,9 @@
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Transformable.h"
+#include "../Utilities/FiniteMath.h"
 #include "Frame.h"
+#include <cmath>
 
 namespace RISE
 {
@@ -60,6 +62,7 @@ namespace RISE
 			Vector3				orientation;		/// Orientation (Pitch,Roll,Yaw)
 			Vector2				target_orientation;	/// Orientation relative to a target
 			bool				from_onb;			/// Is this camera currently represented by an explicit ONB?
+			Scalar				nearClip;			/// Planar near-clip distance in scene units (0 = disabled)
 
 			// Non ONB specifying version
 			CameraCommon(
@@ -151,6 +154,66 @@ namespace RISE
 			inline void    SetPixelRateStored( Scalar v )       { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) pixelRate = v; }
 			inline void    SetEulerOrientation( const Vector3& v )  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) orientation = v; }
 			inline void    SetTargetOrientation( const Vector2& v ) { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) target_orientation = v; }
+			inline Scalar  GetNearClip()                  const { return nearClip; }
+			inline void    SetNearClip( const Scalar v )
+			{
+				Transformable::PreparedExternalMutationScope m;
+				if( m.IsValid() ) {
+					nearClip = ( RISE::IsFiniteDouble( static_cast<double>( v ) ) && v > Scalar( 0 ) ) ? v : Scalar( 0 );
+				}
+			}
+
+			//! Option A near-clip helpers: planar depth `nearClip / cosTheta` along
+			//! a unit ray leaving the unclipped camera origin/aperture (`z = 0`).
+			inline Scalar ComputePlanarNearClipT( const Vector3& rayDir ) const
+			{
+				if( nearClip <= Scalar( 0 ) ) return Scalar( 0 );
+				const Scalar cosTheta = Vector3Ops::Dot( rayDir, frame.GetBasis().w() );
+				return ( cosTheta > NEARZERO ) ? ( nearClip / cosTheta ) : Scalar( 0 );
+			}
+
+			//! True iff `worldPt` lies at or beyond the planar near-clip plane.
+			inline bool IsPointPastPlanarNearClip( const Point3& worldPt ) const
+			{
+				if( nearClip <= Scalar( 0 ) ) return true;
+				const Vector3 delta = Vector3Ops::mkVector3( worldPt, frame.GetOrigin() );
+				return Vector3Ops::Dot( delta, frame.GetBasis().w() ) >= nearClip;
+			}
+
+		protected:
+			//! Advance a camera ray origin to the planar near-clip plane at
+			//! depth `nearClip` along camera forward (`frame.GetBasis().w()`),
+			//! updating ray differential origins so texture footprints at any
+			//! downstream hit are invariant to `nearClip`.  No-op when
+			//! `nearClip <= 0`.  Matches Blender/Cycles `camera_sample_*`.
+			inline void ApplyNearClip( Ray& r ) const
+			{
+				if( nearClip > Scalar( 0 ) ) {
+					const Scalar cosTheta = Vector3Ops::Dot( r.Dir(), frame.GetBasis().w() );
+					if( cosTheta > NEARZERO ) {
+						const Scalar tNear = nearClip / cosTheta;
+						r.Advance( tNear );
+						if( r.hasDifferentials ) {
+							r.diffs.rxOrigin = r.diffs.rxOrigin + r.diffs.rxDir * tNear;
+							r.diffs.ryOrigin = r.diffs.ryOrigin + r.diffs.ryDir * tNear;
+						}
+					}
+				}
+			}
+
+			//! Advance a fisheye/panoramic camera ray radially by `nearClip`.
+			inline void ApplyRadialNearClip( Ray& r ) const
+			{
+				if( nearClip > Scalar( 0 ) ) {
+					r.Advance( nearClip );
+					if( r.hasDifferentials ) {
+						r.diffs.rxOrigin = r.diffs.rxOrigin + r.diffs.rxDir * nearClip;
+						r.diffs.ryOrigin = r.diffs.ryOrigin + r.diffs.ryDir * nearClip;
+					}
+				}
+			}
+
+		public:
 
 			//! Update the camera's frame dimensions and rebuild the
 			//! basis matrix.  Used by the interactive editor to render
@@ -196,14 +259,28 @@ namespace RISE
 				return s;
 			}
 
-			inline Point3 GetLocation( ) const
+			inline Point3 GetLocation( ) const override
 			{
 				return frame.GetOrigin();
 			}
 
-			inline Matrix4 GetMatrix( ) const
+			inline Matrix4 GetMatrix( ) const override
 			{ 
 				return mxTrans;
+			}
+
+			//! Returns the camera's live rigid world-space frame (+X = right,
+			//! +Y = up, +Z = forward, origin = eye position).  Non-virtual by
+			//! design (see ICamera.h's no-vtable-growth note); callers holding
+			//! an `const ICamera*` query it via `dynamic_cast<const CameraCommon*>`.
+			inline bool GetCameraFrame( Point3& origin, Vector3& right, Vector3& up, Vector3& forward ) const
+			{
+				const OrthonormalBasis3D b = frame.GetBasis();
+				origin  = frame.GetOrigin();
+				right   = -b.u();
+				up      = b.v();
+				forward = b.w();
+				return true;
 			}
 
 			//! Current realized orientation basis.  This is the faithful
@@ -262,25 +339,25 @@ namespace RISE
 				return frame.GetHeight();
 			}
 
-			inline Scalar GetExposureTime( ) const
+			inline Scalar GetExposureTime( ) const override
 			{
 				return exposureTime;
 			}
 
-			inline Scalar GetScanningRate( ) const
+			inline Scalar GetScanningRate( ) const override
 			{
 				return scanningRate;
 			}
 
-			inline Scalar GetPixelRate( ) const
+			inline Scalar GetPixelRate( ) const override
 			{
 				return pixelRate;
 			}
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData( );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData( ) override;
 		};
 	}
 }

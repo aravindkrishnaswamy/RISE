@@ -99,6 +99,13 @@ namespace RISE
 			inline bool IsEnergyPreserving()               const { return pBRDF->IsEnergyPreserving(); }
 			inline void SetReflectance( const IPainter& v )       { pBRDF->SetReflectance( v ); pSPF->SetReflectance( v ); }
 			inline void SetRoughness( const IScalarPainter& v )   { pBRDF->SetRoughness( v );   pSPF->SetRoughness( v ); }
+
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetReflectance().GetPathDependence() |
+					pBRDF->GetRoughness().GetPathDependence();
+			}
 		};
 	}
 }

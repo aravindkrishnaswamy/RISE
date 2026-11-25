@@ -240,6 +240,7 @@ namespace
 			ray.SetDir( Vector3Ops::Normalize( ray.Dir() ) );
 
 			RayIntersection ri( ray, nullRasterizerState );
+			ri.geometric.pCamera = scene.GetCamera();
 			IndependentSampler alphaSampler(rng);
 			pObjMgr->IntersectRaySampled(ri, alphaSampler);
 			if( !ri.geometric.bHit ) {
@@ -297,6 +298,11 @@ namespace
 				out.entryObject      = out.chain[0].pObject;
 				out.power            = power;
 				return true;
+			}
+
+			// MIX §I.3: a mix is never a specular caster; stop chain building here.
+			if( ri.bMaterialFromMix ) {
+				return false;
 			}
 
 			// Pick a single specular scattered ray (no branching — branching
@@ -517,7 +523,8 @@ unsigned int SMSPhotonMap::Build(
 			// DL-298: the shared emitter-record fill (world position `P`,
 			// normals, `onb`, UV, `Po`).
 			LightSampler::FillEmitterRecord( rig, r.origin, normal, coord,
-				LightSampler::EmitterObjectPoint( i->pLum, r.origin, rig.ptObjIntersec ) );
+				LightSampler::EmitterObjectPoint( i->pLum, r.origin, rig.ptObjIntersec ),
+				i->pLum, scene.GetCamera() );
 
 			r.SetDir( pEmitter->getEmmittedPhotonDir( rig, dirRand ) );
 

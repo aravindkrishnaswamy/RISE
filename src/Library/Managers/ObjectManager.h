@@ -33,6 +33,8 @@
 
 namespace RISE
 {
+	class IScene;
+
 	namespace Implementation
 	{
 		class ObjectManager : 
@@ -53,6 +55,7 @@ namespace RISE
 			//! uncertified-open-mesh warning fires once per scene, not per
 			//! PrepareForRendering (an animation prepares every frame).
 			mutable std::string openMeshWarningKey;
+			mutable std::string pathDepWarningKey;
             mutable std::vector<const IObject*> smsExtendedCasters;
             mutable bool smsRejectedTransmissiveCaster = false;
             mutable bool smsUncertainNormalOrientation = false;
@@ -444,6 +447,25 @@ namespace RISE
 				const bool bComputeExitInfo
 				) const;
 
+			// Traversal-only and post-traversal completion halves of IntersectRay,
+			// used by IObjectManager::IntersectRaySampled so MixMaterial resolution
+			// runs once after original-ray range restoration and CompleteShadingSignals
+			// with the active ISampler* (MIX §I.2 & Round 3 §3).
+			void IntersectRayTraversalOnly(
+				RayIntersection& ri,
+				const bool bHitFrontFaces,
+				const bool bHitBackFaces,
+				const bool bComputeExitInfo
+				) const;
+
+			void FinalizeIntersectionHit(
+				RayIntersection& ri,
+				ISampler* pSampler,
+				const bool bHitFrontFaces,
+				const bool bHitBackFaces,
+				const bool bComputeExitInfo
+				) const;
+
             // Complete a current direct-object hit with the same scene signal
             // provenance as traversal. Does not replace primitive payloads.
             void CompleteShadingSignals(RayIntersectionGeometric&, const IObject*) const;
@@ -640,6 +662,14 @@ namespace RISE
             const std::vector<const IObject*>& ExtendedSMSCasters() const { return smsExtendedCasters; }
             bool HasUncertainSMSNormalOrientation() const { return smsUncertainNormalOrientation; }
             bool HasRejectedTransmissiveCaster() const { return smsRejectedTransmissiveCaster || smsUncertainNormalOrientation; }
+
+			//! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): returns the OR of
+			//! `PathDependence::Flags` across all world-visible objects (and their
+			//! CSG operands), covering materials, alpha painters, and modifiers.
+			unsigned int ComputeScenePathDependence( std::string* outFirstOffender = 0 ) const;
+
+			//! True iff any world-visible object (or CSG operand) carries a `MixMaterial`.
+			bool SceneHasMixMaterial( std::string* outFirstOffender = 0 ) const;
 
 			void InvalidateSpatialStructure() const;
 			void ClearMotionBounds() const;

@@ -683,6 +683,11 @@ namespace RISE
 		/// as path guiding training.  Default does nothing.
 		virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const {}
 
+		/// Called after PrepareForRendering() and before PreRenderSetup().
+		/// Subclasses (BDPT, VCM) override to refuse unsupported scene
+		/// features cleanly with an eLog_Error diagnostic.
+		virtual bool ValidateSceneForRasterizer( const IScene& /*pScene*/ ) const { return true; }
+
 		/// DL-457: moves the scene to ONE motion-blur sample's time.
 		/// Evaluating the animator alone leaves parented objects composed
 		/// against their parents' frame-time pose; the hierarchy re-bake

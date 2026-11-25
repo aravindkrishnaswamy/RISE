@@ -24,6 +24,18 @@
 		05C1A0000000000000000B05 /* OslColor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000B02 /* OslColor.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		05C1A0000000000000000B04 /* OslColor.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000B01 /* OslColor.h */; };
 		05C1A0000000000000000B03 /* OslColor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000B02 /* OslColor.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000C06 /* OslMath.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000C01 /* OslMath.h */; };
+		05C1A0000000000000000C05 /* OslMath.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000C02 /* OslMath.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000C04 /* OslMath.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000C01 /* OslMath.h */; };
+		05C1A0000000000000000C03 /* OslMath.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000C02 /* OslMath.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000D06 /* OslVector.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000D01 /* OslVector.h */; };
+		05C1A0000000000000000D05 /* OslVector.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000D02 /* OslVector.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000000D04 /* OslVector.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000D01 /* OslVector.h */; };
+		05C1A0000000000000000D03 /* OslVector.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000D02 /* OslVector.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000001006 /* OslShaderNodes.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000001001 /* OslShaderNodes.h */; };
+		05C1A0000000000000001005 /* OslShaderNodes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000001002 /* OslShaderNodes.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05C1A0000000000000001004 /* OslShaderNodes.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000001001 /* OslShaderNodes.h */; };
+		05C1A0000000000000001003 /* OslShaderNodes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000001002 /* OslShaderNodes.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
 		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
@@ -485,6 +497,10 @@
 		F24B72D32F52A632008304C4 /* CookTorranceSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */; };
 		F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E1069C42900069C9E5 /* DielectricMaterial.h */; };
 		F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */; };
+		05C1A0000000000000000E03 /* DiffuseTransmissionMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000E01 /* DiffuseTransmissionMaterial.cpp */; };
+		05C1A0000000000000000E04 /* DiffuseTransmissionMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000E02 /* DiffuseTransmissionMaterial.h */; };
+		05C1A0000000000000000F03 /* MixMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000F01 /* MixMaterial.cpp */; };
+		05C1A0000000000000000F04 /* MixMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000F02 /* MixMaterial.h */; };
 		01EAA6405C33D1616E15A2D7 /* RoughDielectricMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */; };
 		CA368FA60E2912DABDACC33F /* RoughDielectricEnergy.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */; };
 		F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E3069C42900069C9E5 /* DielectricSPF.h */; };
@@ -999,6 +1015,10 @@
 		856C63DC9BEAF1F4D09A336B /* ModifierStack.h in Headers */ = {isa = PBXBuildFile; fileRef = 5FAF03603CF6F447457221AC /* ModifierStack.h */; };
 		693073D646C7654E6A71710D /* ModifierStack.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B5CAA19DB9ED7D86DCF98AB /* ModifierStack.cpp */; };
 		6ED41AE993B92D2A19F87F1A /* ModifierStack.h in Sources */ = {isa = PBXBuildFile; fileRef = 5FAF03603CF6F447457221AC /* ModifierStack.h */; };
+		B1E4D0010000000000000003 /* BlendedModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B1E4D0010000000000000001 /* BlendedModifier.cpp */; };
+		B1E4D0010000000000000004 /* BlendedModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = B1E4D0010000000000000002 /* BlendedModifier.h */; };
+		B1E4D0010000000000000005 /* BlendedModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B1E4D0010000000000000001 /* BlendedModifier.cpp */; };
+		B1E4D0010000000000000006 /* BlendedModifier.h in Sources */ = {isa = PBXBuildFile; fileRef = B1E4D0010000000000000002 /* BlendedModifier.h */; };
 		F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */ = {isa = PBXBuildFile; fileRef = F26E7A002F9244920009D9AE /* RenderETAEstimator.h */; };
 		F26E7A032F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
 		F26E7A042F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
@@ -1255,6 +1275,10 @@
 		F27F0B48069C42910069C9E5 /* CookTorranceSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */; };
 		F27F0B49069C42910069C9E5 /* DielectricMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E1069C42900069C9E5 /* DielectricMaterial.h */; };
 		F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */; };
+		05C1A0000000000000000E05 /* DiffuseTransmissionMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000E01 /* DiffuseTransmissionMaterial.cpp */; };
+		05C1A0000000000000000E06 /* DiffuseTransmissionMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000E02 /* DiffuseTransmissionMaterial.h */; };
+		05C1A0000000000000000F05 /* MixMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000F01 /* MixMaterial.cpp */; };
+		05C1A0000000000000000F06 /* MixMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000F02 /* MixMaterial.h */; };
 		1D81A1F561D9D814B3B6DF5D /* RoughDielectricMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */; };
 		399FB9A52FC966378D28F8FF /* RoughDielectricEnergy.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */; };
 		F27F0B4B069C42910069C9E5 /* DielectricSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08E3069C42900069C9E5 /* DielectricSPF.h */; };
@@ -2395,6 +2419,8 @@
 		F2617A0E2F9B000100620003 /* ReliefModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ReliefModifier.h; sourceTree = "<group>"; };
 		8B5CAA19DB9ED7D86DCF98AB /* ModifierStack.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ModifierStack.cpp; sourceTree = "<group>"; };
 		5FAF03603CF6F447457221AC /* ModifierStack.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ModifierStack.h; sourceTree = "<group>"; };
+		B1E4D0010000000000000001 /* BlendedModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BlendedModifier.cpp; sourceTree = "<group>"; };
+		B1E4D0010000000000000002 /* BlendedModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BlendedModifier.h; sourceTree = "<group>"; };
 		F26E7A002F9244920009D9AE /* RenderETAEstimator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RenderETAEstimator.h; sourceTree = "<group>"; };
 		F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RenderETAEstimator.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
@@ -2650,6 +2676,10 @@
 		F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CookTorranceSPF.h; sourceTree = "<group>"; };
 		F27F08E1069C42900069C9E5 /* DielectricMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DielectricMaterial.h; sourceTree = "<group>"; };
 		F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DielectricSPF.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000E01 /* DiffuseTransmissionMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = DiffuseTransmissionMaterial.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000E02 /* DiffuseTransmissionMaterial.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = DiffuseTransmissionMaterial.h; sourceTree = "<group>"; };
+		05C1A0000000000000000F01 /* MixMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MixMaterial.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000F02 /* MixMaterial.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MixMaterial.h; sourceTree = "<group>"; };
 		4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RoughDielectricMaterial.cpp; sourceTree = "<group>"; };
 		85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RoughDielectricEnergy.cpp; sourceTree = "<group>"; };
 		F27F08E3069C42900069C9E5 /* DielectricSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DielectricSPF.h; sourceTree = "<group>"; };
@@ -3033,12 +3063,18 @@
 		05C1A0000000000000000001 /* OslNoise.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslNoise.h; sourceTree = "<group>"; };
 		05C1A0000000000000000A01 /* OslVoronoi.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslVoronoi.h; sourceTree = "<group>"; };
 		05C1A0000000000000000B01 /* OslColor.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslColor.h; sourceTree = "<group>"; };
+		05C1A0000000000000000C01 /* OslMath.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslMath.h; sourceTree = "<group>"; };
+		05C1A0000000000000000D01 /* OslVector.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslVector.h; sourceTree = "<group>"; };
+		05C1A0000000000000001001 /* OslShaderNodes.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OslShaderNodes.h; sourceTree = "<group>"; };
 		F5C0DEEE0000000000000001 /* SurfaceCurvature.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SurfaceCurvature.h; sourceTree = "<group>"; };
 		F5C0DEF00000000000000001 /* ExpressionMemo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionMemo.h; sourceTree = "<group>"; };
 		F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ProceduralNoiseCore.cpp; sourceTree = "<group>"; };
 		05C1A0000000000000000002 /* OslNoise.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslNoise.cpp; sourceTree = "<group>"; };
 		05C1A0000000000000000A02 /* OslVoronoi.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslVoronoi.cpp; sourceTree = "<group>"; };
 		05C1A0000000000000000B02 /* OslColor.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslColor.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000C02 /* OslMath.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslMath.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000000D02 /* OslVector.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslVector.cpp; sourceTree = "<group>"; };
+		05C1A0000000000000001002 /* OslShaderNodes.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = OslShaderNodes.cpp; sourceTree = "<group>"; };
 		F2ADD1000000000000000001 /* ExpressionParamSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ExpressionParamSpec.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BidirectionalRasterizerBase.cpp; sourceTree = "<group>"; };
@@ -3998,6 +4034,10 @@
 				F27F08E0069C42900069C9E5 /* CookTorranceSPF.h */,
 				F27F08E1069C42900069C9E5 /* DielectricMaterial.h */,
 				F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */,
+				05C1A0000000000000000E01 /* DiffuseTransmissionMaterial.cpp */,
+				05C1A0000000000000000E02 /* DiffuseTransmissionMaterial.h */,
+				05C1A0000000000000000F01 /* MixMaterial.cpp */,
+				05C1A0000000000000000F02 /* MixMaterial.h */,
 				4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */,
 				F27F08E3069C42900069C9E5 /* DielectricSPF.h */,
 				AB8D647B084BB4805FD4BC4C /* RoughDielectricMaterial.h */,
@@ -4074,6 +4114,8 @@
 				F2617A0E2F9B000100620003 /* ReliefModifier.h */,
 				8B5CAA19DB9ED7D86DCF98AB /* ModifierStack.cpp */,
 				5FAF03603CF6F447457221AC /* ModifierStack.h */,
+				B1E4D0010000000000000001 /* BlendedModifier.cpp */,
+				B1E4D0010000000000000002 /* BlendedModifier.h */,
 				F2C0F001069C42900069C9E5 /* NormalMap.cpp */,
 				F2C0F002069C42900069C9E5 /* NormalMap.h */,
 			);
@@ -4660,12 +4702,18 @@
 				05C1A0000000000000000001 /* OslNoise.h */,
 				05C1A0000000000000000A01 /* OslVoronoi.h */,
 				05C1A0000000000000000B01 /* OslColor.h */,
+				05C1A0000000000000000C01 /* OslMath.h */,
+				05C1A0000000000000000D01 /* OslVector.h */,
+				05C1A0000000000000001001 /* OslShaderNodes.h */,
 				F5C0DEEE0000000000000001 /* SurfaceCurvature.h */,
 				F5C0DEF00000000000000001 /* ExpressionMemo.h */,
 				F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */,
 				05C1A0000000000000000002 /* OslNoise.cpp */,
 				05C1A0000000000000000A02 /* OslVoronoi.cpp */,
 				05C1A0000000000000000B02 /* OslColor.cpp */,
+				05C1A0000000000000000C02 /* OslMath.cpp */,
+				05C1A0000000000000000D02 /* OslVector.cpp */,
+				05C1A0000000000000001002 /* OslShaderNodes.cpp */,
 				F27F0A37069C42900069C9E5 /* RandomNumbers.h */,
 				F27F0A38069C42900069C9E5 /* Ray.h */,
 				F2EE004000000000000000A1 /* RayDifferentials.h */,
@@ -5228,6 +5276,8 @@
 				F27F0B48069C42910069C9E5 /* CookTorranceSPF.h in Headers */,
 				F27F0B49069C42910069C9E5 /* DielectricMaterial.h in Headers */,
 				F27F0B4B069C42910069C9E5 /* DielectricSPF.h in Headers */,
+				05C1A0000000000000000E06 /* DiffuseTransmissionMaterial.h in Headers */,
+				05C1A0000000000000000F06 /* MixMaterial.h in Headers */,
 				1746417C8BD779406CF744AA /* RoughDielectricMaterial.h in Headers */,
 				09277BB764AD06ACA6FEA3DE /* RoughDielectricEnergyData.h in Headers */,
 				32CCF27D084D623F36FA1E70 /* RoughDielectricEnergy.h in Headers */,
@@ -5276,6 +5326,7 @@
 				F2617A0E2F9B000100620005 /* ModifierFrame.h in Headers */,
 				F2617A0E2F9B000100620006 /* ReliefModifier.h in Headers */,
 				856C63DC9BEAF1F4D09A336B /* ModifierStack.h in Headers */,
+				B1E4D0010000000000000004 /* BlendedModifier.h in Headers */,
 				F2C0F021069C42910069C9E5 /* NormalMap.h in Headers */,
 				F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */,
 				F27F0B89069C42910069C9E5 /* Noise.h in Headers */,
@@ -5570,6 +5621,9 @@
 				05C1A0000000000000000004 /* OslNoise.h in Headers */,
 				05C1A0000000000000000A04 /* OslVoronoi.h in Headers */,
 				05C1A0000000000000000B04 /* OslColor.h in Headers */,
+				05C1A0000000000000000C04 /* OslMath.h in Headers */,
+				05C1A0000000000000000D04 /* OslVector.h in Headers */,
+				05C1A0000000000000001004 /* OslShaderNodes.h in Headers */,
 				F5C0DEEE0000000000000002 /* SurfaceCurvature.h in Headers */,
 				F5C0DEF00000000000000002 /* ExpressionMemo.h in Headers */,
 				F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */,
@@ -5956,6 +6010,8 @@
 				F27F0B47069C42910069C9E5 /* CookTorranceSPF.cpp in Sources */,
 				F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */,
 				F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */,
+				05C1A0000000000000000E05 /* DiffuseTransmissionMaterial.cpp in Sources */,
+				05C1A0000000000000000F05 /* MixMaterial.cpp in Sources */,
 				1D81A1F561D9D814B3B6DF5D /* RoughDielectricMaterial.cpp in Sources */,
 				399FB9A52FC966378D28F8FF /* RoughDielectricEnergy.cpp in Sources */,
 				F27F0B4D069C42910069C9E5 /* GenericHumanTissueSPF.cpp in Sources */,
@@ -5987,6 +6043,7 @@
 				F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */,
 				F2617A0E2F9B000100620004 /* ReliefModifier.cpp in Sources */,
 				CB5BBE23BA6A723195531560 /* ModifierStack.cpp in Sources */,
+				B1E4D0010000000000000003 /* BlendedModifier.cpp in Sources */,
 				F2C0F020069C42910069C9E5 /* NormalMap.cpp in Sources */,
 				F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */,
 				F27F0B8C069C42910069C9E5 /* PerlinNoise1D.cpp in Sources */,
@@ -6194,6 +6251,9 @@
 				05C1A0000000000000000003 /* OslNoise.cpp in Sources */,
 				05C1A0000000000000000A03 /* OslVoronoi.cpp in Sources */,
 				05C1A0000000000000000B03 /* OslColor.cpp in Sources */,
+				05C1A0000000000000000C03 /* OslMath.cpp in Sources */,
+				05C1A0000000000000000D03 /* OslVector.cpp in Sources */,
+				05C1A0000000000000001003 /* OslShaderNodes.cpp in Sources */,
 				F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */,
 				F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */,
 				F27F0C9B069C42910069C9E5 /* ThreadsPTHREADs.cpp in Sources */,
@@ -6583,6 +6643,10 @@
 				F24B72D32F52A632008304C4 /* CookTorranceSPF.h in Sources */,
 				F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */,
 				F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */,
+				05C1A0000000000000000E03 /* DiffuseTransmissionMaterial.cpp in Sources */,
+				05C1A0000000000000000E04 /* DiffuseTransmissionMaterial.h in Sources */,
+				05C1A0000000000000000F03 /* MixMaterial.cpp in Sources */,
+				05C1A0000000000000000F04 /* MixMaterial.h in Sources */,
 				01EAA6405C33D1616E15A2D7 /* RoughDielectricMaterial.cpp in Sources */,
 				CA368FA60E2912DABDACC33F /* RoughDielectricEnergy.cpp in Sources */,
 				F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */,
@@ -6664,6 +6728,8 @@
 				F2617A0E2F9B000100620009 /* ReliefModifier.h in Sources */,
 				693073D646C7654E6A71710D /* ModifierStack.cpp in Sources */,
 				6ED41AE993B92D2A19F87F1A /* ModifierStack.h in Sources */,
+				B1E4D0010000000000000005 /* BlendedModifier.cpp in Sources */,
+				B1E4D0010000000000000006 /* BlendedModifier.h in Sources */,
 				F2C0F010069C42900069C9E5 /* NormalMap.cpp in Sources */,
 				F2C0F011069C42900069C9E5 /* NormalMap.h in Sources */,
 				F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */,
@@ -7193,10 +7259,16 @@
 				05C1A0000000000000000005 /* OslNoise.cpp in Sources */,
 				05C1A0000000000000000A05 /* OslVoronoi.cpp in Sources */,
 				05C1A0000000000000000B05 /* OslColor.cpp in Sources */,
+				05C1A0000000000000000C05 /* OslMath.cpp in Sources */,
+				05C1A0000000000000000D05 /* OslVector.cpp in Sources */,
+				05C1A0000000000000001005 /* OslShaderNodes.cpp in Sources */,
 				F2ADD0000000000000000006 /* ProceduralNoiseCore.h in Sources */,
 				05C1A0000000000000000006 /* OslNoise.h in Sources */,
 				05C1A0000000000000000A06 /* OslVoronoi.h in Sources */,
 				05C1A0000000000000000B06 /* OslColor.h in Sources */,
+				05C1A0000000000000000C06 /* OslMath.h in Sources */,
+				05C1A0000000000000000D06 /* OslVector.h in Sources */,
+				05C1A0000000000000001006 /* OslShaderNodes.h in Sources */,
 				F5C0DEEE0000000000000003 /* SurfaceCurvature.h in Sources */,
 				F5C0DEF00000000000000003 /* ExpressionMemo.h in Sources */,
 				EE990000000000000000001E /* ExpressionPainter.cpp in Sources */,

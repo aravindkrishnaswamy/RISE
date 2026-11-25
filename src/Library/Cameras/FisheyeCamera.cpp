@@ -203,6 +203,7 @@ bool FisheyeCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const Point
 		ray.diffs.ryDir = dAuxY - d;
 		ray.hasDifferentials = true;
 	}
+	ApplyRadialNearClip( ray );
 
 	return true;
 }

@@ -298,8 +298,9 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 			// A step is a DIRECTION: Vector3Ops::Transform applies the
 			// linear part and drops the translation column, which is what
 			// a difference of two transformed points reduces to.
-			ri2.ptObjIntersec = Point3Ops::mkPoint3( ri.ptObjIntersec,
-				pW2O ? Vector3Ops::Transform( *pW2O, dp ) : dp );
+			const Vector3 dObj = pW2O ? Vector3Ops::Transform( *pW2O, dp ) : dp;
+			ri2.ptObjIntersec = Point3Ops::mkPoint3( ri.ptObjIntersec, dObj );
+			ri2.vReliefObjStep = dObj;
 
 			if( haveUVSolve ) {
 				const Scalar r1 = Vector3Ops::Dot( ri.derivatives.dpdu, dp );

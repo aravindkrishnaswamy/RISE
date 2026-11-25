@@ -151,6 +151,7 @@ namespace RISE
 			IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) override { return 0; }
 			void SetIntermediateValue( const IKeyframeParameter& ) override {}
 			void RegenerateData() override {}
+			unsigned int GetPathDependence() const override { return input.GetPathDependence(); }
 		};
 	}
 }
