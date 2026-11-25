@@ -1,11 +1,23 @@
 # Blender Procedural Shader Translation — Design (DRAFT 6)
 
-**Status:** draft 6, 2026-11-14. Nothing here is implemented except
+**Status:** draft 6, 2026-11-14. Implemented so far:
 constant-reflectance GGX and energy-preserving Oren-Nayar (2026-11-19, §5.6),
-the first four groups of procedural builtins -- gradient noise, fractal
+all seven groups of procedural builtins -- gradient noise, fractal
 noise, the Noise Texture node and White Noise (2026-11-20), the Voronoi
-Texture node (2026-11-22), and the colour conversions and Mix Color node
-(2026-11-22), §5.2(b) -- and the companion's step P
+Texture node (2026-11-22), colour conversions and Mix Color (2026-11-22),
+Safe Math / Vector Math / Clamp / Map Range (2026-11-23), componentwise
+vec3 ops and Vector Rotate (2026-11-23), and live object/world/camera
+space transforms (2026-11-23), §5.2(b) -- Python compiler coverage and
+unit tests (`src/Blender/addons/rise_renderer/procedural_expr.py`,
+`test_procedural_expr.py`), §8 lowered-size and PT/BDPT performance
+baselines (`tools/measure_procedural_lowering.py`,
+`tools/osl_golden/bench_procedural_baseline.cpp`,
+`tools/bench_procedural_render.py`), thin diffuse
+transmission (`DiffuseTransmissionMaterial.{h,cpp}`,
+`tests/DiffuseTransmissionClosedFormTest.cpp`) and standalone Round 3
+closed-form mix/shadow contract prototypes
+(`tools/prototypes/mix_and_shadow_closed_form_proto.cpp`),
+plus the companion's step P
 (2026-11-16, DL-633). Draft 4 was
 reviewed by four independent reviewers
 ([round 1](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md)) and draft 5 by a
@@ -479,7 +491,7 @@ BSD-style; the copyright notices and licence identifiers are reproduced in
 each ported file's header, the full licence texts are in `licenses/`, and the
 macOS release copies them into the app's `Third-Party Licenses` folder.
 
-| Group | Builtins (names: `osl_` prefix, decided 2026-11-20; rows not yet built still show working names) | Source of truth |
+| Group | Builtins (all 7 groups implemented with `osl_` prefix, decided 2026-11-20) | Source of truth |
 |---|---|---|
 | Gradient noise | `osl_snoise(p, w, dims)` signed, 1D–4D. **Implemented 2026-11-20** | `kernel/svm/noise.h`: Jenkins lookup3 lattice hash, quintic fade, per-dimension scale constants, the `fmod(p, 100000)` wrap |
 | Fractal noise | `osl_fractal(p, w, dims, type, detail, roughness, lacunarity, offset, gain, normalize)`, the five types by Cycles' numbering. **Implemented 2026-11-20** | `kernel/svm/fractal_noise.h`, including the fractional-detail octave |
@@ -487,9 +499,9 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
 | Voronoi | `osl_voronoi_distance`, `osl_voronoi_color`, `osl_voronoi_position`, `osl_voronoi_w`, `osl_voronoi_radius`, each `(p, w, dims, feature, metric, scale, detail, roughness, lacunarity, smoothness, exponent, randomness, normalize)`: F1, F2, Smooth F1, Distance to Edge, N-Sphere Radius; Euclidean, Manhattan, Chebychev, Minkowski; 1D–4D; the fractal parameters. The coordinate is passed before the Scale, which the kernel applies (Position and W are divided back by it). **Implemented 2026-11-22** | `kernel/svm/voronoi.h`: PCG integer cell hashes for 2D–4D (as of Blender 5.0; the hash changed in that release), the float hash in 1D |
 | White noise | `osl_white_noise(p, w, dims)` (Value) and `osl_white_noise_color(p, w, dims)` (Color), 1D–4D. **Implemented 2026-11-20** | `kernel/svm/white_noise.h`, `util/hash.h`; see below |
 | Colour | `osl_rgb2hsv(c)`, `osl_hsv2rgb(c)`, `osl_rgb2hsl(c)`, `osl_hsl2rgb(c)`, `osl_mix_color(mode, t, a, b, clamp_factor, clamp_result)` for the 19 Mix modes (`NodeMix` 0..18), with the node's factor and result clamps. **Implemented 2026-11-22** | `util/color.h`, `kernel/svm/color_util.h`, `kernel/svm/mix.h` |
-| Safe math | the 41 Math and the Vector Math operations with Cycles' zero-on-undefined results | `kernel/svm/math_util.h` |
-| Componentwise vec3 | `min/max/abs/floor/fract/pow/clamp`, `rotate(v, axis, angle)`, Euler rotation | Vector Math, Vector Rotate |
-| Space transforms | `to_object_point/vector/normal`, `to_world_*`, `to_camera_*` | Vector Transform, Camera coordinates; the camera matrix is read from the live scene, not baked as constants |
+| Safe math | `osl_math(op, a, b, c)` (41 `NodeMathType` ops 0..40), `osl_vmath_scalar(op, a, b)` (Dot=7, Distance=8, Length=9), `osl_vmath(op, a, b, c, scale)` (30 `NodeVectorMathType` ops 0..29), `osl_clamp(type, v, mn, mx)` (MINMAX/RANGE), `osl_map_range(type, clamp, v, fmin, fmax, tmin, tmax, steps)`, `osl_vmap_range(...)` (LINEAR/STEPPED/SMOOTHSTEP/SMOOTHERSTEP). **Implemented 2026-11-23** | `kernel/svm/math_util.h`, `math.h`, `clamp.h`, `map_range.h` |
+| Componentwise vec3 | `osl_vmin`, `osl_vmax`, `osl_vabs`, `osl_vfloor`, `osl_vfract`, `osl_vpow`, `osl_vclamp`, `osl_rotate(v, axis, angle)`, `osl_vector_rotate(type, invert, v, center, axis, angle, euler)` (AXIS/X/Y/Z/EULER_XYZ). **Implemented 2026-11-23** | `util/math_float3.h`, `util/transform.h`, `kernel/svm/vector_rotate.h` |
+| Space transforms | `osl_to_object_point/vector/normal`, `osl_to_world_point/vector/normal`, `osl_to_camera_point/vector/normal`, `osl_camera_to_world_point/vector/normal`; reads live object matrices and live scene camera (`ICamera::GetCameraFrame`) without baking camera matrices as constants. **Implemented 2026-11-23** | `kernel/svm/vector_transform.h`, `kernel/svm/tex_coord.h`, `kernel/geom/object.h` |
 
 - **Several results.** Voronoi returns distance, colour and position from
   one cell search, and Noise returns a factor and a colour. Builtins in the
@@ -564,6 +576,60 @@ macOS release copies them into the app's `Third-Party Licenses` folder.
   overrides `fmaxf` with `(a > b) ? a : b`). `tests/OslColorTest.cpp` also
   verifies independent closed forms (round-trips, primaries, all 19 blend
   formulas at t = 0 and t = 1, clamps, aliasing).
+- **As built (group 5, Safe Math / Vector Math / Clamp / Map Range, 2026-11-23).**
+  `src/Library/Utilities/OslMath.*` ports `kernel/svm/math_util.h`, `math.h`,
+  `clamp.h`, and `map_range.h` under the same strict-IEEE FP32 contract.
+  Exposed as `osl_math`, `osl_vmath_scalar`, `osl_vmath`, `osl_clamp`,
+  `osl_map_range`, and `osl_vmap_range` (enum/clamp arguments checked as
+  compile-time integer literals; not memo-worthy). Matches Cycles' strict-IEEE
+  build bit for bit (sign of zero included) on all 1,247 rows of
+  `tests/data/osl_math_golden.inc` (dumped by `tools/osl_golden/dump_math_golden.sh`
+  from Cycles' real `svm_node_math`, `svm_node_vector_math<float3>`,
+  `svm_node_clamp`, `svm_node_map_range`, and `svm_node_vector_map_range`
+  entry points; 0 libm non-exact on Apple arm64, gated to 1e-6 off Apple
+  arm64 for transcendental ops). Against Blender-flags builds on Apple M1 Max
+  (Apple clang 21): Math (779 rows) 775 exact / 4 rounding (maxRel 1.168e-7);
+  VectorMath (330 rows) vs SIMD 323 exact / 4 sign0 / 3 rounding (maxRel
+  1.102e-7), vs scalar 318 exact / 12 rounding (maxRel 1.484e-7); Clamp
+  (26 rows) and VectorMapRange (40 rows) 100% exact; MapRange (72 rows) 70
+  exact / 2 rounding (maxRel 6.535e-8). The only departure from Cycles is a
+  UB guard on `safe_powf`'s `float_to_int` cast when `a < 0` and `b` is
+  non-finite or outside int32 range. Verified by `tests/OslMathTest.cpp`
+  (58 checks + mutation proof).
+- **As built (group 6, componentwise vec3 and Vector Rotate, 2026-11-23).**
+  `src/Library/Utilities/OslVector.*` ports `util/math_float3.h`,
+  `util/transform.h` (`euler_to_transform`, `transform_direction`,
+  `transform_direction_transposed`), and `kernel/svm/vector_rotate.h`
+  (`svm_node_vector_rotate`) under strict IEEE FP32. Exposed as `osl_vmin`,
+  `osl_vmax`, `osl_vabs`, `osl_vfloor`, `osl_vfract`, `osl_vpow`,
+  `osl_vclamp`, `osl_rotate`, and `osl_vector_rotate` (not memo-worthy).
+  Matches Cycles' strict-IEEE build bit for bit on all 186 rows of
+  `tests/data/osl_vector_golden.inc` (dumped by
+  `tools/osl_golden/dump_vector_golden.sh`; 0 non-exact on Apple arm64).
+  Against Blender-flags builds on Apple M1 Max: componentwise ops (76 rows)
+  76/76 exact against all 3 builds; VectorRotate (110 rows) vs SIMD 83 exact
+  / 27 rounding (maxRel 2.384e-7), vs scalar 80 exact / 30 rounding (maxRel
+  5.635e-7), 0 sign0, 0 nonfin. Verified by `tests/OslVectorTest.cpp`
+  (37 checks + mutation proof).
+- **As built (group 7, live space transforms, 2026-11-23).**
+  Exposed in `src/Library/Painters/ExpressionOslBuiltins.*` as the 12
+  context-gated builtins `osl_to_object_point/vector/normal`,
+  `osl_to_world_point/vector/normal`, `osl_to_camera_point/vector/normal`,
+  and `osl_camera_to_world_point/vector/normal` (not memo-worthy on their
+  own). `Object::IntersectRay` stamps `pmxObjectToWorld` alongside
+  `pmxWorldToObject` (cleared by `CSGObject::IntersectRay`); `ObjectManager`
+  stamps `pCamera` from the owning `Scene::GetCamera()` live on every hit;
+  `CameraCommon::GetCameraFrame` exposes the rigid Cycles camera basis
+  (`+X = -U` right, `+Y = +V` up, `+Z = +W` forward, origin = eye) so live
+  camera moves and motion-blur poses apply without recompiling expressions.
+  Normals transform by the inverse-transpose linear 3×3 and safe-normalize.
+  `ExpressionMemo::ProgramKey` adds `SpaceTransformHitKey` (including
+  `Transformable::GlobalTransformPoseEpoch()` / `ThreadTransformPoseEpoch()`
+  for in-place matrix mutations, and also populated whenever `sample()` is
+  used; short-circuited for non-space-transform, non-sampling programs; TLS
+  size 3,552 bytes ≤ 4,096 ceiling; non-motion-blur camera mutations also
+  bump `ExpressionMemo::Invalidate()`). Verified by
+  `tests/OslSpaceTransformTest.cpp` (167 checks).
 - **Precision, as built.** The kernels evaluate in strict IEEE single
   precision in the order of Cycles' scalar path, compiled that way on every
   platform (each kernel file refuses to build under fast-math; built and
@@ -845,7 +911,11 @@ A surface that is one shader node maps onto a RISE material:
   sheet that reflects diffusely on the side light arrives and transmits
   diffusely to the other. Blender's Translucent is `reflectance 0`.
   - Reciprocal; energy-bounded when reflectance plus transmittance is at
-    most 1 per channel, and a larger sum is scaled back to 1 with a warning.
+    most 1 per channel (and per wavelength in spectral NM/HWSS mode), and a
+    larger sum is scaled back to 1 (`DiffuseTransmissionMaterial.{h,cpp}`
+    implements this scaling silently at evaluation time; any authored
+    constant-over-budget warning belongs in the scene chunk parser when
+    `diffuse_transmission_material` is wired).
   - It has no interior: no index of refraction, no entry on the refraction
     stack, no medium. That is what distinguishes it from the existing
     `translucent_material` and lets it be a `mix_material` leaf (146 corpus
@@ -1068,33 +1138,71 @@ by colour management.
 
 ## 8. Performance
 
-No number in this section has been measured yet; the VM's own header says it
-is "not a hot per-sample path replacement for a hand-written C++ field, by
-design". The work starts with a baseline, as the repository's performance
-procedure requires.
-
 **Budget.** A translated material costs at most 3× an image-textured GGX
 material per shading point at the 90th-percentile graph size of its phase,
 measured in PT and in BDPT. If a phase misses the budget, the evaluator is
 the first suspect.
 
-**Measured before Phase 1 code:**
+**Measured baseline (2026-11-23, Apple M1 Max arm64, Apple clang 21.0.0,
+`-O3 -ffast-math` host + strict IEEE FP32 `Osl*.cpp` kernels,
+`render_thread_reserve_count 0`):**
 
-- nanoseconds per VM instruction today;
-- an image-textured GGX material, PT and BDPT, as the reference point;
-- **the lowered size of the corpus's Phase 1 graphs:** slots and
-  instructions per material input, from a throwaway lowering pass run over
-  the survey's files. Phase 1's coverage figure is an upper bound until this
-  says how many fit in 512 slots.
+1. **Lowered size (`tools/measure_procedural_lowering.py`):** comparing
+   `procedural_expr.py`'s single-use inlining + automatic depth-splitting
+   (`_INLINE_SPLIT_DEPTH = 24`, well below `kMaxParseDepth = 200`) against
+   naive bind-every-node lowering (`inline_single_use=False`), against the
+   VM's 495 free `def` slots (`kMaxSlots = 512` minus 16 context slots and
+   `seed`):
 
-**Measured in Phase 1:**
+   | Graph | Nodes | Inlined defs / slots / max depth / bytes | Naive defs / slots | Fits 495 slots? |
+   |---|---:|---|---|:---:|
+   | 8-node median (§2.3) | 8 | 5 defs / 11 slots / depth 7 / 897 B | 10 defs / 22 slots | Yes (50% fewer slots) |
+   | 36-node p75 (§2.3) | 36 | 12 defs / 26 slots / depth 20 / 2,273 B | 42 defs / 86 slots | Yes (70% fewer slots) |
+   | 60-stage vec3 diamond | 61 | 59 defs / 177 slots / depth 1 / 3,076 B | 60 defs / 180 slots | Yes |
+   | 150-stage vec3 diamond | 151 | 149 defs / 447 slots / depth 1 / 7,903 B | 150 defs / 450 slots | Yes |
+   | 170-node vec3 chain | 171 | 7 defs / 21 slots / depth 24 / 9,606 B | OVERFLOW (>495 slots) | Yes inlined / No naive |
+   | 250-node scalar chain | 251 | 10 defs / 10 slots / depth 24 / 5,874 B | 250 defs / 250 slots | Yes (survives `kMaxParseDepth=200`) |
 
-- typical Phase 1 materials (8 and 36 nodes) as one expression per input;
-- how often a shared sub-graph is re-evaluated per shading point, across
-  evaluate / sample / density and in spectral mode.
+2. **VM micro-benchmark (`tools/osl_golden/bench_procedural_baseline.cpp`,
+   compiling the exact verbatim `procedural_expr.py` output from
+   `tools/osl_golden/bench_procedural_graphs.inc`):**
+   - Pure arithmetic 41-instruction VM body: **80.55 ns/eval**
+     (**1.96 ns/instruction**).
+   - Group 5–7 single-call VM dispatch: `osl_math(ADD)` **18.28 ns**,
+     `osl_math(POWER)` **30.93 ns**, `osl_vmath(CROSS)` **29.13 ns**,
+     `osl_map_range(SMOOTHERSTEP)` **24.82 ns**, `osl_vector_rotate(AXIS)`
+     **43.61 ns**, `osl_vector_rotate(EULER_XYZ)` **45.65 ns**,
+     `osl_to_object_point` **22.52 ns**, `osl_to_object_normal` **30.29 ns**,
+     `osl_to_camera_point` **25.31 ns**.
+   - Full Phase 1 `EvalVec3` (verbatim `procedural_expr.py` output, zero proxy):
+     8-node median graph **508.40 ns/eval**; 36-node p75 graph
+     **2,252.10 ns/eval**.
+   - Same-`progId` L2 memoization (verbatim 36-node p75 painter queried 3× at
+     the same hit): **6,649.22 ns (memo OFF) → 2,369.69 ns (memo ON),
+     2.81× speedup** (bit-identical checksum).
 
-**The spike that decides option A against option C, before Phase 2:**
+3. **End-to-end PT and BDPT render baseline (`python3 tools/bench_procedural_render.py`,
+   `./bin/rise --no-denoise`, 320×240, GGX sphere + diffuse floor + area light,
+   verbatim `procedural_expr.py` expressions, `render_thread_reserve_count 0`,
+   3 sequential runs each, median wall-clock time):**
 
+   | Integrator | Image-textured GGX (`wood.png`) | 8-node median procedural GGX | 36-node p75 procedural GGX |
+   |---|---:|---:|---:|
+   | **PT** (128 spp) | 3.021 s (1.00×) | 3.350 s (**1.11×**) | 4.561 s (**1.51×**) |
+   | **BDPT** (64 spp) | 3.343 s (1.00×) | 3.534 s (**1.06×**) | 5.194 s (**1.55×**) |
+
+   On this single-albedo hero-sphere scene (~36% primary pixel coverage) at
+   the 36-node corpus p75 graph size, full-frame PT (**1.51×**) and BDPT
+   (**1.55×**) sit well below **3.0×**.
+
+**Still to measure (before/when Phase 2 starts):**
+
+- lowering across the actual 177 `.blend` corpus files in the survey (above
+  table measures 6 representative synthetic graphs; actual corpus p90
+  multi-socket material lowering remains to be run once the compiler runs on
+  Blender's inliner);
+- actual per-shading-point shared-subgraph re-evaluation frequency across
+  `evaluate`/`sample`/`density` and in spectral mode;
 - synthetic programs of 100, 400 and 650 `def`s with six outputs, a bump
   height and four mix weights;
 - in the existing VM extended as §5.2a describes, against a flat register
@@ -1207,12 +1315,14 @@ sinks through node groups):
 
 **What may start now, and what may not.** Round 3's verdict is the gate.
 
-- May start: the procedural builtins and their golden tests (gradient noise,
-  fractal noise, the Noise Texture node and White Noise **implemented
-  2026-11-20**, `tests/OslNoiseTest.cpp`; Voronoi **implemented
-  2026-11-22**, `tests/OslVoronoiTest.cpp`; colour conversions and Mix Color
-  **implemented 2026-11-22**, `tests/OslColorTest.cpp`; safe math,
-  componentwise vec3 and transforms next); the compiler's
+- May start: the procedural builtins and their golden tests (all 7 groups
+  **implemented**: gradient/fractal/Noise Texture/White Noise 2026-11-20,
+  `tests/OslNoiseTest.cpp`; Voronoi 2026-11-22, `tests/OslVoronoiTest.cpp`;
+  colour conversions and Mix Color 2026-11-22, `tests/OslColorTest.cpp`;
+  Safe Math / Vector Math / Clamp / Map Range 2026-11-23,
+  `tests/OslMathTest.cpp`; componentwise vec3 and Vector Rotate 2026-11-23,
+  `tests/OslVectorTest.cpp`; live space transforms 2026-11-23,
+  `tests/OslSpaceTransformTest.cpp`); the compiler's
   unit tests; the lowered-size measurement; the performance baseline;
   constant-reflectance GGX and energy-preserving Oren-Nayar
   (**implemented 2026-11-19**, `tests/BlenderLobeAdditionsTest.cpp`); the
@@ -1220,8 +1330,13 @@ sinks through node groups):
   `tests/UnlistedEmitterWeightTest.cpp`; round 3's extended-SMS site
   concerns mix luminaries and moves to the mixing prototype).
 - Needs a specification fix first (round 3 names each): the new hit inputs,
-  `diffuse_transmission_material`, the companion's step D1, the step-0
-  exporter and camera visibility.
+  the `diffuse_transmission_material` scene chunk / exporter wiring (the
+  core C++ lobe `DiffuseTransmissionMaterial.{h,cpp}` and closed-form
+  `tests/DiffuseTransmissionClosedFormTest.cpp` — 187 checks covering
+  per-wavelength conservation, reciprocity/re-aim, `valueByScatterType`,
+  multi-bounce Pel/NM white furnace, and HWSS bundle/companion evaluation — are
+  already landed), the companion's step D1, the step-0 exporter and camera
+  visibility.
 - Not built from prose at all: the companion's steps S, B, D2 and A, and the
   Phase 2 program cache. They are prototyped against failing closed-form
   tests taken from the three reviews' counterexamples.

@@ -1784,3 +1784,12 @@ accepts with probability equal to coverage. Values clamp to [0,1]; invalid
 values become zero. OPAQUE ignores the scalar. This is surface coverage,
 separate from dielectric transmission. Existing Ward/hair `alpha` parameters
 retain their original meanings. See [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md).
+
+## Mix materials, diffuse transmission, blended modifiers & camera `near_clip`
+
+- **`mix_material`**: Bounded N-ary material mixer (`child <mat|none> [weight] <scalar> [modifier <mod>]`, repeatable; optional `passthrough [weight] <scalar>`). Weights are response coefficients (sum <= 1; shortfall absorbs as `none`; sum > 1 divides by sum and logs once). Refuses nested mixes and containment-tracking/refracting children, and cannot be wrapped inside `composite_material` / `coated_material` / `fabric_material` / luminaires or assigned to objects carrying/inheriting an `interior_medium`. Spatially varying SSS leaf weights are PT-only (refused in BDPT/VCM); `mix_material` is refused in MLT.
+- **`diffuse_transmission_material`**: Thin two-sided diffuse reflection (`reflectance`) + diffuse transmission (`transmittance`), strictly energy-conserved (`R + T <= 1`) per RGB channel and per spectral wavelength, with reciprocal both-sides evaluation and full-sphere NEE.
+- **`blended_modifier`**: Weighted blend of two modifiers (`modifier_a` at weight 0, `modifier_b` at weight 1; either may be `none` for the unperturbed normal; `weight` scalar painter or number in [0,1]).
+- **`scalar_painter { painter NAME channel RGB }`**: Extracts all three post-colorspace RGB channels as a per-channel `PainterRGBScalarPainter` (refused by single-scalar slots; accepted by per-channel scalar slots).
+- **Camera `near_clip`**: Optional near-clip distance (in scene units, default `0` = disabled; planar along forward axis for pinhole/thinlens/orthographic, radial for fisheye) on all 5 camera chunks (`pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera`).
+- **PT-only non-physical VM signals (Part 0)**: `osl_layer_weight`, `osl_fresnel`, `osl_is_camera_ray`, and `osl_backfacing` are view/ray-dependent non-physical signals contained to Path Tracing (refused by BDPT/VCM/MLT, routed to PT by `AutoRasterizer`, excluded from SMS and OpenPGL path guiding). `osl_ao` is physically based and works in all integrators.

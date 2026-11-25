@@ -207,12 +207,12 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 |--------|-------|----------|
 | Painters | 40 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions), `expression_painter` (the doc-88 texture-expression VM colour pipe; `scalar_painter`'s sibling `expression` and `painter` FORMs are not separate keywords), `ramp_painter` (doc-88 S3 P2.2, the universal scalar->colour remap), `mapping_painter` (doc-88 S7 P2.3, the domain scale/rotate/translate/reproject wrapper -- uv/world/object/triplanar), `stochastic_tile_painter` (doc-88 P3.1 S8, hex-tiling with histogram-preserving blending), `scatter_painter` (doc-88 P3.2 S8, texture-bombing / FX-map-lite) |
 | Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
-| Materials | 29 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
-| Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
+| Materials | 33 | `null_boundary_material`, `lambertian_material`, `diffuse_transmission_material`, `mix_material`, `dielectric_material`, `rough_dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
+| Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` (all 5 cameras accept optional `near_clip` in scene units) |
 | Geometry | 27 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry` |
 | Hair guides | 1 | `hair_guides` |
-| Modifiers | 4 | `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
-| Media | 5 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `global_medium` |
+| Modifiers | 5 | `relief_modifier`, `modifier_stack`, `blended_modifier`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
+| Media | 6 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `fire_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
@@ -226,7 +226,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 176 unique chunk keywords** -- counted directly from the 176 `add(...)` registrations in `CreateAllChunkParsers()`. Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
+**Total: 183 unique chunk keywords** -- counted directly from the 183 `add(...)` registrations in `CreateAllChunkParsers()` (pinned by `tests/SceneEditorSuggestionsTest.cpp`). Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above, `scalar_painter`'s `painter NAME channel RGB` form is a channel option on `scalar_painter` (not a separate keyword), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
 
 ### Composite chunks (parse-time sugar)
 
@@ -471,7 +471,7 @@ Parameter sets shared across many chunks live in [ChunkParserRegistry.cpp](Chunk
 
 Registry-level parser wrappers in `CreateAllChunkParsers()` also decorate descriptors uniformly:
 
-- **`AlphaMaterialParser`**: wraps every `ChunkCategory::Material` parser (all 29 material chunks) to add `alpha_mode` (`opaque|mask|blend`), `alpha_coverage` (`IScalarPainter` reference or inline scalar), and `alpha_cutoff` without duplicating them per material class (see `docs/ALPHA_COVERAGE.md`).
+- **`AlphaMaterialParser`**: wraps every `ChunkCategory::Material` parser (all 33 material chunks) to add `alpha_mode` (`opaque|mask|blend`), `alpha_coverage` (`IScalarPainter` reference or inline scalar), and `alpha_cutoff` without duplicating them per material class (see `docs/ALPHA_COVERAGE.md`).
 - **`LegacyTierParser`** (`MarkFrozen` / `MarkDeprecated`): wraps chunks listed in `kLegacyTierTable` with a descriptor copy carrying their legacy tier and replacement guidance so the CST validator and editor surface frozen/deprecated diagnostics while keeping `Finalize` bit-identical.
 
 ## Where Agent Authors Usually Get Tripped Up
