@@ -7812,6 +7812,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
@@ -7885,6 +7886,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
@@ -7957,6 +7959,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
@@ -8156,6 +8159,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
@@ -8316,6 +8320,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -8439,6 +8444,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -8562,6 +8568,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -8686,6 +8693,7 @@
 					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
