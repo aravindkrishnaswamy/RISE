@@ -11,8 +11,10 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -236,9 +238,15 @@ def run(source_dir: Path, output_dir: Path, selected: list[str]) -> list[Path]:
     written = []
     for curve_id, result in prepared:
         destination = output_dir / f"{curve_id}.json"
-        temporary = destination.with_suffix(destination.suffix + ".tmp")
-        temporary.write_text(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n")
-        temporary.replace(destination)
+        descriptor, temporary_name = tempfile.mkstemp(prefix="hylios-import-", suffix=".tmp", dir=output_dir)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            temporary.write_text(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n",
+                                 encoding="utf-8")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         written.append(destination)
     return written
 

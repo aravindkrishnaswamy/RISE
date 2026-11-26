@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import sys
 import tempfile
 import unittest
+from threading import Barrier
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -251,6 +254,58 @@ wave0=[250,251,252,253,254,255,256,257.9556,259,260,261,270];
             paths = run(self.source, self.output, ["keratin_abs"])
         self.assertEqual(content_a, paths[0].read_text())
         self.assertEqual(json.loads(content_a)["curve_id"], "keratin_abs")
+
+    def writer_fixture_manifest(self):
+        entry = self.entry("water_absorption", "data=[0.1,0.2];\nwave=[380,385];\n")
+        manifest_file = self.root / "writer-manifest.json"
+        manifest_file.write_text(json.dumps({"author_data_index": {"items": [entry]},
+                                             "author_water_data_index": {"items": []}}))
+        return entry, manifest_file
+
+    def test_concurrent_writers_publish_complete_json_from_unique_temporary_files(self):
+        entry, manifest_file = self.writer_fixture_manifest()
+        expected = import_curve("water_absorption", entry, self.source)
+        barrier = Barrier(2)
+        real_replace = Path.replace
+        temporary_paths = []
+        def synchronized_replace(temporary, destination):
+            temporary_paths.append(temporary)
+            barrier.wait(timeout=5)
+            return real_replace(temporary, destination)
+        with patch("hylios_import_data.MANIFEST_PATH", manifest_file), \
+             patch.object(Path, "replace", synchronized_replace), \
+             ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(run, self.source, self.output, ["water_absorption"])
+                       for _ in range(2)]
+            results = [future.result(timeout=10) for future in futures]
+        destination = self.output / "water_absorption.json"
+        self.assertEqual(results, [[destination], [destination]])
+        self.assertEqual(json.loads(destination.read_text()), expected)
+        self.assertEqual(len(set(temporary_paths)), 2)
+        self.assertEqual(list(self.output.glob("*.tmp")), [])
+
+    def test_failed_write_or_replace_preserves_existing_output_and_cleans_temporary_file(self):
+        _, manifest_file = self.writer_fixture_manifest()
+        with patch("hylios_import_data.MANIFEST_PATH", manifest_file):
+            run(self.source, self.output, ["water_absorption"])
+        destination = self.output / "water_absorption.json"
+        original = destination.read_bytes()
+        unrelated = destination.with_suffix(".json.tmp")
+        unrelated.write_text("unrelated file must survive")
+        real_write_text = Path.write_text
+        def fail_after_write(path, *args, **kwargs):
+            real_write_text(path, *args, **kwargs)
+            raise OSError("injected write failure")
+        for operation in ("write", "replace"):
+            mocked = (patch.object(Path, "write_text", fail_after_write) if operation == "write"
+                      else patch.object(Path, "replace", side_effect=OSError("injected replace failure")))
+            with self.subTest(operation=operation), \
+                 patch("hylios_import_data.MANIFEST_PATH", manifest_file), mocked:
+                with self.assertRaisesRegex(OSError, "injected .* failure"):
+                    run(self.source, self.output, ["water_absorption"])
+            self.assertEqual(destination.read_bytes(), original)
+            self.assertEqual(unrelated.read_text(), "unrelated file must survive")
+            self.assertEqual(list(self.output.glob("hylios-import-*.tmp")), [])
 
 
 if __name__ == "__main__":

@@ -237,7 +237,9 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSOpticalData.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSOptics.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSlabTransport.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSForwardTransport.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongBRDF.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\

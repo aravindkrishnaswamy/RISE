@@ -116,6 +116,7 @@ int main() {
 	Check(!IntersectProlateRay({1e308,1e308,z},{0,0,1.7e308},z),"behind-ray rejection precedes unrepresentable full-chord construction");
 	const auto tangent=IntersectProlateRay(prolate,{2,0,-3},z);
 	Check(tangent && tangent->entryDistanceMetres==3 && tangent->exitDistanceMetres==3 && tangent->chordLengthMetres==0,"exact tangent is retained without epsilon");
+	Check(!IntersectProlateRay({1,1,z},{1,smallest,0},z),"exact silhouette rim plus any nonzero second coordinate is outside despite squared underflow");
 	const auto onSurface=IntersectProlateRay(prolate,{0,0,5},z);
 	Check(onSurface && onSurface->exitDistanceMetres==0,"outward ray on exact surface retains zero-distance exit");
 	Check(!IntersectProlateRay(prolate,{std::nextafter(2.0,3.0),0,-3},z),"one-ulp outside tangent is a miss without widened gate");
@@ -124,6 +125,31 @@ int main() {
 	if(nearTangent) Near(nearTangent->chordLengthMetres,10*std::sqrt((2-std::nextafter(2.0,0.0))/2*(1+std::nextafter(2.0,0.0)/2)),1e-15,"near-rim chord preserves factored complement");
 	const auto far=IntersectProlateRay(sphere,{0,0,-1e100},z);
 	Check(far && far->chordLengthMetres==4,"distant-origin root cancellation does not erase physical chord");
+	for(double distance : {1e16,1e100}) {
+		const auto oblique=IntersectProlateRay({1,1,z},{-distance,-2*distance,-4*distance},{1,2,4});
+		Check(oblique && oblique->chordLengthMetres==2,"raw oblique central line retains diameter at distant origin");
+		const double microscopic=1e-100;
+		const auto rescaled=IntersectProlateRay({microscopic,microscopic,z},
+			{-distance*microscopic,-2*distance*microscopic,-4*distance*microscopic},{1,2,4});
+		Check(rescaled.has_value(),"raw oblique microscopic central line retains intersection under length rescaling");
+		if(rescaled) Near(rescaled->chordLengthMetres,2*microscopic,1e-14,"raw oblique microscopic central line retains scaled diameter");
+	}
+	const double powerOfTwoDistance=0x1p54;
+	const auto farOffset=IntersectProlateRay({5,5,z},
+		{-powerOfTwoDistance,-2*powerOfTwoDistance,-4*powerOfTwoDistance+8},{1.1,2.2,4.4});
+	Check(farOffset.has_value(),"compensated raw products retain noncentral far-line intersection");
+	if(farOffset) Near(farOffset->chordLengthMetres,2*std::sqrt(25.0-320.0/21.0),2e-15,
+		"compensated raw products retain exact eight-unit projected offset");
+	const ParticleVector translatedCentre{32,-64,128},translatedOrigin{31,-66,124};
+	const auto translatedMicroscopic=IntersectProlateRay({0x1p-40,0x1p-40,z},
+		Add(translatedOrigin,Scale(translatedCentre,-1)),{1,2,4});
+	Check(translatedMicroscopic && translatedMicroscopic->chordLengthMetres==0x1p-39,
+		"particle-relative raw oblique projection preserves translated microscopic diameter");
+	for(double major : {1.0,2.0}) {
+		const auto extremeTangent=IntersectProlateRay({smallest,major,z},{-0.48*major,0,0.64*major},{0.8,0,0.6});
+		if(extremeTangent && extremeTangent->chordLengthMetres==0)
+			Absolute(Dot(extremeTangent->exitOutwardNormal,{0.8,0,0.6}),0,2e-15,"underflowing spheroid coefficients cannot produce a non-tangent tangent normal");
+	}
 	// Independent reference and rotation/scale/axis-sign covariance.
 	std::mt19937_64 generator(0x82b43a6);
 	std::uniform_real_distribution<double> uniform(0,1);
@@ -192,6 +218,9 @@ int main() {
 		const auto rim=SampleProlateProjectedHit(prolate,d,std::nextafter(1.0,0.0),0.125);
 		Check(rim.chord.chordLengthMetres>0,"last representable radial uniform retains nonzero chord without rejection");
 	}
+	const auto extremeProjected=SampleProlateProjectedHit({smallest,2,z},{0.8,0,0.6},0.75,0);
+	Check(extremeProjected.chord.exitOutwardNormal.x==1 && extremeProjected.chord.exitOutwardNormal.z==smallest,
+		"known projected disk parameters retain analytic extreme-aspect gradient normal");
 	// Exponent boundaries: no squared-axis overflow/underflow; arbitrary-length
 	// orientation vectors normalize without squaring their original components.
 	for(double scale : {1e-150,1e150}) {
@@ -220,6 +249,10 @@ int main() {
 	VectorNear(pole.chord.exitOutwardNormal,z,0,"extreme-ratio pole normal survives vanishing a/b");
 	volatile double compensatedAxes=smallest*largest;
 	Near(ProlateProjectedArea(slender,x),Pi*compensatedAxes,2e-15,"tiny minor/huge major projected area preserves compensating exponents");
+	Throws<std::underflow_error>([&]{ IntersectProlateRay({2,1e100,z},{0,smallest,0},z); },
+		"unrepresentable normalized impact is an explicit range failure before normal amplification");
+	Throws<std::underflow_error>([&]{ SampleProlateProjectedHit({1,1e300,z},z,smallest,smallest); },
+		"unrepresentable sampled disk component is an explicit range failure before normal amplification");
 	Throws<std::overflow_error>([&]{ ProlateProjectedArea({largest,largest,z},z); },"unrepresentable projected area throws overflow");
 	Throws<std::underflow_error>([&]{ ProlateProjectedArea({smallest,smallest,z},z); },"unrepresentable positive projected area throws underflow");
 	Throws<std::overflow_error>([&]{ SampleProlateProjectedHit(slender,z,0,0); },"unrepresentable true full chord throws overflow");

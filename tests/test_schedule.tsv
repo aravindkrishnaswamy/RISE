@@ -121,4 +121,8 @@ WetTextureDetailRenderTest	wide:2	1	1.9 cores (measured)
 HyLIoSOpticalDataTest	pool	2
 HyLIoSOpticsTest	pool	2
 HyLIoSSlabTransportTest	pool	2
+HyLIoSForwardTransportTest	pool	2
+HyLIoSForwardFailureTest	pool	2
 HyLIoSParticleGeometryTest	pool	2
+HyLIoSGeometrySumTest	pool	2
+HyLIoSParticleOverlapTest	pool	2

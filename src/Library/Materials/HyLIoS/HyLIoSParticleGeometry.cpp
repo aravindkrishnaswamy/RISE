@@ -4,7 +4,12 @@
 #include <algorithm>
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <stdexcept>
+
+#if defined(__FAST_MATH__) || defined(_M_FP_FAST)
+#error "HyLIoS particle geometry requires strict floating-point arithmetic"
+#endif
 
 namespace RISE::HyLIoS {
 namespace {
@@ -54,31 +59,147 @@ double DifferenceOfProducts(double a, double b, double c, double d) {
 	const double cd = c*d;
 	return std::fma(a,b,-cd)+std::fma(-c,d,cd);
 }
+struct SumPair { double head,tail; };
+SumPair TwoSum(double a, double b) {
+	const double head=a+b;
+	if (!std::isfinite(head)) throw std::overflow_error("particle compensated sum exceeds binary64 range");
+	const double second=head-a;
+	return {head,(a-(head-second))+(b-second)};
+}
+// Fixed-size expansion for exactly three products and their FMA residuals.
+// Its tail stays separate until all cancellation has happened; adding it into
+// a large operand before that cancellation would silently erase it.
+double SumSix(double (&terms)[6]) {
+	std::sort(terms,terms+6,[](double a,double b){ return std::abs(a)>std::abs(b); });
+	for (int i=1; i<6; ++i) if (std::signbit(terms[i]) != std::signbit(terms[0])) {
+		std::swap(terms[1],terms[i]); break;
+	}
+	double components[6]={};
+	int count=0;
+	for (double term : terms) {
+		double next[6]={};
+		int nextCount=0;
+		for (int i=0; i<count; ++i) {
+			const SumPair sum=TwoSum(term,components[i]);
+			if (sum.tail != 0.0) next[nextCount++]=sum.tail;
+			term=sum.head;
+		}
+		if (term != 0.0 || nextCount==0) next[nextCount++]=term;
+		std::copy(next,next+nextCount,components);
+		count=nextCount;
+	}
+	double result=0.0;
+	for (int i=0; i<count; ++i) result+=components[i];
+	if (!std::isfinite(result)) throw std::overflow_error("particle compensated dot exceeds binary64 range");
+	return result;
+}
+// An exponent is part of the value until the final representable result.
+// In particular, a coefficient smaller than denorm_min may become a finite
+// normal component after cancellation of a semiaxis in the gradient.
+struct Extended { double fraction; int exponent; };
+Extended Canonical(double fraction, int exponent) {
+	int adjustment = 0;
+	fraction = std::frexp(fraction,&adjustment);
+	return {fraction,exponent+adjustment};
+}
+Extended ExtendedProduct(std::initializer_list<double> numerator, std::initializer_list<double> denominator) {
+	double fraction = 1.0;
+	int exponent = 0;
+	for (double value : numerator) {
+		if (value == 0.0) return {0.0,0};
+		int power = 0;
+		fraction *= std::frexp(value,&power); exponent += power;
+		fraction = std::frexp(fraction,&power); exponent += power;
+	}
+	for (double value : denominator) {
+		int power = 0;
+		fraction /= std::frexp(value,&power); exponent -= power;
+		fraction = std::frexp(fraction,&power); exponent += power;
+	}
+	return {fraction,exponent};
+}
+Extended ExtendedAdd(Extended a, Extended b) {
+	if (a.fraction == 0.0) return b;
+	if (b.fraction == 0.0) return a;
+	if (a.exponent < b.exponent) std::swap(a,b);
+	return Canonical(a.fraction+std::ldexp(b.fraction,b.exponent-a.exponent),a.exponent);
+}
+Extended ExtendedMultiply(Extended a, double value) {
+	const Extended factor = ExtendedProduct({value},{});
+	return Canonical(a.fraction*factor.fraction,a.exponent+factor.exponent);
+}
+Extended ExtendedDivide(Extended a, Extended b) {
+	return Canonical(a.fraction/b.fraction,a.exponent-b.exponent);
+}
+double Rounded(Extended value) {
+	const double result = std::ldexp(value.fraction,value.exponent);
+	if (!std::isfinite(result)) throw std::overflow_error("particle projection exceeds binary64 range");
+	if (value.fraction != 0.0 && result == 0.0)
+		throw std::underflow_error("particle projected displacement cannot be resolved in binary64");
+	return result;
+}
+Extended ExtendedDifferenceOfProducts(double a, double b, double c, double d) {
+	if (a == 0.0 || b == 0.0) return ExtendedProduct({-c,d},{});
+	if (c == 0.0 || d == 0.0) return ExtendedProduct({a,b},{});
+	int ae=0,be=0,ce=0,de=0;
+	const double af=std::frexp(a,&ae),bf=std::frexp(b,&be),cf=std::frexp(c,&ce),df=std::frexp(d,&de);
+	const int exponent = std::max(ae+be,ce+de);
+	// A common power-of-two scaling preserves exact raw-line collinearity.
+	// Compensated products retain the residual when the two products round
+	// alike; normalized direction/basis rounding never multiplies the origin.
+	return Canonical(DifferenceOfProducts(std::ldexp(af,ae+be-exponent),bf,
+		std::ldexp(cf,ce+de-exponent),df),exponent);
+}
+struct ExtendedSumPair { Extended head,tail; };
+ExtendedSumPair ExtendedTwoSum(Extended a, Extended b) {
+	if (a.fraction==0.0) return {b,{0.0,0}};
+	if (b.fraction==0.0) return {a,{0.0,0}};
+	if (a.exponent<b.exponent) std::swap(a,b);
+	// A sufficiently small addend is an exact residual, not a value to
+	// round away while aligning exponents before a later cancellation.
+	if (a.exponent-b.exponent>std::numeric_limits<double>::digits+1) return {a,b};
+	const SumPair sum=TwoSum(a.fraction,std::ldexp(b.fraction,b.exponent-a.exponent));
+	return {Canonical(sum.head,a.exponent),Canonical(sum.tail,a.exponent)};
+}
+Extended ExtendedDot(Extended a, Extended b, Extended c, ParticleVector direction) {
+	Extended terms[3]={ExtendedMultiply(a,direction.x),ExtendedMultiply(b,direction.y),ExtendedMultiply(c,direction.z)};
+	std::sort(terms,terms+3,[](Extended x,Extended y){
+		if (x.fraction==0.0) return false;
+		if (y.fraction==0.0) return true;
+		return x.exponent!=y.exponent ? x.exponent>y.exponent : std::abs(x.fraction)>std::abs(y.fraction);
+	});
+	if (std::signbit(terms[0].fraction)==std::signbit(terms[1].fraction) &&
+		std::signbit(terms[0].fraction)!=std::signbit(terms[2].fraction)) std::swap(terms[1],terms[2]);
+	const ExtendedSumPair first=ExtendedTwoSum(terms[0],terms[1]);
+	const ExtendedSumPair second=ExtendedTwoSum(first.head,terms[2]);
+	const ExtendedSumPair tails=ExtendedTwoSum(first.tail,second.tail);
+	const ExtendedSumPair result=ExtendedTwoSum(second.head,tails.head);
+	return ExtendedAdd(result.head,ExtendedAdd(result.tail,tails.tail));
+}
+Extended DirectionLength(ParticleVector direction) {
+	const double largest=std::max({std::abs(direction.x),std::abs(direction.y),std::abs(direction.z)});
+	int exponent=0;
+	std::frexp(largest,&exponent); --exponent;
+	const ParticleVector scaled{std::ldexp(direction.x,-exponent),std::ldexp(direction.y,-exponent),std::ldexp(direction.z,-exponent)};
+	return Canonical(std::hypot(scaled.x,scaled.y,scaled.z),exponent);
+}
 ParticleVector Cross(ParticleVector a, ParticleVector b) {
 	return {DifferenceOfProducts(a.y,b.z,a.z,b.y),DifferenceOfProducts(a.z,b.x,a.x,b.z),
 		DifferenceOfProducts(a.x,b.y,a.y,b.x)};
 }
-// Sum opposite signs first, avoiding an overflowing partial sum when the final
-// projection is finite. FMA keeps product residuals at cancellation-heavy dots.
 double Dot(ParticleVector a, ParticleVector b) {
-	double p[3] = {a.x*b.x,a.y*b.y,a.z*b.z};
-	const double residual = std::fma(a.x,b.x,-p[0])+std::fma(a.y,b.y,-p[1])+std::fma(a.z,b.z,-p[2]);
-	if (std::signbit(p[0]) == std::signbit(p[1])) {
-		if (std::signbit(p[0]) != std::signbit(p[2])) std::swap(p[1],p[2]);
-	}
-	const double sum = p[0]+p[1];
-	const double second = sum-p[0];
-	const double error = (p[0]-(sum-second))+(p[1]-second);
-	const double result = sum+(p[2]+(error+residual));
-	if (!std::isfinite(result)) throw std::overflow_error("particle projection overflowed");
-	return result;
+	const double x=a.x*b.x,y=a.y*b.y,z=a.z*b.z;
+	if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+		throw std::overflow_error("particle dot product exceeds binary64 range");
+	double terms[6]={x,y,z,std::fma(a.x,b.x,-x),std::fma(a.y,b.y,-y),std::fma(a.z,b.z,-z)};
+	return SumSix(terms);
 }
 ParticleVector Combine(ParticleVector a, double x, ParticleVector b, double y, ParticleVector c, double z) {
 	const ParticleVector result{Dot({x,y,z},{a.x,b.x,c.x}),Dot({x,y,z},{a.y,b.y,c.y}),Dot({x,y,z},{a.z,b.z,c.z})};
 	return result;
 }
 struct Projection {
-	double a,b,c,s,radius,radialCoefficient,axialCoefficient;
+	double a,b,c,s,radius,axialCoefficient;
 	ParticleVector direction,e,f,radial,axis;
 };
 Projection Project(const ProlateParticle& particle, ParticleVector direction) {
@@ -107,32 +228,29 @@ Projection Project(const ProlateParticle& particle, ParticleVector direction) {
 	const ParticleVector e = Unit(Cross(f,d));
 	const double a = particle.semiMinorMetres, b = particle.semiMajorMetres;
 	const double radius = std::hypot(a*c,b*s);
-	// A and B are a plane rotation in the ellipsoid's unit-sphere space.
-	const double A = ProductRatio({a,c},{radius},true);
+	// B is bounded and never smaller than s; unlike a*c/radius it does
+	// not lose a coefficient needed after division by a microscopic axis.
 	const double B = s == 0.0 ? 0.0 : ProductRatio({b,s},{radius});
-	return {a,b,c,s,radius,A,B,d,e,f,Combine(e,c,d,-s,f,0.0),Combine(e,s,d,c,f,0.0)};
+	// Retain the authored axis directly. Reconstructing it (or its radial
+	// partner) from rounded c/s can inject a spurious component at a pole;
+	// huge aspect ratios then make that basis error visible in the normal.
+	return {a,b,c,s,radius,B,d,e,f,Unit(Cross(f,axis)),axis};
 }
-ParticleVector Normal(const Projection& p, double radial, double side, double axial) {
-	// Normalize (radial/a, side/a, axial/b) using separate exponents. Neither
-	// squaring a submicron axis nor forming the potentially overflowing b/a
-	// is necessary, and a pole remains valid even when a/b rounds to zero.
-	double values[3] = {radial,side,axial};
-	const double divisors[3] = {p.a,p.a,p.b};
-	int exponents[3] = {0,0,0};
-	int maximum = -10000;
-	for (int i=0; i<3; ++i) {
-		if (values[i] == 0.0) continue;
-		int numeratorExponent = 0, divisorExponent = 0;
-		values[i] = std::frexp(values[i],&numeratorExponent)/std::frexp(divisors[i],&divisorExponent);
-		exponents[i] = numeratorExponent-divisorExponent;
-		maximum = std::max(maximum,exponents[i]);
-	}
-	// Mantissa quotients lie in (0.5,2). Keep a largest-exponent component
-	// in (1,4), so subsequent normalization cannot restore an avoidably lost
-	// subnormal. The bounded vector norm cannot overflow.
-	--maximum;
-	for (int i=0; i<3; ++i) if (values[i] != 0.0) values[i] = std::ldexp(values[i],exponents[i]-maximum);
-	const ParticleVector local = Unit({values[0],values[1],values[2]});
+ParticleVector Normal(const Projection& p, double X, double Y, double w, double sign) {
+	// Differentiate the ellipsoid before rounding its unit-sphere coordinates:
+	// (A*X +/- B*w)/a = c*X/L +/- b*s*w/(a*L), and likewise for the
+	// axial term. Canceling a in A/a is essential when A itself underflows.
+	const Extended radial=ExtendedAdd(ExtendedProduct({p.c,X},{p.radius}),
+		ExtendedProduct({sign,p.b,p.s,w},{p.a,p.radius}));
+	const Extended side=ExtendedProduct({Y},{p.a});
+	const Extended axial=ExtendedAdd(ExtendedProduct({p.s,X},{p.radius}),
+		ExtendedProduct({-sign,p.a,p.c,w},{p.b,p.radius}));
+	const Extended gradients[3]={radial,side,axial};
+	int maximum=-10000;
+	for (const Extended value : gradients) if (value.fraction != 0.0) maximum=std::max(maximum,value.exponent);
+	ParticleVector local{std::ldexp(radial.fraction,radial.exponent-maximum+1),
+		std::ldexp(side.fraction,side.exponent-maximum+1),std::ldexp(axial.fraction,axial.exponent-maximum+1)};
+	local=Unit(local);
 	return Unit(Combine(p.radial,local.x,p.f,local.y,p.axis,local.z));
 }
 double HalfChord(const Projection& p, double w) {
@@ -152,10 +270,7 @@ ParticleChord Chord(const Projection& p, double X, double Y, double w, double or
 	if (!std::isfinite(entry) || !std::isfinite(exit)) throw std::overflow_error("particle root overflowed");
 	const double x = p.radius*X, y = p.a*Y;
 	return {entry,exit,length,Combine(p.e,x,p.f,y,p.direction,start),Combine(p.e,x,p.f,y,p.direction,end),
-		Normal(p,std::fma(p.axialCoefficient,w,p.radialCoefficient*X),Y,
-			std::fma(-p.radialCoefficient,w,p.axialCoefficient*X)),
-		Normal(p,std::fma(-p.axialCoefficient,w,p.radialCoefficient*X),Y,
-			std::fma(p.radialCoefficient,w,p.axialCoefficient*X))};
+		Normal(p,X,Y,w,1.0),Normal(p,X,Y,w,-1.0)};
 }
 }
 double ProlateProjectedArea(const ProlateParticle& particle, ParticleVector direction) {
@@ -165,14 +280,28 @@ double ProlateProjectedArea(const ProlateParticle& particle, ParticleVector dire
 std::optional<ParticleChord> IntersectProlateRay(const ProlateParticle& particle, ParticleVector origin, ParticleVector direction) {
 	Finite(origin);
 	const Projection p = Project(particle,direction);
-	const double x = Dot(origin,p.e), y = Dot(origin,p.f), z = Dot(origin,p.direction);
+	// Project the raw line's perpendicular displacement, not the distant
+	// origin onto a rounded normalized frame. The latter can turn an exact
+	// central chord into a miss by amplifying one basis ulp by |origin|.
+	const Extended gx=ExtendedDifferenceOfProducts(origin.y,direction.z,origin.z,direction.y);
+	const Extended gy=ExtendedDifferenceOfProducts(origin.z,direction.x,origin.x,direction.z);
+	const Extended gz=ExtendedDifferenceOfProducts(origin.x,direction.y,origin.y,direction.x);
+	const Extended directionLength=DirectionLength(direction);
+	const double x = -Rounded(ExtendedDivide(ExtendedDot(gx,gy,gz,p.f),directionLength));
+	const double y = Rounded(ExtendedDivide(ExtendedDot(gx,gy,gz,p.e),directionLength));
+	const double z = Dot(origin,p.direction);
 	if (std::abs(x) > p.radius || std::abs(y) > p.a) return std::nullopt;
-	const double X = ProductRatio({x},{p.radius},true), Y = ProductRatio({y},{p.a},true);
+	// A nonzero impact that disappears here could reappear after the normal
+	// divides by a semiaxis. Reject that unsupported range explicitly.
+	const double X = ProductRatio({x},{p.radius}), Y = ProductRatio({y},{p.a});
 	// Factor the larger squared coordinate's complement: points one ulp inside
 	// the silhouette retain that distance rather than subtracting two squares.
 	const bool largerX = std::abs(X) >= std::abs(Y);
 	const double difference = largerX ? ProductRatio({p.radius-std::abs(x)},{p.radius},true) : ProductRatio({p.a-std::abs(y)},{p.a},true);
 	const double larger = largerX ? std::abs(X) : std::abs(Y), other = largerX ? Y : X;
+	// An exact rim coordinate leaves no room for ANY other nonzero offset,
+	// even when its square falls below binary64. This is not a tangent.
+	if (difference == 0.0 && other != 0.0) return std::nullopt;
 	const double remainder = std::fma(-other,other,difference*(1.0+larger));
 	if (remainder < 0.0) return std::nullopt;
 	const double w = std::sqrt(remainder);
@@ -185,7 +314,10 @@ ProjectedParticleHit SampleProlateProjectedHit(const ProlateParticle& particle, 
 	Uniform(u); Uniform(v);
 	const Projection p = Project(particle,direction);
 	const double radius = std::sqrt(u), azimuth = 2.0*Pi*v;
-	const double X = radius*std::cos(azimuth), Y = radius*std::sin(azimuth);
+	// Preserve product exponents until the result is checked. Silently
+	// dropping a tiny disk component can become a finite normal error.
+	const double X = Rounded(ExtendedProduct({radius,std::cos(azimuth)},{}));
+	const double Y = Rounded(ExtendedProduct({radius,std::sin(azimuth)},{}));
 	return {Combine(p.e,p.radius*X,p.f,p.a*Y,p.direction,0.0),Chord(p,X,Y,std::sqrt(1.0-u),0.0)};
 }
 } // namespace RISE::HyLIoS

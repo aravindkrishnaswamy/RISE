@@ -288,6 +288,9 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
 # M3a: the cloth solver (strict IEEE arithmetic for reproducible checkpoints and evidence).
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, \
 	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
+# HYLIOS compensated geometry and certified overlap intervals require strict arithmetic.
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Materials/HyLIoS/, \
+	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -466,6 +469,11 @@ $(PATHTESTS)FireSequenceTest.o : $(PATHTESTS)FireSequenceTest.cpp
 	@echo Compiling strict calibration owner: $<
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
+# The internal geometry-sum regression includes its strict implementation TU.
+$(PATHTESTS)HyLIoSGeometrySumTest.o : $(PATHTESTS)HyLIoSGeometrySumTest.cpp $(TEST_MODE_STAMP)
+	@echo "Compiling strict geometry sum regression: $<"
+	@$(CXX) $(call TEST_CPPFLAGS_FOR,HyLIoSGeometrySumTest) $(filter-out -ffast-math,$(call TEST_CXXFLAGS_FOR,HyLIoSGeometrySumTest)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 $(PATHTESTS)ImageReaderOverflowTest.o: CPPFLAGS += -DRISE_TEST_SOURCE_ROOT='"$(abspath ../../..)"'
 
 $(PATHTESTS)%.o : $(PATHTESTS)%.cpp $(TEST_MODE_STAMP)
@@ -574,6 +582,16 @@ $(PATHLIBRARY)Utilities/FireCase.o : $(PATHLIBRARY)Utilities/FireCase.cpp
 # scalar path as strict IEEE single precision; fast-math's contraction would
 # change their results (OslNoise.cpp, OslVoronoi.cpp, OslColor.cpp, OslMath.cpp
 # and OslVector.cpp refuse to compile with __FAST_MATH__ defined).
+# Compensated microscopic geometry must not reassociate error-free sums.
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.cpp
+	@echo "Compiling (strict particle geometry): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# Certified overlap bounds must retain outward-rounded operations.
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.cpp
+	@echo "Compiling (strict overlap): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 $(PATHLIBRARY)Utilities/OslNoise.o : $(PATHLIBRARY)Utilities/OslNoise.cpp
 	@echo "Compiling (safe fp32): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@

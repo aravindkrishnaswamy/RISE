@@ -5,6 +5,8 @@
 namespace RISE::HyLIoS {
 
 // Geometry prerequisite for HyLIoS, not a particle-placement/transport model.
+// The implementation TU requires strict FP (no fast-math/reassociation); its
+// compensated products and sums rely on IEEE binary64 round-to-nearest steps.
 // All positions are relative to the particle centre, in metres. Keep scene
 // translation outside these primitives so microscopic chords retain precision.
 struct ParticleVector { double x, y, z; };
@@ -36,8 +38,11 @@ struct ProjectedParticleHit {
 // vectors are required. Vectors are normalized internally without squaring their
 // unscaled components. Invalid inputs throw invalid_argument; unrepresentable
 // positive full chord lengths/areas throw overflow_error or underflow_error. Signed
-// distances, positions and
-// normal components may round to zero. No RNG, retry loop, or hidden state.
+// distances, positions and normal components may round to zero. A nonzero
+// projected displacement or normalized disk component that rounds to zero
+// raises an explicit range exception, never a physical miss or altered normal.
+// This is binary64 geometry; it does not promise arbitrary exponent ranges.
+// No RNG, retry loop, or hidden state.
 double ProlateProjectedArea(const ProlateParticle& particle, ParticleVector direction);
 
 // nullopt means the infinite line misses, or its exit lies strictly behind the
