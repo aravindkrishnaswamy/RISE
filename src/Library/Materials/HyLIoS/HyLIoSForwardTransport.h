@@ -12,6 +12,12 @@ inline constexpr const char* ForwardTransportVersion = "hylios-individual-forwar
 // Null-collision consumes one rejected candidate as a host-only flight event;
 // its accepted volume fraction is NOT asserted equal to the authored fraction.
 enum class ForwardPlacementPolicy { FixedEventDiagnosticV1, NullCollisionPlacementV1 };
+// Diagnostic keeps an inward post-exit direction unresolved. Discard is the
+// explicitly versioned virtual-particle model: the full angular law is kept,
+// and only predecessor exclusion retains the accepted particle's geometry.
+enum class ForwardPostScatterPolicy { DiagnosticRetainParticleV1, DiscardAfterScatterV1 };
+inline constexpr const char* ForwardDiagnosticPostScatterVersion = "hylios_diagnostic_retain_particle_v1";
+inline constexpr const char* ForwardDiscardPostScatterVersion = "hylios_discard_after_scatter_v1";
 enum class ForwardOrganization { IndividualSpheroids, UnsupportedComplexes };
 struct ForwardOrganelle {
     ForwardOrganization organization;
@@ -36,7 +42,7 @@ struct ForwardCounters {
     std::uint64_t workUnits=0, nullPlacements=0, flights=0, internalInterfaces=0, bottomReflections=0;
     std::uint64_t boundaryEncounters=0, rouletteTrials=0, rouletteKills=0;
     std::uint64_t particleCandidates=0, placementAttempts=0, containmentRejections=0, overlapRejections=0;
-    std::uint64_t acceptedParticles=0, particleReflections=0, particleExits=0;
+    std::uint64_t acceptedParticles=0, particleReflections=0, particleExits=0, inwardPostExitEvents=0;
     std::uint64_t fiberEvents=0, fiberPasses=0, perturbationProposals=0;
     double pathLengthMetres=0;
     std::array<double,6> layerPathLengthMetres{}, hostPathLengthMetres{}, particlePathLengthMetres{};
@@ -85,7 +91,7 @@ public:
     // is the named 1400-nm endpoint interpretation in HYLIOS_EQUATIONS.md §4.
     HyLIoSForwardTransport(std::array<ForwardLayer,6>, double wavelengthNm,
         double exteriorIOR, double papillaryFiberRatePerMetre,
-        AbsorptionEstimator, double rouletteTargetWeight, ForwardPlacementPolicy);
+        AbsorptionEstimator, double rouletteTargetWeight, ForwardPlacementPolicy, ForwardPostScatterPolicy);
     HyLIoSForwardTransport(const HyLIoSForwardTransport&)=delete;
     HyLIoSForwardTransport& operator=(const HyLIoSForwardTransport&)=delete;
     HyLIoSForwardTransport(HyLIoSForwardTransport&&)=delete;
@@ -106,6 +112,7 @@ private:
     double wavelengthNm_,exteriorIOR_,fiberRate_,rouletteTarget_,forwardAngle_;
     AbsorptionEstimator estimator_;
     ForwardPlacementPolicy placementPolicy_;
+    ForwardPostScatterPolicy postScatterPolicy_;
     void Encounter(ForwardState&,SlabSide) const;
     bool Flight(ForwardState&,double,double,bool,bool) const;
     bool Roulette(ForwardState&,ISampler&) const;
@@ -113,5 +120,6 @@ private:
     void Placement(ForwardState&,ISampler&) const;
     void ParticleFlight(ForwardState&,ISampler&) const;
     void Perturb(ForwardState&,ISampler&) const;
+    void FinishForwardScatter(ForwardState&) const;
 };
 }

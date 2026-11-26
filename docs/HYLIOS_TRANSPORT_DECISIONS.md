@@ -1,6 +1,10 @@
-# HyLIoS transport decisions awaiting selection
+# HyLIoS versioned clean-room transport decisions
 
-**No rule selected or implemented; no author contact made.** This note distinguishes inspected publication statements, questions for the authors, and proposed clean-room models. The current kernel remains a forward diagnostic; these choices are not implementation approvals.
+**Selected for implementation, 2026-11-26.** The user authorized complete versioned clean-room transport. No author contact is needed to choose these documented interpretations. The diagnostic variants remain available. Implementation and review status are recorded in the forward-transport and measurement documentation.
+
+The selected combination is `NullCollisionPlacementV1`, `hylios_discard_after_scatter_v1`, and `hylios_complex_explicit_pack_v1`. The latter treats the resolved composition count as the actual number of children, rather than a cap on optical interactions. Child axes have an isotropic prior; centres are uniform in the radius `R-b` ball, obtained by cube rejection. This conservative bounding-sphere containment law and sequential nonoverlap construction are explicit clean-room assumptions. Each child gets 256 proposal attempts before the partial layout restarts; all proposals/restarts consume reported work, and caller cancellation/budget exhaustion retains live power. Children may be revisited by physical trajectories. Host absorbs in gaps, children own their interior absorption, the envelope has no extra optical interface, and the final exponential perturbation occurs once on envelope exit. These choices do not claim author-code or empirical equivalence.
+
+The alternatives below remain an evidence and comparison ledger; they are not pending approval requests.
 
 Sources: Chen et al., [*Hyperspectral Modeling of Skin Appearance*](https://www.npsg.uwaterloo.ca/resources/docs/a31-chen.pdf), TOG 34(3), Article 31 (2015), §§4–4.2.1, Fig. 7, Eqs. (1), (3)–(6), Algorithm 1; Chen, [*On the Modelling of Hyperspectral Light and Skin Interactions…*](https://www.npsg.uwaterloo.ca/resources/docs/theses/Chen_Tenn_PhD_Thesis.pdf), §4.2.1, printed pp. 26–29, Fig. 4.4, Eqs. (4.1), (4.3)–(4.6), Algorithm 1. Neither inspected passage supplies a complete executable specification.
 
@@ -10,7 +14,7 @@ Sources: Chen et al., [*Hyperspectral Modeling of Skin Appearance*](https://www.
 
 **Author questions.** Do major/minor axes in the diameter/count prose mean full axes or semi-axes, and how is the noninteger ratio converted to `n_m`? Please give the integer for the appendix's `0.41 × 0.17 µm` light dimensions. Are children a spatial packing, sequential spatial proposals, or independent nonspatial trials? Specify child centres, filling fraction, gap lengths, containment/overlap rules, and whether predecessor exclusion also applies inside complexes. Does actual envelope exit stop interactions before the count; what happens at the count while still inside; and does a reflection consume that count? What absorbs between children, is there an envelope optical interface, and is Algorithm 1 applied once per complex or per child? A single-complex pseudocode example would resolve these jointly.
 
-**Concrete clean-room alternatives, if author clarification is unavailable.**
+**Clean-room alternatives considered.**
 
 | Proposed version | Explicit construction and tradeoff | Independent gate |
 |---|---|---|
@@ -51,4 +55,4 @@ Simply redrawing complete exponential proposals until one fits is not a finished
 
 Each choice defines a different forward kernel. Predecessor memory, placement conditioning, child caps, fiber-pass state and angular perturbation are not made reciprocal by individual Fresnel tests. Stationary geometry helps define reversal but does not prove the internal scattering law reciprocal.
 
-A future selected version needs explicit augmented state, direction/area/solid-angle measures, branch/rejection normalizers, index factors and reversed transitions. Validate paired source/detector experiments on the same layout or a precisely defined ensemble, with uncertainty. If reversal differs, derive the adjoint or retain forward measurement/light transport; do not reuse the forward kernel as camera PT or silently symmetrize it. Implementation, author reproduction and empirical fidelity remain separate gates.
+The selected version needs explicit augmented state, direction/area/solid-angle measures, branch/rejection normalizers, index factors and reversed transitions. Validate paired source/detector experiments on the same layout or a precisely defined ensemble, with uncertainty. If reversal differs, derive the adjoint or retain forward measurement/light transport; do not reuse the forward kernel as camera PT or silently symmetrize it. Implementation, author reproduction and empirical fidelity remain separate gates.

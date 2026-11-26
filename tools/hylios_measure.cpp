@@ -35,7 +35,7 @@
 using namespace RISE::HyLIoS;
 using J = RISE::Agent::JsonValue;
 namespace {
-constexpr const char *MeasurementVersion = "hylios-forward-measure-draft-v1";
+constexpr const char *MeasurementVersion = "hylios-forward-measure-v2";
 volatile std::sig_atomic_t interrupted = 0;
 void Signal(int) {
     interrupted = 1;
@@ -233,7 +233,7 @@ double Real(const std::string &s, const std::string &label, double minimum = 0,
     return v;
 }
 struct Options {
-    std::string specimen, output, placement, boundary, seedText, estimator = "analog";
+    std::string specimen, output, placement, postScatter, boundary, seedText, estimator = "analog";
     double wavelength = 0, roulette = 0, fiberRadius = 1e-7, fiberFraction = .22,
            fiberEta = 1.5 / 1.33, exteriorIOR = 1;
     std::uint64_t histories = 0, maxTransitions = 0, seed = 0;
@@ -241,10 +241,10 @@ struct Options {
 };
 void Usage() {
     std::cout << "hylios_measure --specimen FILE --wavelength-nm N --placement fixed|null "
-                 "--boundary smooth --histories N --max-transitions N --seed U64 --output FILE\n"
+                 "--post-scatter diagnostic|discard --boundary smooth --histories N --max-transitions N --seed U64 --output FILE\n"
                  "  [--estimator analog|weighted] [--roulette-target N] [--exterior-ior N]\n"
                  "  [--fiber-radius-m N] [--fiber-volume-fraction N] [--fiber-relative-ior N]\n"
-                 "Only forward diagnostic transport and explicit smooth boundary override are "
+                 "Only individual-particle forward transport and explicit smooth boundary override are "
                  "supported.\n";
 }
 Options Parse(int argc, char **argv) {
@@ -258,6 +258,7 @@ Options Parse(int argc, char **argv) {
     const std::set<std::string> allowed = {"--specimen",
                                            "--wavelength-nm",
                                            "--placement",
+                                           "--post-scatter",
                                            "--boundary",
                                            "--histories",
                                            "--max-transitions",
@@ -273,7 +274,7 @@ Options Parse(int argc, char **argv) {
         Require(allowed.count(pair.first) > 0, "unknown option: " + pair.first);
         o.explicitOptions.set(pair.first, Str(pair.second));
     }
-    for (const auto &key : {"--specimen", "--wavelength-nm", "--placement", "--boundary",
+    for (const auto &key : {"--specimen", "--wavelength-nm", "--placement", "--post-scatter", "--boundary",
                             "--histories", "--max-transitions", "--seed", "--output"})
         Require(flags.count(key) > 0, std::string("required option: ") + key);
     o.specimen = flags.at("--specimen");
@@ -281,6 +282,9 @@ Options Parse(int argc, char **argv) {
     Require(!o.specimen.empty() && !o.output.empty(), "empty input/output path");
     o.placement = flags.at("--placement");
     Require(o.placement == "fixed" || o.placement == "null", "placement must be fixed or null");
+    o.postScatter = flags.at("--post-scatter");
+    Require(o.postScatter == "diagnostic" || o.postScatter == "discard",
+            "post-scatter must be diagnostic or discard");
     o.boundary = flags.at("--boundary");
     Require(o.boundary == "smooth",
             "only explicit --boundary smooth is implemented; authored folds are not simulated");
@@ -607,6 +611,7 @@ struct Aggregate {
         ADD_COUNTER(acceptedParticles);
         ADD_COUNTER(particleReflections);
         ADD_COUNTER(particleExits);
+        ADD_COUNTER(inwardPostExitEvents);
         ADD_COUNTER(fiberEvents);
         ADD_COUNTER(fiberPasses);
         ADD_COUNTER(perturbationProposals);
@@ -641,7 +646,9 @@ J Measure(const Options &o, const Resolved &r) {
         o.estimator == "analog" ? AbsorptionEstimator::Analog : AbsorptionEstimator::Weighted,
         o.roulette,
         o.placement == "fixed" ? ForwardPlacementPolicy::FixedEventDiagnosticV1
-                               : ForwardPlacementPolicy::NullCollisionPlacementV1);
+                               : ForwardPlacementPolicy::NullCollisionPlacementV1,
+        o.postScatter == "diagnostic" ? ForwardPostScatterPolicy::DiagnosticRetainParticleV1
+                                      : ForwardPostScatterPolicy::DiscardAfterScatterV1);
     Aggregate aggregate;
     for (std::uint64_t history = 0; history < o.histories; ++history) {
         Random rng(o.seed + history);
@@ -668,14 +675,19 @@ J Measure(const Options &o, const Resolved &r) {
     J output = J::MakeObject();
     output.set("measurement_version", Str(MeasurementVersion));
     output.set("kernel_version", Str(ForwardTransportVersion));
-    output.set("model_scope", Str("six-layer monochromatic individual-spheroid forward diagnostic; "
+    output.set("model_scope", Str("six-layer monochromatic individual-spheroid forward transport; "
                                   "complexes and renderer adjoint unsupported"));
     output.set("placement_policy",
                Str(o.placement == "fixed" ? "FixedEventDiagnosticV1" : "NullCollisionPlacementV1"));
     output.set("boundary_law", Str("smooth_planar_dielectric_override_v1"));
     output.set("authored_surface_folds_simulated", Bool(false));
     output.set("authored_surface_fold_aspect_ratio", r.original.get("surface_fold_aspect_ratio"));
-    output.set("post_exit_reentry_policy", Str("unresolved_live_weight_v1"));
+    output.set("post_exit_reentry_policy",
+               Str(o.postScatter == "diagnostic" ? "hylios_diagnostic_retain_particle_v1"
+                                                  : "hylios_discard_after_scatter_v1"));
+    output.set("transport_interpretation", Str(o.postScatter == "discard"
+        ? "versioned clean-room virtual particles; discarded after scattering"
+        : "diagnostic; inward post-exit directions retain unresolved live weight"));
     output.set("approximate", r.original.get("approximate"));
     for (const auto &key :
          {"composition_revision", "coverage_profile_id", "spectral_bundle_sha256",

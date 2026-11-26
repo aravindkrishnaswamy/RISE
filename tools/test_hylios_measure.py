@@ -53,7 +53,7 @@ class MeasurementCLI(unittest.TestCase):
 
     def command(self, **changes):
         values = {"--specimen": str(self.source), "--wavelength-nm": "1400", "--placement": "null",
-                  "--boundary": "smooth", "--histories": "100", "--max-transitions": "10000",
+                  "--post-scatter": "diagnostic", "--boundary": "smooth", "--histories": "100", "--max-transitions": "10000",
                   "--seed": "1234", "--output": str(self.output), "--fiber-volume-fraction": "0"}
         values.update(changes)
         return [str(BINARY)] + [str(v) for pair in values.items() if pair[1] is not None for v in pair]
@@ -236,9 +236,36 @@ class MeasurementCLI(unittest.TestCase):
         result = subprocess.run(self.command(), capture_output=True, text=True, timeout=30)
         self.assertNotEqual(result.returncode, 0)
 
+    def test_explicit_virtual_particle_policy_and_delta_limit(self):
+        source = specimen()
+        particle = active_particle()
+        particle.update(semi_minor_m=5e-5, semi_major_m=5e-5,
+                        organelle_fraction=.15, interior_absorption_m_inv=[0., 0.])
+        source["layers"][1]["particles"] = particle
+        common = {"--histories": "1000", "--max-transitions": "10000"}
+        diagnostic = self.run_case(source, **dict(common, **{"--wavelength-nm": "550"}))
+        discard = self.run_case(source, **dict(common, **{"--wavelength-nm": "550", "--post-scatter": "discard"}))
+        self.assertGreater(diagnostic["outcomes"]["post_exit_reentry"]["count"], 0)
+        self.assertGreater(discard["aggregate_counters"]["inwardPostExitEvents"], 0)
+        self.assertEqual(discard["outcomes"]["post_exit_reentry"]["count"], 0)
+        self.assertEqual(discard["unresolved_history_count"], 0)
+        self.assertTrue(discard["complete_physical_estimate"])
+        self.assertEqual(discard["post_exit_reentry_policy"], "hylios_discard_after_scatter_v1")
+        self.assertEqual(diagnostic["post_exit_reentry_policy"], "hylios_diagnostic_retain_particle_v1")
+        self.assertEqual(discard["estimates"]["escaped_reflectance"]["mean"], 1)
+        self.assertEqual(sum(discard["host_absorbed_weight_by_layer"] + discard["particle_absorbed_weight_by_layer"]), 0)
+        # At the exact zero-angle endpoint the selected policy changes only
+        # provenance; physical histories, counters and RNG consumption agree.
+        delta_diagnostic = self.run_case(source, **common)
+        delta_discard = self.run_case(source, **dict(common, **{"--post-scatter": "discard"}))
+        for key in ("outcomes", "aggregate_counters", "estimates", "random_draw_count"):
+            self.assertEqual(delta_diagnostic[key], delta_discard[key], key)
+
     def test_cli_budget_and_explicit_boundary_preflight(self):
         for changes, message in [({"--boundary": None}, "required option"), ({"--boundary": "folded"}, "only explicit"),
-                                 ({"--placement": None}, "required option"), ({"--histories": "0"}, "positive"),
+                                 ({"--placement": None}, "required option"),
+                                 ({"--post-scatter": None}, "required option"),
+                                 ({"--post-scatter": "silent"}, "post-scatter must be"), ({"--histories": "0"}, "positive"),
                                  ({"--max-transitions": "10000001"}, "supported bound"),
                                  ({"--histories": "10000000", "--max-transitions": "10000000"}, "work budget"),
                                  ({"--seed": "18446744073709551616"}, "supported bound"),

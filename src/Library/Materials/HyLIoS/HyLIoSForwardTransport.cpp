@@ -72,9 +72,10 @@ const SlabBoundaryEncounter& ForwardState::PendingBoundary() const {
     if(!pending_) throw std::logic_error("no pending forward boundary");return encounter_;
 }
 HyLIoSForwardTransport::HyLIoSForwardTransport(std::array<ForwardLayer,6> layers,double wavelengthNm,
-    double exteriorIOR,double fiberRate,AbsorptionEstimator estimator,double rouletteTarget,ForwardPlacementPolicy placementPolicy):
+    double exteriorIOR,double fiberRate,AbsorptionEstimator estimator,double rouletteTarget,ForwardPlacementPolicy placementPolicy,ForwardPostScatterPolicy postScatterPolicy):
     layers_(layers),wavelengthNm_(wavelengthNm),exteriorIOR_(exteriorIOR),fiberRate_(fiberRate),
-    rouletteTarget_(rouletteTarget),forwardAngle_(wavelengthNm<780 ? 5*Pi/180 : wavelengthNm<1400 ? (5*Pi/180)*(1400-wavelengthNm)/620 : 0),estimator_(estimator),placementPolicy_(placementPolicy) {
+    rouletteTarget_(rouletteTarget),forwardAngle_(wavelengthNm<780 ? 5*Pi/180 : wavelengthNm<1400 ? (5*Pi/180)*(1400-wavelengthNm)/620 : 0),estimator_(estimator),placementPolicy_(placementPolicy),postScatterPolicy_(postScatterPolicy) {
+    Require(postScatterPolicy==ForwardPostScatterPolicy::DiagnosticRetainParticleV1||postScatterPolicy==ForwardPostScatterPolicy::DiscardAfterScatterV1,"invalid post-scatter policy");
     Require(placementPolicy==ForwardPlacementPolicy::FixedEventDiagnosticV1||placementPolicy==ForwardPlacementPolicy::NullCollisionPlacementV1,"invalid placement policy");
     Require(Finite(wavelengthNm)&&wavelengthNm>0&&Finite(exteriorIOR)&&exteriorIOR>0,"invalid wavelength/exterior IOR");
     Require(Finite(fiberRate)&&fiberRate>=0,"invalid PD fiber rate");
@@ -271,7 +272,7 @@ void HyLIoSForwardTransport::ParticleFlight(ForwardState& s,ISampler& rng) const
 }
 void HyLIoSForwardTransport::Perturb(ForwardState& s,ISampler& rng) const {
     double u,v,a;
-    if(s.phase_==ForwardPhase::ForwardPerturbation&&forwardAngle_==0) {s.phase_=ForwardPhase::BulkFlight;return;}
+    if(s.phase_==ForwardPhase::ForwardPerturbation&&forwardAngle_==0) {FinishForwardScatter(s);return;}
     ++s.counters_.perturbationProposals;
     if(!Draw(rng,u)||!Draw(rng,v)) {s.termination_=ForwardTermination::InvalidSample;return;}
     if(s.phase_==ForwardPhase::ReflectedPerturbation) {
@@ -290,11 +291,21 @@ void HyLIoSForwardTransport::Perturb(ForwardState& s,ISampler& rng) const {
     const auto angle=TrySampleExponentialForward(forwardAngle_,u,v,a);if(!angle) return;
     if(!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
     s.direction_=Polar(s.perturbationAxis_,std::cos(angle->thetaRadians),2*Pi*a);
+    FinishForwardScatter(s);
+}
+void HyLIoSForwardTransport::FinishForwardScatter(ForwardState& s) const {
     if(Dot(s.direction_,V(s.exitNormal_))<0) {
-        // The publication does not define how post-exit angular perturbation
-        // re-enters its own particle. Preserve drawn direction/weight and expose
-        // unresolved work; neither truncate nor silently condition the law.
-        s.termination_=ForwardTermination::ForwardPerturbationReentry;return;
+        ++s.counters_.inwardPostExitEvents;
+        if(postScatterPolicy_==ForwardPostScatterPolicy::DiagnosticRetainParticleV1) {
+            // Preserve the full draw, active particle and live power for diagnosis.
+            s.termination_=ForwardTermination::ForwardPerturbationReentry;return;
+        }
+    }
+    if(postScatterPolicy_==ForwardPostScatterPolicy::DiscardAfterScatterV1) {
+        // The virtual particle no longer owns any future travel or absorption.
+        // Its independent predecessor copy remains solely for placement exclusion.
+        s.particle_={};s.particlePoint_={};s.particleExit_={};s.exitNormal_={};
+        s.chordDistance_=0;s.perturbationAxis_={};
     }
     s.phase_=ForwardPhase::BulkFlight;
 }

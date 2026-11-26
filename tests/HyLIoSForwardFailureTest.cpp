@@ -11,9 +11,10 @@ ParticleOverlapResult ClassifyProlateOverlap(const ProlateParticle&,const Prolat
 #undef main
 int main(){try {
  for(auto policy:{ForwardPlacementPolicy::FixedEventDiagnosticV1,ForwardPlacementPolicy::NullCollisionPlacementV1})
+ for(auto postScatter:{ForwardPostScatterPolicy::DiagnosticRetainParticleV1,ForwardPostScatterPolicy::DiscardAfterScatterV1})
  for(auto status:{ParticleOverlapStatus::Indeterminate,ParticleOverlapStatus::InvalidInput,ParticleOverlapStatus::UnsupportedRange}) {
   RISE::HyLIoS::injectedStatus=status;
-  HyLIoSForwardTransport k(Particles(),1400,1,0,AbsorptionEstimator::Analog,0,policy);auto s=Enter(k);
+  HyLIoSForwardTransport k(Particles(),1400,1,0,AbsorptionEstimator::Analog,0,policy,postScatter);auto s=Enter(k);
   Sequence t{.3};k.Advance(s,t,1);Sequence p{.5,0,0,0};k.Advance(s,p,1);Sequence e{.5};k.Advance(s,e,1);Sequence delta{};k.Advance(s,delta,1);
   Sequence next{.01};k.Advance(s,next,1);Sequence attempt{.5,0,0,0};k.Advance(s,attempt,1);
   Check(s.Termination()==ForwardTermination::NumericalFailure&&s.Weight()==1&&Absorbed(s)==0,"uncertain overlap is unresolved live power, never a reject/null/absorb");

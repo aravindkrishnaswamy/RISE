@@ -1,8 +1,7 @@
-# HyLIoS forward diagnostic measurement
+# HyLIoS forward measurement and diagnostic variants
 
 `tools/hylios_measure.cpp` measures the current forward-only individual-spheroid
-kernel. It is an explicit scientific diagnostic, with unresolved histories retained
-in the result. It does not validate the publication's physiological reflectance.
+kernel with explicitly selected post-scattering semantics. Diagnostic or budget-limited histories retain unresolved power in the result. It does not validate the publication's physiological reflectance.
 
 ## Build and run
 
@@ -12,7 +11,7 @@ From the repository root on macOS/Linux:
 make -C build/make/rise build-tool/hylios_measure
 ./bin/tools/hylios_measure \
   --specimen resolved-s4.json \
-  --wavelength-nm 550 --placement null --boundary smooth \
+  --wavelength-nm 550 --placement null --post-scatter discard --boundary smooth \
   --histories 1000 --max-transitions 10000 --seed 55000001 \
   --output measurement.json
 python3 -m unittest discover -s tools -p test_hylios_measure.py -v
@@ -43,7 +42,7 @@ it does not verify the Python producer's canonical semantic JSON hash. Formattin
 changes legitimately change byte identity while preserving the claimed hash.
 
 Required options: `--specimen FILE`, `--wavelength-nm N`, `--placement fixed|null`,
-`--boundary smooth`, `--histories N`, `--max-transitions N`, `--seed U64`,
+`--post-scatter diagnostic|discard`, `--boundary smooth`, `--histories N`, `--max-transitions N`, `--seed U64`,
 `--output FILE`. Every option occurs at most once; unknown options fail.
 The wavelength must exactly equal an explicitly resolved grid value; no spectral
 interpolation occurs. Six layers must use SC/SG/SS/SB/PD/RD order and SI unit tags.
@@ -110,9 +109,20 @@ versioned kernel conventions. Their accepted process is different, and nominal
 volume fraction is not asserted equal to realized accepted fraction. Counts retain
 candidates, attempts, accepted particles, nulls and rejection causes.
 
-The publication does not specify continuation when its post-exit forward angular
-law points into the just-left particle. That outcome remains explicit
-`post_exit_reentry` unresolved work with its live weight. Fixed placement can also
+Post-scattering policy is mandatory. `diagnostic` selects
+`hylios_diagnostic_retain_particle_v1`: an inward final direction produces
+`post_exit_reentry` with live unresolved power. `discard` selects
+`hylios_discard_after_scatter_v1`: the full angular draw is retained and host
+travel resumes, even through the discarded particle's former volume. The old
+shape is retained only for accepted-predecessor exclusion. This explicit virtual
+particle interpretation follows the publication's discard-after-scattering
+wording; it does not claim a persistent packed medium or author-code equivalence.
+Both variants count inward draws in `inwardPostExitEvents`. Data approximation
+labels are separate from the recorded transport interpretation. At the exact
+zero-angle endpoint, both policies produce identical physical histories and RNG
+consumption. The report schema is now `hylios-forward-measure-v2`.
+
+Fixed placement can also
 remain impossible; a finite caller transition budget becomes `budget_exceeded`,
 not absorption. Invalid samples and numerical failures remain unresolved too.
 Detailed overlap failure categories are retained. The CLI always reports the
@@ -221,7 +231,7 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /fp:strict /I"$repo\src\Library" `
   /Fe:"$repo\bin\tools\hylios_measure.exe"
 Pop-Location
 .\bin\tools\hylios_measure.exe --specimen resolved-s4.json --wavelength-nm 550 `
-  --placement null --boundary smooth --histories 1000 --max-transitions 10000 `
+  --placement null --post-scatter discard --boundary smooth --histories 1000 --max-transitions 10000 `
   --seed 55000001 --output measurement.json
 python tools/test_hylios_measure.py -v
 ```
@@ -241,7 +251,7 @@ This runs sequentially and writes four complete JSON reports plus
 `s4-exploration-summary.json` into the chosen directory. `--binary` or
 `RISE_HYLIOS_MEASURE` can select an isolated binary. Input wavelengths are fixed
 at 550 and 1300 nm and must already be resolved in the specimen. Initial
-histories: 1000, normal incidence, smooth boundary override, analog, cap 10,000
+histories: 1000, normal incidence, smooth boundary override, diagnostic post-scattering policy, analog, cap 10,000
 transitions; seed=`wavelength*100000+1`.
 The prior explicit approximation specimen produced the exploratory counts below.
 They are historical observations for that exact labeled input, rather than
@@ -261,7 +271,7 @@ and claimed resolved-specimen digest
 Every row retains 1000 incident histories and accounts for all physical absorption,
 escaped and unresolved live weight. No numerical failures occurred in this small
 exploration. The substantial visible reentry count and fixed-placement budgets
-are model limitations to resolve, not validation of full S4 reflectance. The
+are limitations of the diagnostic policy, not validation of full S4 reflectance. The discard variant continues those inward histories under its separately recorded transport rule. The
 underlying approximation data are not author-equivalent or physiologically
 validated.
 
@@ -292,3 +302,21 @@ On another machine, select a Python 3.9 environment before invoking the full
 runner. A newer default interpreter's synthetic-LBL "stale" error is a pinned
 fixture runtime limitation, rather than a HyLIoS test failure; it must not be
 resolved by silently regenerating scientific records with different bytes.
+## First completed discard-policy S4 controls
+
+Using the same input-byte digest, 1000 histories, seeds, smooth boundary and
+transition cap as the historical table above, select `--placement null
+--post-scatter discard`. The first clean-room runs produced:
+
+| Wavelength (nm) | Absorbed | Escaped | Inward angular events continued | Unresolved histories | Escaped mean ± standard error |
+|---|---:|---:|---:|---:|---:|
+| 550 | 527 | 473 | 282 | 0 | 0.473 ± 0.01580 |
+| 1300 | 288 | 712 | 8 | 0 | 0.712 ± 0.01433 |
+
+Inward angular events can occur more than once in a history. These runs account
+for all incident power and have no numerical failures. They demonstrate completion
+under the selected versioned interpretation, not agreement with measured skin or
+unavailable author code. They still override authored surface folds and use the
+explicit approximation data profile. `complete_physical_estimate` describes
+completion of this declared forward model, not physiological validation.
+

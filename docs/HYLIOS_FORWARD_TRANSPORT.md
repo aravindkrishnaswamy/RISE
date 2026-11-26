@@ -1,11 +1,11 @@
 # HYLIOS individual-spheroid forward transport
 
-`HyLIoSForwardTransport` is an experimental forward kernel with explicit unresolved outcomes. The independent `HyLIoSSlabTransport` remains the analytic control. There is no renderer integration, complex support, reciprocity, adjoint sampler, or full S1–S4 claim.
+`HyLIoSForwardTransport` is an experimental forward kernel with explicitly selected placement and post-scatter policies and explicit unresolved outcomes. The independent `HyLIoSSlabTransport` remains the analytic control. There is no renderer integration, complex support, reciprocity, adjoint sampler, or full S1–S4 claim.
 
 `HyLIoSForwardTransport` accepts exactly six resolved monochromatic layers in
 SC/SG/SS/SB/PD/RD order, explicit host/particle coefficients and indices, an
 explicit PD fiber encounter rate, estimator/RR settings and an explicit placement
-policy. Local launch position is (0,0,0); retain scene translation in adapters.
+policy and an explicit post-scatter policy; neither has a default. Local launch position is (0,0,0); retain scene translation in adapters.
 No spectrum, absorber composition, biological defaults, or hidden RNG is owned.
 Particle geometric rates and Eq5 orientations reuse checked optical primitives;
 projected hits reuse the geometric sampler. Complex organization is refused.
@@ -39,7 +39,7 @@ containment and overlap counters distinguish nominal and realized processes.
 An uncertain/unsupported overlap is **always** numerical failure, never a null
 collision or retried geometry. The status is retained in `FailureDetail()`.
 
-## Internal particle process and unresolved angular law
+## Internal particle process and explicit post-scatter law
 
 Entry has no extra dielectric event or refraction. Absorption is evaluated along
 each true local chord using the particle coefficient alone; host absorption acts
@@ -50,14 +50,29 @@ chord uses the analytically deflated known surface root; no origin epsilon.
 After transmission, the named 1400 nm endpoint exponential forward law is applied
 once. At or above 1400 nm it is an exact forward delta and consumes no angular draws.
 
-A post-exit angular perturbation can point back into its particle. The publication
-does not define the continuation. This kernel retains the drawn direction, all
-particle state and live weight, reporting `ForwardPerturbationReentry`. It does
-not condition away those samples or invent repeated absorption. This currently
-prevents a complete visible-range transport claim. The diagnostic is material,
-not a negligible endpoint issue. Separate bounded measurements must report
-physical absorption, escaped power and every unresolved outcome before drawing
-conclusions about a specimen.
+A post-exit angular perturbation can point back into its particle. The constructor
+requires one of two policies; neither conditions or resamples the final angular
+law or adds absorption at the angular event:
+
+- `ForwardPostScatterPolicy::DiagnosticRetainParticleV1`
+  (`hylios_diagnostic_retain_particle_v1`) retains the drawn direction, all
+  particle state and live weight, reporting `ForwardPerturbationReentry`.
+- `ForwardPostScatterPolicy::DiscardAfterScatterV1`
+  (`hylios_discard_after_scatter_v1`) is the user-selected clean-room virtual
+  particle rule. After scattering, the active particle is discarded and travel
+  resumes through the host, even in the former particle interior. Only the
+  accepted predecessor's shape and relative centre survive, for exclusion of
+  later proposed placements. No new entry Fresnel, absorption chord, outward
+  conditioning, or extra angular draw is inserted. The zero-angle endpoint also
+  discards the active particle without consuming angular draws.
+
+`inwardPostExitEvents` records accepted inward directions under **both** policies,
+including completed discard histories; it is distinct from the diagnostic-only
+unresolved `ForwardPerturbationReentry` termination. The selected discard rule
+completes this previously unresolved step for the individual-particle model; it
+is not a persistent spatial particle medium or a claim of author-code equivalence.
+Separate bounded measurements must still report physical absorption, escaped power
+and every unresolved outcome before drawing conclusions about a specimen.
 
 PD fiber state resets only at actual transmitted exit/re-entry. A Fresnel
 reflection within PD cannot reset eligibility. All random inputs come from the
@@ -84,8 +99,20 @@ probability against the normalized polar law `exp(-theta/t)*sin(theta)` gives
 At `t=5 degrees` the exact probability is approximately `0.0110855`. The fixed-seed
 100,000-history test observes 1,126 reentries (`0.01126`, binomial SE `0.000331098`)
 with no numerical or placement failures. It checks the independent integral within
-five standard errors and preserves live power for every unresolved reentry. This
+five standard errors and preserves live power at every inward event. Both explicit policies independently
+observe the same 1,126 inward events with the same seed. Diagnostic reports those
+as unresolved; discard resumes host travel without changing the sampled angular
+law. This
 is a single-particle analytic control; it is not a full skin reflectance estimate.
+
+Exact scripted controls force an accepted polar angle greater than `pi/2` at a
+central sphere exit. They assert the unchanged full angle, four angular draws,
+and one inward counter event under either policy. Under discard, two subsequent
+known steps inside the former sphere use exact host distances and host Beer loss;
+particle path length and absorption remain unchanged. Two overlapping proposals
+are rejected against the retained accepted predecessor. The 1400 nm discard delta
+uses zero angular draws. Invalid explicit policy values are refused. The targeted
+control is available as `--discard-only`.
 
 A separate combined control uses absorbing host and spheres with mismatched
 particle/host indices, including repeated internal reflected chords. Its 12,000
@@ -94,7 +121,11 @@ and particle absorption separately, each within five combined standard errors.
 It reports sample counts, standard errors and reflection counts. The fixed-seed
 strict run records 22,424 analog and 163,512 weighted particle reflections, with
 4,273 and 9,341 histories respectively containing repeated reflections, and no
-failed histories. This complements the exact central-sphere Beer/chord tests.
+failed histories. A second 12,000-history control at 550 nm with the discard policy
+compares the same three means, requires completed inward events and repeated
+internal reflections, and refuses failed histories. The quantum/RNG checks cover
+the cross product of both placement and both post-scatter policies, including
+absorption tallies and inward counters. This complements the exact central-sphere Beer/chord tests.
 
 The `hylios_absorbed_tally_overflow` regression builds a finite preexisting host
 absorption tally, promotes live power with a valid caller boundary proposal, then
@@ -121,6 +152,7 @@ clang++ -std=c++17 -Wall -Werror -pedantic -O2 \
   -o /tmp/hylios-forward-test
 /tmp/hylios-forward-test
 /tmp/hylios-forward-test --absorption-overflow-only
+/tmp/hylios-forward-test --discard-only
 ```
 
 The sanitizer form uses `-O1 -g -fsanitize=address,undefined` with the same strict

@@ -34,7 +34,7 @@ def main() -> None:
             output = options.output_dir / f"s4-{wavelength}-{placement}.json"
             subprocess.run([str(binary), "--specimen", str(options.specimen),
                             "--wavelength-nm", str(wavelength), "--placement", placement,
-                            "--boundary", "smooth", "--histories", "1000",
+                            "--post-scatter", "diagnostic", "--boundary", "smooth", "--histories", "1000",
                             "--max-transitions", "10000", "--seed", str(wavelength * 100000 + 1),
                             "--output", str(output)], check=True)
             value = json.loads(output.read_text())
