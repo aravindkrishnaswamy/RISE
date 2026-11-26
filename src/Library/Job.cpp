@@ -8881,6 +8881,52 @@ bool Job::AddDirectionalLight(
 	return ok;
 }
 
+bool Job::AddPhysicalPointOmniLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double pos[3], const bool shootPhotons)
+{
+	if (!name || !*name || !pos || !RISE::IsFiniteDouble(pos[0]) || !RISE::IsFiniteDouble(pos[1]) || !RISE::IsFiniteDouble(pos[2])) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalPointOmniLight(&light, count, nm, values, outsidePolicy, scale, shootPhotons)) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	light->SetPosition(Point3(pos));
+	light->FinalizeTransformations();
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
+	return ok;
+}
+
+bool Job::AddPhysicalPointSpotLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double target[3], const double inner, const double outer, const double pos[3], const bool shootPhotons)
+{
+	if (!name || !*name || !pos || !target || !RISE::IsFiniteDouble(pos[0]) || !RISE::IsFiniteDouble(pos[1]) || !RISE::IsFiniteDouble(pos[2]) || (pos[0] == target[0] && pos[1] == target[1] && pos[2] == target[2])) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalPointSpotLight(&light, count, nm, values, outsidePolicy, scale, Point3(pos), Point3(target), inner, outer, shootPhotons)) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	light->SetPosition(Point3(pos));
+	light->FinalizeTransformations();
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
+	return ok;
+}
+
+bool Job::AddPhysicalDirectionalLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double direction[3])
+{
+	if (!name || !*name || !direction) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalDirectionalLight(&light, count, nm, values, outsidePolicy, scale, Vector3(direction))) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
+	return ok;
+}
+
 //
 // Adds functions
 //

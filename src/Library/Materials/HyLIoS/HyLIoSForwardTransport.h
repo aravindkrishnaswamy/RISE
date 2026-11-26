@@ -1,12 +1,13 @@
 #pragma once
 #include "HyLIoSSlabTransport.h"
 #include "HyLIoSParticleGeometry.h"
+#include "HyLIoSComplexLayout.h"
 #include <optional>
 
 namespace RISE::HyLIoS {
-// Forward-only clean-room interpretation. Individual spheroids (S4 organization),
-// resolved constant monochromatic coefficients; no complexes, folds or adjoint PDF.
-inline constexpr const char* ForwardTransportVersion = "hylios-individual-forward-draft-v1";
+// Forward-only clean-room interpretation: individual spheroids or explicit
+// finite spatial complexes, resolved monochromatic coefficients; no adjoint PDF.
+inline constexpr const char* ForwardTransportVersion = "hylios-forward-explicit-complex-draft-v2";
 // Both policies sample the same nominal geometric encounter rate. Fixed-event
 // resamples geometry at one frozen event and can remain unplaceable indefinitely.
 // Null-collision consumes one rejected candidate as a host-only flight event;
@@ -18,11 +19,14 @@ enum class ForwardPlacementPolicy { FixedEventDiagnosticV1, NullCollisionPlaceme
 enum class ForwardPostScatterPolicy { DiagnosticRetainParticleV1, DiscardAfterScatterV1 };
 inline constexpr const char* ForwardDiagnosticPostScatterVersion = "hylios_diagnostic_retain_particle_v1";
 inline constexpr const char* ForwardDiscardPostScatterVersion = "hylios_discard_after_scatter_v1";
-enum class ForwardOrganization { IndividualSpheroids, UnsupportedComplexes };
+enum class ForwardOrganization { IndividualSpheroids, UnsupportedComplexes, ExplicitComplexPackV1 };
 struct ForwardOrganelle {
     ForwardOrganization organization;
     double volumeFraction, semiMinorMetres, semiMajorMetres;
     double absorptionPerMetre, realIOR;
+    // Required for explicit complexes; zero defaults preserve individual inputs.
+    double envelopeRadiusMetres=0;
+    std::size_t childCount=0;
 };
 struct ForwardLayer {
     double thicknessMetres, hostAbsorptionPerMetre, realIOR;
@@ -35,7 +39,7 @@ enum class ForwardTermination {
 };
 enum class ForwardFailureDetail { None, OverlapIndeterminate, OverlapInvalidInput, OverlapUnsupportedRange, ArithmeticOrGeometry };
 enum class ForwardPhase { BulkFlight, CandidatePlacement, ParticleChord,
-    ReflectedPerturbation, ForwardPerturbation, FiberPerturbation };
+    ReflectedPerturbation, ForwardPerturbation, FiberPerturbation, ComplexLayout, ComplexHostFlight };
 enum class ForwardAdvanceKind { OuterBoundaryEncounter, YieldBudget, Terminal };
 struct ForwardAdvanceResult { ForwardAdvanceKind kind; ForwardTermination termination; };
 struct ForwardCounters {
@@ -44,6 +48,11 @@ struct ForwardCounters {
     std::uint64_t particleCandidates=0, placementAttempts=0, containmentRejections=0, overlapRejections=0;
     std::uint64_t acceptedParticles=0, particleReflections=0, particleExits=0, inwardPostExitEvents=0;
     std::uint64_t fiberEvents=0, fiberPasses=0, perturbationProposals=0;
+    // acceptedParticles counts outer objects; child events are not outer accepts.
+    std::uint64_t acceptedComplexes=0, complexExits=0, complexChildEntries=0;
+    std::uint64_t complexChildExits=0, complexChildReflections=0, complexHostSegments=0;
+    std::uint64_t complexLayoutProposals=0, complexLayoutContainmentRejections=0;
+    std::uint64_t complexLayoutOverlapRejections=0, complexLayoutRestarts=0, complexLayoutPairChecks=0;
     double pathLengthMetres=0;
     std::array<double,6> layerPathLengthMetres{}, hostPathLengthMetres{}, particlePathLengthMetres{};
 };
@@ -83,6 +92,11 @@ private:
     ParticleVector particlePoint_{},particleExit_{},exitNormal_{},predecessorCentreFromPosition_{};
     double chordDistance_=0;
     SlabVector perturbationAxis_{};
+    std::optional<ComplexLayout> complexLayout_;
+    ProlateParticle envelope_{};
+    ParticleVector complexPoint_{};
+    bool complexActive_=false,complexEntryChord_=false;
+    std::size_t activeChild_=ComplexLayout::MaximumChildren, lastExitedChild_=ComplexLayout::MaximumChildren;
 };
 class HyLIoSForwardTransport {
 public:
@@ -120,6 +134,8 @@ private:
     void Placement(ForwardState&,ISampler&) const;
     void ParticleFlight(ForwardState&,ISampler&) const;
     void Perturb(ForwardState&,ISampler&) const;
+    void BuildComplex(ForwardState&,ISampler&) const;
+    void ComplexHost(ForwardState&,ISampler&) const;
     void FinishForwardScatter(ForwardState&) const;
 };
 }

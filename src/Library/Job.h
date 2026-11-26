@@ -3899,6 +3899,12 @@ namespace RISE
 									const bool   createSun
 									);
 
+		bool AddPhysicalPointOmniLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double pos[3], const bool shootPhotons);
+
+		bool AddPhysicalPointSpotLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double target[3], const double inner, const double outer, const double pos[3], const bool shootPhotons);
+
+		bool AddPhysicalDirectionalLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double direction[3]);
+
 	private:
 		//! Callback-output render scope (2026-11-14).  Every
 		//! CallbackRasterizerOutputDispatch this Job creates through

@@ -16,6 +16,7 @@
 #ifndef POINTLIGHT_
 #define POINTLIGHT_
 
+#include "PhysicalLightSpectrum.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/RGBSpectra.h"
@@ -54,8 +55,10 @@ namespace RISE
 			//! `SetIntermediateValue`).  There is no `SetColor` mutator and
 			//! `cColor` is protected, so hooking that one site is
 			//! sufficient; `SnapshotLeafClone` rebuilds a fresh light from
-			//! `emissionColor()` rather than mutating one.
+			//! `emissionColor()` and retains the immutable physical source, if any.
 			RGBIlluminantSpectrum	cSpectrum;
+			std::shared_ptr<const PhysicalLightSpectrum> physicalSpectrum;
+			Scalar SourceSpectrumNM(Scalar nm) const { return physicalSpectrum ? physicalSpectrum->Eval(nm) : cSpectrum.Eval(nm); }
 
 			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
 			//! `cColor`.
@@ -69,6 +72,9 @@ namespace RISE
 			//! before the workers start and after they join).
 			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
 			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! Null for legacy RGB authoring; immutable physical samples otherwise.
+			std::shared_ptr<const PhysicalLightSpectrum> GetPhysicalSpectrum() const { RISE_TIME_INDEXED_FORWARD( PointLight, GetPhysicalSpectrum() ); return physicalSpectrum; }
 
 			//! DL-465: a per-thread clone, exact copy of this light's state
 			//! (never itself slotted).
@@ -87,6 +93,7 @@ namespace RISE
 
 			inline RISEPel radiantExitance() const override
 			{ RISE_TIME_INDEXED_FORWARD( PointLight, radiantExitance() );
+				if (physicalSpectrum) return physicalSpectrum->ScaledVisibleRGB(radiantEnergy,FOUR_PI);
 				return (cColor * radiantEnergy * FOUR_PI);
 			}
 
@@ -97,10 +104,11 @@ namespace RISE
 
 			//! Spectral twin of `emittedRadiance` (Stage C slice 2).  Reads
 			//! the cached illuminant spectrum instead of the ILight
-			//! default's per-call LUT uplift; the two agree numerically.
+			//! default's per-call LUT uplift for RGB lights. Physical sources
+			//! instead evaluate their immutable authored SPD without RGB uplift.
 			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
 			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
-				return cSpectrum.Eval( nm ) * radiantEnergy;
+				return SourceSpectrumNM( nm ) * radiantEnergy;
 			}
 
 			inline Point3 position() const override
@@ -130,7 +138,8 @@ namespace RISE
 			PointLight(
 				const Scalar radiantEnergy_,
 				const RISEPel& c,
-				const bool shootPhotons
+				const bool shootPhotons,
+				std::shared_ptr<const PhysicalLightSpectrum> physical = {}
 				);
 
 			//! `bFullSphereReceiver` (residual wave 2 item D) is a no-op

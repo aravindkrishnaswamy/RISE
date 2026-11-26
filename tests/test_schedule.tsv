@@ -126,3 +126,6 @@ HyLIoSForwardFailureTest	pool	2
 HyLIoSParticleGeometryTest	pool	2
 HyLIoSGeometrySumTest	pool	2
 HyLIoSParticleOverlapTest	pool	2
+PhysicalLightSpectrumTest	pool	2
+HyLIoSComplexLayoutTest	pool	30
+HyLIoSComplexForwardTransportTest	pool	5

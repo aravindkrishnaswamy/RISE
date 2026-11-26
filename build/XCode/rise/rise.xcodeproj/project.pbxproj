@@ -11,18 +11,22 @@
 		C0F1D0000000000000000003 /* HyLIoSForwardTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */; };
 		C0F1B0000000000000000003 /* HyLIoSParticleGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1C0000000000000000003 /* HyLIoSParticleOverlap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		906A66F26F6F1C2A6C901C4E /* HyLIoSComplexLayout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1A0000000000000000010 /* HyLIoSSlabTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
 		C0F1D0000000000000000004 /* HyLIoSForwardTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */; };
 		C0F1B0000000000000000004 /* HyLIoSParticleGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
 		C0F1C0000000000000000004 /* HyLIoSParticleOverlap.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */; };
+		C8E7DDF99061B742251BA60A /* HyLIoSComplexLayout.h in Headers */ = {isa = PBXBuildFile; fileRef = 794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */; };
 		C0F1A0000000000000000011 /* HyLIoSSlabTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */; };
 		C0F1D0000000000000000005 /* HyLIoSForwardTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */; };
 		C0F1B0000000000000000005 /* HyLIoSParticleGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1C0000000000000000005 /* HyLIoSParticleOverlap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		80B5F53D90795A5748EB106B /* HyLIoSComplexLayout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
 		C0F1D0000000000000000006 /* HyLIoSForwardTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */; };
 		C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
 		C0F1C0000000000000000006 /* HyLIoSParticleOverlap.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */; };
+		0967E8C81624C1627CDF82EF /* HyLIoSComplexLayout.h in Sources */ = {isa = PBXBuildFile; fileRef = 794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */; };
 		C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
 		C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000008 /* HyLIoSOptics.h */; };
 		C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
@@ -484,7 +488,9 @@
 		F24B72A82F52A632008304C4 /* DirectionalLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B7069C428F0069C9E5 /* DirectionalLight.cpp */; };
 		F24B72A92F52A632008304C4 /* DirectionalLight.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B8069C428F0069C9E5 /* DirectionalLight.h */; };
 		F24B72AA2F52A632008304C4 /* PointLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B9069C428F0069C9E5 /* PointLight.cpp */; };
+		C2934DBF349F027AD7D9358E /* PhysicalLightSpectrum.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9CE320A4B2D7349B4E27ECCD /* PhysicalLightSpectrum.cpp */; };
 		F24B72AB2F52A632008304C4 /* PointLight.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BA069C428F0069C9E5 /* PointLight.h */; };
+		B29F6749CD59572A108E292C /* PhysicalLightSpectrum.h in Sources */ = {isa = PBXBuildFile; fileRef = 7968779E4C723F3D0F10B196 /* PhysicalLightSpectrum.h */; };
 		F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BB069C428F0069C9E5 /* SpotLight.cpp */; };
 		F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BC069C428F0069C9E5 /* SpotLight.h */; };
 		F24B72B02F52A632008304C4 /* DeletedCallbackDispatcher.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */; };
@@ -1302,7 +1308,9 @@
 		F27F0B21069C42910069C9E5 /* DirectionalLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B7069C428F0069C9E5 /* DirectionalLight.cpp */; };
 		F27F0B22069C42910069C9E5 /* DirectionalLight.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08B8069C428F0069C9E5 /* DirectionalLight.h */; };
 		F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B9069C428F0069C9E5 /* PointLight.cpp */; };
+		FEC11B2C3C9740AEF3DD3C26 /* PhysicalLightSpectrum.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9CE320A4B2D7349B4E27ECCD /* PhysicalLightSpectrum.cpp */; };
 		F27F0B24069C42910069C9E5 /* PointLight.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08BA069C428F0069C9E5 /* PointLight.h */; };
+		406AF307F0E32205E3C61229 /* PhysicalLightSpectrum.h in Headers */ = {isa = PBXBuildFile; fileRef = 7968779E4C723F3D0F10B196 /* PhysicalLightSpectrum.h */; };
 		F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BB069C428F0069C9E5 /* SpotLight.cpp */; };
 		F27F0B26069C42910069C9E5 /* SpotLight.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08BC069C428F0069C9E5 /* SpotLight.h */; };
 		F27F0B2A069C42910069C9E5 /* DeletedCallbackDispatcher.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */; };
@@ -2355,10 +2363,12 @@
 		C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSForwardTransport.cpp; sourceTree = "<group>"; };
 		C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSParticleGeometry.cpp; sourceTree = "<group>"; };
 		C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSParticleOverlap.cpp; sourceTree = "<group>"; };
+		17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSComplexLayout.cpp; sourceTree = "<group>"; };
 		C0F1A000000000000000000E /* HyLIoSSlabTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSlabTransport.h; sourceTree = "<group>"; };
 		C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSForwardTransport.h; sourceTree = "<group>"; };
 		C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSParticleGeometry.h; sourceTree = "<group>"; };
 		C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSParticleOverlap.h; sourceTree = "<group>"; };
+		794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSComplexLayout.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000007 /* HyLIoSOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOptics.cpp; sourceTree = "<group>"; };
 		C0F1A0000000000000000008 /* HyLIoSOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSOptics.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOpticalData.cpp; sourceTree = "<group>"; };
@@ -2797,7 +2807,9 @@
 		F27F08B7069C428F0069C9E5 /* DirectionalLight.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DirectionalLight.cpp; sourceTree = "<group>"; };
 		F27F08B8069C428F0069C9E5 /* DirectionalLight.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DirectionalLight.h; sourceTree = "<group>"; };
 		F27F08B9069C428F0069C9E5 /* PointLight.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PointLight.cpp; sourceTree = "<group>"; };
+		9CE320A4B2D7349B4E27ECCD /* PhysicalLightSpectrum.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PhysicalLightSpectrum.cpp; sourceTree = "<group>"; };
 		F27F08BA069C428F0069C9E5 /* PointLight.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PointLight.h; sourceTree = "<group>"; };
+		7968779E4C723F3D0F10B196 /* PhysicalLightSpectrum.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhysicalLightSpectrum.h; sourceTree = "<group>"; };
 		F27F08BB069C428F0069C9E5 /* SpotLight.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SpotLight.cpp; sourceTree = "<group>"; };
 		F27F08BC069C428F0069C9E5 /* SpotLight.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SpotLight.h; sourceTree = "<group>"; };
 		F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DeletedCallbackDispatcher.h; sourceTree = "<group>"; };
@@ -4146,7 +4158,9 @@
 				F27F08B7069C428F0069C9E5 /* DirectionalLight.cpp */,
 				F27F08B8069C428F0069C9E5 /* DirectionalLight.h */,
 				F27F08B9069C428F0069C9E5 /* PointLight.cpp */,
+				9CE320A4B2D7349B4E27ECCD /* PhysicalLightSpectrum.cpp */,
 				F27F08BA069C428F0069C9E5 /* PointLight.h */,
+				7968779E4C723F3D0F10B196 /* PhysicalLightSpectrum.h */,
 				F27F08BB069C428F0069C9E5 /* SpotLight.cpp */,
 				F27F08BC069C428F0069C9E5 /* SpotLight.h */,
 			);
@@ -4260,10 +4274,12 @@
 				C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */,
 				C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */,
 				C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */,
+				794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */,
 				C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */,
 				C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */,
 				C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */,
 				C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */,
+				17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */,
 				C0F1A0000000000000000008 /* HyLIoSOptics.h */,
 				C0F1A0000000000000000007 /* HyLIoSOptics.cpp */,
 				C0F1A0000000000000000002 /* HyLIoSOpticalData.h */,
@@ -5592,6 +5608,7 @@
 				F27F0B20069C42910069C9E5 /* AmbientLight.h in Headers */,
 				F27F0B22069C42910069C9E5 /* DirectionalLight.h in Headers */,
 				F27F0B24069C42910069C9E5 /* PointLight.h in Headers */,
+				406AF307F0E32205E3C61229 /* PhysicalLightSpectrum.h in Headers */,
 				F27F0B26069C42910069C9E5 /* SpotLight.h in Headers */,
 				F27F0B2A069C42910069C9E5 /* DeletedCallbackDispatcher.h in Headers */,
 				F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */,
@@ -5620,6 +5637,7 @@
 				C0F1D0000000000000000004 /* HyLIoSForwardTransport.h in Headers */,
 				C0F1B0000000000000000004 /* HyLIoSParticleGeometry.h in Headers */,
 				C0F1C0000000000000000004 /* HyLIoSParticleOverlap.h in Headers */,
+				C8E7DDF99061B742251BA60A /* HyLIoSComplexLayout.h in Headers */,
 				C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */,
 				C0F1A0000000000000000004 /* HyLIoSOpticalData.h in Headers */,
 				F27F0B3F069C42910069C9E5 /* BioSpecSkinSPF.h in Headers */,
@@ -6401,6 +6419,7 @@
 				F27F0B1E069C42910069C9E5 /* Job.cpp in Sources */,
 				F27F0B21069C42910069C9E5 /* DirectionalLight.cpp in Sources */,
 				F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */,
+				FEC11B2C3C9740AEF3DD3C26 /* PhysicalLightSpectrum.cpp in Sources */,
 				F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */,
 				F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
 				F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */,
@@ -6417,6 +6436,7 @@
 				C0F1D0000000000000000003 /* HyLIoSForwardTransport.cpp in Sources */,
 				C0F1B0000000000000000003 /* HyLIoSParticleGeometry.cpp in Sources */,
 				C0F1C0000000000000000003 /* HyLIoSParticleOverlap.cpp in Sources */,
+				906A66F26F6F1C2A6C901C4E /* HyLIoSComplexLayout.cpp in Sources */,
 				C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */,
 				C0F1A0000000000000000003 /* HyLIoSOpticalData.cpp in Sources */,
 				F27F0B3E069C42910069C9E5 /* BioSpecSkinSPF.cpp in Sources */,
@@ -7047,9 +7067,11 @@
 				F24B72A82F52A632008304C4 /* DirectionalLight.cpp in Sources */,
 				F24B72A92F52A632008304C4 /* DirectionalLight.h in Sources */,
 				F24B72AA2F52A632008304C4 /* PointLight.cpp in Sources */,
+				C2934DBF349F027AD7D9358E /* PhysicalLightSpectrum.cpp in Sources */,
 				F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
 				F2E45A032FA0000100F1A45E /* SSSContainment.cpp in Sources */,
 				F24B72AB2F52A632008304C4 /* PointLight.h in Sources */,
+				B29F6749CD59572A108E292C /* PhysicalLightSpectrum.h in Sources */,
 				F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */,
 				F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */,
 				F24B72B02F52A632008304C4 /* DeletedCallbackDispatcher.h in Sources */,
@@ -7086,10 +7108,12 @@
 				C0F1D0000000000000000005 /* HyLIoSForwardTransport.cpp in Sources */,
 				C0F1B0000000000000000005 /* HyLIoSParticleGeometry.cpp in Sources */,
 				C0F1C0000000000000000005 /* HyLIoSParticleOverlap.cpp in Sources */,
+				80B5F53D90795A5748EB106B /* HyLIoSComplexLayout.cpp in Sources */,
 				C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */,
 				C0F1D0000000000000000006 /* HyLIoSForwardTransport.h in Sources */,
 				C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */,
 				C0F1C0000000000000000006 /* HyLIoSParticleOverlap.h in Sources */,
+				0967E8C81624C1627CDF82EF /* HyLIoSComplexLayout.h in Sources */,
 				C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */,
 				C0F1A000000000000000000C /* HyLIoSOptics.h in Sources */,
 				C0F1A0000000000000000005 /* HyLIoSOpticalData.cpp in Sources */,

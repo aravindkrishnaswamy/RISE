@@ -60,6 +60,11 @@ void SurfaceExit(ProlateParticle particle,ParticleVector point,SlabVector direct
     const SlabVector qs=Mul(q,1/particle.semiMinorMetres);const double qa=Dot(qs,axis);
     normal=P(Unit(Add(Add(qs,Mul(axis,-qa)),Mul(axis,ratio*ratio*qa))));
 }
+bool IsEnvelopeSphere(const ComplexChild& child,const ProlateParticle& envelope) {
+    return envelope.semiMinorMetres==envelope.semiMajorMetres&&
+        child.particle.semiMinorMetres==envelope.semiMinorMetres&&child.particle.semiMajorMetres==envelope.semiMajorMetres&&
+        child.centreFromEnvelopeMetres.x==0&&child.centreFromEnvelopeMetres.y==0&&child.centreFromEnvelopeMetres.z==0;
+}
 SmoothDielectricEvaluation ParticleDielectric(SlabVector direction,ParticleVector normal,double from,double to) {
     const Frame f(V(normal));
     // Positive local z travels from the particle toward its host. The slab's
@@ -88,10 +93,19 @@ HyLIoSForwardTransport::HyLIoSForwardTransport(std::array<ForwardLayer,6> layers
         Require(Finite(planes_[i+1])&&planes_[i+1]>planes_[i],"layer planes not representably separated");
         if(l.organelle) {
             const auto& o=*l.organelle;
-            Require(o.organization==ForwardOrganization::IndividualSpheroids,"complex transport is unsupported");
+            Require(o.organization==ForwardOrganization::IndividualSpheroids||o.organization==ForwardOrganization::ExplicitComplexPackV1,"unversioned complex transport is unsupported");
             Require(Finite(o.volumeFraction)&&o.volumeFraction>=0&&o.volumeFraction<=1&&Finite(o.absorptionPerMetre)&&o.absorptionPerMetre>=0&&Finite(o.realIOR)&&o.realIOR>0,"invalid organelle coefficients");
-            geometricRates_[i]=GeometricEncounterRate(ProlateSurfaceToVolume(o.semiMinorMetres,o.semiMajorMetres),o.volumeFraction);
-            if(o.volumeFraction>0) Require(o.semiMinorMetres<l.thicknessMetres/2,"layer cannot contain positive-measure spheroid placements");
+            if(o.organization==ForwardOrganization::ExplicitComplexPackV1) {
+                Require(i!=4||fiberRate_==0,"PD complex host gaps with fiber scattering are unsupported");
+                // Constructor validates count, conservative support and range even
+                // at zero outer fraction; it does not generate a layout.
+                ComplexLayout check(o.envelopeRadiusMetres,o.semiMinorMetres,o.semiMajorMetres,o.childCount);
+                geometricRates_[i]=GeometricEncounterRate(ProlateSurfaceToVolume(o.envelopeRadiusMetres,o.envelopeRadiusMetres),o.volumeFraction);
+                if(o.volumeFraction>0) Require(o.envelopeRadiusMetres<l.thicknessMetres/2,"layer cannot contain positive-measure envelopes");
+            } else {
+                geometricRates_[i]=GeometricEncounterRate(ProlateSurfaceToVolume(o.semiMinorMetres,o.semiMajorMetres),o.volumeFraction);
+                if(o.volumeFraction>0) Require(o.semiMinorMetres<l.thicknessMetres/2,"layer cannot contain positive-measure spheroid placements");
+            }
         }
     }
 }
@@ -139,7 +153,9 @@ bool HyLIoSForwardTransport::Flight(ForwardState& s,double distance,double absor
         !Finite(s.counters_.layerPathLengthMetres[i]+distance)||!Finite(s.counters_.pathLengthMetres+distance)) {
         s.termination_=ForwardTermination::NumericalFailure;return false;
     }
-    s.position_=position;s.counters_.pathLengthMetres+=distance;s.counters_.layerPathLengthMetres[i]+=distance;path+=distance;++s.counters_.flights;
+    s.position_=position;
+    if(s.complexActive_) s.complexPoint_=P(Add(V(s.complexPoint_),step));
+    s.counters_.pathLengthMetres+=distance;s.counters_.layerPathLengthMetres[i]+=distance;path+=distance;++s.counters_.flights;
     if(s.hasPredecessor_) s.predecessorCentreFromPosition_=P(Add(V(s.predecessorCentreFromPosition_),Mul(step,-1)));
     auto& tally=inside ? s.particleAbsorbed_[i] : s.hostAbsorbed_[i];
     if(absorbed) {
@@ -195,9 +211,10 @@ void HyLIoSForwardTransport::Bulk(ForwardState& s,ISampler& rng) const {
             // attain +/-r*sqrt(1-dz^2). Therefore its minimum downstream
             // clearance is r*(1-sqrt(1-dz^2)); use the cancellation-free form.
             // Equality has zero projected-area support, hence is unresolved.
-            if(o.semiMinorMetres==o.semiMajorMetres) {
+            if(o.organization==ForwardOrganization::ExplicitComplexPackV1||o.semiMinorMetres==o.semiMajorMetres) {
                 const double az=std::abs(s.direction_.z);
-                const double margin=o.semiMinorMetres*(az*az/(1+std::sqrt((1-az)*(1+az))));
+                const double radius=o.organization==ForwardOrganization::ExplicitComplexPackV1 ? o.envelopeRadiusMetres : o.semiMinorMetres;
+                const double margin=radius*(az*az/(1+std::sqrt((1-az)*(1+az))));
                 const double clearance=down ? planes_[i+1]-s.position_.z : s.position_.z-planes_[i];
                 if(clearance<=margin) s.termination_=ForwardTermination::UnplaceableBoundaryCandidate;
             }
@@ -224,9 +241,14 @@ void HyLIoSForwardTransport::Bulk(ForwardState& s,ISampler& rng) const {
 }
 void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
     const auto i=static_cast<std::size_t>(s.layer_);const auto& o=*layers_[i].organelle;
-    double u,v,r,a;if(!Draw(rng,u)||!Draw(rng,v)||!Draw(rng,r)||!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
+    double r,a;
+    ProlateParticle particle{o.envelopeRadiusMetres,o.envelopeRadiusMetres,{0,0,1}};
+    if(o.organization==ForwardOrganization::IndividualSpheroids) {
+        double u,v;if(!Draw(rng,u)||!Draw(rng,v)) {s.termination_=ForwardTermination::InvalidSample;return;}
+        particle={o.semiMinorMetres,o.semiMajorMetres,P(Polar(s.direction_,SampleOrientationCosine(u,o.semiMinorMetres,o.semiMajorMetres),2*Pi*v))};
+    }
+    if(!Draw(rng,r)||!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
     ++s.counters_.placementAttempts;
-    const ProlateParticle particle{o.semiMinorMetres,o.semiMajorMetres,P(Polar(s.direction_,SampleOrientationCosine(u,o.semiMinorMetres,o.semiMajorMetres),2*Pi*v))};
     const auto hit=SampleProlateProjectedHit(particle,P(s.direction_),r,a);
     // Distance convention: geometric free-flight ends at the ENTRY point, so
     // centre = event position - sampled entryPoint. Never add half a chord.
@@ -247,7 +269,100 @@ void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
     }
     s.particle_=particle;s.predecessor_=particle;s.hasPredecessor_=true;s.predecessorCentreFromPosition_=P(centre);
     s.particlePoint_=hit.chord.entryPointMetres;s.particleExit_=hit.chord.exitPointMetres;s.exitNormal_=hit.chord.exitOutwardNormal;
-    s.chordDistance_=hit.chord.chordLengthMetres;++s.counters_.acceptedParticles;s.phase_=ForwardPhase::ParticleChord;
+    s.chordDistance_=hit.chord.chordLengthMetres;++s.counters_.acceptedParticles;
+    s.complexLayout_.reset();s.complexActive_=false;s.complexEntryChord_=false;
+    if(o.organization==ForwardOrganization::ExplicitComplexPackV1) {
+        s.envelope_=particle;s.complexPoint_=hit.chord.entryPointMetres;s.complexActive_=true;s.complexEntryChord_=true;
+        s.activeChild_=ComplexLayout::MaximumChildren;s.lastExitedChild_=ComplexLayout::MaximumChildren;
+        s.complexLayout_.emplace(o.envelopeRadiusMetres,o.semiMinorMetres,o.semiMajorMetres,o.childCount);
+        ++s.counters_.acceptedComplexes;
+        s.phase_=s.complexLayout_->Complete() ? ForwardPhase::ComplexHostFlight : ForwardPhase::ComplexLayout;
+    } else s.phase_=ForwardPhase::ParticleChord;
+}
+void HyLIoSForwardTransport::BuildComplex(ForwardState& s,ISampler& rng) const {
+    std::array<double,5> u{};
+    for(double& value:u) if(!Draw(rng,value)) {s.termination_=ForwardTermination::InvalidSample;return;}
+    const auto previous=s.complexLayout_->Counters();
+    const auto result=s.complexLayout_->Propose(u);
+    const auto& now=s.complexLayout_->Counters();
+    s.counters_.complexLayoutProposals+=now.proposals-previous.proposals;
+    s.counters_.complexLayoutContainmentRejections+=now.containmentRejections-previous.containmentRejections;
+    s.counters_.complexLayoutOverlapRejections+=now.overlapRejections-previous.overlapRejections;
+    s.counters_.complexLayoutRestarts+=now.restarts-previous.restarts;
+    s.counters_.complexLayoutPairChecks+=now.overlapChecks-previous.overlapChecks;
+    if(result.kind==ComplexProposalKind::InvalidSample) s.termination_=ForwardTermination::InvalidSample;
+    else if(result.kind==ComplexProposalKind::NumericalFailure) {
+        s.termination_=ForwardTermination::NumericalFailure;
+        s.failureDetail_=result.geometryStatus==ParticleOverlapStatus::Indeterminate ? ForwardFailureDetail::OverlapIndeterminate :
+            result.geometryStatus==ParticleOverlapStatus::InvalidInput ? ForwardFailureDetail::OverlapInvalidInput : ForwardFailureDetail::OverlapUnsupportedRange;
+    } else if(s.complexLayout_->Complete()) s.phase_=ForwardPhase::ComplexHostFlight;
+}
+void HyLIoSForwardTransport::ComplexHost(ForwardState& s,ISampler& rng) const {
+    const auto& children=s.complexLayout_->Children();
+    double distance;
+    ParticleVector envelopeExit,envelopeNormal;
+    if(s.complexEntryChord_) {
+        // Placement already owns a projected-area entry and its complete chord.
+        // Layout yields do not change that ray. Do not rediscover a rounded
+        // surface root, including for an empty envelope.
+        distance=s.chordDistance_;envelopeExit=s.particleExit_;envelopeNormal=s.exitNormal_;
+    } else if(s.lastExitedChild_<children.size()&&IsEnvelopeSphere(children[s.lastExitedChild_],s.envelope_)) {
+        // Equal centred spheres have the same boundary. Child transmission
+        // has already reached the envelope exit; there is exactly zero host
+        // distance even when refraction changed the transmitted direction.
+        distance=0;envelopeExit=s.complexPoint_;envelopeNormal=s.exitNormal_;
+    } else {
+        const auto hit=IntersectProlateRay(s.envelope_,s.complexPoint_,P(s.direction_));
+        if(!hit||hit->exitDistanceMetres<0) throw std::runtime_error("complex lost its envelope");
+        distance=hit->exitDistanceMetres;envelopeExit=hit->exitPointMetres;envelopeNormal=hit->exitOutwardNormal;
+    }
+    std::size_t selected=ComplexLayout::MaximumChildren;
+    std::optional<ParticleChord> selectedHit;
+    for(std::size_t index=0;index<children.size();++index) {
+        // A convex child just transmitted outward cannot be re-entered by the
+        // unchanged host direction. This topological exclusion removes its
+        // known zero surface root, without shifting the ray or hiding another
+        // child's touching entry. Any reflection clears this exclusion.
+        if(index==s.lastExitedChild_) continue;
+        const auto& child=children[index];
+        const bool ownedEntry=s.complexEntryChord_&&IsEnvelopeSphere(child,s.envelope_);
+        const auto hit=ownedEntry ? std::optional<ParticleChord>{ParticleChord{0,distance,distance,s.complexPoint_,envelopeExit,
+            P(Unit(V(s.complexPoint_))),envelopeNormal}} :
+            IntersectProlateRay(child.particle,P(Add(V(s.complexPoint_),Mul(V(child.centreFromEnvelopeMetres),-1))),P(s.direction_));
+        if(!hit||hit->chordLengthMetres==0) continue;
+        if(hit->entryDistanceMetres<0) throw std::runtime_error("complex host lies inside unowned child");
+        if(!ownedEntry&&Dot(s.direction_,V(hit->entryOutwardNormal))>=0) continue;
+        // Stable array order resolves equal child entries. Strictly entering
+        // child boundaries own ties with the envelope's outward boundary.
+        if(hit->entryDistanceMetres<distance||(hit->entryDistanceMetres==distance&&selected==ComplexLayout::MaximumChildren)) {
+            distance=hit->entryDistanceMetres;selected=index;selectedHit=hit;
+        }
+    }
+    const double absorption=layers_[static_cast<std::size_t>(s.layer_)].hostAbsorptionPerMetre;
+    bool absorbed=false;
+    if(estimator_==AbsorptionEstimator::Analog&&absorption>0) {
+        double u;if(!Draw(rng,u)) {s.termination_=ForwardTermination::InvalidSample;return;}
+        const double proposal=*SampleExponentialFreePath(absorption,u);
+        if(proposal<distance) {distance=proposal;absorbed=true;}
+    }
+    ++s.counters_.complexHostSegments;
+    if(!Flight(s,distance,absorption,false,absorbed)) return;
+    s.complexEntryChord_=false;
+    if(selected!=ComplexLayout::MaximumChildren) {
+        const auto& child=children[selected];
+        s.activeChild_=selected;s.particle_=child.particle;
+        s.particlePoint_=selectedHit->entryPointMetres;s.particleExit_=selectedHit->exitPointMetres;
+        s.exitNormal_=selectedHit->exitOutwardNormal;s.chordDistance_=selectedHit->chordLengthMetres;
+        s.complexPoint_=P(Add(V(child.centreFromEnvelopeMetres),V(s.particlePoint_)));
+        ++s.counters_.complexChildEntries;s.phase_=ForwardPhase::ParticleChord;
+    } else {
+        s.complexPoint_=envelopeExit;s.particle_=s.envelope_;
+        s.particlePoint_=s.complexPoint_;s.exitNormal_=envelopeNormal;
+        s.perturbationAxis_=s.direction_;s.complexActive_=false;
+        ++s.counters_.complexExits;
+        if(children.empty()) FinishForwardScatter(s);
+        else s.phase_=ForwardPhase::ForwardPerturbation;
+    }
 }
 void HyLIoSForwardTransport::ParticleFlight(ForwardState& s,ISampler& rng) const {
     const auto& o=*layers_[static_cast<std::size_t>(s.layer_)].organelle;
@@ -259,15 +374,21 @@ void HyLIoSForwardTransport::ParticleFlight(ForwardState& s,ISampler& rng) const
     }
     if(!Flight(s,s.chordDistance_,o.absorptionPerMetre,true,false)) return;
     s.particlePoint_=s.particleExit_;
+    if(s.complexActive_) s.complexPoint_=P(Add(V(s.complexLayout_->Children()[s.activeChild_].centreFromEnvelopeMetres),V(s.particlePoint_)));
     // Absorption precedes the sole Fresnel test. Entry has no extra Fresnel.
     const auto optics=ParticleDielectric(s.direction_,s.exitNormal_,o.realIOR,layers_[static_cast<std::size_t>(s.layer_)].realIOR);
     if(!Draw(rng,u)) {s.termination_=ForwardTermination::InvalidSample;return;}
     if(u<optics.reflectance) {
         s.direction_=optics.reflectedDirection;s.perturbationAxis_=s.direction_;
         s.phase_=ForwardPhase::ReflectedPerturbation;++s.counters_.particleReflections;
+        if(s.complexActive_) {++s.counters_.complexChildReflections;s.lastExitedChild_=ComplexLayout::MaximumChildren;}
     } else {
         s.direction_=optics.transmittedDirection;s.perturbationAxis_=s.direction_;
-        s.phase_=ForwardPhase::ForwardPerturbation;++s.counters_.particleExits;
+        ++s.counters_.particleExits;
+        if(s.complexActive_) {
+            ++s.counters_.complexChildExits;s.lastExitedChild_=s.activeChild_;
+            s.activeChild_=ComplexLayout::MaximumChildren;s.phase_=ForwardPhase::ComplexHostFlight;
+        } else s.phase_=ForwardPhase::ForwardPerturbation;
     }
 }
 void HyLIoSForwardTransport::Perturb(ForwardState& s,ISampler& rng) const {
@@ -305,7 +426,7 @@ void HyLIoSForwardTransport::FinishForwardScatter(ForwardState& s) const {
         // The virtual particle no longer owns any future travel or absorption.
         // Its independent predecessor copy remains solely for placement exclusion.
         s.particle_={};s.particlePoint_={};s.particleExit_={};s.exitNormal_={};
-        s.chordDistance_=0;s.perturbationAxis_={};
+        s.chordDistance_=0;s.perturbationAxis_={};s.complexLayout_.reset();
     }
     s.phase_=ForwardPhase::BulkFlight;
 }
@@ -321,6 +442,8 @@ ForwardAdvanceResult HyLIoSForwardTransport::Advance(ForwardState& s,ISampler& r
             switch(s.phase_) {
                 case ForwardPhase::BulkFlight: Bulk(s,rng);break;
                 case ForwardPhase::CandidatePlacement: Placement(s,rng);break;
+                case ForwardPhase::ComplexLayout: BuildComplex(s,rng);break;
+                case ForwardPhase::ComplexHostFlight: ComplexHost(s,rng);break;
                 case ForwardPhase::ParticleChord: ParticleFlight(s,rng);break;
                 default: Perturb(s,rng);break;
             }

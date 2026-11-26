@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/IndependentSampler.h"
 #include "PointLight.h"
@@ -68,12 +69,14 @@ Scalar ILight::ComputeDirectLightingNM(
 PointLight::PointLight(
 	const Scalar radiantEnergy_,
 	const RISEPel& c,
-	const bool shootPhotons
+	const bool shootPhotons,
+	std::shared_ptr<const PhysicalLightSpectrum> physical
 	) :
   radiantEnergy( radiantEnergy_ ),
   ptPosition( Point3( 0, 0, 0 ) ),
   cColor( c ),
-  bShootPhotons( shootPhotons )
+  bShootPhotons( shootPhotons ),
+  physicalSpectrum( std::move(physical) )
 {
 	RefreshSpectrum();
 }
@@ -202,7 +205,7 @@ Scalar PointLight::ComputeDirectLightingSampledNM(
 	// projection of its RGB colour used flat at every wavelength.  The luma
 	// collapse made every coloured point light spectrally grey and tinted
 	// even a white one by the flat-spectrum chromaticity.
-	const Scalar lightSpec = cSpectrum.Eval( nm );
+	const Scalar lightSpec = SourceSpectrumNM( nm );
 	return lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
 }
 
@@ -235,13 +238,14 @@ IKeyframeParameter* PointLight::KeyframeFromParameters( const String& name, cons
 
 	// Check the name and see if its something we recognize
 	if( name == "color" ) {
+		if( physicalSpectrum ) return nullptr;
 		double d[3];
 		if( ParseStrictVec3( value, d ) ) {
 			p = new Parameter<RISEPel>( RISEPel(d), COLOR_ID );
 		}
 	} else if( name == "energy" ) {
 		Scalar parsed;
-		if( !ParseStrictScalar( value, parsed ) ) {
+		if( !ParseStrictScalar( value, parsed ) || (physicalSpectrum && !physicalSpectrum->CanScale(parsed, FOUR_PI)) ) {
 			return 0;
 		}
 		p = new Parameter<Scalar>( parsed, ENERGY_ID );
@@ -260,13 +264,19 @@ void PointLight::SetIntermediateValue( const IKeyframeParameter& val )
 	{
 	case COLOR_ID:
 		{
+			if( physicalSpectrum ) return;
 			cColor = *(RISEPel*)val.getValue();
 			RefreshSpectrum();		// keep the cached illuminant spectrum in step
 		}
 		break;
 	case ENERGY_ID:
 		{
-			radiantEnergy = *(Scalar*)val.getValue();
+			const Scalar energy = *(const Scalar*)val.getValue();
+			if( physicalSpectrum && !physicalSpectrum->CanScale(energy, FOUR_PI) ) {
+                GlobalLog()->PrintEasyError("physical PointLight: invalid intensity scale; previous scale retained");
+                return;
+            }
+			radiantEnergy = energy;
 		}
 		break;
 	}

@@ -10991,6 +10991,45 @@ namespace RISE
 				}
 			};
 
+            // Physical source spectra are inline numeric pairs, not named graph references.
+            static bool ReadPhysicalLightSamples(const ParseStateBag& bag,
+                std::vector<double>& nm, std::vector<double>& values)
+            {
+                if (bag.Has("color") || bag.Has("colorspace") ||
+                    !bag.Has("spectral_outside") || bag.GetString("spectral_outside") != "zero") {
+                    RISE::SetFinalizeDiagIfEmpty("physical light requires spectral_outside zero and excludes color/colorspace");
+                    return false;
+                }
+                for (const auto& row : bag.GetRepeatable("spectral_samples")) {
+                    std::istringstream input(row);
+                    double wavelength, value;
+                    std::string extra;
+                    if (!(input >> wavelength >> value) || (input >> extra)) {
+                        RISE::SetFinalizeDiagIfEmpty("spectral_samples requires exactly wavelength_nm and spectral value");
+                        return false;
+                    }
+                    nm.push_back(wavelength); values.push_back(value);
+                }
+                if (nm.size() < 2 || nm.size() > std::numeric_limits<unsigned int>::max()) {
+                    RISE::SetFinalizeDiagIfEmpty("physical light requires at least two spectral_samples");
+                    return false;
+                }
+                return true;
+            }
+
+            static void DescribePhysicalLightSamples(ChunkDescriptor& cd)
+            {
+                ParameterDescriptor samples;
+                samples.name = "spectral_samples"; samples.kind = ValueKind::String;
+                samples.repeatable = true; samples.tupleKinds = {ValueKind::Double, ValueKind::Double};
+                samples.description = "Physical source pair: wavelength_nm value (repeatable, increasing nm). Point/spot W/(sr nm), directional W/(m^2 nm). Excludes color/colorspace; power is a dimensionless scale.";
+                cd.parameters.push_back(samples);
+                ParameterDescriptor outside;
+                outside.name = "spectral_outside"; outside.kind = ValueKind::Enum; outside.enumValues = {"zero"};
+                outside.description = "Required with spectral_samples: explicit zero outside the authored interval. This is a model policy, not measured coverage.";
+                cd.parameters.push_back(outside);
+            }
+
 			// OmniLight — descriptor-driven, Finalize-only
 			struct OmniLightAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -11002,6 +11041,12 @@ namespace RISE
 					double color[3]    = {0,0,0}; bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
 					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+                    if (!bag.GetRepeatable("spectral_samples").empty() || bag.Has("spectral_outside")) {
+                        std::vector<double> nm, values;
+                        if (!ReadPhysicalLightSamples(bag, nm, values)) return false;
+                        return pJob.AddPhysicalPointOmniLight(name.c_str(), static_cast<unsigned int>(nm.size()),
+                            nm.data(), values.data(), "zero", power, position, shootphotons);
+                    }
 					return pJob.AddPointOmniLight( name.c_str(), power, color, cspace.c_str(), position, shootphotons );
 				}
 
@@ -11013,11 +11058,12 @@ namespace RISE
 						cd.description = "Point light radiating uniformly in all directions.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color; dimensionless with spectral_samples)";   p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;             p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						DescribePhysicalLightSamples(cd);
 						return cd;
 					}();
 					return d;
@@ -11041,6 +11087,12 @@ namespace RISE
 					double color[3]    = {0,0,0};  bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
 					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+                    if (!bag.GetRepeatable("spectral_samples").empty() || bag.Has("spectral_outside")) {
+                        std::vector<double> nm, values;
+                        if (!ReadPhysicalLightSamples(bag, nm, values)) return false;
+                        return pJob.AddPhysicalPointSpotLight(name.c_str(), static_cast<unsigned int>(nm.size()),
+                            nm.data(), values.data(), "zero", power, target, inner, outer, position, shootphotons);
+                    }
 					return pJob.AddPointSpotLight( name.c_str(), power, color, cspace.c_str(), target, inner, outer, position, shootphotons );
 				}
 
@@ -11052,14 +11104,15 @@ namespace RISE
 						cd.description = "Cone spot light with inner and outer falloff angles.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";       p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";  p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)"; p.defaultValueHint = "45"; }
-						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color; dimensionless with spectral_samples)";  p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner full cone angle (degrees)"; p.defaultValueHint = "45"; }
+						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer full cone angle (degrees)"; p.defaultValueHint = "90"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						DescribePhysicalLightSamples(cd);
 						return cd;
 					}();
 					return d;
@@ -11123,6 +11176,12 @@ namespace RISE
 					double dir[3]   = {0,0,0}; bag.GetVec3( "direction", dir );
 					double color[3] = {0,0,0}; bag.GetVec3( "color",     color );
 					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+                    if (!bag.GetRepeatable("spectral_samples").empty() || bag.Has("spectral_outside")) {
+                        std::vector<double> nm, values;
+                        if (!ReadPhysicalLightSamples(bag, nm, values)) return false;
+                        return pJob.AddPhysicalDirectionalLight(name.c_str(), static_cast<unsigned int>(nm.size()),
+                            nm.data(), values.data(), "zero", power, dir);
+                    }
 					return pJob.AddDirectionalLight( name.c_str(), power, color, cspace.c_str(), dir );
 				}
 
@@ -11134,10 +11193,11 @@ namespace RISE
 						cd.description = "Parallel rays from a fixed direction (e.g. sunlight).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light";      p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color; dimensionless with spectral_samples)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector";                p.defaultValueHint = "0 -1 0"; }
 						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;           p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::Enum;      p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
+						DescribePhysicalLightSamples(cd);
 						return cd;
 					}();
 					return d;

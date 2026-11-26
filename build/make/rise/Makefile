@@ -290,7 +290,7 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, 
 	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 # HYLIOS compensated geometry and certified overlap intervals require strict arithmetic.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Materials/HyLIoS/, \
-	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o)
+	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -590,6 +590,10 @@ $(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.o : $(PATHLIBRARY)Material
 # Certified overlap bounds must retain outward-rounded operations.
 $(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.cpp
 	@echo "Compiling (strict overlap): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.cpp
+	@echo "Compiling (strict complex geometry): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 $(PATHLIBRARY)Utilities/OslNoise.o : $(PATHLIBRARY)Utilities/OslNoise.cpp

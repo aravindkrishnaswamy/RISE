@@ -304,6 +304,12 @@ namespace RISE
 		const Vector3 vDir										///< [in] Direction the light is shining
 		);
 
+	// Physical source samples: point/spot W/(sr nm), directional W/(m^2 nm).
+	// Linear interpolation; outsidePolicy must explicitly be "zero". Scale is dimensionless.
+	bool RISE_API_CreatePhysicalPointOmniLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const bool shootPhotons);
+	bool RISE_API_CreatePhysicalPointSpotLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Point3& position, const Point3& target, const Scalar inner, const Scalar outer, const bool shootPhotons);
+	bool RISE_API_CreatePhysicalDirectionalLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Vector3& direction);
+
 	///////////////////////////////////////////////////////////
 	// Defines Geometry creation
 	///////////////////////////////////////////////////////////

@@ -1,0 +1,33 @@
+RISE ASCII SCENE 7
+# Source-construction fixture for P6a. Not a UV/IR rendering acceptance scene.
+# Point/spot values: W/(sr nm); directional: W/(m^2 nm). power is dimensionless.
+omni_light
+{
+    name swir_point
+    position 0 0 2
+    power 3
+    spectral_outside zero
+    spectral_samples 1100 2
+    spectral_samples 1200 4
+    spectral_samples 1300 6
+}
+spot_light
+{
+    name uv_spot
+    position 0 2 0
+    target 0 0 0
+    inner 20
+    outer 40
+    spectral_outside zero
+    spectral_samples 250 0
+    spectral_samples 300 1
+    spectral_samples 350 0
+}
+directional_light
+{
+    name swir_directional
+    direction 0 1 0
+    spectral_outside zero
+    spectral_samples 1100 1
+    spectral_samples 1300 1
+}

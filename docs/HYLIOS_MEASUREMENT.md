@@ -1,7 +1,7 @@
 # HyLIoS forward measurement and diagnostic variants
 
 `tools/hylios_measure.cpp` measures the current forward-only individual-spheroid
-kernel with explicitly selected post-scattering semantics. Diagnostic or budget-limited histories retain unresolved power in the result. It does not validate the publication's physiological reflectance.
+and explicit-complex kernel with explicitly selected post-scattering semantics. Diagnostic or budget-limited histories retain unresolved power in the result. It does not validate the publication's physiological reflectance.
 
 ## Build and run
 
@@ -20,7 +20,7 @@ python3 -m unittest discover -s tools -p test_hylios_measure.py -v
 The existing generic tool rule discovers this source; it is not added to `all`.
 Fresh checkouts need the platform setup described in [AGENTS.md](../AGENTS.md).
 The tool links the shared forward transport, slab/optics, particle geometry and
-certified overlap implementations; it does not run the renderer.
+certified overlap and strict complex-layout implementations; it does not run the renderer.
 
 The input is the actual JSON emitted by `tools/hylios_compose_specimen.py`:
 
@@ -68,16 +68,28 @@ publication. Valid non-ASCII text and escaped supplementary characters round-tri
 The complete serialized report is validated again before atomic replacement; any
 unsupported metadata leaves existing output intact. The original source-byte hash
 continues to identify the exact accepted input bytes.
-Active organelles need evaluated internal absorption and individually dispersed
-organization; active complexes are refused. Disabled particles are skipped,
+Active organelles need evaluated internal absorption. Individual organization uses
+spheroids; active `complexes` additionally require the explicit
+`--complex-layout explicit-pack-v1` choice. No complex interpretation is selected
+by default. Each complex requires `complex_diameter_m` and an integer
+`maximum_internal_count` from 0 to 64. The diameter is divided by two to obtain R;
+that R, child axes and count must satisfy the layout constructor's finite-range,
+bounding-sphere containment and necessary volume checks. N=0 is an empty-envelope
+analytic control. Under this clean-room convention the resolved integer counts
+**actual spatial children**, not a maximum number of optical interactions.
+Revisits can exceed N without absorption or termination at a count cap. Disabled particles are skipped,
 including their unused geometry/absorption fields, but cannot claim positive
 fraction. When a producer supplies a geometric rate it must match the rate
-recomputed from its axes and fraction to the documented FP rounding bound.
+recomputed from its axes and fraction to the relative bound
+`64*epsilon*max(declared,computed)`. For individual particles the rate uses the
+spheroid S/V; complex envelopes use `3*f/(4*R)`, independently of child count or
+child axes. The nominal outer fraction is not a measured packed child fraction.
 
 Optional inputs have named, reported values rather than hidden kernel defaults:
 
 | Option | Reported default / convention |
 |---|---|
+| `--complex-layout explicit-pack-v1` | no default; required for active complexes |
 | `--estimator analog\|weighted` | analog |
 | `--roulette-target N` | 0, disabled; nonzero requires weighted |
 | `--exterior-ior N` | 1, measurement exterior convention |
@@ -92,11 +104,34 @@ also retained verbatim. Fiber fraction 0 disables that clock. No incident-angle 
 spatial-light source is implemented: all histories launch at local origin with
 normal inward direction (0,0,1), recorded in the result.
 
+For an explicitly resolved complex specimen, select its construction:
+
+```sh
+./bin/tools/hylios_measure --specimen resolved-s3.json --wavelength-nm 550 \
+  --placement null --post-scatter discard --complex-layout explicit-pack-v1 \
+  --boundary smooth --histories 100 --max-transitions 100000 --seed 55000001 \
+  --output measurement-s3.json
+```
+
+The history/transition limits are caller work budgets. A 256-proposal child restart
+is construction work, not absorption; packing is not guaranteed for arbitrary
+inputs. Inspect unresolved power and layout counters before interpreting a run.
+
 ## Scientific scope and unresolved histories
 
-This is a forward measurement diagnostic of the current individually dispersed
-spheroid milestone. It does not support complexes, S1–S3 reproduction, reverse
-camera sampling, a marginal PDF, adjoint transport or a reciprocity claim.
+This measures the selected forward individual-spheroid and explicit spatial
+complex models. It does not establish S1–S3 author-model or physiological
+reproduction, reverse camera sampling, a marginal PDF, adjoint transport or
+reciprocity. The complex law is detailed in
+[HYLIOS_COMPLEX_LAYOUT.md](HYLIOS_COMPLEX_LAYOUT.md).
+`maximum_internal_count` as actual children is a recorded clean-room choice.
+Layout construction is independent of the ray, uses five draws per proposal, and
+preserves its full proposal/restart/pair-check counters. Host gaps and true child
+chords own separate absorption; there is no envelope Fresnel or per-child final
+exponential event. The final angular event occurs once at nonempty envelope exit;
+empty complexes introduce no angular kick even at visible wavelengths. PD
+complexes with a nonzero fiber rate are explicitly refused; current composed
+S1/S2/S3 complexes occupy SG/SS/SB.
 `--boundary smooth` is a mandatory explicit **override** of authored fold metadata.
 The original fold aspect ratio is retained and
 `authored_surface_folds_simulated=false` is explicit. Surface folds are not
@@ -120,7 +155,7 @@ wording; it does not claim a persistent packed medium or author-code equivalence
 Both variants count inward draws in `inwardPostExitEvents`. Data approximation
 labels are separate from the recorded transport interpretation. At the exact
 zero-angle endpoint, both policies produce identical physical histories and RNG
-consumption. The report schema is now `hylios-forward-measure-v2`.
+consumption. The report schema is `hylios-forward-measure-v3`.
 
 Fixed placement can also
 remain impossible; a finite caller transition budget becomes `budget_exceeded`,
@@ -128,7 +163,7 @@ not absorption. Invalid samples and numerical failures remain unresolved too.
 Detailed overlap failure categories are retained. The CLI always reports the
 original number of incident histories. It never divides by completed histories.
 
-After preflight the CLI flushes `hylios_measure: signal handlers ready` to stderr;
+After input resolution the CLI flushes `hylios_measure: signal handlers ready` to stderr;
 this is the readiness handshake used by the cancellation test, with no timing sleep.
 SIGINT/SIGTERM is checked between at most 64-transition batches. A started history
 retains its already tallied absorption and current live weight. All unstarted
@@ -154,7 +189,18 @@ streams, so scheduling/batching cannot change their initial random state.
 Outcomes have separate counts, terminal live weights and unresolved flags.
 External reflection and subsurface return are distinct. Absorption is accumulated
 separately for each layer's host and particle path. Layer host/particle/total path
-lengths and all aggregate event counters are included. Zero-weight diagnostics are
+lengths and all aggregate event counters are included. Selected layers distinguish
+`active_individual_spheroids` from `active_complex_pack`; the latter records R,
+actual child count, the count interpretation, child axes/coefficient/index and
+nominal envelope rate. `complex_layout_policy` and `complex_layout_convention`
+record the chosen construction, isotropic axis prior, conservative centre support,
+64-child resource limit and 256-proposal restart threshold. An interaction cap is
+explicitly absent. `acceptedComplexes` counts accepted outer envelopes, while
+`complexChildEntries`/`Exits`/`Reflections` count actual child events.
+`complexLayoutProposals`, `complexLayoutContainmentRejections`,
+`complexLayoutOverlapRejections`, `complexLayoutRestarts` and
+`complexLayoutPairChecks` expose construction work. `complexHostSegments` and
+`complexExits` describe internal host travel and successful envelope exits. Zero-weight diagnostics are
 conservatively incomplete even when their surviving weight is zero. Roulette
 kills are a statistical estimator outcome, excluded from unresolved power and
 physical absorption.
@@ -190,17 +236,34 @@ RISE_HYLIOS_MEASURE=/absolute/path/to/hylios_measure \
 
 Tests default to repository `bin/tools/hylios_measure` (`hylios_measure.exe` on
 Windows). `RISE_HYLIOS_MEASURE` selects another binary without consuming unittest
-arguments. A missing binary explicitly skips the twelve contracts with the build
+arguments. A missing binary explicitly skips the eighteen contracts with the build
 command. Standard unittest discovery, test selection and flags remain available.
 
+A strict standalone POSIX build reads sources directly and avoids shared-archive
+relink races:
+
+```sh
+hylios_check_dir="$(mktemp -d)"
+inc=src/Library/Materials/HyLIoS
+clang++ -std=c++17 -O2 -Wall -Werror -pedantic \
+  -fno-fast-math -ffp-contract=off -I src/Library \
+  tools/hylios_measure.cpp "$inc/HyLIoSForwardTransport.cpp" \
+  "$inc/HyLIoSOptics.cpp" "$inc/HyLIoSParticleGeometry.cpp" \
+  "$inc/HyLIoSParticleOverlap.cpp" "$inc/HyLIoSComplexLayout.cpp" \
+  "$inc/HyLIoSSlabTransport.cpp" src/Library/Agent/Json.cpp \
+  src/Library/Utilities/RISECBOR64.cpp -o "$hylios_check_dir/hylios_measure"
+RISE_HYLIOS_MEASURE="$hylios_check_dir/hylios_measure" \
+  python3 tools/test_hylios_measure.py -v
+```
+
 The canonical build uses its platform optimization flags. Particle geometry and
-certified overlap retain their existing strict floating-point build registrations.
+certified overlap and complex layout retain strict floating-point compilation.
 For isolated checks, compile the source list in the Windows example below with
 C++17 and the repository `src/Library` include directory. GCC/Clang strict mode uses
 `-fno-fast-math -ffp-contract=off`; ASan/UBSan adds
 `-O1 -g -fsanitize=address,undefined` to compilation and linking. Full-LTO checks use
 `-O3 -flto=full`, compiling the driver/forward/optics/slab with
-`-ffast-math -fno-finite-math-only` and particle geometry, overlap, JSON and SHA
+`-ffast-math -fno-finite-math-only` and particle geometry, overlap, complex layout, JSON and SHA
 with `-fno-fast-math -ffp-contract=off`. Compile each TU separately before linking
 so its floating-point contract survives LTO. The isolated modes were exercised on
 macOS; Windows/Linux have not been executed in this environment.
@@ -209,7 +272,11 @@ Tests use temporary synthetic resolved specimens. Strong oracles include exact
 vacuum power, independent Beer+cosine-bottom quadrature, compensated weighted/RR
 mean agreement, all-history hard-budget accounting with partial absorption,
 cancellation with unstarted initial power, active-particle resolution, inactive
-skip, missing coverage/complex refusal, schema/unit/shape/nonfinite rejection,
+skip, missing coverage and missing explicit complex-policy refusal,
+complex count/radius/rate validation with atomic output preservation,
+one-child full-envelope exact event counts, successful five-child physical paths,
+construction-only budget accounting, visible empty-complex Beer/bottom quadrature,
+schema/unit/shape/nonfinite rejection,
 source labels and byte-hash preservation, deterministic seeded replay, atomic
 failure preservation and concurrent unique publication. No render is invoked.
 
@@ -226,7 +293,8 @@ Push-Location "$repo\bin\tools"
 cl /nologo /std:c++17 /EHsc /W4 /WX /fp:strict /I"$repo\src\Library" `
   "$repo\tools\hylios_measure.cpp" "$inc\HyLIoSForwardTransport.cpp" `
   "$inc\HyLIoSOptics.cpp" "$inc\HyLIoSParticleGeometry.cpp" `
-  "$inc\HyLIoSParticleOverlap.cpp" "$inc\HyLIoSSlabTransport.cpp" `
+  "$inc\HyLIoSParticleOverlap.cpp" "$inc\HyLIoSComplexLayout.cpp" `
+  "$inc\HyLIoSSlabTransport.cpp" `
   "$repo\src\Library\Agent\Json.cpp" "$repo\src\Library\Utilities\RISECBOR64.cpp" `
   /Fe:"$repo\bin\tools\hylios_measure.exe"
 Pop-Location
@@ -236,7 +304,7 @@ Pop-Location
 python tools/test_hylios_measure.py -v
 ```
 
-The POSIX SIGINT contract is skipped on Windows; the other eleven CLI contracts
+The POSIX SIGINT contract is skipped on Windows; the other seventeen CLI contracts
 have no POSIX-specific invocation requirement. Their Windows implementation
 remains unverified here.
 
@@ -277,7 +345,7 @@ validated.
 
 ## Full-suite pinned-fixture runtime
 
-The measurement CLI's twelve contracts and the HyLIoS binaries can be tested
+The measurement CLI's eighteen contracts and the HyLIoS binaries can be tested
 directly with the commands above. The repository-wide `run_all_tests.sh` also
 checks unrelated committed fire records before applying its test filter.
 
@@ -320,3 +388,98 @@ unavailable author code. They still override authored surface folds and use the
 explicit approximation data profile. `complete_physical_estimate` describes
 completion of this declared forward model, not physiological validation.
 
+
+
+## Version 3 exploratory S1–S4 controls (2026-11-26)
+
+Eight sequential runs used the final ownership fix and the standalone mixed-full-LTO
+binary, without linking a shared library archive. Every run used 100 normal-incidence
+histories, analog absorption, roulette disabled, `--placement null --post-scatter
+discard --complex-layout explicit-pack-v1 --boundary smooth`, transition cap 100000,
+and the named Eq7 fiber defaults (r=100nm, fraction .22, relative IOR 1.5/1.33).
+Seeds were 55001 at 550nm and 130001 at 1300nm. Authored surface folds remained
+an explicit smooth-boundary override.
+
+The report version is `hylios-forward-measure-v3`; the kernel version is
+`hylios-forward-explicit-complex-draft-v2`. Apple clang 21.0.0
+(clang-2100.4.1.1), arm64, compiled geometry, overlap, layout, JSON and SHA strictly;
+driver, transport, optics and slab used `-O3 -flto=full -ffast-math
+-fno-finite-math-only`. Binary SHA-256:
+
+`ffcee8c844504d25db6e306509f2aa8e7aa89917e1202a4046b96eeb7c27c418`
+
+All inputs carry `approximate=true`, profile
+`hylios_cleanroom_approximation_v1`, and spectral bundle SHA-256
+`39068ada1e82a488f48781fd50842c1067ade52a44496bdba689d699e60d9d64`.
+The first digest below identifies exact opened bytes. The second remains the
+producer's unverified canonical resolved-specimen claim, as recorded by the CLI.
+
+| Preset | Exact input-byte SHA-256 | Claimed resolved-specimen SHA-256 |
+|---|---|---|
+| S1 | `99b796267b69ff37536a8e48d098ef61df2acea827713f62f058a4706e95c2a2` | `6a461fd6ac5ed7592e1dff6e197f585d3a35e07d41994ec675fa661b62f3b5c6` |
+| S2 | `f393b06719ab2beb5058c51406303d9dd31119a15910077fc0f8a0b72deb5af2` | `24db13e739012867b2ea9d91b3de41d2976c7c46be8a1a343a34227e9b6ed6e4` |
+| S3 | `0f611dd6236e3d4ecfed002657d6cc5b241192a617fc9309b27977a902be1bc8` | `3b51e51263657c8bc7b9071d7ab9aca556b87a53c9a396e0c2f79f4824ad0283` |
+| S4 | `2a64624521d0fa790558e173e0309b2eb6503efd1929312d4747f64a536d2417` | `98a4b7eb83cd43f8ad625cc4039332807434c5304176be5acdc228412b7f5bfa` |
+
+R is escaped incident power; A is physical absorption. The uncertainty shown is
+the sample standard error over all 100 incident histories. All eight reports
+have zero unresolved histories, zero unresolved live weight and zero numerical
+failures; incident R+A accounts for one within binary64 summation error. Inward
+angular events were continued under discard and are not unresolved outcomes.
+
+| Preset | nm | R ± standard error | A | Inward events continued |
+|---|---:|---:|---:|---:|
+| S1 | 550 | 0.41 ± 0.04943 | 0.59 | 9 |
+| S1 | 1300 | 0.41 ± 0.04943 | 0.59 | 0 |
+| S2 | 550 | 0.25 ± 0.04352 | 0.75 | 9 |
+| S2 | 1300 | 0.43 ± 0.04976 | 0.57 | 0 |
+| S3 | 550 | 0.35 ± 0.04794 | 0.65 | 9 |
+| S3 | 1300 | 0.36 ± 0.04824 | 0.64 | 1 |
+| S4 | 550 | 0.53 ± 0.05016 | 0.47 | 30 |
+| S4 | 1300 | 0.63 ± 0.04852 | 0.37 | 2 |
+
+The work table retains actual event counts. Outer accepts include individual
+particles and complex envelopes; the complex subset is shown after `/`. S4 has
+individual particles and no complex construction despite the explicitly selected
+available policy. Layout proposals and pair checks are different units of work.
+Wall times are sequential elapsed process times on this workspace, with other
+workspace activity possible; they are not isolated throughput guarantees.
+
+| Preset | nm | Outer accepts / complexes | Child entries / reflections | Layout proposals | Restarts | Pair checks | Work units | Wall seconds |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| S1 | 550 | 971 / 971 | 411 / 323 | 856279 | 2003 | 680925 | 863744 | 7.341 |
+| S1 | 1300 | 968 / 968 | 395 / 322 | 791633 | 1839 | 628291 | 798799 | 6.287 |
+| S2 | 550 | 651 / 651 | 282 / 202 | 552802 | 1297 | 440986 | 557787 | 4.266 |
+| S2 | 1300 | 833 / 833 | 358 / 297 | 686854 | 1596 | 545275 | 693264 | 5.714 |
+| S3 | 550 | 818 / 818 | 330 / 237 | 658590 | 1538 | 524123 | 664936 | 5.387 |
+| S3 | 1300 | 754 / 754 | 319 / 275 | 641666 | 1502 | 509225 | 647814 | 3.471 |
+| S4 | 550 | 3111 / 0 | 0 / 0 | 0 | 0 | 0 | 19406 | 0.026 |
+| S4 | 1300 | 8641 / 0 | 0 / 0 | 0 | 0 | 0 | 54693 | 0.053 |
+
+Reports are named `rendered/hylios-complex/S{1,2,3,4}-{550,1300}-measure-v3.json`;
+`rendered/hylios-complex/exploration-v3-summary.json` retains report hashes,
+identities, unrounded means and work/timing values. These generated files are
+local evidence, not committed fixtures. One replay command, after rebuilding the
+declared binary mode, is:
+
+```sh
+./bin/tools/hylios_measure --specimen rendered/hylios-complex/S3-resolved.json \
+  --wavelength-nm 550 --placement null --post-scatter discard \
+  --complex-layout explicit-pack-v1 --boundary smooth --histories 100 \
+  --max-transitions 100000 --seed 55001 --estimator analog --roulette-target 0 \
+  --output rendered/hylios-complex/S3-550-measure-v3.json
+```
+
+These are small exploratory samples of the selected clean-room forward model
+and explicitly approximate data. They demonstrate completed accounting for these
+inputs, not convergence, author-code equivalence, agreement with measured skin,
+or a validated ordering of presets. More histories and angle studies remain
+separate work; none of these runs implements authored surface folds.
+
+The eighteen CLI contracts pass source-linked strict, ASan/UBSan and mixed full-LTO
+builds. They include the exact full-envelope one-child limit that was observed
+RED with 267 numerical failures among 500 histories before owned-boundary reuse,
+and GREEN with complete R=1 afterward. The same test checks exact child/envelope
+counts and identical physical histories with or without a consistent declared
+encounter rate. Source, kernel and measurement mechanics tests remain separate
+from the exploratory scientific interpretation above.

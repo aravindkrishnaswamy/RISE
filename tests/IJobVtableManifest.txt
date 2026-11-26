@@ -375,3 +375,6 @@ virtual bool AddMixMaterial(const char*,const char*const*,const char*const*,cons
 virtual bool AddBlendedModifier(const char*,const char*,const char*,const char*){ return false;}
 virtual bool SetCameraNearClip(const char*,const double){ return false;}
 virtual bool AddDiffuseTransmissionMaterial(const char*,const char*,const char*){ return false;}
+virtual bool AddPhysicalPointOmniLight(const char*,const unsigned int,const double*,const double*,const char*,const double,const double[3],const bool){ return false;}
+virtual bool AddPhysicalPointSpotLight(const char*,const unsigned int,const double*,const double*,const char*,const double,const double[3],const double,const double,const double[3],const bool){ return false;}
+virtual bool AddPhysicalDirectionalLight(const char*,const unsigned int,const double*,const double*,const char*,const double,const double[3]){ return false;}

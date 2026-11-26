@@ -188,6 +188,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSForwardTransport.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSParticleGeometry.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSParticleOverlap.cpp"
+    "${RISE_LIB}/Materials/HyLIoS/HyLIoSComplexLayout.cpp"
     "${RISE_LIB}/Materials/AshikminShirleyAnisotropicPhongBRDF.cpp"
     "${RISE_LIB}/Materials/AshikminShirleyAnisotropicPhongSPF.cpp"
     "${RISE_LIB}/Materials/BioSpecSkinSPF.cpp"
@@ -453,6 +454,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Lights/DirectionalLight.cpp"
     "${RISE_LIB}/Lights/LightBVH.cpp"
     "${RISE_LIB}/Lights/PointLight.cpp"
+    "${RISE_LIB}/Lights/PhysicalLightSpectrum.cpp"
     "${RISE_LIB}/Lights/SpotLight.cpp"
     "${RISE_LIB}/Lights/LightSampler.cpp"
 

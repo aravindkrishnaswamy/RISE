@@ -35,7 +35,7 @@
 using namespace RISE::HyLIoS;
 using J = RISE::Agent::JsonValue;
 namespace {
-constexpr const char *MeasurementVersion = "hylios-forward-measure-v2";
+constexpr const char *MeasurementVersion = "hylios-forward-measure-v3";
 volatile std::sig_atomic_t interrupted = 0;
 void Signal(int) {
     interrupted = 1;
@@ -233,7 +233,7 @@ double Real(const std::string &s, const std::string &label, double minimum = 0,
     return v;
 }
 struct Options {
-    std::string specimen, output, placement, postScatter, boundary, seedText, estimator = "analog";
+    std::string specimen, output, placement, postScatter, complexLayout, boundary, seedText, estimator = "analog";
     double wavelength = 0, roulette = 0, fiberRadius = 1e-7, fiberFraction = .22,
            fiberEta = 1.5 / 1.33, exteriorIOR = 1;
     std::uint64_t histories = 0, maxTransitions = 0, seed = 0;
@@ -242,9 +242,9 @@ struct Options {
 void Usage() {
     std::cout << "hylios_measure --specimen FILE --wavelength-nm N --placement fixed|null "
                  "--post-scatter diagnostic|discard --boundary smooth --histories N --max-transitions N --seed U64 --output FILE\n"
-                 "  [--estimator analog|weighted] [--roulette-target N] [--exterior-ior N]\n"
+                 "  [--complex-layout explicit-pack-v1] [--estimator analog|weighted] [--roulette-target N] [--exterior-ior N]\n"
                  "  [--fiber-radius-m N] [--fiber-volume-fraction N] [--fiber-relative-ior N]\n"
-                 "Only individual-particle forward transport and explicit smooth boundary override are "
+                 "Only forward particle/complex transport and explicit smooth boundary override are "
                  "supported.\n";
 }
 Options Parse(int argc, char **argv) {
@@ -259,6 +259,7 @@ Options Parse(int argc, char **argv) {
                                            "--wavelength-nm",
                                            "--placement",
                                            "--post-scatter",
+                                           "--complex-layout",
                                            "--boundary",
                                            "--histories",
                                            "--max-transitions",
@@ -285,6 +286,10 @@ Options Parse(int argc, char **argv) {
     o.postScatter = flags.at("--post-scatter");
     Require(o.postScatter == "diagnostic" || o.postScatter == "discard",
             "post-scatter must be diagnostic or discard");
+    if (flags.count("--complex-layout")) {
+        o.complexLayout = flags.at("--complex-layout");
+        Require(o.complexLayout == "explicit-pack-v1", "complex-layout must be explicit-pack-v1");
+    }
     o.boundary = flags.at("--boundary");
     Require(o.boundary == "smooth",
             "only explicit --boundary smooth is implemented; authored folds are not simulated");
@@ -433,27 +438,43 @@ Resolved Resolve(const Options &options) {
                 const double fraction =
                     Number(particle.get("organelle_fraction"), "organelle fraction", 0, true);
                 Require(fraction <= 1, "organelle fraction exceeds1");
-                Require(Text(particle.get("organization"), "organelle organization") ==
-                            "individually_dispersed_particles",
-                        "active complexes and unknown organizations are unsupported");
+                const auto organization = Text(particle.get("organization"), "organelle organization");
+                const bool complex = organization == "complexes";
+                Require(complex || organization == "individually_dispersed_particles",
+                        "unknown organelle organization");
+                Require(!complex || options.complexLayout == "explicit-pack-v1",
+                        "active complexes require explicit --complex-layout explicit-pack-v1");
                 Require(Boolean(particle.get("interior_absorption_evaluated"),
                                 "particle absorption coverage"),
                         "active organelle absorption has not been evaluated");
                 const auto melanin = Spectrum(particle.get("interior_absorption_m_inv"),
                                               grid.size(), "particle absorption");
                 ForwardOrganelle o{
-                    ForwardOrganization::IndividualSpheroids,
+                    complex ? ForwardOrganization::ExplicitComplexPackV1 : ForwardOrganization::IndividualSpheroids,
                     fraction,
                     Number(particle.get("semi_minor_m"), "semi-minor", 0, true),
                     Number(particle.get("semi_major_m"), "semi-major", 0, true),
                     melanin[selected],
                     Number(particle.get("real_refractive_index"), "particle IOR", 0, true)};
                 Require(o.semiMajorMetres >= o.semiMinorMetres, "prolate major axis below minor");
+                if (complex) {
+                    o.envelopeRadiusMetres = Number(particle.get("complex_diameter_m"), "complex diameter", 0, true) / 2;
+                    Require(o.envelopeRadiusMetres > 0, "complex radius underflows");
+                    const double count = Number(particle.get("maximum_internal_count"), "complex child count");
+                    Require(std::floor(count) == count && count <= ComplexLayout::MaximumChildren,
+                            "complex child count must be an integer from 0 to 64");
+                    o.childCount = static_cast<std::size_t>(count);
+                    // Constructor checks dimensions, volume and implementation range
+                    // before any history or output mutation. It draws no samples.
+                    const ComplexLayout validated(o.envelopeRadiusMetres, o.semiMinorMetres,
+                                                  o.semiMajorMetres, o.childCount);
+                }
                 if (particle.has("encounter_rate_m_inv")) {
                     const double rate = Number(particle.get("encounter_rate_m_inv"),
                                                "declared geometric rate"),
                                  computed = GeometricEncounterRate(
-                                     ProlateSurfaceToVolume(o.semiMinorMetres, o.semiMajorMetres),
+                                     complex ? ProlateSurfaceToVolume(o.envelopeRadiusMetres, o.envelopeRadiusMetres)
+                                             : ProlateSurfaceToVolume(o.semiMinorMetres, o.semiMajorMetres),
                                      fraction);
                     Require(std::abs(rate - computed) <=
                                 64 * std::numeric_limits<double>::epsilon() *
@@ -477,11 +498,23 @@ Resolved Resolve(const Options &options) {
             Put(object, "absorption_m_inv", o.absorptionPerMetre);
             Put(object, "real_refractive_index", o.realIOR);
             Put(object, "nominal_geometric_rate_m_inv",
-                GeometricEncounterRate(ProlateSurfaceToVolume(o.semiMinorMetres, o.semiMajorMetres),
-                                       o.volumeFraction));
-            chosen.set("active_individual_spheroids", object);
-        } else
+                GeometricEncounterRate(o.organization == ForwardOrganization::ExplicitComplexPackV1
+                    ? ProlateSurfaceToVolume(o.envelopeRadiusMetres, o.envelopeRadiusMetres)
+                    : ProlateSurfaceToVolume(o.semiMinorMetres, o.semiMajorMetres), o.volumeFraction));
+            if (o.organization == ForwardOrganization::ExplicitComplexPackV1) {
+                Put(object, "envelope_radius_m", o.envelopeRadiusMetres);
+                Put(object, "actual_child_count", static_cast<double>(o.childCount));
+                object.set("count_interpretation", Str("resolved_maximum_internal_count_as_actual_children_v1"));
+                chosen.set("active_individual_spheroids", J::MakeNull());
+                chosen.set("active_complex_pack", object);
+            } else {
+                chosen.set("active_individual_spheroids", object);
+                chosen.set("active_complex_pack", J::MakeNull());
+            }
+        } else {
             chosen.set("active_individual_spheroids", J::MakeNull());
+            chosen.set("active_complex_pack", J::MakeNull());
+        }
         r.selected.push_back(chosen);
     }
     r.bytesHash = RISE::RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char *>(bytes.data()),
@@ -612,6 +645,17 @@ struct Aggregate {
         ADD_COUNTER(particleReflections);
         ADD_COUNTER(particleExits);
         ADD_COUNTER(inwardPostExitEvents);
+        ADD_COUNTER(acceptedComplexes);
+        ADD_COUNTER(complexExits);
+        ADD_COUNTER(complexChildEntries);
+        ADD_COUNTER(complexChildExits);
+        ADD_COUNTER(complexChildReflections);
+        ADD_COUNTER(complexHostSegments);
+        ADD_COUNTER(complexLayoutProposals);
+        ADD_COUNTER(complexLayoutContainmentRejections);
+        ADD_COUNTER(complexLayoutOverlapRejections);
+        ADD_COUNTER(complexLayoutRestarts);
+        ADD_COUNTER(complexLayoutPairChecks);
         ADD_COUNTER(fiberEvents);
         ADD_COUNTER(fiberPasses);
         ADD_COUNTER(perturbationProposals);
@@ -675,10 +719,18 @@ J Measure(const Options &o, const Resolved &r) {
     J output = J::MakeObject();
     output.set("measurement_version", Str(MeasurementVersion));
     output.set("kernel_version", Str(ForwardTransportVersion));
-    output.set("model_scope", Str("six-layer monochromatic individual-spheroid forward transport; "
-                                  "complexes and renderer adjoint unsupported"));
+    output.set("model_scope", Str("six-layer monochromatic individual/explicit-complex forward transport; "
+                                  "renderer adjoint unsupported"));
     output.set("placement_policy",
                Str(o.placement == "fixed" ? "FixedEventDiagnosticV1" : "NullCollisionPlacementV1"));
+    output.set("complex_layout_policy", o.complexLayout.empty() ? J::MakeNull() : Str(ComplexLayoutVersion));
+    J construction = J::MakeObject();
+    construction.set("centre_support", Str("uniform ball of largest binary64 radius <= R-b, via cube rejection"));
+    construction.set("child_axis_prior", Str("isotropic, independent of incoming ray"));
+    Put(construction, "maximum_children", ComplexLayout::MaximumChildren);
+    Put(construction, "proposals_per_child_before_restart", ComplexLayout::ProposalsPerChildBeforeRestart);
+    construction.set("interaction_count_cap", J::MakeNull());
+    output.set("complex_layout_convention", o.complexLayout.empty() ? J::MakeNull() : construction);
     output.set("boundary_law", Str("smooth_planar_dielectric_override_v1"));
     output.set("authored_surface_folds_simulated", Bool(false));
     output.set("authored_surface_fold_aspect_ratio", r.original.get("surface_fold_aspect_ratio"));

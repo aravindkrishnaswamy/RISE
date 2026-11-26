@@ -235,8 +235,8 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 
 	if( const PointLight* m = dynamic_cast<const PointLight*>( light ) ) {
 		ILightPriv* clone = 0;
-		RISE_API_CreatePointOmniLight( &clone, m->emissionEnergy(), m->emissionColor(),
-			m->CanGeneratePhotons() );
+		clone = new PointLight( m->emissionEnergy(), m->emissionColor(),
+			m->CanGeneratePhotons(), m->GetPhysicalSpectrum() );
 		if( clone ) {
 			GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot point light clone" );
 			return Restore::Place( clone, *m );
@@ -244,9 +244,9 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 	}
 	else if( const SpotLight* m = dynamic_cast<const SpotLight*>( light ) ) {
 		ILightPriv* clone = 0;
-		RISE_API_CreatePointSpotLight( &clone, m->emissionEnergy(), m->emissionColor(),
-			m->emissionTarget(), m->emissionInnerAngle(), m->emissionOuterAngle(),
-			m->CanGeneratePhotons() );
+		clone = new SpotLight( m->emissionEnergy(), m->emissionTarget(),
+			m->emissionInnerAngle(), m->emissionOuterAngle(), m->emissionColor(),
+			m->CanGeneratePhotons(), m->GetPhysicalSpectrum() );
 		if( clone ) {
 			GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot spot light clone" );
 			// Spot derives both ptPosition and vDirection (from target +
@@ -257,8 +257,8 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 	}
 	else if( const DirectionalLight* m = dynamic_cast<const DirectionalLight*>( light ) ) {
 		ILightPriv* clone = 0;
-		RISE_API_CreateDirectionalLight( &clone, m->emissionEnergy(), m->emissionColor(),
-			m->emissionDirection() );
+		clone = new DirectionalLight( m->emissionEnergy(), m->emissionColor(),
+			m->emissionDirection(), m->GetPhysicalSpectrum() );
 		if( clone ) {
 			GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot directional light clone" );
 			return clone;

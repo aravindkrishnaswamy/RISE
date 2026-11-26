@@ -57,6 +57,8 @@ double ProlateProjectedArea(const ProlateParticle& particle, ParticleVector dire
 // the nominal gradient magnitude. This explicitly excludes poorly resolved
 // grazing normals and extreme exponent combinations. Known surface zeros are
 // deflated only when certified; the projected sampler has no such root enclosure.
+// External spheres preserve the raw discriminant with a fixed degree-four
+// product expansion; unsupported product/residual exponents raise range_error.
 // No ray-origin epsilon or self-intersection policy is imposed by this math.
 std::optional<ParticleChord> IntersectProlateRay(const ProlateParticle& particle,
 	ParticleVector originRelativeMetres, ParticleVector direction);

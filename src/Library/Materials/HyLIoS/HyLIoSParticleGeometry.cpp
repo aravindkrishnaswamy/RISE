@@ -513,6 +513,119 @@ bool TryInsideChord(const Projection& p, ParticleVector rawAxis,ParticleVector o
 	result=ParticleChord{entry,exit,length,entryPoint,exitPoint,ImplicitEndpointNormal(p,frame,entryPoint),ImplicitEndpointNormal(p,frame,exitPoint)};
 	return true;
 }
+// Sphere-only raw quartic discriminant. The degree-four expression has at
+// most 120 exact product/residual terms; capacity is fixed, not arbitrary
+// precision. Every product must have a representable exact FMA residual.
+struct SphereExpansion {
+	std::array<double,128> components{};
+	std::size_t count=0;
+	void Add(double value) {
+		std::array<double,128> next{};
+		std::size_t size=0;
+		for (std::size_t i=0;i<count;++i) {
+			const SumPair sum=TwoSum(value,components[i]);
+			if (sum.tail!=0.0) {
+				if (size==next.size()) throw std::range_error("sphere exact discriminant capacity exceeded");
+				next[size++]=sum.tail;
+			}
+			value=sum.head;
+		}
+		if (value!=0.0 || size==0) {
+			if (size==next.size()) throw std::range_error("sphere exact discriminant capacity exceeded");
+			next[size++]=value;
+		}
+		components=next; count=size;
+	}
+	void Add(const SphereExpansion& other,double sign=1.0) {
+		for (std::size_t i=0;i<other.count;++i) Add(sign*other.components[i]);
+	}
+	int Sign() const {
+		for (std::size_t i=count;i>0;--i) if (components[i-1]!=0.0) return components[i-1]<0.0 ? -1 : 1;
+		return 0;
+	}
+	double Value() const {
+		double result=0.0;
+		for (std::size_t i=0;i<count;++i) result+=components[i];
+		if (!std::isfinite(result) || (result==0.0 && Sign()!=0))
+			throw std::range_error("sphere exact discriminant result exceeds binary64 range");
+		return result;
+	}
+};
+SphereExpansion SphereProduct(double a,double b) {
+	SphereExpansion result;
+	if (a==0.0 || b==0.0) return result;
+	const double product=a*b;
+	if (!std::isfinite(product) || !ProductResidualRepresentable(a,b))
+		throw std::range_error("sphere raw products exceed supported exact-residual exponent range");
+	result.Add(std::fma(a,b,-product)); result.Add(product);
+	return result;
+}
+SphereExpansion SphereMultiply(const SphereExpansion& a,const SphereExpansion& b) {
+	SphereExpansion result;
+	for (std::size_t i=0;i<a.count;++i) for (std::size_t j=0;j<b.count;++j)
+		result.Add(SphereProduct(a.components[i],b.components[j]));
+	return result;
+}
+SphereExpansion SphereScale(const SphereExpansion& a,double b) {
+	SphereExpansion result;
+	for (std::size_t i=0;i<a.count;++i) result.Add(SphereProduct(a.components[i],b));
+	return result;
+}
+SphereExpansion SphereDot(ParticleVector a,ParticleVector b) {
+	SphereExpansion result=SphereProduct(a.x,b.x);
+	result.Add(SphereProduct(a.y,b.y)); result.Add(SphereProduct(a.z,b.z));
+	return result;
+}
+SphereExpansion SphereDeterminant(double a,double b,double c,double d) {
+	SphereExpansion result=SphereProduct(a,b); result.Add(SphereProduct(c,d),-1.0); return result;
+}
+std::optional<ParticleChord> IntersectExternalSphere(double radius,ParticleVector origin,ParticleVector direction) {
+	const SphereExpansion B=SphereDot(origin,direction);
+	// This branch is reached only after the raw metric classified the origin
+	// outside. An outward or tangent-forward ray cannot hit the sphere.
+	if (B.Sign()>=0) return std::nullopt;
+	const SphereExpansion A=SphereDot(direction,direction);
+	const SphereExpansion rr=SphereProduct(radius,radius);
+	const SphereExpansion gx=SphereDeterminant(origin.y,direction.z,origin.z,direction.y);
+	const SphereExpansion gy=SphereDeterminant(origin.z,direction.x,origin.x,direction.z);
+	const SphereExpansion gz=SphereDeterminant(origin.x,direction.y,origin.y,direction.x);
+	SphereExpansion discriminant=SphereMultiply(rr,A);
+	discriminant.Add(SphereMultiply(gx,gx),-1.0);
+	discriminant.Add(SphereMultiply(gy,gy),-1.0);
+	discriminant.Add(SphereMultiply(gz,gz),-1.0);
+	if (discriminant.Sign()<0) return std::nullopt;
+	const double normSquared=A.Value(),norm=std::sqrt(normSquared);
+	const double root=std::sqrt(discriminant.Value());
+	SphereExpansion C=SphereDot(origin,origin); C.Add(rr,-1.0);
+	if (C.Sign()<=0) throw std::range_error("sphere outside classification disagrees with exact raw metric");
+	const double numerator=-B.Value()+root;
+	if (!std::isfinite(numerator)) throw std::range_error("sphere raw root exceeds supported exponent range");
+	// A certified zero discriminant has ONE root. Evaluate it once so two
+	// algebraically equivalent divisions cannot reverse equal distances.
+	const bool tangent=discriminant.Sign()==0;
+	const double half=ProductRatio({root},{norm},true);
+	double entry=tangent ? ProductRatio({-B.Value(),norm},{normSquared}) : ProductRatio({C.Value(),norm},{numerator});
+	double exit=tangent ? entry : ProductRatio({numerator},{norm});
+	if (entry>exit) {
+		const double centre=ProductRatio({-B.Value()},{norm});
+		// At a distant origin both physical roots can have the same rounded
+		// distance. Preserve that shared distance and the independent chord.
+		if (centre-half!=centre+half) throw std::range_error("sphere root distances cannot be ordered in binary64");
+		entry=exit=centre;
+	}
+	const double length=ProductRatio({2.0,root},{norm});
+	// Reconstruct endpoints from the raw perpendicular displacement, not from
+	// subtracting distant roots from the origin. Full chord is independent of
+	// subtracting its two rounded distances.
+	SphereExpansion px=SphereScale(gz,direction.y); px.Add(SphereScale(gy,direction.z),-1.0);
+	SphereExpansion py=SphereScale(gx,direction.z); py.Add(SphereScale(gz,direction.x),-1.0);
+	SphereExpansion pz=SphereScale(gy,direction.x); pz.Add(SphereScale(gx,direction.y),-1.0);
+	const ParticleVector closest{px.Value()/normSquared,py.Value()/normSquared,pz.Value()/normSquared};
+	const ParticleVector unit=Unit(direction);
+	const ParticleVector start{std::fma(-half,unit.x,closest.x),std::fma(-half,unit.y,closest.y),std::fma(-half,unit.z,closest.z)};
+	const ParticleVector end{std::fma(half,unit.x,closest.x),std::fma(half,unit.y,closest.y),std::fma(half,unit.z,closest.z)};
+	return ParticleChord{entry,exit,length,start,end,Unit(start),Unit(end)};
+}
 double HalfChord(const Projection& p, double w) {
 	return w == 0.0 ? 0.0 : ProductRatio({p.a,p.b,w},{p.radius},true);
 }
@@ -542,6 +655,7 @@ std::optional<ParticleChord> IntersectProlateRay(const ProlateParticle& particle
 	const Projection p = Project(particle,direction);
 	std::optional<ParticleChord> insideChord;
 	if (TryInsideChord(p,particle.axis,origin,direction,insideChord)) return insideChord;
+	if (p.a==p.b) return IntersectExternalSphere(p.a,origin,direction);
 	// Project the raw line's perpendicular displacement, not the distant
 	// origin onto a rounded normalized frame. The latter can turn an exact
 	// central chord into a miss by amplifying one basis ulp by |origin|.

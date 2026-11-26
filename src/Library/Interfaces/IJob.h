@@ -5052,6 +5052,11 @@ namespace RISE
 			return false;
 		}
 
+		//! Physical delta-source construction. See RISE_API.h for units and zero-outside policy.
+		virtual bool AddPhysicalPointOmniLight(const char*, const unsigned int, const double*, const double*, const char*, const double, const double[3], const bool) { return false; }
+		virtual bool AddPhysicalPointSpotLight(const char*, const unsigned int, const double*, const double*, const char*, const double, const double[3], const double, const double, const double[3], const bool) { return false; }
+		virtual bool AddPhysicalDirectionalLight(const char*, const unsigned int, const double*, const double*, const char*, const double, const double[3]) { return false; }
+
 	};
 
 

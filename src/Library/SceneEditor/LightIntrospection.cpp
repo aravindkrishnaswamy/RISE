@@ -20,6 +20,9 @@
 
 #include "pch.h"
 #include "LightIntrospection.h"
+#include "../Lights/PhysicalLightSpectrum.h"
+#include <sstream>
+#include <iomanip>
 #include "ChunkDescriptorRegistry.h"
 #include "../Cst/Cst.h"                 // the `colorspace` row reads the light's own chunk
 #include "../Interfaces/ILight.h"
@@ -125,6 +128,18 @@ String ReadLightColorSpace( const RISE::Cst::Document* doc, const String& lightN
 String ReadLightParam( const ILight& light, const std::string& paramName )
 {
 	char buf[128];
+    if (paramName == "spectral_outside") return String("zero");
+    if (paramName == "spectral_samples") {
+        const auto spectrum = RISE::Implementation::GetPhysicalLightSpectrum(light);
+        if (!spectrum) return String();
+        std::ostringstream out;
+        out << std::setprecision(17);
+        for (std::size_t i = 0; i < spectrum->Wavelengths().size(); ++i) {
+            if (i) out << "; ";
+            out << spectrum->Wavelengths()[i] << " " << spectrum->Values()[i];
+        }
+        return String(out.str().c_str());
+    }
 	if( paramName == "power" ) {
 		std::snprintf( buf, sizeof(buf), "%g", static_cast<double>( light.emissionEnergy() ) );
 		return String( buf );
@@ -182,6 +197,7 @@ String ReadLightParam( const ILight& light, const std::string& paramName )
 // in the first place.
 bool IsRuntimeEditable( ILight::LightType type, const std::string& paramName )
 {
+	if( paramName == "spectral_samples" || paramName == "spectral_outside" ) return false;
 	if( paramName == "name" ) return false;  // shown as panel header
 	// See ReadLightColorSpace's doc: a load-time interpretation, already
 	// consumed by the time the light exists.  Re-interpreting the
@@ -202,7 +218,7 @@ bool IsRuntimeEditable( ILight::LightType type, const std::string& paramName )
 const char* OverrideDescription( const std::string& paramName, const char* fallback )
 {
 	if( paramName == "power" ) {
-		return "Radiant energy multiplier.  Scales the per-channel `color` to produce emitted radiance.";
+		return "Intensity multiplier. Scales color for RGB sources; dimensionless scale of spectral_samples for physical sources.";
 	}
 	if( paramName == "inner" ) {
 		return "Inner cone full-angle (degrees).  Full intensity within this cone.";
@@ -225,6 +241,7 @@ std::vector<CameraProperty> LightIntrospection::Inspect(
 {
 	std::vector<CameraProperty> rows;
 	const ILight::LightType type = light.lightType();
+	const bool physical = bool(RISE::Implementation::GetPhysicalLightSpectrum(light));
 
 	rows.push_back( MakeReadOnlyRow(
 		"Name", name,
@@ -249,6 +266,8 @@ std::vector<CameraProperty> LightIntrospection::Inspect(
 	// the natural display order, matching what users see in their scene
 	// files.
 	for( const ParameterDescriptor& p : desc->parameters ) {
+		if (!physical && (p.name == "spectral_samples" || p.name == "spectral_outside")) continue;
+        if (physical && (p.name == "color" || p.name == "colorspace")) continue;
 		if( p.name == "name" ) continue;  // panel header carries this
 
 		// Skip per-axis Eulers / quaternion shadows of the spotlight

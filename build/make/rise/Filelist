@@ -240,6 +240,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSForwardTransport.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongBRDF.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
@@ -513,6 +514,7 @@ SRCLIBLIGHTS =\
 	$(PATHLIBRARY)Lights/DirectionalLight.cpp					\
 	$(PATHLIBRARY)Lights/LightBVH.cpp							\
 	$(PATHLIBRARY)Lights/PointLight.cpp							\
+	$(PATHLIBRARY)Lights/PhysicalLightSpectrum.cpp							\
 	$(PATHLIBRARY)Lights/SpotLight.cpp							\
 	$(PATHLIBRARY)Lights/LightSampler.cpp
 

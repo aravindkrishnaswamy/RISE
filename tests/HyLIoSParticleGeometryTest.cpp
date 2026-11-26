@@ -192,6 +192,10 @@ int main() {
 	}
 	const auto arbitrarySphereAxis=IntersectProlateRay({5,5,{1,2,3}},{3,4,0},{-4,3,0});
 	Check(arbitrarySphereAxis && arbitrarySphereAxis->exitDistanceMetres==0,"sphere tangent metric is independent of irrelevant authored axis");
+	const auto exteriorTangent=IntersectProlateRay({1,1,z},{-1,1,-1},{1,0,1});
+	Check(exteriorTangent && exteriorTangent->entryDistanceMetres==exteriorTangent->exitDistanceMetres && exteriorTangent->chordLengthMetres==0,
+		"certified zero raw sphere discriminant retains one shared external tangent distance");
+	if(exteriorTangent) Near(exteriorTangent->entryDistanceMetres,std::sqrt(2.0),2e-15,"external oblique sphere tangent has analytic physical distance");
 	const auto skin=IntersectProlateRay({0.4e-6,1.2e-6,{1,2,3}},{0.1e-6,0,0},{0.3,0.4,0.5});
 	Check(skin.has_value(),"physiological micron axes and ordinary aspect retain general intersection support");
 	for(double major : {0x1p52,0x1p100}) {
@@ -203,6 +207,30 @@ int main() {
 	const auto supportedGrazing=IntersectProlateRay({1,supportedMajor,z},{slope/2,0,-supportedMajor/2},{slope/supportedMajor,0,1});
 	Check(supportedGrazing.has_value(),"bounded ordinary grazing aspect retains general intersection support");
 	if(supportedGrazing) VectorNear(supportedGrazing->entryOutwardNormal,{0,0,-1},1e-9,"supported grazing normal agrees with analytic pole within its resolved precision");
+	// Decimal100 oracles of the exact binary64 inputs below (from_float, not
+	// decimal-rounded coordinates). Raw D is +2.839993017139124e-17 for the
+	// upper child and -3.282252376674699e-17 for the lower child.
+	const ParticleVector nearSphereDirection{0x1.0000000000001p-1,0,0x1.bb67ae8584cacp-1};
+	const ParticleVector upperSphereOrigin{-0x1.3ffffffffffffp-1,0,-0x1.9520cd1372fe9p+0};
+	const ParticleVector lowerSphereOrigin{upperSphereOrigin.x,0,-0x1.2a419a26e5fd2p-1};
+	for(int power : {-20,0,20}) for(ParticleVector sphereAxis : {z,x,ParticleVector{1,2,3}}) {
+		const double scale=std::ldexp(1.0,power);
+		const ProlateParticle child{0.25*scale,0.25*scale,sphereAxis};
+		const auto smallChord=IntersectProlateRay(child,Scale(upperSphereOrigin,scale),nearSphereDirection);
+		Check(smallChord.has_value(),"exact positive raw sphere discriminant retains meaningful small chord");
+		if(smallChord) {
+			Near(smallChord->entryDistanceMetres,scale*1.6830126965630604844,2e-15,"external sphere entry matches exact-binary Decimal100 oracle");
+			Near(smallChord->chordLengthMetres,scale*1.06583169724663806e-8,2e-14,"external sphere chord matches exact-binary Decimal100 oracle");
+		}
+		Check(!IntersectProlateRay(child,Scale(lowerSphereOrigin,scale),nearSphereDirection),"exact negative raw sphere discriminant remains a miss");
+	}
+	for(int power : {-20,20}) {
+		const auto scaledDirection=IntersectProlateRay({0.25,0.25,z},upperSphereOrigin,Scale(nearSphereDirection,std::ldexp(1.0,power)));
+		Check(scaledDirection.has_value(),"sphere raw direction power-of-two scaling preserves near-tangent hit");
+		if(scaledDirection) Near(scaledDirection->chordLengthMetres,1.06583169724663806e-8,2e-14,"sphere physical small chord is independent of raw direction magnitude");
+	}
+	Throws<std::range_error>([&]{ IntersectProlateRay({1e-200,1e-200,z},{0,0,-1},z); },
+		"external sphere unsupported exact-residual exponent domain fails explicitly");
 	// Independent reference and rotation/scale/axis-sign covariance.
 	std::mt19937_64 generator(0x82b43a6);
 	std::uniform_real_distribution<double> uniform(0,1);

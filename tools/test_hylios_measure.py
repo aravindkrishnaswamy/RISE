@@ -41,6 +41,15 @@ def active_particle():
                 semi_minor_m=1e-7, semi_major_m=1e-7, real_refractive_index=1.)
 
 
+def active_complex(count=1, radius=1e-4, fraction=.05, full_child=True):
+    return dict(enabled=True, organelle_fraction=fraction, organization="complexes",
+                interior_absorption_evaluated=True, interior_absorption_m_inv=[0., 0.],
+                semi_minor_m=radius if full_child else radius/5,
+                semi_major_m=radius if full_child else radius/2,
+                real_refractive_index=1., complex_diameter_m=2*radius,
+                maximum_internal_count=count, encounter_rate_m_inv=3*fraction/(4*radius))
+
+
 @unittest.skipUnless(BINARY.is_file(), MISSING_BINARY)
 class MeasurementCLI(unittest.TestCase):
     def setUp(self):
@@ -212,6 +221,145 @@ class MeasurementCLI(unittest.TestCase):
         a = self.run_case(p)
         self.assertIsNone(a["selected_resolved_layers"][1]["active_individual_spheroids"])
         self.assertEqual(a["estimates"]["escaped_reflectance"]["mean"], 1)
+
+    def test_complex_explicit_policy_and_atomic_resolution(self):
+        p = specimen();p["layers"][1]["particles"] = active_complex()
+        self.reject_case(p, "active complexes require explicit")
+        self.reject_case(p, "required option", **{"--complex-layout": "explicit-pack-v1", "--post-scatter": None})
+        self.reject_case(p, "complex-layout must be", **{"--complex-layout": "implicit"})
+        cases = []
+        for field in ("maximum_internal_count", "complex_diameter_m"):
+            value = specimen();value["layers"][1]["particles"] = active_complex()
+            del value["layers"][1]["particles"][field]
+            cases.append((value, "must be a number"))
+        for count in (-1, .5, 65, True, "5"):
+            value = specimen();value["layers"][1]["particles"] = active_complex()
+            value["layers"][1]["particles"]["maximum_internal_count"] = count
+            cases.append((value, "complex child count"))
+        for diameter, message in ((0, "complex diameter"), (-1, "complex diameter"),
+                                  (5e-324, "underflows"),
+                                  (1e-4, "unsupported complex dimensions/count"),
+                                  (.001, "layer cannot contain positive-measure envelopes")):
+            value = specimen();value["layers"][1]["particles"] = active_complex()
+            value["layers"][1]["particles"]["complex_diameter_m"] = diameter
+            value["layers"][1]["particles"].pop("encounter_rate_m_inv")
+            cases.append((value, message))
+        value = specimen();value["layers"][1]["particles"] = active_complex(count=2)
+        cases.append((value, "unsupported complex dimensions/count"))
+        value = specimen();value["layers"][1]["particles"] = active_complex(count=2)
+        value["layers"][1]["particles"].update(semi_minor_m=8e-5, semi_major_m=8e-5)
+        cases.append((value, "child volume exceeds envelope volume"))
+        for declared in (0, 3*.05/(4*2e-5), 3*.05/1e-4):
+            value = specimen();value["layers"][1]["particles"] = active_complex()
+            value["layers"][1]["particles"]["encounter_rate_m_inv"] = declared
+            cases.append((value, "declared particle rate disagrees"))
+        for value, error in cases:
+            with self.subTest(error=error, particle=value["layers"][1]["particles"]):
+                self.reject_case(value, error, **{"--complex-layout": "explicit-pack-v1"})
+        pd = specimen();pd["layers"][4]["particles"] = active_complex()
+        self.reject_case(pd, "PD complex host gaps with fiber scattering", **{
+            "--complex-layout": "explicit-pack-v1", "--fiber-volume-fraction": ".22"})
+
+    def test_complex_full_child_counters_and_provenance(self):
+        p = specimen();p["layers"][1]["particles"] = active_complex()
+        a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard", "--histories": "500"})
+        self.assertEqual(a["measurement_version"], "hylios-forward-measure-v3")
+        self.assertEqual(a["complex_layout_policy"], "hylios_complex_explicit_pack_v1")
+        self.assertEqual(a["explicit_cli_options"]["--complex-layout"], "explicit-pack-v1")
+        convention = a["complex_layout_convention"]
+        self.assertEqual(convention["maximum_children"], 64)
+        self.assertEqual(convention["proposals_per_child_before_restart"], 256)
+        self.assertIsNone(convention["interaction_count_cap"])
+        self.assertIn("isotropic", convention["child_axis_prior"])
+        chosen = a["selected_resolved_layers"][1]
+        self.assertIsNone(chosen["active_individual_spheroids"])
+        selected = chosen["active_complex_pack"]
+        self.assertEqual(selected["envelope_radius_m"], 1e-4)
+        self.assertEqual(selected["actual_child_count"], 1)
+        self.assertEqual(selected["count_interpretation"], "resolved_maximum_internal_count_as_actual_children_v1")
+        self.assertAlmostEqual(selected["nominal_geometric_rate_m_inv"], 375)
+        counters = a["aggregate_counters"]
+        accepted = counters["acceptedComplexes"]
+        self.assertGreater(accepted, 0)
+        # R==child radius gives one centred child filling the envelope. At the
+        # matched-index zero-angle endpoint, every accepted envelope has exactly
+        # one complete child entry/exit and one five-draw accepted proposal.
+        for key in ("acceptedParticles", "complexExits", "complexChildEntries", "complexChildExits", "particleExits", "complexLayoutProposals"):
+            self.assertEqual(counters[key], accepted, key)
+        for key in ("complexChildReflections", "complexLayoutRestarts", "complexLayoutPairChecks", "perturbationProposals"):
+            self.assertEqual(counters[key], 0, key)
+        self.assertGreater(a["particle_path_length_m_by_layer"][1], 0)
+        self.assertTrue(a["complete_physical_estimate"])
+        self.assertEqual(a["estimates"]["escaped_reflectance"]["mean"], 1)
+        self.assertEqual(a["estimates"]["physical_absorption"]["mean"], 0)
+        self.assertEqual(a["input_bytes_sha256"], hashlib.sha256(self.source.read_bytes()).hexdigest())
+        self.assertEqual(a["provenance"], p["provenance"])
+        # The declared rate is a checked producer claim, not an alternative
+        # proposal clock: omitting it preserves the identical resolved process.
+        p["layers"][1]["particles"].pop("encounter_rate_m_inv")
+        b = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard", "--histories": "500"})
+        for key in ("outcomes", "aggregate_counters", "estimates", "random_draw_count"):
+            self.assertEqual(a[key], b[key], key)
+
+    def test_complex_five_child_physical_paths_and_work(self):
+        p = specimen(100)
+        particle = active_complex(count=5, fraction=.015, full_child=False)
+        particle.update(interior_absorption_m_inv=[5000., 5000.], real_refractive_index=1.7)
+        p["layers"][1]["particles"] = particle
+        a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard",
+                                "--estimator": "weighted", "--histories": "200", "--max-transitions": "100000"})
+        selected = a["selected_resolved_layers"][1]["active_complex_pack"]
+        self.assertEqual(selected["actual_child_count"], 5)
+        counters = a["aggregate_counters"]
+        self.assertGreater(counters["acceptedComplexes"], 0)
+        self.assertGreaterEqual(counters["complexLayoutProposals"], 5*counters["acceptedComplexes"])
+        self.assertGreater(counters["complexLayoutPairChecks"], 0)
+        self.assertGreater(counters["complexChildEntries"], 0)
+        self.assertGreater(counters["complexChildReflections"], 0)
+        self.assertGreater(sum(a["particle_path_length_m_by_layer"]), 0)
+        self.assertGreater(sum(a["particle_absorbed_weight_by_layer"]), 0)
+        self.assertGreater(sum(a["host_absorbed_weight_by_layer"]), 0)
+        self.assertEqual(a["unresolved_history_count"], 0)
+        self.assertTrue(a["complete_physical_estimate"])
+        self.assertAlmostEqual(a["estimates"]["accounted_weight"]["mean"], 1, places=12)
+
+    def test_complex_construction_budget_retains_power(self):
+        p = specimen();p["layers"][0]["particles"] = active_complex(count=5, fraction=.2, full_child=False)
+        p["layers"][0]["particles"]["interior_absorption_m_inv"] = [1e6, 1e6]
+        a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard",
+                                "--histories": "128", "--max-transitions": "3", "--wavelength-nm": "550"})
+        c = a["aggregate_counters"]
+        self.assertGreater(c["acceptedComplexes"], 0)
+        self.assertEqual(c["complexLayoutProposals"], c["acceptedComplexes"])
+        self.assertEqual(c["complexChildEntries"], 0)
+        self.assertEqual(c["complexExits"], 0)
+        self.assertEqual(c["workUnits"], 3*128)
+        self.assertEqual(a["outcomes"]["budget_exceeded"]["count"], 128)
+        self.assertEqual(a["estimates"]["unresolved_live_weight"]["mean"], 1)
+        self.assertEqual(a["estimates"]["physical_absorption"]["mean"], 0)
+        self.assertEqual(sum(a["particle_path_length_m_by_layer"]), 0)
+        self.assertFalse(a["complete_physical_estimate"])
+
+    def test_visible_empty_complex_matches_independent_host_integral(self):
+        p = specimen(100)
+        particle = active_complex(count=0, fraction=.02, full_child=False)
+        particle.update(interior_absorption_m_inv=[1e6, 1e6], real_refractive_index=7.)
+        p["layers"][1]["particles"] = particle
+        bins, tau = 100000, .6
+        expected = math.exp(-tau)*sum(2*((i+.5)/bins)*math.exp(-tau/((i+.5)/bins)) for i in range(bins))/bins
+        for estimator in ("analog", "weighted"):
+            a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard",
+                                    "--wavelength-nm": "550", "--estimator": estimator, "--histories": "3000"})
+            self.assertGreater(a["aggregate_counters"]["acceptedComplexes"], 0)
+            for key in ("complexChildEntries", "complexChildExits", "complexLayoutProposals", "perturbationProposals"):
+                self.assertEqual(a["aggregate_counters"][key], 0, key)
+            self.assertEqual(sum(a["particle_absorbed_weight_by_layer"]), 0)
+            self.assertEqual(sum(a["particle_path_length_m_by_layer"]), 0)
+            self.assertEqual(a["host_path_length_m_by_layer"], a["path_length_m_by_layer"])
+            escaped = a["estimates"]["escaped_reflectance"]
+            self.assertLessEqual(abs(escaped["mean"]-expected), 5*escaped["standard_error"]+1e-4)
+            self.assertEqual(a["unresolved_history_count"], 0)
+            self.assertTrue(a["complete_physical_estimate"])
 
     def test_structural_rejections_are_atomic(self):
         cases = []

@@ -25,6 +25,8 @@
 #endif
 
 #include "Interfaces/ILog.h"
+#include "Lights/PhysicalLightSpectrum.h"
+#include "Utilities/FiniteMath.h"
 
 //////////////////////////////////////////////////////////
 // Library versioning information
@@ -322,6 +324,52 @@ namespace RISE
 
 namespace RISE
 {
+	// Checked physical sources; spectra are copied and shared immutably.
+	bool RISE_API_CreatePhysicalPointOmniLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const bool shootPhotons)
+	{
+		if (!ppi) return false;
+		*ppi = nullptr;
+		if (!RISE::IsFiniteDouble(scale) || scale < 0) return false;
+		auto spectrum = PhysicalLightSpectrum::Create(nm, values, count, outsidePolicy);
+		if (!spectrum || !spectrum->CanScale(scale, FOUR_PI)) return false;
+		const RISEPel rgb = spectrum->VisibleRGB();
+		*ppi = new PointLight(scale, rgb, shootPhotons, spectrum);
+		GlobalLog()->PrintNew(*ppi, __FILE__, __LINE__, "physical spectral light");
+		return true;
+	}
+
+	bool RISE_API_CreatePhysicalPointSpotLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Point3& position, const Point3& target, const Scalar inner, const Scalar outer, const bool shootPhotons)
+	{
+		if (!ppi) return false;
+		*ppi = nullptr;
+		if (!RISE::IsFiniteDouble(scale) || scale < 0 || !RISE::IsFiniteDouble(inner) || !RISE::IsFiniteDouble(outer) || inner < 0 || outer <= 0 || inner > outer || outer > PI || !SpotLight::IsSupportedPhysicalCone(inner, outer) || !RISE::IsFiniteDouble(target.x) || !RISE::IsFiniteDouble(target.y) || !RISE::IsFiniteDouble(target.z) ||
+            !RISE::IsFiniteDouble(position.x) || !RISE::IsFiniteDouble(position.y) || !RISE::IsFiniteDouble(position.z)) return false;
+        const Scalar axisLength = Vector3Ops::Magnitude(Vector3Ops::mkVector3(target, position));
+        if (!RISE::IsFiniteDouble(axisLength) || !(axisLength > 0)) return false;
+		auto spectrum = PhysicalLightSpectrum::Create(nm, values, count, outsidePolicy);
+		if (!spectrum || !spectrum->CanScale(scale, FOUR_PI)) return false;
+		const RISEPel rgb = spectrum->VisibleRGB();
+		auto* light = new SpotLight(scale, target, inner, outer, rgb, shootPhotons, spectrum);
+        light->SetPosition(position);
+        light->FinalizeTransformations();
+        *ppi = light;
+		GlobalLog()->PrintNew(*ppi, __FILE__, __LINE__, "physical spectral light");
+		return true;
+	}
+
+	bool RISE_API_CreatePhysicalDirectionalLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Vector3& direction)
+	{
+		if (!ppi) return false;
+		*ppi = nullptr;
+		if (!RISE::IsFiniteDouble(scale) || scale < 0 || !RISE::IsFiniteDouble(direction.x) || !RISE::IsFiniteDouble(direction.y) || !RISE::IsFiniteDouble(direction.z) || !RISE::IsFiniteDouble(Vector3Ops::Magnitude(direction)) || !(Vector3Ops::Magnitude(direction) > 0)) return false;
+		auto spectrum = PhysicalLightSpectrum::Create(nm, values, count, outsidePolicy);
+		if (!spectrum || !spectrum->CanScale(scale)) return false;
+		const RISEPel rgb = spectrum->VisibleRGB();
+		*ppi = new DirectionalLight(scale, rgb, direction, spectrum);
+		GlobalLog()->PrintNew(*ppi, __FILE__, __LINE__, "physical spectral light");
+		return true;
+	}
+
 	//! Creates a infinite point omni light, located at the origin
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePointOmniLight(

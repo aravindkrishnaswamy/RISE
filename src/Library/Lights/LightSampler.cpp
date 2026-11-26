@@ -4344,9 +4344,9 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		if( entry.pLight )
 		{
-			// Non-mesh (delta-position) light — spectral approximation
-			// via CIE luminance of the RGB emitted radiance.  Matches
-			// the BDPT integrator's spectral handling of non-mesh lights.
+			// Non-mesh (delta-position) light. Recover its actual NM source
+			// evaluator below: cached uplift for RGB authoring, or the
+			// immutable authored SPD for a physical source.
 			const Point3 lightPos = entry.pLight->position();
 			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
 			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );

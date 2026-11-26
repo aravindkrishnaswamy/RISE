@@ -1,6 +1,6 @@
-# HYLIOS individual-spheroid forward transport
+# HYLIOS forward transport with individual particles and complexes
 
-`HyLIoSForwardTransport` is an experimental forward kernel with explicitly selected placement and post-scatter policies and explicit unresolved outcomes. The independent `HyLIoSSlabTransport` remains the analytic control. There is no renderer integration, complex support, reciprocity, adjoint sampler, or full S1–S4 claim.
+`HyLIoSForwardTransport` is an experimental forward kernel with explicitly selected placement and post-scatter policies and explicit unresolved outcomes. The independent `HyLIoSSlabTransport` remains the analytic control. There is no renderer integration, reciprocity, adjoint sampler, or full S1–S4 claim. Version 2 adds the explicitly selected finite complex organization described below.
 
 `HyLIoSForwardTransport` accepts exactly six resolved monochromatic layers in
 SC/SG/SS/SB/PD/RD order, explicit host/particle coefficients and indices, an
@@ -8,7 +8,7 @@ explicit PD fiber encounter rate, estimator/RR settings and an explicit placemen
 policy and an explicit post-scatter policy; neither has a default. Local launch position is (0,0,0); retain scene translation in adapters.
 No spectrum, absorber composition, biological defaults, or hidden RNG is owned.
 Particle geometric rates and Eq5 orientations reuse checked optical primitives;
-projected hits reuse the geometric sampler. Complex organization is refused.
+projected hits reuse the geometric sampler. Unversioned complex organization is refused; `ExplicitComplexPackV1` is the selected finite spatial organization described below.
 
 The caller controls each outer boundary decision through the existing slab
 encounter/token/decision record. The supplied smooth Fresnel helper can be used
@@ -47,8 +47,8 @@ on host distance alone. At surviving exit, one melanin-to-host Fresnel test occu
 Internal reflection receives a cosine perturbation about the **specular reflected
 direction**, conditioned inward. Each rejected proposal costs one quantum. A new
 chord uses the analytically deflated known surface root; no origin epsilon.
-After transmission, the named 1400 nm endpoint exponential forward law is applied
-once. At or above 1400 nm it is an exact forward delta and consumes no angular draws.
+After individual transmission or nonempty-complex envelope exit, the named
+1400 nm endpoint exponential forward law is applied once. At or above 1400 nm it is an exact forward delta and consumes no angular draws.
 
 A post-exit angular perturbation can point back into its particle. The constructor
 requires one of two policies; neither conditions or resamples the final angular
@@ -83,9 +83,9 @@ Analog absorption and weighted Beer/RR use separate host/particle tallies.
 
 ## Validation surfaces
 
-`tests/HyLIoSForwardTransportTest.cpp` exercises independent slab and spherical-chord controls, analog/weighted/roulette means, host versus particle absorption ownership, fiber-pass state, explicit placement policies, quantum/RNG equivalence and unresolved accounting. `tests/HyLIoSForwardFailureTest.cpp` supplies a deterministic overlap fault provider to verify propagation of indeterminate, invalid and unsupported predicates. These mechanics tests do not establish author-model equivalence.
+`tests/HyLIoSForwardTransportTest.cpp` exercises independent slab and spherical-chord controls, analog/weighted/roulette means, host versus particle absorption ownership, fiber-pass state, explicit placement policies, quantum/RNG equivalence and unresolved accounting. `tests/HyLIoSComplexForwardTransportTest.cpp` exercises real-layout host/child chords, revisits, boundary ownership, construction work and the empty-complex limit. `tests/HyLIoSForwardFailureTest.cpp` supplies a deterministic overlap fault provider to verify propagation of indeterminate, invalid and unsupported predicates. These mechanics tests do not establish author-model equivalence.
 
-Particle geometry and overlap predicates require strict floating-point compilation even when the transport and caller use fast math. Their separate full-LTO checks preserve this distinction.
+Particle geometry, overlap predicates and complex layout require strict floating-point compilation even when the transport and caller use fast math. Their separate full-LTO checks preserve this distinction.
 
 
 ### Independent controls and accounting failure regression
@@ -147,7 +147,8 @@ inc=src/Library/Materials/HyLIoS
 clang++ -std=c++17 -Wall -Werror -pedantic -O2 \
   -fno-fast-math -ffp-contract=off -I src/Library -I "$inc" \
   "$inc/HyLIoSForwardTransport.cpp" tests/HyLIoSForwardTransportTest.cpp \
-  "$inc/HyLIoSParticleOverlap.cpp" "$inc/HyLIoSOptics.cpp" \
+  "$inc/HyLIoSParticleOverlap.cpp" "$inc/HyLIoSComplexLayout.cpp" \
+  "$inc/HyLIoSOptics.cpp" \
   "$inc/HyLIoSParticleGeometry.cpp" "$inc/HyLIoSSlabTransport.cpp" \
   -o /tmp/hylios-forward-test
 /tmp/hylios-forward-test
@@ -156,9 +157,118 @@ clang++ -std=c++17 -Wall -Werror -pedantic -O2 \
 ```
 
 The sanitizer form uses `-O1 -g -fsanitize=address,undefined` with the same strict
-FP flags. For mixed full LTO, compile **both** `HyLIoSParticleGeometry.cpp` and
-`HyLIoSParticleOverlap.cpp` separately with `-O3 -flto=full -fno-fast-math
+FP flags. For mixed full LTO, compile `HyLIoSParticleGeometry.cpp`,
+`HyLIoSParticleOverlap.cpp` and `HyLIoSComplexLayout.cpp` separately with `-O3 -flto=full -fno-fast-math
 -ffp-contract=off`. Compile the transport, optics, slab and test caller with
 `-O3 -flto=full -ffast-math -fno-finite-math-only`, then link all objects with
-`-O3 -flto=full`. Do not put geometry into the fast-math caller batch. Its strict
-compilation guard is part of the tested contract.
+`-O3 -flto=full`. Do not put geometry, overlap or layout into the fast-math caller batch. Their strict
+compilation guards are part of the tested contract.
+
+## Explicit complex integration (`hylios-forward-explicit-complex-draft-v2`)
+
+`ForwardOrganization::ExplicitComplexPackV1` uses the selected
+`hylios_complex_explicit_pack_v1` layout. `envelopeRadiusMetres` and `childCount`
+are explicit inputs; the former unversioned `UnsupportedComplexes` organization
+remains rejected. `childCount` is the actual number of spatial children, bounded
+by 64, rather than an optical interaction cap. Individual aggregate inputs retain
+zero defaults for these two unused fields. The outer geometric rate is
+`3*volumeFraction/(4*envelopeRadiusMetres)`. The authored fraction is nominal for
+the outer placement process, not a certified stationary occupied fraction.
+
+An outer sphere proposal uses two projected-area draws and no sphere orientation
+draw. Existing whole-layer containment and predecessor exclusion apply to the
+envelope. Accepted envelopes generate their layout resumably, with five draws per
+proposal and no physical travel or absorption during construction. All helper
+proposal, containment/overlap rejection, restart and pair-check counters survive
+in aggregate transport counters, even after layout deletion. The helper's
+isotropic axes are generated independently of the incoming ray; child hits do not
+resample Eq.(5) orientations or projected points.
+
+Within a completed envelope, the kernel scans all children at each host step,
+so nearest-boundary work is O(N) per step, with N<=64; there is no acceleration or
+constant-cost claim. Child entries and envelope exit are compared geometrically.
+Host gaps own host absorption; true child chords own particle absorption. Entry
+has no extra Fresnel. Existing exit Fresnel and conditional reflected cosine
+perturbations apply to children. Child transmission resumes the same spatial
+layout without a per-child exponential kick. Revisits remain allowed and can
+exceed N entries. The final exponential event occurs once at envelope exit, with
+no extra envelope Fresnel. An empty layout is exactly host-only and introduces
+no final angular kick, including at visible wavelengths.
+
+The sampled envelope entry chord is retained across layout yields and reused for
+the first internal host segment, including empty layouts. An exactly coincident
+centred child sphere owns a zero-distance entry; its transmitted child exit is the
+envelope exit at zero host distance. These rules use exact shape/centre identity,
+with no tolerance or new query of an already owned surface.
+
+The last outward-transmitted convex child is excluded only while its host ray is
+unchanged; this removes its owned zero surface root without shifting the ray.
+A reflected direction clears that exclusion. Other touching children remain
+eligible for zero-gap entering intersections. Tangent zero-length chords do not
+enter. Stable child array order resolves equal child entries; owned child exits
+finish before a coincident envelope exit. Geometry exceptions propagate as live
+`NumericalFailure`, never a miss, placement retry, null event or absorption.
+
+The envelope remains the outer predecessor throughout child walks. After the
+final kick, discard removes the layout while retaining only that envelope copy
+for later outer exclusion. Diagnostic policy retains unresolved state on an
+inward final draw. `acceptedParticles` counts accepted outer objects;
+`acceptedComplexes` is its complex subset. `complexChildEntries`,
+`complexChildExits` and `complexChildReflections` distinguish internal child
+optics; `complexExits` counts successful outer exits. Existing `particleExits` and
+`particleReflections` count actual melanosome events, including complex children.
+`complexHostSegments` counts host-gap flights. `complexLayoutProposals`,
+`complexLayoutContainmentRejections`, `complexLayoutOverlapRejections`,
+`complexLayoutRestarts` and `complexLayoutPairChecks` expose construction cost.
+
+PD complexes with a nonzero papillary fiber rate are explicitly unsupported and
+refused by the constructor. Individual PD particles retain the existing fiber
+clock behavior. Current S1/S2/S3 complexes occur in SG/SS/SB. No camera/adjoint
+sampler, reciprocity, stationary whole-medium geometry or author-code equivalence
+is claimed.
+
+The focused complex test uses real proposal uniforms to make exact empty,
+centred-one-child and separated-two-child layouts. Its independent Beer oracle is
+`exp(-muHost*hostLength-muChild*childLength)`. A two-child reflection fixture
+performs three entries and four complete child diameters, proving N is not an
+optical cap. Separate touching-envelope, touching-child and exact-tangent
+fixtures verify boundary ownership. A 257-proposal construction fixture witnesses
+one full restart and preserves path/power; cancellation and hard budgets retain
+live unresolved weight. Unsupported layout predicates and an unsupported FP
+environment exercise sticky numerical failure before host travel.
+
+A conditional S3 N5 control uses a=.085um, b=.205um, R=.41um, with 300 histories per
+analog/weighted/weighted-RR estimator. It conditions a known accepted envelope
+entry and normalizes live weight there to one using the public boundary weight
+proposal; it is not a specimen reflectance estimate. It compares escaped, host
+absorbed and child absorbed power separately. Its fixed-seed strict run recorded
+748125 proposals, 596676 pair checks, 1737 restarts, 1044 child entries and 1084
+roulette trials across 900 envelope histories. Quantum tests compare proposal and
+optical RNG state, counter totals and absorption tallies under 1/64-work yields.
+The visible empty-complex control compares 3000 analog and weighted whole histories
+against the independent slab and exercises 295 accepted envelopes.
+
+The nearest-boundary sphere reference retains a near-tangent case that exposed an
+existing external-intersection precision defect. Its naive binary64 quadratic
+falsely predicted a miss; a 100-digit Decimal polynomial using the exact binary64
+input tuple established a real tiny chord. The pre-fix primitive overestimated
+that chord by about 22%. The focused entry-distance regression was observed RED
+with the original geometry and GREEN with the strict raw-sphere precision repair.
+For radius .25, origin `(-0x1.3ffffffffffffp-1,0,-0x1.9520cd1372fe9p+0)` and
+direction `(0x1.0000000000001p-1,0,0x1.bb67ae8584cacp-1)`, the independent entry
+is `1.6830126965630604843973119973056605864` and the full chord is
+`1.0658316972466380597130430092403321767e-8`. With exact decimal conversions
+of those binary64 inputs, compute A=d·d, B=o·d, C=o·o-r², D=B²-A*C;
+entry=(-B-sqrt(D))/sqrt(A), chord=2*sqrt(D)/sqrt(A). The corresponding lower
+sphere's origin z `-0x1.2a419a26e5fd2p-1` gives a strictly negative D and misses.
+No input is skipped, treated as a null event or hidden with an origin epsilon.
+
+
+The measurement adapter exposes this model only when the caller selects
+`--complex-layout explicit-pack-v1`. Its v3 report maps resolved
+`complex_diameter_m/2` to R and `maximum_internal_count` to actual N, verifies any
+declared rate against `3*f/(4*R)`, and retains construction conventions and all
+counter groups. See [HYLIOS_MEASUREMENT.md](HYLIOS_MEASUREMENT.md) for CLI scope,
+atomic validation and standalone build sources. To run the focused complex
+control directly, use the standalone command above with
+`tests/HyLIoSComplexForwardTransportTest.cpp` in place of the individual test.
