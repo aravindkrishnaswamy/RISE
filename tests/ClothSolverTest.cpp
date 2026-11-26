@@ -193,11 +193,17 @@ void Description()
 		d.cache.outputs[0].name == "surface" && d.cache.outputs[0].type == "mesh.v2" && d.cache.count == 10,
 		"cloth describes one mesh.v2 output (version m3a.4)");
 	const PortDeclaration* offer = nullptr; const PortDeclaration* accept = nullptr;
-	for (const auto& p : d.ports) (p.offers ? offer : accept) = &p;
+	for (const auto& p : d.ports) {
+		if (p.name == "surface_state") offer = &p;
+		if (p.name == "surface_load") accept = &p;
+	}
 	std::vector<std::uint32_t> indices;
-	Check(d.ports.size() == 2 && offer && accept && offer->name == "surface_state" && offer->output == "surface" &&
-		offer->codec == "mesh.v2" && accept->name == "surface_load" && accept->codec == "field.v1" && accept->units == "Pa" &&
-		accept->channels.size() == 2 && accept->channels[0].name == "pressure" && accept->channels[1].components == 3 &&
+	// M7e: surface_load gained a per-vertex force channel, and the cloth offers its
+	// mechanics and stiffness and accepts a partner's steps (five ports).
+	Check(d.ports.size() == 5 && offer && accept && offer->offers && offer->output == "surface" &&
+		offer->codec == "mesh.v2" && !accept->offers && accept->codec == "field.v1" && accept->units == "Pa" &&
+		accept->channels.size() == 3 && accept->channels[0].name == "force" && accept->channels[0].units == "N" &&
+		accept->channels[1].name == "pressure" && accept->channels[2].components == 3 &&
 		accept->domain.size() == 64 && accept->output.empty(),
 		"cloth offers surface_state and accepts a live-only field.v1 surface_load on its own vertices");
 	const auto& c = d.capabilities;

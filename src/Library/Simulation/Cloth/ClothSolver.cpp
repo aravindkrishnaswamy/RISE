@@ -43,6 +43,21 @@ constexpr const char* SolverVersion = "m3a.4";
 constexpr const char* StateFormat = "cloth.shell.state.v2";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";
+// M7e (coupling): the linearised response a partner needs to solve the cloth's
+// motion implicitly (liquid.mac's coupled sheets): per vertex its lumped mass,
+// pinned flag, the non-hydrodynamic force and the Rayleigh coefficients; and
+// the projected elastic Hessian as its upper block triangle.  Offered with
+// surface_state (never changes results; nothing reads them unless connected).
+constexpr const char* MechanicsPort = "surface_mechanics";
+constexpr const char* StiffnessPort = "surface_stiffness";
+// M7e: the partner's own steps over the held macro step (field.v1 over (step,
+// vertex) pairs, step-major: the impulse on each vertex in each step and the
+// step's segment ordinal within the macro step).  When it is offered the cloth
+// takes the same steps (equal steps per segment, as the partner splits them),
+// by backward Euler with each step's impulse as its force: the same discrete
+// dynamics as the partner's linearised copy of the cloth (liquid.mac's
+// implicit sheets).
+constexpr const char* StepsPort = "surface_load_steps";
 // M6 (coupling): a mesh collider with motion {type: port, port: <name>} follows
 // the mesh.v2 surface accepted on <name>; the contact reaction on every such
 // collider is offered on ReactionPort.
@@ -814,6 +829,11 @@ struct ClothState {
 	bool finished = false, held = false, havePrev = false;
 	std::vector<double> x, v, xPrev, vPrev, pressure, traction;
 	std::vector<double> colliders;   // M6: PortCollider::Size per port-driven collider
+	std::vector<double> force;       // M7e: the held per-vertex force (empty: none)
+	std::vector<double> stepImpulse; // M7e: the held partner steps (3 per vertex per step) and their segments
+	std::vector<std::uint32_t> stepSegment;
+	std::uint64_t stepCursor = 0, segmentOrdinal = 0;
+	std::vector<double> linearX0;    // M7e: the linear model's origin (empty: none)
 };
 
 struct ClothToken final : SolverStateToken {
@@ -844,6 +864,11 @@ private:
 	bool Encode(Bytes& frame, std::shared_ptr<const Bytes>& fixed, std::string& error);
 	bool Publish(std::int64_t index, double time, IFrameSink& sink, IPortExchange* ports, std::string& error);
 	bool OfferState(double time, IPortExchange& ports, std::string& error);
+	bool OfferMechanics(double time, IPortExchange& ports, std::string& error);   // M7e
+	bool AcceptSteps(IPortExchange* ports, double time, std::string& error);       // M7e
+	std::vector<double> stepImpulse_;          // M7e: the held partner steps (StepsPort)
+	std::vector<std::uint32_t> stepSegment_;
+	std::uint64_t stepCursor_ = 0, segmentOrdinal_ = 0;
 	bool AcceptLoads(double time, IPortExchange* ports, std::string& error);
 	ClothState Capture() const;
 	bool Apply(ClothState&& state, std::string& error);
@@ -869,6 +894,7 @@ private:
 	std::vector<std::uint32_t> indices_;
 	std::vector<std::uint32_t> materialUV_;   // rest (u, v) per vertex, m, binary32
 	std::string topology_;                    // topology digest: the surface_load domain
+	std::string stiffnessDomain_;             // M7e: the surface_stiffness index space (the Hessian's upper blocks)
 	std::vector<std::shared_ptr<const SceneTrack>> tracks_;
 	double t_ = 0, segStart_ = 0, segTarget_ = 0, heldFor_ = 0;
 	std::int64_t next_ = 0;
@@ -1006,6 +1032,17 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 		materialUV_.push_back(F32(sheet.sizeV*static_cast<double>(j)/static_cast<double>(sheet.verticesV - 1)));
 	}
 	topology_ = MeshTopologyDigest(built.Vertices(), indices_);
+	{
+		// M7e: the stiffness blocks (row <= column) in pattern order name surface_stiffness's index space.
+		const BlockMatrix& pat = probe.StiffnessPattern();
+		V::Values pairs;
+		for (std::uint32_t i = 0; i < pat.Blocks(); ++i)
+			for (std::size_t k = pat.RowStart()[i]; k < pat.RowStart()[i + 1]; ++k)
+				if (pat.Column()[k] >= i) pairs.push_back(V::ArrayValue({V::Unsigned(i), V::Unsigned(pat.Column()[k])}));
+		Bytes encoded;
+		RISECBOR64::Encode(V::ArrayValue({V::String("cloth.stiffness.v1"), V::String(topology_), V::ArrayValue(pairs)}), encoded, nullptr);
+		stiffnessDomain_ = RISECBOR64::SHA256Hex(encoded);
+	}
 	staticReady_ = false;   // the static record is rebuilt for this configuration on first use
 	tracks_ = scene.tracks;
 	colliders_ = std::move(portColliders);
@@ -1035,7 +1072,14 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 		{StatePort, "surface", "m", "mesh.v2", true, "surface",
 			{{"normal", "normal", "1", 3}, {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""},
 		{LoadPort, "surface load", "Pa", "field.v1", false, "",
-			{{"pressure", "pressure", "Pa", 1}, {"traction", "traction", "Pa", 3}}, topology_}};
+			{{"force", "force", "N", 3}, {"pressure", "pressure", "Pa", 1}, {"traction", "traction", "Pa", 3}}, topology_},
+		{MechanicsPort, "surface mechanics", "kg", "field.v1", true, "",
+			{{"damping_mass", "damping", "1/s", 1}, {"damping_stiffness", "damping", "s", 1}, {"fixed", "fixed", "1", 1},
+			 {"force", "force", "N", 3}, {"mass", "mass", "kg", 1}}, topology_},
+		{StiffnessPort, "surface stiffness", "N/m", "field.v1", true, "",
+			{{"column", "index", "1", 1}, {"row", "index", "1", 1}, {"stiffness", "stiffness", "N/m", 9}}, stiffnessDomain_},
+		{StepsPort, "surface load steps", "N s", "field.v1", false, "",
+			{{"impulse", "impulse", "N s", 3}, {"segment", "index", "1", 1}}, ""}};
 	// M6: each port-driven collider accepts its surface; the reactions on all of them are offered.
 	for (const auto& pc : colliders_)
 		candidate.ports.push_back({pc.port, "collider surface", "m", "mesh.v2", false, "", {{"position", "position", "m", 3}}, pc.topology});
@@ -1265,6 +1309,7 @@ bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPo
 	if (!sink.Publish(index, "surface", time, payload, {}, error)) return false;
 	if (ports && (!ports->OfferStatic(MeshTopologyStaticType, fixed, error) || !ports->Offer(StatePort, time, payload, error)))
 		return false;
+	if (ports && !OfferMechanics(time, *ports, error)) return false;   // M7e
 	if (ports && !colliders_.empty() && !OfferReaction(time, *ports, error)) return false;   // M6
 	return true;
 }
@@ -1275,7 +1320,53 @@ bool ClothSolver::OfferState(double time, IPortExchange& ports, std::string& err
 	std::shared_ptr<const Bytes> fixed;
 	if (!Encode(*bytes, fixed, error)) return false;
 	if (!ports.OfferStatic(MeshTopologyStaticType, fixed, error) || !ports.Offer(StatePort, time, std::move(bytes), error)) return false;
+	if (!OfferMechanics(time, ports, error)) return false;   // M7e
 	return colliders_.empty() || OfferReaction(time, ports, error);   // M6
+}
+
+// M7e: surface_mechanics (field.v1 over the vertices) and surface_stiffness
+// (field.v1 over the Hessian's upper blocks, row <= column, in pattern order;
+// the indices as binary32 integers).
+bool ClothSolver::OfferMechanics(double time, IPortExchange& ports, std::string& error)
+{
+	std::vector<double> force;
+	BlockMatrix k;
+	system_.Mechanics(force, k);
+	const Sheet& sheet = system_.GetSheet();
+	const std::uint32_t n = system_.Vertices();
+	const Material& m = model_.material;
+	const double alpha = model_.damping ? m.dampingMass : 0.0, beta = model_.damping ? m.dampingStiffness : 0.0;
+	FieldFrame f;
+	f.domain = topology_;
+	f.count = n;
+	FieldChannel dm{"damping_mass", "1/s", 1, {}}, ds{"damping_stiffness", "s", 1, {}}, fx{"fixed", "1", 1, {}},
+		fo{"force", "N", 3, {}}, ma{"mass", "kg", 1, {}};
+	for (std::uint32_t q = 0; q < n; ++q) {
+		dm.values.push_back(F32(alpha));
+		ds.values.push_back(F32(beta));
+		fx.values.push_back(F32(system_.Fixed(q) ? 1.0 : 0.0));
+		for (int a = 0; a < 3; ++a) fo.values.push_back(F32(force[3*std::size_t(q) + std::size_t(a)]));
+		ma.values.push_back(F32(sheet.mass[q]));
+	}
+	f.channels = {dm, ds, fx, fo, ma};
+	auto bytes = std::make_shared<Bytes>();
+	if (!EncodeField(f, CodecBudget, *bytes, error) || !ports.Offer(MechanicsPort, time, std::move(bytes), error)) return false;
+	FieldFrame s;
+	s.domain = stiffnessDomain_;
+	FieldChannel col{"column", "1", 1, {}}, row{"row", "1", 1, {}}, st{"stiffness", "N/m", 9, {}};
+	for (std::uint32_t i = 0; i < k.Blocks(); ++i)
+		for (std::size_t e = k.RowStart()[i]; e < k.RowStart()[i + 1]; ++e) {
+			const std::uint32_t j = k.Column()[e];
+			if (j < i) continue;
+			row.values.push_back(F32(double(i)));
+			col.values.push_back(F32(double(j)));
+			const double* b = k.Block(e);
+			for (int c = 0; c < 9; ++c) st.values.push_back(F32(b[c]));
+		}
+	s.count = static_cast<std::uint32_t>(row.values.size());
+	s.channels = {col, row, st};
+	auto sb = std::make_shared<Bytes>();
+	return EncodeField(s, CodecBudget, *sb, error) && ports.Offer(StiffnessPort, time, std::move(sb), error);
 }
 
 // surface_load: field.v1 over the sheet's vertices (domain: the sheet's
@@ -1290,6 +1381,7 @@ bool ClothSolver::AcceptLoads(double time, IPortExchange* ports, std::string& er
 	if (status == PortStatus::Unbound || status == PortStatus::Unavailable) {
 		system_.portPressure.clear();
 		system_.portTraction.clear();
+		system_.portForce.clear();
 		return true;
 	}
 	if (status != PortStatus::Ready) return false;
@@ -1298,18 +1390,53 @@ bool ClothSolver::AcceptLoads(double time, IPortExchange* ports, std::string& er
 	const std::uint32_t n = system_.Vertices();
 	if (f.domain != topology_ || f.count != n)
 		return Fail(error, "surface_load must be a field.v1 over the sheet's vertices (domain: its topology digest)");
-	std::vector<double> pressure, traction;
+	std::vector<double> pressure, traction, force;
 	for (const auto& c : f.channels) {
-		const bool isPressure = c.name == "pressure" && c.components == 1;
-		const bool isTraction = c.name == "traction" && c.components == 3;
-		if ((!isPressure && !isTraction) || c.units != "Pa")
-			return Fail(error, "surface_load channels are pressure (1 component, Pa) and traction (3, Pa)");
-		std::vector<double>& target = isPressure ? pressure : traction;
+		const bool isPressure = c.name == "pressure" && c.components == 1 && c.units == "Pa";
+		const bool isTraction = c.name == "traction" && c.components == 3 && c.units == "Pa";
+		const bool isForce = c.name == "force" && c.components == 3 && c.units == "N";   // M7e
+		if (!isPressure && !isTraction && !isForce)
+			return Fail(error, "surface_load channels are force (3 components, N), pressure (1, Pa) and traction (3, Pa)");
+		std::vector<double>& target = isPressure ? pressure : isTraction ? traction : force;
 		target.resize(c.values.size());
 		for (std::size_t k = 0; k < c.values.size(); ++k) target[k] = FromF32(c.values[k]);
 	}
 	system_.portPressure.swap(pressure);
 	system_.portTraction.swap(traction);
+	system_.portForce.swap(force);
+	return true;
+}
+
+// M7e: StepsPort (unbound or unavailable: none, the held load alone).
+bool ClothSolver::AcceptSteps(IPortExchange* ports, double time, std::string& error)
+{
+	stepImpulse_.clear();
+	stepSegment_.clear();
+	stepCursor_ = segmentOrdinal_ = 0;
+	if (!ports) return true;
+	std::shared_ptr<const Bytes> bytes;
+	const auto status = ports->Accept(StepsPort, time, bytes, error);
+	if (status == PortStatus::Unbound || status == PortStatus::Unavailable) { error.clear(); return true; }
+	if (status != PortStatus::Ready) return false;
+	FieldFrame f;
+	if (!DecodeField(*bytes, CodecBudget, f, error)) return false;
+	const std::uint32_t n = system_.Vertices();
+	const FieldChannel *imp = nullptr, *seg = nullptr;
+	for (const auto& c : f.channels) {
+		if (c.name == "impulse" && c.components == 3 && c.units == "N s") imp = &c;
+		else if (c.name == "segment" && c.components == 1 && c.units == "1") seg = &c;
+	}
+	if (!imp || !seg || n == 0 || f.count % n != 0)
+		return Fail(error, std::string(StepsPort) + " must be a field.v1 over (step, vertex) pairs with impulse (3, N s) and segment (1)");
+	const std::uint32_t steps = f.count/n;
+	stepImpulse_.resize(3*std::size_t(f.count));
+	for (std::size_t k = 0; k < stepImpulse_.size(); ++k) stepImpulse_[k] = FromF32(imp->values[k]);
+	for (std::uint32_t j = 0; j < steps; ++j) {
+		const double o = FromF32(seg->values[std::size_t(j)*n]);
+		if (!(o >= 0) || std::floor(o) != o || (j > 0 && o < double(stepSegment_.back())))
+			return Fail(error, std::string(StepsPort) + ": invalid segment ordinals");
+		stepSegment_.push_back(static_cast<std::uint32_t>(o));
+	}
 	return true;
 }
 
@@ -1349,8 +1476,20 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 			if (!macro || !held_ || heldFor_ != request.macroEnd) {
 				if (!AcceptLoads(segStart_, ports, error)) return false;
 				if (!AcceptColliders(segStart_, macro ? request.macroEnd : segTarget_, ports, error)) return false;
+				if (!AcceptSteps(macro ? ports : nullptr, segStart_, error)) return false;   // M7e
+				// M7e: with the partner's steps, the macro step's elasticity is the partner's linear model.
+				if (!stepSegment_.empty()) system_.BeginLinear();
+				else system_.EndLinear();
 				held_ = macro;
 				heldFor_ = request.macroEnd;
+			}
+			if (macro && !stepSegment_.empty()) {
+				// M7e: the partner's steps of this segment (the same split: equal steps).
+				std::uint64_t k = 0;
+				for (std::size_t j = stepCursor_; j < stepSegment_.size() && stepSegment_[j] == segmentOrdinal_; ++j) ++k;
+				if (k == 0) return Fail(error, std::string(StepsPort) + " has no steps for the segment at t = " + std::to_string(segStart_) +
+					" (the cloth and its partner must share their output times and macro steps)");
+				segN_ = k;
 			}
 		} else if (macro && segTarget_ > request.macroEnd) return Fail(error, "macro end inside an interrupted segment");
 		offered = false;
@@ -1367,12 +1506,22 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 			}
 			const double tn = segJ_ + 1 == segN_ ? segTarget_ :
 				segStart_ + (segTarget_ - segStart_)*static_cast<double>(segJ_ + 1)/static_cast<double>(segN_);
-			if (!system_.Step(tn - t_, scheme_, newton_, stats_, error) || !TrackFailure(error)) return false;
+			Scheme scheme = scheme_;
+			if (macro && !stepSegment_.empty()) {
+				// M7e: the partner's step: its impulse as the step's force, backward Euler.
+				const std::uint32_t n = system_.Vertices();
+				system_.portForce.assign(stepImpulse_.begin() + std::ptrdiff_t(3*n*stepCursor_), stepImpulse_.begin() + std::ptrdiff_t(3*n*(stepCursor_ + 1)));
+				for (double& x : system_.portForce) x /= tn - t_;
+				scheme = Scheme::BackwardEuler;
+				++stepCursor_;
+			}
+			if (!system_.Step(tn - t_, scheme, newton_, stats_, error) || !TrackFailure(error)) return false;
 			system_.time = tn;
 			t_ = tn;
 			++segJ_;
 		}
 		segN_ = segJ_ = 0;
+		if (macro && !stepSegment_.empty()) ++segmentOrdinal_;   // M7e
 	}
 }
 
@@ -1501,6 +1650,9 @@ ClothState ClothSolver::Capture() const
 	c.finished = finished_; c.held = held_; c.havePrev = system_.havePrev;
 	c.x = system_.x; c.v = system_.v; c.xPrev = system_.xPrev; c.vPrev = system_.vPrev;
 	c.pressure = system_.portPressure; c.traction = system_.portTraction;
+	c.force = system_.portForce;
+	c.stepImpulse = stepImpulse_; c.stepSegment = stepSegment_; c.stepCursor = stepCursor_; c.segmentOrdinal = segmentOrdinal_;
+	if (system_.Linear()) c.linearX0 = system_.LinearOrigin();
 	c.colliders = SaveColliders();
 	return c;
 }
@@ -1517,17 +1669,27 @@ bool ClothSolver::Apply(ClothState&& c, std::string& error)
 	const std::size_t dofs = 3*static_cast<std::size_t>(sheet.Vertices());
 	if (c.x.size() != dofs || c.v.size() != dofs || (!c.xPrev.empty() && c.xPrev.size() != dofs) ||
 		(!c.vPrev.empty() && c.vPrev.size() != dofs) || (!c.pressure.empty() && c.pressure.size() != dofs/3) ||
-		(!c.traction.empty() && c.traction.size() != dofs) || (c.havePrev && (c.xPrev.empty() || c.vPrev.empty())))
+		(!c.traction.empty() && c.traction.size() != dofs) || (!c.force.empty() && c.force.size() != dofs) ||
+		(c.havePrev && (c.xPrev.empty() || c.vPrev.empty())))
 		return Fail(error, "cloth solver state does not match the configured sheet");
 	system.x.swap(c.x); system.v.swap(c.v); system.xPrev.swap(c.xPrev); system.vPrev.swap(c.vPrev);
 	system.hPrev = c.hPrev; system.havePrev = c.havePrev; system.time = c.time;
 	system.portPressure.swap(c.pressure); system.portTraction.swap(c.traction);
+	system.portForce.swap(c.force);
+	if (!c.linearX0.empty()) {
+		if (c.linearX0.size() != dofs) return Fail(error, "cloth solver state does not match the configured sheet (linear model)");
+		system.BeginLinearAt(c.linearX0);
+	}
 	system_ = std::move(system);
 	if (!LoadColliders(c.colliders, error)) return false;   // M6
 	ObserveSteps();
 	t_ = c.t; next_ = static_cast<std::int64_t>(c.next); finished_ = c.finished;
 	segStart_ = c.segStart; segTarget_ = c.segTarget; segN_ = c.segN; segJ_ = c.segJ;
 	held_ = c.held; heldFor_ = c.heldFor;
+	stepImpulse_ = std::move(c.stepImpulse); stepSegment_ = std::move(c.stepSegment);
+	stepCursor_ = c.stepCursor; segmentOrdinal_ = c.segmentOrdinal;
+	if (stepImpulse_.size() != dofs*stepSegment_.size() || stepCursor_ > stepSegment_.size())
+		return Fail(error, "cloth solver state does not match the configured sheet (load steps)");
 	stats_ = StepStats{};
 	started_ = true;
 	return true;
@@ -1545,6 +1707,16 @@ bool ClothSolver::Checkpoint(Bytes& state, std::string& error)
 		{"pressure", V::BytesValue(PackDoubles(system_.portPressure))},
 		{"traction", V::BytesValue(PackDoubles(system_.portTraction))}};
 	if (!colliders_.empty()) m.emplace_back("port_colliders", V::BytesValue(PackDoubles(SaveColliders())));   // M6
+	// M7e: the held per-vertex force, only when one is held (earlier states are unchanged).
+	if (!system_.portForce.empty()) m.emplace_back("force", V::BytesValue(PackDoubles(system_.portForce)));
+	if (!stepSegment_.empty()) {
+		std::vector<double> seg(stepSegment_.begin(), stepSegment_.end());
+		m.emplace_back("load_steps", V::BytesValue(PackDoubles(stepImpulse_)));
+		m.emplace_back("load_step_segments", V::BytesValue(PackDoubles(seg)));
+		m.emplace_back("load_step_cursor", V::Unsigned(stepCursor_));
+		m.emplace_back("load_step_segment", V::Unsigned(segmentOrdinal_));
+	}
+	if (system_.Linear()) m.emplace_back("linear_x0", V::BytesValue(PackDoubles(system_.LinearOrigin())));
 	return RISECBOR64::Encode(V::MapValue(m), state, &error);
 }
 
@@ -1571,6 +1743,19 @@ bool ClothSolver::Restore(const Bytes& state, std::string& error)
 		return Fail(error, "cloth solver state does not match the configured sheet");
 	if (!colliders_.empty() && !UnpackDoubles(v.Find("port_colliders"), PortCollider::Size*colliders_.size(), c.colliders, false))
 		return Fail(error, "cloth solver state does not match the configured port colliders");
+	if (v.Find("force") && !UnpackDoubles(v.Find("force"), dofs, c.force, false))
+		return Fail(error, "cloth solver state does not match the configured sheet (force)");
+	if (v.Find("load_step_segments")) {
+		const V* segs = v.Find("load_step_segments");
+		std::vector<double> seg;
+		if (segs->GetType() != V::ByteString || segs->GetBytes().size() % 8 != 0 || !UnpackDoubles(segs, segs->GetBytes().size()/8, seg, false) ||
+			!UnpackDoubles(v.Find("load_steps"), dofs*seg.size(), c.stepImpulse, false) || !count("load_step_cursor", c.stepCursor) ||
+			!count("load_step_segment", c.segmentOrdinal))
+			return Fail(error, "cloth solver state does not match the configured sheet (load steps)");
+		for (double x : seg) c.stepSegment.push_back(static_cast<std::uint32_t>(x));
+	}
+	if (v.Find("linear_x0") && !UnpackDoubles(v.Find("linear_x0"), dofs, c.linearX0, false))
+		return Fail(error, "cloth solver state does not match the configured sheet (linear model)");
 	if (!Apply(std::move(c), error)) return false;
 	staticSent_ = false;
 	return true;

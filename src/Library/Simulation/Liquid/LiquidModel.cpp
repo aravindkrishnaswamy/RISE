@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <tuple>
 
 namespace RISE { namespace Simulation { namespace Liquid {
 
@@ -272,6 +274,8 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 		for (LiquidSheet& sh : sheets) if (sh.motion == LiquidSheet::Motion::Prescribed) sh.PrescribedAt(0);
 		sheetSolid_.Resize(g);
 		CloseSheetFaces();
+		// m7e: implicitly coupled sheets project through the solid velocity field the bodies use.
+		for (const LiquidSheet& sh : sheets) if (sh.implicit && solidVelocity_.u[0].size() != g.Faces(0)) solidVelocity_.Resize(g);
 	}
 	LiquidCells(g, setup.liquid, phi, pool);
 	// phi is not extrapolated into solids: the velocity is (closed faces are
@@ -541,6 +545,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	t1 = t0;
 	// m7d: the faces the sheets closed open again before the bodies' cut cells
 	// are rebuilt (which write the fractions in their regions).
+	const std::vector<SheetCrossing> facesBefore = CoupledSheets() ? sheetFaces_ : std::vector<SheetCrossing>();   // m7e
 	if (!sheets.empty()) RestoreSheetFaces();
 	// Bodies (m7b): new poses (drifted with the step-start velocity, as the
 	// interface), the cut cells rebuilt there, the level set in the cells
@@ -569,10 +574,17 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// m7d: the sheets at the step's end (prescribed: their motion; port: drifted
 	// with the accepted velocity), the faces they cross closed with their velocity.
 	MacField* sheetSolid = nullptr;
+	const bool coupledSheets = CoupledSheets();   // m7e
 	if (!sheets.empty()) {
 		MoveSheets(dt);
 		CloseSheetFaces();
-		if (!hasBodies) {
+		if (coupledSheets) {
+			const std::pair<std::size_t, std::size_t> n = SweepSheetCells(facesBefore);
+			stats.sheetCellsKept += n.first;
+			stats.sheetParticlesRemoved += n.second;
+		}
+
+		if (!hasBodies && !coupledSheets) {
 			ClearSheetVelocity(sheetSolid_);
 			SetSheetVelocity(sheetSolid_);
 			sheetSolid = &sheetSolid_;
@@ -599,7 +611,18 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	stats.particles += t0 - t1;
 	if (options_.volumeCorrection) stats.volumeShift = CorrectVolume(g, phi, targetVolume_, open, pool);
 	// m7d: no cell beside a sheet fills across it (LiquidSheets.h BlockSheetLeaks).
-	if (!sheets.empty()) stats.sheetCellsKept = BlockSheetLeaks(g, sheetFaces_, fraction, phiStart, phi, pool);
+	if (!sheets.empty() && !coupledSheets) stats.sheetCellsKept = BlockSheetLeaks(g, sheetFaces_, fraction, phiStart, phi, pool);
+	if (coupledSheets) {
+		// m7e: beside a coupled sheet the creep rule would hold a dry cell's level set while the
+		// sheet approaches it (the false interface could not follow a membrane sagging inside a
+		// cell gap: its oscillation came out stiffer with every step taken); PinFalseInterface
+		// puts that zero at the sheet instead.  The rule elsewhere (cells that fill without a wet
+		// neighbour) stays.
+		std::vector<SheetCrossing> others;
+		for (const SheetCrossing& c : sheetFaces_) if (!sheets[c.sheet].Coupled()) others.push_back(c);
+		stats.sheetCellsKept = BlockSheetLeaks(g, others, fraction, phiStart, phi, pool);
+		stats.sheetCellsKept += PinFalseInterface();
+	}
 	// m7c: the curvature of the new interface for the surface-tension jump.
 	if (setup_.surfaceTension > 0) Curvature(g, phi, kappa_, pool);
 	t1 = Now();
@@ -690,6 +713,21 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			for (int a = 0; a < 3; ++a) if (b.free[std::size_t(a)]) w1star[i][std::size_t(a)] += dt*b.externalForce[std::size_t(a)]/b.state.mass;
 		}
 	}
+	std::vector<std::vector<double>> v1star(sheets.size()), sheetImp1, sheetImp2;
+	// The sheet velocities after the step's projections (empty: not coupled).
+	std::vector<std::vector<double>> sheetNew(sheets.size());
+	auto sheetUpdate = [&](const std::vector<std::vector<double>>& star, const std::vector<std::vector<double>>& imp, double w,
+		std::vector<std::vector<double>>& out) {
+		out.assign(sheets.size(), {});
+		for (std::size_t i = 0; i < sheets.size(); ++i) {
+			if (!sheets[i].Coupled()) continue;
+			std::vector<double> r = imp[i], dv;
+			for (double& x : r) x *= w;
+			sheets[i].dyn.Solve(r, dv);
+			out[i] = star[i];
+			for (std::size_t k = 0; k < dv.size(); ++k) out[i][k] += dv[k];
+		}
+	};
 	// m7c: viscosity once per step, implicit over dt, before the step's last
 	// projection and before gravity's increment (a uniform field, which the
 	// hydrostatic pressure balances; diffused at a no-slip wall it would leave
@@ -702,13 +740,27 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// (replaced by extrapolation before the next step transports them); the
 	// first stage's keeps every updated face for the second stage.
 	PressureOptions po = WithJump(options_.momentumStages <= 1 ? FinalPressure() : options_.pressure, dt, 1.0);
-	if (hasBodies) {
+	if (coupledSheets) {
+		// m7e: the implicitly coupled sheets' predicted velocities: their linearised
+		// backward-Euler step with the liquid on the faces they close moving with
+		// them (LiquidSheets.h), from the stage's predicted face velocities.
+		std::vector<std::vector<SheetBlock>> faceMass;
+		std::vector<std::vector<double>> faceRhs;
+		SheetFaceMass(s1, faceMass, faceRhs);
+		for (std::size_t i = 0; i < sheets.size(); ++i) {
+			if (!sheets[i].Coupled()) continue;
+			if (!sheets[i].dyn.Prepare(dt, sheets[i].v, faceMass[i], sheets[i].triangles, error)) return false;
+			sheets[i].dyn.Predict(dt, sheets[i].v, faceRhs[i], v1star[i]);
+		}
+		if (!ProjectCoupled(s1, po, w1star, v1star, impulse1, sheetImp1, stats.pressure, error)) return false;
+	} else if (hasBodies) {
 		if (!ProjectBodies(s1, po, w1star, impulse1, stats.pressure, error)) return false;
 	} else if (!Project(g, phi, fraction, sheetSolid, po, {}, s1, q_, valid, stats.pressure, pool, error)) return false;
 	t1 = Now();
 	stats.project += t1 - t0;
 	if (options_.momentumStages <= 1) {
 		u = std::move(s1);
+		if (coupledSheets) sheetUpdate(v1star, sheetImp1, 1.0, sheetNew);
 		if (hasBodies)
 			for (std::size_t i = 0; i < bodies.size(); ++i) {
 				bodyImpulse[i] = impulse1[i];
@@ -744,6 +796,9 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 				const Vec6 dw = c.InverseMass(half);
 				for (int m = 0; m < 6; ++m) w2star[i][std::size_t(m)] += dw[std::size_t(m)];
 			}
+		// m7e: coupled sheets likewise, V*2 = V*1 + S^-1 I1 / 2 (Heun) or V*1 (midpoint).
+		std::vector<std::vector<double>> v2star = v1star;
+		if (coupledSheets && weno) sheetUpdate(v1star, sheetImp1, 0.5, v2star);
 		if (viscous) {
 			// Heun: s2 holds q1 / 2 already (through s1); the midpoint scheme none.
 			std::vector<double> half;
@@ -759,8 +814,11 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		po = WithJump(FinalPressure(), dt, weno ? 0.5 : 1.0);
 		po.warmStart = true;
 		PressureStats second;
-		if (hasBodies) {
-			if (!ProjectBodies(s2, po, w2star, impulse2, second, error)) return false;
+		if (hasBodies || coupledSheets) {
+			if (coupledSheets) { if (!ProjectCoupled(s2, po, w2star, v2star, impulse2, sheetImp2, second, error)) return false; }
+			else if (!ProjectBodies(s2, po, w2star, impulse2, second, error)) return false;
+			// m7e: the coupled sheets' new velocities V*2 + S^-1 I2 (their impulse: SheetDynamics::ApplyS below).
+			if (coupledSheets) sheetUpdate(v2star, sheetImp2, 1.0, sheetNew);
 			// The step's impulse: I1 / 2 + I2 (Heun) or I2 (midpoint), and the viscous
 			// impulse; new velocities w*2 + M^-1 I2 (w*2 already holds the viscous part).
 			for (std::size_t i = 0; i < bodies.size(); ++i) {
@@ -811,6 +869,41 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	lastDt_ = dt;
 	++steps;
 	if (!sheets.empty()) AccumulateSheetImpulse();
+	if (coupledSheets) {
+		// m7e: the coupled sheets' new velocities, elastic positions and the step's impulse;
+		// their closed faces carry the new velocity into the next step's transport.
+		for (std::size_t i = 0; i < sheets.size(); ++i) {
+			if (!sheets[i].Coupled()) continue;
+			LiquidSheet& sh = sheets[i];
+			// The impulse on the sheet itself: S V_new - (M v + dt (f0 - K (xe - x0))), its
+			// momentum change in the linearised step beyond its own forces (the pressure's
+			// impulse and the exchange with the liquid on its faces).
+			std::vector<double> sv, rhs;
+			sh.dyn.ApplyS(dt, sheetNew[i], sv);
+			sh.dyn.Rhs(dt, sh.v, rhs);
+			V3 total{{0, 0, 0}};
+			for (std::size_t q = 0; q < sh.dyn.Vertices(); ++q) {
+				if (sh.dyn.fixed[q]) continue;
+				for (int a = 0; a < 3; ++a) {
+					const std::size_t k = 3*q + std::size_t(a);
+					const double I = sv[k] - rhs[k];
+					sheetImpulse[i][k] += I;
+					total[std::size_t(a)] += I;
+				}
+			}
+			const std::size_t at = sheetHistory[i].size();
+			sheetHistory[i].resize(at + 3*sh.dyn.Vertices(), 0.0);
+			for (std::size_t q = 0; q < sh.dyn.Vertices(); ++q)
+				if (!sh.dyn.fixed[q]) for (int a = 0; a < 3; ++a) sheetHistory[i][at + 3*q + std::size_t(a)] = sv[3*q + std::size_t(a)] - rhs[3*q + std::size_t(a)];
+			sheetStepImpulse[i] = total;
+			sh.v = sheetNew[i];
+			for (std::size_t k = 0; k < sh.v.size(); ++k) sh.dyn.xe[k] += dt*sh.v[k];
+			// The geometry follows the linearised step's positions (it drifted with the step-start
+			// velocity); the next step's closing sweeps the difference (SweepSheetCells).
+			sh.x = sh.dyn.xe;
+		}
+		SheetCrossingVelocities(sheets, sheetNew, sheetFaces_);
+	}
 	if (hasBodies) {
 		for (std::size_t i = 0; i < bodies.size(); ++i)
 			for (int m = 0; m < 6; ++m) bodyAccumulated[i][std::size_t(m)] += bodyImpulse[i][std::size_t(m)];
@@ -912,13 +1005,16 @@ void LiquidModel::ResetSheetImpulses()
 {
 	sheetImpulse.resize(sheets.size());
 	for (std::size_t i = 0; i < sheets.size(); ++i) sheetImpulse[i].assign(3*sheets[i].Vertices(), 0.0);
+	sheetHistory.assign(sheets.size(), {});
 }
 
-void LiquidModel::UpdateSheetGeometry()
+void LiquidModel::UpdateSheetGeometry(bool sweep)
 {
 	if (sheets.empty()) return;
+	const std::vector<SheetCrossing> before = sweep && CoupledSheets() ? sheetFaces_ : std::vector<SheetCrossing>();
 	RestoreSheetFaces();
 	CloseSheetFaces();
+	if (sweep && CoupledSheets()) SweepSheetCells(before);
 }
 
 void LiquidModel::MoveSheets(double dt)
@@ -972,6 +1068,7 @@ void LiquidModel::AccumulateSheetImpulse()
 	const double scale = setup_.density*g.h*g.h*g.h;
 	for (V3& x : sheetStepImpulse) x = {{0, 0, 0}};
 	for (const SheetCrossing& c : sheetFaces_) {
+		if (sheets[c.sheet].Coupled()) continue;   // m7e: their impulse comes from the coupled solve
 		const auto d = g.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
@@ -1068,6 +1165,258 @@ bool LiquidModel::ProjectBodies(MacField& s, const PressureOptions& po, const st
 		else { couplings[i]->Begin(active); impulse[i] = couplings[i]->Measure(q_); }
 	}
 	return true;
+}
+
+bool LiquidModel::ProjectCoupled(MacField& s, const PressureOptions& po, const std::vector<Vec6>& wStar,
+	const std::vector<std::vector<double>>& vStar, std::vector<Vec6>& impulse, std::vector<std::vector<double>>& sheetImp,
+	PressureStats& stats, std::string& error)
+{
+	const Grid& g = setup_.grid;
+	Pool* pool = pool_.get();
+	ClearSheetVelocity(solidVelocity_);
+	if (!bodies.empty()) geometry_.SolidVelocity(wStar, solidVelocity_);
+	SheetCrossingVelocities(sheets, vStar, sheetFaces_);
+	SetSheetVelocity(solidVelocity_);
+	std::vector<std::unique_ptr<BodyCoupling>> couplings;
+	std::vector<IPressureCoupling*> coupled;
+	bool kinematic = false;
+	for (std::size_t i = 0; i < bodies.size(); ++i) {
+		couplings.emplace_back(new BodyCoupling(g, geometry_.Faces()[i], bodies[i], setup_.density, bodies[i].Coupled()));
+		if (bodies[i].Coupled()) coupled.push_back(couplings.back().get());
+		else kinematic = true;
+	}
+	SheetCoupling sheet(g, sheetFaces_, sheets, setup_.density);
+	coupled.push_back(&sheet);
+	if (!Project(g, phi, fraction, &solidVelocity_, po, coupled, s, q_, valid, stats, pool, error)) return false;
+	std::vector<std::uint8_t> active;
+	if (kinematic) ActiveCells(g, phi, fraction, active, pool);
+	impulse.assign(bodies.size(), Vec6{{0, 0, 0, 0, 0, 0}});
+	for (std::size_t i = 0; i < bodies.size(); ++i) {
+		if (bodies[i].Coupled()) impulse[i] = couplings[i]->Impulse();
+		else { couplings[i]->Begin(active); impulse[i] = couplings[i]->Measure(q_); }
+	}
+	sheetImp = sheet.Impulse();
+	return true;
+}
+
+void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<SheetBlock>>& blocks, std::vector<std::vector<double>>& rhs) const
+{
+	// The liquid on a face a coupled sheet closes moves with the sheet's normal velocity
+	// G_f V: its kinetic energy rho h^3 w_f (G_f V - u*_f)^2 / 2, w_f = A_f theta_f the
+	// projection's weight (A_f the face's fraction before the sheet closed it), joins the
+	// sheet's step: F = rho h^3 sum w_f G_f^T G_f, right-hand side rho h^3 sum w_f G_f^T u*_f.
+	// Without it the weight of that liquid would not be carried: across a closed face the
+	// pressure jumps by its hydrostatic difference over the cell, which acted on the sheet as
+	// a buoyancy of rho g h n_a^2 per area (as if it were a slab a cell thick).
+	const Grid& g = setup_.grid;
+	const double scale = setup_.density*g.h*g.h*g.h, thetaMin = options_.pressure.thetaMin;
+	blocks.assign(sheets.size(), {});
+	rhs.assign(sheets.size(), {});
+	for (std::size_t i = 0; i < sheets.size(); ++i) if (sheets[i].Coupled()) rhs[i].assign(3*sheets[i].dyn.Vertices(), 0.0);
+	for (std::size_t k = 0; k < sheetFaces_.size(); ++k) {
+		const SheetCrossing& c = sheetFaces_[k];
+		const LiquidSheet& sh = sheets[c.sheet];
+		if (!sh.Coupled()) continue;
+		const auto d = g.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		const double pr = phi[g.C(idx[0], idx[1], idx[2])];
+		--idx[c.axis];
+		const double pl = phi[g.C(idx[0], idx[1], idx[2])];
+		double theta = 0;
+		if (pl < 0 && pr < 0) theta = 1;
+		else if (pl < 0) theta = std::min(1.0, std::max(thetaMin, pl/(pl - pr)));
+		else if (pr < 0) theta = std::min(1.0, std::max(thetaMin, pr/(pr - pl)));
+		const double w = scale*theta*sheetSaved_[k];
+		if (!(w > 0)) continue;
+		double cv[3][3];
+		std::uint32_t v[3];
+		for (int m = 0; m < 3; ++m) {
+			v[m] = sh.triangles[3*std::size_t(c.triangle) + std::size_t(m)];
+			for (int a = 0; a < 3; ++a) cv[m][a] = c.w[m]*c.normal[c.axis]*c.normal[a];
+		}
+		const double us = s.u[c.axis][c.face];
+		for (int m = 0; m < 3; ++m) {
+			for (int a = 0; a < 3; ++a) rhs[c.sheet][3*std::size_t(v[m]) + std::size_t(a)] += w*cv[m][a]*us;
+			for (int n = m; n < 3; ++n) {
+				SheetBlock e;
+				const int p = v[m] <= v[n] ? m : n, q = v[m] <= v[n] ? n : m;
+				e.i = v[p]; e.j = v[q];
+				for (int r = 0; r < 3; ++r) for (int cc = 0; cc < 3; ++cc) {
+					e.b[3*r + cc] = w*cv[p][r]*cv[q][cc];
+					if (m != n && e.i == e.j) e.b[3*r + cc] += w*cv[q][r]*cv[p][cc];   // a repeated vertex
+				}
+				blocks[c.sheet].push_back(e);
+			}
+		}
+	}
+}
+
+std::size_t LiquidModel::PinFalseInterface()
+{
+	// m7e: where a coupled sheet holds liquid on one side only, the level set's zero (the
+	// false interface) belongs at the sheet.  Across a closed face between L and R, R wet
+	// (phi_R < 0) and L notably drier (phi_L - phi_R > h / 2) with no clearly wet open
+	// neighbour of its own (phi < -h / 2), L is the dry side: its level set is the distance
+	// from its centre to the crossing (a cell beside several such faces takes the last).  Without it the level set crept across a
+	// moving sheet by fractions of a millimetre as the sheet passed cell centres, and the
+	// cells it wetted fed their neighbours (BlockSheetLeaks' rule) until the liquid was on
+	// both sides.
+	const Grid& g = setup_.grid;
+	const double h = g.h;
+	auto clearlyFed = [&](std::size_t c) {
+		const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+			int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+		for (int a = 0; a < 3; ++a) for (int side = 0; side < 2; ++side) {
+			int f[3] = {idx[0], idx[1], idx[2]}, nb[3] = {idx[0], idx[1], idx[2]};
+			f[a] += side;
+			nb[a] += side ? 1 : -1;
+			if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
+			if (!(fraction[std::size_t(a)][g.F(a, f[0], f[1], f[2])] > 0)) continue;
+			if (phi[g.C(nb[0], nb[1], nb[2])] < -0.5*h) return true;
+		}
+		return false;
+	};
+	std::vector<std::pair<std::size_t, double>> set;
+	for (const SheetCrossing& c : sheetFaces_) {
+		if (!sheets[c.sheet].Coupled()) continue;
+		const auto d = g.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+		const double yR = g.origin[std::size_t(c.axis)] + (idx[c.axis] + 0.5)*h;
+		--idx[c.axis];
+		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+		const double dL = std::max(0.0, c.s - (yR - h)), dR = std::max(0.0, yR - c.s);
+		const double pL = phi[L], pR = phi[R];
+		if (pR < 0 && pL - pR > 0.5*h && !clearlyFed(L)) set.emplace_back(L, dL);
+		else if (pL < 0 && pR - pL > 0.5*h && !clearlyFed(R)) set.emplace_back(R, dR);
+	}
+	for (const auto& e : set) phi[e.first] = e.second;
+	return set.size();
+}
+
+std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vector<SheetCrossing>& facesBefore)
+{
+	// m7e: a cell whose centre a coupled sheet swept over changed sides.  Its level set is
+	// that of its new side (the cell beyond the sheet's old crossing) extended to it with unit
+	// slope towards the sheet, a dry side kept dry (at least the distance to the sheet) and a
+	// wet one wet, so the false interface where a sheet holds liquid on one side stays at the
+	// sheet; and the marker particles of every cell beside a coupled sheet's closed face,
+	// before or now, go (a particle the sheet moved over without its cell's centre changing
+	// sides is on the wrong side of it).  Left as they were, a membrane holding a layer
+	// leaked half of it within 0.4 s as it oscillated across cell centres.
+	const Grid& g = setup_.grid;
+	std::vector<SweptCell> swept;
+	SweptSheetCells(facesBefore, swept);
+	const std::vector<double> old = phi;
+	for (const SweptCell& c : swept) {
+		const double r = old[c.ref];
+		phi[c.cell] = r >= 0 ? std::max(c.distance, r - c.span) : std::min(-c.distance, r + c.span);
+	}
+	std::size_t removed = 0;
+	if (options_.particles) {
+		std::vector<std::size_t> cells;
+		for (const SweptCell& c : swept) cells.push_back(c.cell);
+		for (const std::vector<SheetCrossing>* list : {&facesBefore, static_cast<const std::vector<SheetCrossing>*>(&sheetFaces_)})
+			for (const SheetCrossing& c : *list) {
+				if (!sheets[c.sheet].Coupled()) continue;
+				const auto d = g.FaceDims(c.axis);
+				int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+					int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+				cells.push_back(g.C(idx[0], idx[1], idx[2]));
+				--idx[c.axis];
+				cells.push_back(g.C(idx[0], idx[1], idx[2]));
+			}
+		std::sort(cells.begin(), cells.end());
+		auto& ps = particles.Particles();
+		std::size_t out = 0;
+		for (std::size_t i = 0; i < ps.size(); ++i) {
+			int idx[3];
+			for (int a = 0; a < 3; ++a)
+				idx[a] = std::min(g.n[a] - 1, std::max(0, int(std::floor((ps[i].x[std::size_t(a)] - g.origin[std::size_t(a)])/g.h))));
+			if (!std::binary_search(cells.begin(), cells.end(), g.C(idx[0], idx[1], idx[2]))) ps[out++] = ps[i];
+		}
+		removed = ps.size() - out;
+		ps.resize(out);
+	}
+	return {swept.size(), removed};
+}
+
+void LiquidModel::SweptSheetCells(const std::vector<SheetCrossing>& before, std::vector<SweptCell>& swept) const
+{
+	const Grid& g = setup_.grid;
+	swept.clear();
+	// Per (axis, line): the coupled sheets' crossing coordinates, before and now.
+	using Key = std::tuple<int, std::size_t>;   // axis, the face index with the axis coordinate zeroed
+	auto key = [&](const SheetCrossing& c, int& along) {
+		const auto d = g.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		along = idx[c.axis];
+		idx[c.axis] = 0;
+		return Key(c.axis, g.F(c.axis, idx[0], idx[1], idx[2]));
+	};
+	std::map<Key, std::pair<std::vector<double>, std::vector<double>>> lines;
+	int along = 0;
+	for (const SheetCrossing& c : before) if (sheets[c.sheet].Coupled()) lines[key(c, along)].first.push_back(c.s);
+	for (const SheetCrossing& c : sheetFaces_) if (sheets[c.sheet].Coupled()) lines[key(c, along)].second.push_back(c.s);
+	for (auto& e : lines) {
+		auto& a = e.second.first;
+		auto& b = e.second.second;
+		if (a.size() != b.size() || a.empty()) continue;   // a fold appeared or vanished: not paired
+		std::sort(a.begin(), a.end());
+		std::sort(b.begin(), b.end());
+		const int axis = std::get<0>(e.first);
+		const auto d = g.FaceDims(axis);
+		const std::size_t f0 = std::get<1>(e.first);
+		int idx[3] = {int(f0 % std::size_t(d[0])), int((f0/std::size_t(d[0])) % std::size_t(d[1])), int(f0/(std::size_t(d[0])*std::size_t(d[1])))};
+		for (std::size_t m = 0; m < a.size(); ++m) {
+			const double s0 = a[m], s1 = b[m];
+			if (s0 == s1) continue;
+			const double o = g.origin[std::size_t(axis)];
+			// Cells with centres strictly between s0 and s1; the new side lies beyond s0, away from s1.
+			const int dir = s0 > s1 ? 1 : -1;
+			int lo = int(std::ceil((std::min(s0, s1) - o)/g.h - 0.5)), hi = int(std::floor((std::max(s0, s1) - o)/g.h - 0.5));
+			lo = std::max(0, lo); hi = std::min(g.n[axis] - 1, hi);
+			int ref = dir > 0 ? hi + 1 : lo - 1;
+			if (ref < 0 || ref >= g.n[axis]) continue;
+			for (int i = lo; i <= hi; ++i) {
+				const double centre = o + (i + 0.5)*g.h;
+				if (!((centre - s0)*(centre - s1) < 0)) continue;
+				int c[3] = {idx[0], idx[1], idx[2]}, r[3] = {idx[0], idx[1], idx[2]};
+				c[axis] = i; r[axis] = ref;
+				SweptCell w;
+				w.cell = g.C(c[0], c[1], c[2]);
+				w.ref = g.C(r[0], r[1], r[2]);
+				w.distance = std::fabs(centre - s1);
+				w.span = std::abs(ref - i)*g.h;
+				swept.push_back(w);
+			}
+		}
+	}
+	std::sort(swept.begin(), swept.end(), [](const SweptCell& p, const SweptCell& q) {
+		return p.cell != q.cell ? p.cell < q.cell : p.distance < q.distance; });
+	swept.erase(std::unique(swept.begin(), swept.end(), [](const SweptCell& p, const SweptCell& q) { return p.cell == q.cell; }), swept.end());
+}
+
+bool LiquidModel::CoupledSheets() const
+{
+	for (const LiquidSheet& sh : sheets) if (sh.Coupled()) return true;
+	return false;
+}
+
+void LiquidModel::ResetSheetDynamics()
+{
+	std::vector<std::vector<double>> v(sheets.size());
+	for (std::size_t i = 0; i < sheets.size(); ++i) {
+		if (!sheets[i].Coupled()) continue;
+		sheets[i].dyn.x0 = sheets[i].x;
+		sheets[i].dyn.xe = sheets[i].x;
+
+		v[i] = sheets[i].v;
+	}
+	SheetCrossingVelocities(sheets, v, sheetFaces_);
 }
 
 void LiquidModel::AuditWalls()

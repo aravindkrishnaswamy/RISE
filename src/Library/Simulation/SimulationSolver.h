@@ -126,6 +126,12 @@ struct PortDeclaration {
 	std::string output;
 	std::vector<PortChannel> channels;
 	std::string domain;
+	// M7e, additive (contract Appendix C): an accepted port that must read its
+	// source's value at the macro step's start (a state the accepting solver
+	// advances itself).  A group serves a live source's offer at the step's
+	// start in either order (under Gauss-Seidel with the source first, rather
+	// than its end-of-step offer).  Default false: every port before.
+	bool startOfStep = false;
 };
 // Offer -> accept binding check: codec, quantity, units and the channel list
 // must match exactly, and the domains when both are stated. Anything else

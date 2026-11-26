@@ -159,9 +159,15 @@ thin sheets as moving boundaries of the liquid (preview: grid faces crossed by t
 leakage found), prescribed or following a cloth's `surface_state` with the pressure load returned as its
 `surface_load`, lagged one macro step; that exchange is stable only for sheets of about 500 kg/m² and up (about 50
 with under-relaxation), so real cloth is one-way only; closed-mesh rigid bodies; the dam break at 256³ costs 2.3 s per
-step and 6.3 GB ([M7d results](SIMULATION_M7D_RESULTS.md)). **M7 is complete as planned** (design §7, steps 1–7). Not
-done within M7: a stable two-way cloth-in-water coupling (implicit; design §2's later step), spray and thin films,
-contact inside the liquid, and the multigrid weakness with large bodies at 256³ (PCG iterations triple).
+step and 6.3 GB ([M7d results](SIMULATION_M7D_RESULTS.md)). **M7 is complete as planned** (design §7, steps 1–7).
+M7e (in review): cloth coupled implicitly with the liquid (preview): the cloth's linearised response (masses, force,
+projected Hessian, damping) is solved with the pressure in every step, the liquid on the faces the sheet closes moves
+with it, and the cloth takes the liquid's own steps with the same linear model; stable for areal densities 0.05–100
+kg/m² at 24–64 cells and macro steps 1/30 and 1/120 s where the staggered exchange diverges, cotton in a dam-break surge
+in the demo; checked against a piston (exact), a plate's added mass, a membrane's static deflection and natural
+frequency under a layer; a light sheet holding liquid on one side that sweeps across cell centres under gravity still
+leaks ([M7e results](SIMULATION_M7E_RESULTS.md)). Not done within M7: spray and thin films, contact inside the liquid,
+one-sided sweeping sheets, and the multigrid weakness with large bodies at 256³ (PCG iterations triple).
 
 ## 6. Rules that hold throughout
 

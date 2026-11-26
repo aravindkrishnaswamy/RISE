@@ -42,7 +42,14 @@ solids from scratch and gives no smooth surface); material-point and lattice met
   feature: a port payload carrying mass properties, and a group policy in which the liquid's step is the single
   implicit exchange for those bodies.
 - **Cloth in liquid:** first version treats cloth as a prescribed moving boundary with a lagged load, labelled
-  `preview`. A stable two-way treatment (fully implicit, Robinson-Mosher et al. 2008) is a later step.
+  `preview`. A stable two-way treatment (fully implicit, Robinson-Mosher et al. 2008) is a later step. *Done as M7e
+  (2026-11-26, [results](SIMULATION_M7E_RESULTS.md); preview): the cloth offers its linearised response (lumped masses,
+  pins, force, projected elastic Hessian, Rayleigh coefficients) through two ports; the liquid solves it with the
+  pressure in one symmetric positive definite system in every step (S = M(1 + dt alpha) + (dt beta + dt²)K in place of
+  a body's mass matrix, plus the liquid on the faces the sheet closes) and offers the impulse of each of its steps; the
+  cloth takes those steps with the same linear model (an owned exchange). A scheme in which the cloth integrated on
+  its own nonlinear model with the liquid's impulses diverged slowly for light cloth; this one is stable from 0.05 to
+  100 kg/m². One-sided sheets that sweep cell centres under gravity still leak.*
 
 ## 3. Outputs
 
@@ -114,4 +121,5 @@ bake is on the order of 7 hours; 128³ is about 16 times cheaper. A first protot
    receive the pressure impulse on those faces as a per-vertex load; prescribed or following a cloth's `surface_state`,
    the load returned as its `surface_load` once per macro step. The lagged exchange is stable only for sheets far
    heavier than cloth (measured in §6 of the results); a stable two-way treatment is still the later step. Also in
-   M7d: closed-mesh bodies, and the dam break at 256³.*
+   M7d: closed-mesh bodies, and the dam break at 256³.* *M7e (2026-11-26; [results](SIMULATION_M7E_RESULTS.md)): the
+   implicit coupling of §2, stable for real cloth.*

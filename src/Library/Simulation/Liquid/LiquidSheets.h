@@ -32,6 +32,29 @@
 //  sheet's on the liquid.  It is spread to the crossed triangle's vertices by
 //  the barycentric weights of the crossing.
 //
+//  Implicit coupling (m7e, docs/SIMULATION_M7E_RESULTS.md).  A port sheet
+//  with `coupling: implicit` carries its partner's linearised response for
+//  the macro step (SheetDynamics: lumped masses M, pins, the force f0 at the
+//  macro step's start x0, the projected elastic Hessian K, Rayleigh
+//  coefficients alpha and beta).  In each step of length dt its vertex
+//  velocities V solve, with the pressure, the minimisation of
+//      (rho h^3 / 2) sum_f A_f theta_f (u_f - u*_f)^2 + (1/2) (V - V*)^T S (V - V*),
+//      S = M (1 + dt alpha) + (dt beta + dt^2) K,
+//      V* = S^-1 (M V_n + dt (f0 - K (xe - x0)))      (backward Euler, linearised about x0),
+//  subject to the discrete divergence, in which a closed face f carries
+//  u_s,f = G_f V (the crossing's barycentric velocity along the triangle's
+//  normal, (w . V) n_a n).  The second term is the sheet's incremental
+//  potential of that step, so the minimisation is the monolithic step of the
+//  liquid and the linearised sheet, derived as M7b's body coupling with S in
+//  place of the body's mass matrix:
+//      V = V* + rho h^3 S^-1 J q,   (A + rho h^3 J^T S^-1 J) q = b,
+//      J_c = sum_{f of c closed by the sheet} s_cf G_f^T,
+//  symmetric positive semidefinite (S is positive definite).  The impulse on
+//  the sheet is rho h^3 J q: on each vertex of the crossed triangle
+//  rho h^3 (q_L - q_R) w_m n_a n.  The sheet's added mass is therefore
+//  implicit in every projection (the added-mass instability of the lagged
+//  exchange cannot arise), and so is its elastic response to the pressure.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -40,11 +63,51 @@
 #define RISE_SIMULATION_LIQUID_SHEETS_H
 
 #include "LiquidBodies.h"
+#include "../Cloth/ClothLinearAlgebra.h"
 
 #include <string>
 #include <vector>
 
 namespace RISE { namespace Simulation { namespace Liquid {
+
+//! m7e: a 3x3 block (i <= j) added to an implicitly coupled sheet's step matrix.
+struct SheetBlock {
+	std::uint32_t i = 0, j = 0;
+	double b[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+};
+
+//! m7e: the linearised response of an implicitly coupled sheet over a macro
+//! step (LiquidSheets.h header), and the factorisation of its step matrix.
+struct SheetDynamics {
+	std::vector<double> mass;          // per vertex, kg
+	std::vector<std::uint8_t> fixed;   // per vertex: the velocity is prescribed (a pin)
+	std::vector<double> force;         // 3 per vertex, N: the non-hydrodynamic force at x0
+	std::vector<double> x0, xe;        // 3 per vertex: the linearisation point; the elastic positions (x0 + sum dt V)
+	double dampingMass = 0, dampingStiffness = 0;   // Rayleigh alpha (1/s), beta (s)
+	Cloth::BlockMatrix stiffness;      // K (3x3 blocks, symmetric pattern)
+	std::string stiffnessDomain;       // the accepted pattern's index-space digest
+	bool useStiffness = true;          // false: S = M (1 + dt alpha), f0 explicit (the measured contrast)
+	// Not state: rebuilt every step.
+	Cloth::BlockMatrix matrix;         // S plus the step's face mass, pins masked
+	Cloth::BandedCholesky factor;
+	std::vector<std::uint32_t> order;
+	std::vector<double> pinned;        // (S + F)_fp V_p (free rows)
+	bool Active() const { return !mass.empty(); }
+	std::size_t Vertices() const { return mass.size(); }
+	bool WithStiffness() const { return useStiffness && stiffness.Blocks() == mass.size(); }
+	//! Factors S + F for dt, F the blocks `extra` (the face mass), the pattern the
+	//! stiffness's and the triangles' pairs.  `v`: the current velocities (the pins').
+	bool Prepare(double dt, const std::vector<double>& v, const std::vector<SheetBlock>& extra,
+		const std::vector<std::uint32_t>& triangles, std::string& error);
+	//! out = (S + F)^-1 r with the pinned components zero (after Prepare).
+	void Solve(const std::vector<double>& r, std::vector<double>& out) const;
+	//! The sheet's own right-hand side M v + dt (f0 - K (xe - x0)).
+	void Rhs(double dt, const std::vector<double>& v, std::vector<double>& out) const;
+	//! The predictor (S + F)^-1 (Rhs + extra - (S + F)_fp V_p), pins keeping their velocity.
+	void Predict(double dt, const std::vector<double>& v, const std::vector<double>& extra, std::vector<double>& out) const;
+	//! out = S V (the sheet's own step matrix, no face mass, pins unmasked).
+	void ApplyS(double dt, const std::vector<double>& V, std::vector<double>& out) const;
+};
 
 struct LiquidSheet {
 	std::string name;
@@ -61,6 +124,11 @@ struct LiquidSheet {
 	// Port: the accepted surface and the offered load.
 	std::string port, loadPort;
 	std::string topology;                   // the accepted surface's topology digest (the load's domain)
+	// m7e: implicit coupling (its partner's mechanics and stiffness through two more ports).
+	bool implicit = false;
+	std::string mechanicsPort, stiffnessPort, stepsPort;
+	SheetDynamics dyn;
+	bool Coupled() const { return implicit && dyn.Active(); }
 	std::size_t Vertices() const { return x.size()/3; }
 	//! Prescribed: x and v at time t.
 	void PrescribedAt(double t);
@@ -76,6 +144,8 @@ struct SheetCrossing {
 	double w[3] = {0, 0, 0};    // barycentric weights of the crossing on the triangle's vertices
 	double distance = 0;        // |s - face coordinate| (the choice among several crossings)
 	double velocity = 0;        // (v . n) n_a at the crossing
+	double normal[3] = {0, 0, 0};   // m7e: the triangle's unit normal
+	double s = 0;                   // m7e: the crossing's coordinate along the axis (world)
 };
 
 
@@ -106,6 +176,46 @@ std::size_t BlockSheetLeaks(const Grid& g, const std::vector<SheetCrossing>& fac
 //! sorted by axis and face, as FindSheetCrossings gives them).  Points outside
 //! the domain count as in the nearest cell.
 bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const V3& from, const V3& to);
+
+//! m7e: the coupling of the implicitly coupled sheets in one projection
+//! (LiquidSheets.h header): J over the faces those sheets close, S^-1 per
+//! sheet (SheetDynamics, prepared for the step), and the impulse rho h^3 J q.
+//! Every sum runs in the crossings' order on one thread: the result does not
+//! depend on the thread count.
+class SheetCoupling final : public IPressureCoupling {
+public:
+	SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density);
+	void Begin(const std::vector<std::uint8_t>& active) override;
+	void ApplyAdd(const std::vector<double>& q, std::vector<double>& out) const override;
+	void AddRhs(std::vector<double>&) const override {}
+	void Finish(const std::vector<double>& q) override;
+	//! rho h^3 J q of the last Finish, per sheet (3 per vertex, N s; empty for sheets not coupled).
+	const std::vector<std::vector<double>>& Impulse() const { return impulse_; }
+	//! rho h^3 J q for any q (after Begin).
+	void Measure(const std::vector<double>& q, std::vector<std::vector<double>>& out) const;
+	bool Empty() const { return faces_.empty(); }
+private:
+	struct Face {
+		std::size_t L = 0, R = 0;   // the cells on the minus and plus side
+		bool aL = false, aR = false;
+		std::uint32_t sheet = 0;
+		std::uint32_t v[3] = {0, 0, 0};
+		double c[3][3] = {{0}};     // per vertex m: w_m n_a n
+	};
+	const Grid& g_;
+	const std::vector<SheetCrossing>& crossings_;
+	const std::vector<LiquidSheet>& sheets_;
+	double scale_ = 0;              // rho h^3
+	std::vector<Face> faces_;
+	std::vector<std::vector<double>> impulse_;
+	mutable std::vector<std::vector<double>> r_, z_;
+};
+
+//! m7e: sets the crossing velocity (V . n) n_a of every face an implicitly
+//! coupled sheet closes from the velocities `v` (per sheet, 3 per vertex; an
+//! empty array keeps the crossing's velocity).
+void SheetCrossingVelocities(const std::vector<LiquidSheet>& sheets, const std::vector<std::vector<double>>& v,
+	std::vector<SheetCrossing>& faces);
 
 //! The per-vertex pressure (Pa) that, applied as cloth applies `surface_load`
 //! pressure (force -p times the vertex's vector area: a third of each

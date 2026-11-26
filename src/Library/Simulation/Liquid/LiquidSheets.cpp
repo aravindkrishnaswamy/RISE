@@ -126,6 +126,8 @@ void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, s
 					for (int m = 0; m < 3; ++m)
 						vn += (x.w[0]*v0[std::size_t(m)] + x.w[1]*v1[std::size_t(m)] + x.w[2]*v2[std::size_t(m)])*n[std::size_t(m)];
 					x.velocity = vn*n[std::size_t(a)];
+					for (int m = 0; m < 3; ++m) x.normal[m] = n[std::size_t(m)];
+					x.s = s;
 					mine.push_back(x);
 				}
 			}
@@ -234,6 +236,257 @@ bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const
 		if (open) return false;
 	} while (std::next_permutation(axes, axes + na));
 	return true;
+}
+
+// ------------------------------------------------------------------ m7e: implicit coupling
+
+namespace {
+// A banded ordering of the stiffness pattern: reverse Cuthill-McKee from a
+// vertex of least degree (ties by index), every component in turn;
+// deterministic.
+std::vector<std::uint32_t> BandOrder(const Cloth::BlockMatrix& a)
+{
+	const std::uint32_t n = a.Blocks();
+	std::vector<std::uint32_t> degree(n, 0), order;
+	for (std::uint32_t i = 0; i < n; ++i) degree[i] = std::uint32_t(a.RowStart()[i + 1] - a.RowStart()[i]);
+	std::vector<char> seen(n, 0);
+	order.reserve(n);
+	for (;;) {
+		std::uint32_t start = n;
+		for (std::uint32_t i = 0; i < n; ++i) if (!seen[i] && (start == n || degree[i] < degree[start])) start = i;
+		if (start == n) break;
+		std::size_t head = order.size();
+		order.push_back(start);
+		seen[start] = 1;
+		while (head < order.size()) {
+			const std::uint32_t i = order[head++];
+			std::vector<std::uint32_t> next;
+			for (std::size_t k = a.RowStart()[i]; k < a.RowStart()[i + 1]; ++k) {
+				const std::uint32_t j = a.Column()[k];
+				if (!seen[j]) { seen[j] = 1; next.push_back(j); }
+			}
+			std::sort(next.begin(), next.end(), [&](std::uint32_t p, std::uint32_t q) {
+				return degree[p] != degree[q] ? degree[p] < degree[q] : p < q; });
+			order.insert(order.end(), next.begin(), next.end());
+		}
+	}
+	std::reverse(order.begin(), order.end());
+	return order;
+}
+} // namespace
+
+bool SheetDynamics::Prepare(double dt, const std::vector<double>& v, const std::vector<SheetBlock>& extra,
+	const std::vector<std::uint32_t>& triangles, std::string& error)
+{
+	const std::uint32_t n = std::uint32_t(mass.size());
+	const bool withK = WithStiffness();
+	if (matrix.Blocks() != n) {
+		// The pattern: the stiffness's and every triangle's vertex pairs (the face mass couples a triangle's vertices).
+		std::vector<std::pair<std::uint32_t, std::uint32_t>> pairs;
+		if (withK)
+			for (std::uint32_t i = 0; i < n; ++i)
+				for (std::size_t k = stiffness.RowStart()[i]; k < stiffness.RowStart()[i + 1]; ++k)
+					if (stiffness.Column()[k] > i) pairs.emplace_back(i, stiffness.Column()[k]);
+		for (std::size_t t = 0; t + 2 < triangles.size(); t += 3)
+			for (int a = 0; a < 3; ++a) for (int c = a + 1; c < 3; ++c) {
+				const std::uint32_t p = triangles[t + std::size_t(a)], q = triangles[t + std::size_t(c)];
+				if (p != q) pairs.emplace_back(std::min(p, q), std::max(p, q));
+			}
+		std::sort(pairs.begin(), pairs.end());
+		pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+		matrix.Build(n, pairs);
+		order.clear();
+	}
+	Cloth::BlockMatrix& s = matrix;
+	s.Zero();
+	const double ks = dt*dampingStiffness + dt*dt;
+	if (withK)
+		for (std::uint32_t i = 0; i < n; ++i)
+			for (std::size_t k = stiffness.RowStart()[i]; k < stiffness.RowStart()[i + 1]; ++k) {
+				double* b = s.Block(s.Slot(i, stiffness.Column()[k]));
+				const double* kb = stiffness.Block(k);
+				for (int r = 0; r < 9; ++r) b[r] += ks*kb[r];
+			}
+	for (std::uint32_t q = 0; q < n; ++q) {
+		double* b = s.Block(s.DiagonalSlot(q));
+		const double m = mass[q]*(1 + dt*dampingMass);
+		b[0] += m; b[4] += m; b[8] += m;
+	}
+	for (const SheetBlock& e : extra) {
+		double* b = s.Block(s.Slot(e.i, e.j));
+		for (int r = 0; r < 9; ++r) b[r] += e.b[r];
+		if (e.i != e.j) {
+			double* t = s.Block(s.Slot(e.j, e.i));
+			for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) t[3*c + r] += e.b[3*r + c];
+		}
+	}
+	// Pins: their velocity is given; (S + F)_fp V_p moves to the free rows' right-hand side,
+	// and their rows and columns become the identity.
+	pinned.assign(3*std::size_t(n), 0.0);
+	for (std::uint32_t i = 0; i < n; ++i) {
+		if (fixed[i]) continue;
+		for (std::size_t k = s.RowStart()[i]; k < s.RowStart()[i + 1]; ++k) {
+			const std::uint32_t j = s.Column()[k];
+			if (!fixed[j]) continue;
+			const double* b = s.Block(k);
+			for (int r = 0; r < 3; ++r)
+				for (int c = 0; c < 3; ++c) pinned[3*std::size_t(i) + std::size_t(r)] += b[3*r + c]*v[3*std::size_t(j) + std::size_t(c)];
+		}
+	}
+	for (std::uint32_t i = 0; i < n; ++i)
+		for (std::size_t k = s.RowStart()[i]; k < s.RowStart()[i + 1]; ++k) {
+			const std::uint32_t j = s.Column()[k];
+			if (!fixed[i] && !fixed[j]) continue;
+			double* b = s.Block(k);
+			for (int r = 0; r < 9; ++r) b[r] = 0;
+			if (i == j) b[0] = b[4] = b[8] = 1;
+		}
+	if (order.size() != n) order = BandOrder(s);
+	if (!factor.Factor(s, order)) {
+		error = "the coupled sheet's step matrix is not positive definite (mass, damping and stiffness of the partner)";
+		return false;
+	}
+	return true;
+}
+
+void SheetDynamics::Solve(const std::vector<double>& r, std::vector<double>& out) const
+{
+	std::vector<double> b = r;
+	for (std::size_t q = 0; q < fixed.size(); ++q) if (fixed[q]) b[3*q] = b[3*q + 1] = b[3*q + 2] = 0;
+	factor.Solve(b, out);
+	for (std::size_t q = 0; q < fixed.size(); ++q) if (fixed[q]) out[3*q] = out[3*q + 1] = out[3*q + 2] = 0;
+}
+
+void SheetDynamics::Rhs(double dt, const std::vector<double>& v, std::vector<double>& out) const
+{
+	const std::size_t n = mass.size();
+	std::vector<double> d(3*n), kd;
+	for (std::size_t k = 0; k < 3*n; ++k) d[k] = xe[k] - x0[k];
+	if (WithStiffness()) stiffness.Multiply(d, kd);
+	out.assign(3*n, 0.0);
+	for (std::size_t q = 0; q < n; ++q)
+		for (int a = 0; a < 3; ++a) {
+			const std::size_t k = 3*q + std::size_t(a);
+			out[k] = mass[q]*v[k] + dt*(force[k] - (kd.empty() ? 0.0 : kd[k]));
+		}
+}
+
+void SheetDynamics::Predict(double dt, const std::vector<double>& v, const std::vector<double>& extra, std::vector<double>& out) const
+{
+	const std::size_t n = mass.size();
+	std::vector<double> b;
+	Rhs(dt, v, b);
+	for (std::size_t q = 0; q < n; ++q)
+		for (int a = 0; a < 3; ++a) {
+			const std::size_t k = 3*q + std::size_t(a);
+			b[k] = fixed[q] ? v[k] : b[k] + (extra.empty() ? 0.0 : extra[k]) - pinned[k];
+		}
+	factor.Solve(b, out);
+	for (std::size_t q = 0; q < n; ++q) if (fixed[q]) for (int a = 0; a < 3; ++a) out[3*q + std::size_t(a)] = v[3*q + std::size_t(a)];
+}
+
+void SheetDynamics::ApplyS(double dt, const std::vector<double>& V, std::vector<double>& out) const
+{
+	const std::size_t n = mass.size();
+	std::vector<double> kv;
+	if (WithStiffness()) stiffness.Multiply(V, kv);
+	out.assign(3*n, 0.0);
+	const double ks = dt*dampingStiffness + dt*dt;
+	for (std::size_t q = 0; q < n; ++q)
+		for (int a = 0; a < 3; ++a) {
+			const std::size_t k = 3*q + std::size_t(a);
+			out[k] = mass[q]*(1 + dt*dampingMass)*V[k] + (kv.empty() ? 0.0 : ks*kv[k]);
+		}
+}
+
+SheetCoupling::SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density)
+	: g_(g), crossings_(faces), sheets_(sheets), scale_(density*g.h*g.h*g.h)
+{
+	impulse_.resize(sheets.size());
+	r_.resize(sheets.size());
+	z_.resize(sheets.size());
+	for (std::size_t i = 0; i < sheets.size(); ++i)
+		if (sheets[i].Coupled()) {
+			impulse_[i].assign(3*sheets[i].dyn.Vertices(), 0.0);
+			r_[i].assign(impulse_[i].size(), 0.0);
+			z_[i].assign(impulse_[i].size(), 0.0);
+		}
+}
+
+void SheetCoupling::Begin(const std::vector<std::uint8_t>& active)
+{
+	faces_.clear();
+	for (const SheetCrossing& c : crossings_) {
+		const LiquidSheet& sh = sheets_[c.sheet];
+		if (!sh.Coupled()) continue;
+		const auto d = g_.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		Face f;
+		f.R = g_.C(idx[0], idx[1], idx[2]);
+		--idx[c.axis];
+		f.L = g_.C(idx[0], idx[1], idx[2]);
+		f.aL = active[f.L] != 0;
+		f.aR = active[f.R] != 0;
+		if (!f.aL && !f.aR) continue;
+		f.sheet = c.sheet;
+		for (int m = 0; m < 3; ++m) {
+			f.v[m] = sh.triangles[3*std::size_t(c.triangle) + std::size_t(m)];
+			for (int k = 0; k < 3; ++k) f.c[m][k] = c.w[m]*c.normal[c.axis]*c.normal[k];
+		}
+		faces_.push_back(f);
+	}
+}
+
+void SheetCoupling::Measure(const std::vector<double>& q, std::vector<std::vector<double>>& out) const
+{
+	out.resize(sheets_.size());
+	for (std::size_t i = 0; i < sheets_.size(); ++i) out[i].assign(sheets_[i].Coupled() ? 3*sheets_[i].dyn.Vertices() : 0, 0.0);
+	for (const Face& f : faces_) {
+		const double jump = scale_*((f.aL ? q[f.L] : 0.0) - (f.aR ? q[f.R] : 0.0));
+		std::vector<double>& o = out[f.sheet];
+		for (int m = 0; m < 3; ++m) for (int k = 0; k < 3; ++k) o[3*std::size_t(f.v[m]) + std::size_t(k)] += f.c[m][k]*jump;
+	}
+}
+
+void SheetCoupling::ApplyAdd(const std::vector<double>& q, std::vector<double>& out) const
+{
+	if (faces_.empty()) return;
+	for (std::size_t i = 0; i < sheets_.size(); ++i) std::fill(r_[i].begin(), r_[i].end(), 0.0);
+	for (const Face& f : faces_) {
+		const double jump = (f.aL ? q[f.L] : 0.0) - (f.aR ? q[f.R] : 0.0);
+		std::vector<double>& r = r_[f.sheet];
+		for (int m = 0; m < 3; ++m) for (int k = 0; k < 3; ++k) r[3*std::size_t(f.v[m]) + std::size_t(k)] += f.c[m][k]*jump;
+	}
+	for (std::size_t i = 0; i < sheets_.size(); ++i) if (!r_[i].empty()) sheets_[i].dyn.Solve(r_[i], z_[i]);
+	for (const Face& f : faces_) {
+		const std::vector<double>& z = z_[f.sheet];
+		double gz = 0;
+		for (int m = 0; m < 3; ++m) for (int k = 0; k < 3; ++k) gz += f.c[m][k]*z[3*std::size_t(f.v[m]) + std::size_t(k)];
+		if (f.aL) out[f.L] += scale_*gz;
+		if (f.aR) out[f.R] -= scale_*gz;
+	}
+}
+
+void SheetCoupling::Finish(const std::vector<double>& q)
+{
+	Measure(q, impulse_);
+}
+
+void SheetCrossingVelocities(const std::vector<LiquidSheet>& sheets, const std::vector<std::vector<double>>& v,
+	std::vector<SheetCrossing>& faces)
+{
+	for (SheetCrossing& c : faces) {
+		if (!sheets[c.sheet].Coupled() || c.sheet >= v.size() || v[c.sheet].empty()) continue;
+		const LiquidSheet& sh = sheets[c.sheet];
+		// FindSheetCrossings' arithmetic, so that faces closed again from a restored state carry the same bits.
+		const V3 v0 = At(v[c.sheet], sh.triangles[3*std::size_t(c.triangle)]), v1 = At(v[c.sheet], sh.triangles[3*std::size_t(c.triangle) + 1]),
+			v2 = At(v[c.sheet], sh.triangles[3*std::size_t(c.triangle) + 2]);
+		double vn = 0;
+		for (int m = 0; m < 3; ++m)
+			vn += (c.w[0]*v0[std::size_t(m)] + c.w[1]*v1[std::size_t(m)] + c.w[2]*v2[std::size_t(m)])*c.normal[m];
+		c.velocity = vn*c.normal[c.axis];
+	}
 }
 
 void SheetPressure(const LiquidSheet& sheet, const std::vector<double>& impulse, double span, std::vector<double>& pressure)

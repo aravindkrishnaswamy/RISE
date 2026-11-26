@@ -143,7 +143,8 @@ bool TranslateBodyObject(const std::string& text, V& body, std::string& error)
 }
 
 // m7d: `sheet <name> port [port <accepted>] [load_port <offered>] [relaxation w]`
-// (a mesh surface through a port, e.g. a cloth's surface_state) or `sheet <name>
+// (a mesh surface through a port, e.g. a cloth's surface_state; m7e: `coupling
+// implicit` with `mechanics_port`, `stiffness_port`, `steps_port`, `response`) or `sheet <name>
 // rect sx sy [divisions nx ny] [at x y z] [orientation w x y z] [velocity vx vy vz]
 // [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` (a prescribed
 // rectangle in its frame's xy plane, normal +z).
@@ -159,9 +160,11 @@ bool TranslateSheet(const std::string& text, V& sheet, std::string& error)
 		m.emplace_back("motion", V::String("port"));
 		while (i < t.size()) {
 			double x = 0;
-			if ((t[i] == "port" || t[i] == "load_port") && i + 1 < t.size()) { m.emplace_back(t[i], V::String(t[i + 1])); i += 2; }
+			if ((t[i] == "port" || t[i] == "load_port" || t[i] == "mechanics_port" || t[i] == "stiffness_port" || t[i] == "steps_port" ||
+				t[i] == "coupling" || t[i] == "response") && i + 1 < t.size()) { m.emplace_back(t[i], V::String(t[i + 1])); i += 2; }
 			else if (t[i] == "relaxation" && i + 1 < t.size() && Real(t[i + 1], x)) { m.emplace_back("relaxation", V::Float(x)); i += 2; }
-			else return Fail(error, where + ": unexpected `" + t[i] + "` (port <name> | load_port <name> | relaxation w)");
+			else return Fail(error, where + ": unexpected `" + t[i] + "` (port <name> | load_port <name> | relaxation w | coupling implicit|staggered | "
+				"mechanics_port <name> | stiffness_port <name> | steps_port <name> | response stiffness|lumped)");
 		}
 	} else if (t[1] == "rect" && Numbers(t, 2, 2, v)) {
 		m.emplace_back("size", v);
@@ -321,7 +324,10 @@ ParameterSchema Build()
 	F("sheet", SchemaChunkField::Kind::Text, "A thin open sheet as a moving boundary (m7d, preview): `<name> port [port <accepted>] "
 		"[load_port <offered>] [relaxation w]` follows a mesh surface (connect a cloth's surface_state to <accepted>, default "
 		"sheet_state, and <offered>, default sheet_load, to its surface_load in a simulation_group; the load is lagged one macro "
-		"step and unstable for light sheets: docs/SIMULATION_M7D_RESULTS.md), or `<name> rect sx sy [divisions nx ny] [at x y z] "
+		"step and unstable for light sheets: docs/SIMULATION_M7D_RESULTS.md; m7e: `coupling implicit` solves the cloth's linearised "
+		"response with the pressure, stable for cloth of any weight: also connect its surface_mechanics and surface_stiffness to "
+		"<sheet_mechanics> and <sheet_stiffness>, and <sheet_load_steps> to its surface_load_steps, with `owned <liquid> <cloth>`; "
+		"docs/SIMULATION_M7E_RESULTS.md), or `<name> rect sx sy [divisions nx ny] [at x y z] "
 		"[orientation w x y z] [velocity vx vy vz] [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` a prescribed "
 		"rectangle (its frame's xy plane, normal +z)");
 	// Text, as rigid_simulation's body_object: the object's name is followed by options.

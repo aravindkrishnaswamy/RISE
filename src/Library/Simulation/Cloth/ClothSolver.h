@@ -12,6 +12,13 @@
 //  (the same payloads) and accepts "surface_load" (grid.v1 on the sheet's
 //  vertex lattice: "pressure" in Pa and/or "traction", 3 components, Pa).
 //  Honours imposed macro steps; deterministic; checkpoints are exact.
+//  M7e (docs/SIMULATION_M7E_RESULTS.md): also offers "surface_mechanics"
+//  (lumped masses, pins, force, Rayleigh coefficients) and
+//  "surface_stiffness" (the projected elastic Hessian's upper blocks), and
+//  accepts "surface_load_steps" (a partner's steps and their impulses: the
+//  cloth then takes those steps by backward Euler with the macro step's
+//  elasticity linearised at its start) and a per-vertex "force" (N) on
+//  "surface_load".
 //
 //  Evidence is computed at Configure by running a fast subset of the
 //  analytic validation cases (ClothValidation.h) for the configured

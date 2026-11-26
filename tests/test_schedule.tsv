@@ -75,6 +75,7 @@ IORStackSeedingRegressionTest	wide:3	7	2.5 cores (measured)
 InfinitePlaneLuminaireTest	pool	5
 IntermediateCompositionTest	wide:3	2	2.7 cores (measured)
 LayeredWhiteFurnaceTest	pool	8
+LiquidClothCouplingTest	wide:4	12	about 2.2 cores mean (25 s cpu / 11.5 s real; solver pools of 8 and 4 threads)
 LiquidMeshBodyTest	wide:3	7	about 2 cores mean (8-thread pool; measured alone)
 LiquidPhysicsValidationTest	wide:3	50	about 3 cores mean (8-thread pool; small grids serial in the viscous solve; measured alone)
 LiquidRigidTest	wide:5	8	5 cores mean (38 s cpu / 7.5 s real, solver pools of 8-16 threads; measured alone)

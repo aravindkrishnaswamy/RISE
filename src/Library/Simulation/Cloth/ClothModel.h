@@ -320,6 +320,30 @@ public:
 	bool havePrev = false;
 	std::vector<double> portPressure;  // per vertex, Pa (empty: none)
 	std::vector<double> portTraction;  // 3 per vertex, Pa (empty: none)
+	std::vector<double> portForce;     // M7e: 3 per vertex, N (empty: none)
+	//! M7e (coupling): the cloth's linearised response for a partner that solves its
+	//! motion implicitly (liquid.mac's coupled sheets): `force` (3 per vertex, N) is
+	//! the force at the current state without the port loads (gravity, the
+	//! configured pressure and drag at v, contact, minus the elastic gradient);
+	//! `stiffness` is the projected elastic Hessian at x (membrane and bending, the
+	//! matrix the Rayleigh damping scales; pinned rows and columns kept, contact
+	//! curvature left out).  Never changes results.
+	void Mechanics(std::vector<double>& force, BlockMatrix& stiffness) const;
+	//! The pattern Mechanics' stiffness has (values zero).
+	const BlockMatrix& StiffnessPattern() const { return pattern_; }
+	//! M7e (coupling): until EndLinear, the membrane and bending energies are the
+	//! quadratic model about the current x, E0 + g0 . d + d^T K0 d / 2 (d = x - x0;
+	//! g0 the elastic gradient, K0 the projected Hessian of Mechanics, both rounded
+	//! to binary32 as surface_mechanics and surface_stiffness carry them), and the
+	//! Rayleigh damping uses K0: the dynamics a partner's linearised copy of the
+	//! cloth integrates (liquid.mac's implicit sheets), so the cloth and that copy
+	//! take the same steps.  Contact stays exact.
+	void BeginLinear();
+	void EndLinear() { linear_ = false; }
+	bool Linear() const { return linear_; }
+	const std::vector<double>& LinearOrigin() const { return linearX0_; }
+	//! Restores the linear model about `x0` (a checkpoint taken inside it).
+	void BeginLinearAt(const std::vector<double>& x0);
 	//! M6 (coupling): called after every accepted step (each part of a halved one)
 	//! with the contact frame of its final Newton solve, the new positions and the
 	//! step length (the cloth solver's collider_reaction port); never changes results.
@@ -385,7 +409,7 @@ private:
 		const ContactPair& blocking, double t) const;
 	bool StepRecursive(double h, Scheme scheme, const NewtonOptions& options, int depth, StepStats& stats,
 		std::string& error);
-	void ExternalForce(const std::vector<double>& pos, const std::vector<double>& vel, std::vector<double>& f) const;
+	void ExternalForce(const std::vector<double>& pos, const std::vector<double>& vel, std::vector<double>& f, bool ports = true) const;
 	void PinTargets(double t, std::vector<double>& pos, std::vector<double>* vel) const;
 	void MaskFixed(BlockMatrix& h) const;
 
@@ -411,6 +435,11 @@ private:
 	mutable BandedCholesky factor_;           // the last direct factorisation
 	mutable bool factorValid_ = false;
 	bool fatal_ = false;                      // the last StepOnce failed in a way halving cannot cure
+	// M7e: the linear model (BeginLinear).
+	bool linear_ = false;
+	std::vector<double> linearX0_, linearG0_;
+	BlockMatrix linearK0_;
+	void PenaltyContact(const std::vector<double>& pos, std::vector<double>* gradient, BlockMatrix* hessian, double& energy) const;
 };
 
 } } }

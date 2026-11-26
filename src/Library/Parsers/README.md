@@ -403,6 +403,37 @@ simulation_group
 }
 ```
 
+M7e: `sheet <name> port coupling implicit [mechanics_port <m>] [stiffness_port <s>] [steps_port <t>] [response
+stiffness|lumped]` couples the cloth implicitly (preview, stable for cloth of any weight): besides the two connections
+above, connect the cloth's `surface_mechanics` and `surface_stiffness` to `<m>` and `<s>` (defaults `sheet_mechanics`,
+`sheet_stiffness`) and `<t>` (default `sheet_load_steps`) to its `surface_load_steps`, and make the exchange owned
+(`owned pool cloth`, the liquid first).  The cloth then takes the liquid's steps.  A macro end within 1e-6 of a macro
+step of a frame time is snapped to it, so a macro step written a few digits short no longer leaves sliver steps; with
+the cloth first in Gauss–Seidel a staggered sheet still reads the cloth's state at the macro step's start.  Sample:
+`scenes/Tests/Simulation/liquid_cloth_wave.RISEscene`:
+
+```text
+cloth_simulation { name cloth  frames 61  size_u 0.3  size_v 0.45  vertices_u 13  vertices_v 19
+                   origin 0.6123 0.55 0.05  axis_u 0 0 1  axis_v 0 -1 0
+                   material cotton-plain-weave  material_density 0.2  pin v0 }
+liquid_simulation { name pool  frames 61  resolution 64  liquid box -1 -1 -1 0.3 0.45 2  sheet cloth port coupling implicit }
+simulation_group
+{
+    name            flume
+    members         pool
+    members         cloth
+    connect         cloth.surface_state -> pool.sheet_state
+    connect         cloth.surface_mechanics -> pool.sheet_mechanics
+    connect         cloth.surface_stiffness -> pool.sheet_stiffness
+    connect         pool.sheet_load -> cloth.surface_load
+    connect         pool.sheet_load_steps -> cloth.surface_load_steps
+    order           gauss-seidel
+    member_order    pool cloth
+    owned           pool cloth
+    macro_step      0.008333333333333333
+}
+```
+
 ## Coupling (M6)
 
 docs/SIMULATION_M6_RESULTS.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and

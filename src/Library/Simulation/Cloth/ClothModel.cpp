@@ -737,30 +737,7 @@ double ClothSystem::ElementEnergies(const std::vector<double>& pos, std::vector<
 		});
 	double energy = 0;
 	for (double e : elementEnergy_) energy += e;
-	if (contact && config_.contact == ContactModel::Penalty && !config_.colliders.empty()) {
-		for (std::uint32_t q = 0; q < sheet_.Vertices(); ++q) {
-			const V3 p = At(pos, q);
-			const double k = config_.contactStiffness*sheet_.area[q];
-			for (const auto& c : config_.colliders) {
-				V3 n;
-				// C2 penalty in the depth d: k d^3/(6 delta) for d < delta, then
-				// k (d^2/2 - delta d/2 + delta^2/6) (a quadratic penalty's Hessian jump at
-				// d = 0 makes Newton chatter on the contact set).
-				const double d = config_.contactThickness - c.Distance(p, n);
-				if (!(d > 0)) continue;
-				const double delta = std::max(0.5*config_.contactThickness, 1e-5);
-				double e, f, s;
-				if (d < delta) { e = k*d*d*d/(6*delta); f = k*d*d/(2*delta); s = k*d/delta; }
-				else { e = k*(0.5*d*d - 0.5*delta*d + delta*delta/6); f = k*(d - 0.5*delta); s = k; }
-				energy += e;
-				if (gradient) Accumulate(*gradient, q, Mul(n, -f));
-				if (hessian) {
-					double* blk = hessian->Block(pattern_.DiagonalSlot(q));
-					for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += s*n[i]*n[j];
-				}
-			}
-		}
-	}
+	if (contact) PenaltyContact(pos, gradient, hessian, energy);
 	return energy;
 }
 
@@ -772,7 +749,19 @@ double ClothSystem::Evaluate(const Potential& p, const std::vector<double>& pos,
 	if (hessian) hessian->Zero();
 	// Projected: keep the compression the inertia can absorb (clamp it in statics).
 	const double allowance = project ? 0.25*config_.material.density*p.inertia : std::numeric_limits<double>::infinity();
-	double energy = ElementEnergies(pos, gradient, hessian, true, allowance);
+	double energy = 0;
+	if (linear_) {
+		// M7e: the quadratic model about x0 (BeginLinear), exact penalty contact.
+		std::vector<double> d(dofs), kd;
+		for (std::size_t k = 0; k < dofs; ++k) d[k] = pos[k] - linearX0_[k];
+		linearK0_.Multiply(d, kd, pool_.get());
+		for (std::size_t k = 0; k < dofs; ++k) {
+			energy += d[k]*(linearG0_[k] + 0.5*kd[k]);
+			if (gradient) (*gradient)[k] += linearG0_[k] + kd[k];
+		}
+		if (hessian) hessian->AddScaled(linearK0_, 1.0);
+		PenaltyContact(pos, gradient, hessian, energy);
+	} else energy = ElementEnergies(pos, gradient, hessian, true, allowance);
 	if (p.contact && barrier_) {
 		const double e = barrier_->Evaluate(*p.contact, pos, gradient, hessian, project, fixed_);
 		if (!std::isfinite(e)) return std::numeric_limits<double>::infinity();
@@ -1022,12 +1011,74 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 	}
 }
 
-void ClothSystem::ExternalForce(const std::vector<double>& pos, const std::vector<double>& vel, std::vector<double>& f) const
+void ClothSystem::PenaltyContact(const std::vector<double>& pos, std::vector<double>* gradient, BlockMatrix* hessian, double& energy) const
+{
+	if (config_.contact == ContactModel::Penalty && !config_.colliders.empty()) {
+		for (std::uint32_t q = 0; q < sheet_.Vertices(); ++q) {
+			const V3 p = At(pos, q);
+			const double k = config_.contactStiffness*sheet_.area[q];
+			for (const auto& c : config_.colliders) {
+				V3 n;
+				// C2 penalty in the depth d: k d^3/(6 delta) for d < delta, then
+				// k (d^2/2 - delta d/2 + delta^2/6) (a quadratic penalty's Hessian jump at
+				// d = 0 makes Newton chatter on the contact set).
+				const double d = config_.contactThickness - c.Distance(p, n);
+				if (!(d > 0)) continue;
+				const double delta = std::max(0.5*config_.contactThickness, 1e-5);
+				double e, f, s;
+				if (d < delta) { e = k*d*d*d/(6*delta); f = k*d*d/(2*delta); s = k*d/delta; }
+				else { e = k*(0.5*d*d - 0.5*delta*d + delta*delta/6); f = k*(d - 0.5*delta); s = k; }
+				energy += e;
+				if (gradient) Accumulate(*gradient, q, Mul(n, -f));
+				if (hessian) {
+					double* blk = hessian->Block(pattern_.DiagonalSlot(q));
+					for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += s*n[i]*n[j];
+				}
+			}
+		}
+	}
+}
+
+namespace {
+double RoundF32(double x) { return static_cast<double>(static_cast<float>(x)); }
+} // namespace
+
+void ClothSystem::BeginLinearAt(const std::vector<double>& x0)
+{
+	linearX0_ = x0;
+	linearG0_.assign(x0.size(), 0.0);
+	ElementEnergies(x0, &linearG0_, nullptr, false, 0.0);
+	linearK0_ = pattern_;
+	linearK0_.Zero();
+	ElementEnergies(x0, nullptr, &linearK0_, false, 0.0);
+	for (double& g : linearG0_) g = RoundF32(g);
+	for (std::size_t k = 0; k < linearK0_.PatternBlocks(); ++k) {
+		double* b = linearK0_.Block(k);
+		for (int r = 0; r < 9; ++r) b[r] = RoundF32(b[r]);
+	}
+	// The partner reads the upper blocks and mirrors them: the lower blocks are their transposes.
+	for (std::uint32_t i = 0; i < linearK0_.Blocks(); ++i)
+		for (std::size_t k = linearK0_.RowStart()[i]; k < linearK0_.RowStart()[i + 1]; ++k) {
+			const std::uint32_t j = linearK0_.Column()[k];
+			if (j >= i) continue;
+			const double* u = linearK0_.Block(linearK0_.Slot(j, i));
+			double* b = linearK0_.Block(k);
+			for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) b[3*r + c] = u[3*c + r];
+		}
+	linear_ = true;
+}
+
+void ClothSystem::BeginLinear()
+{
+	BeginLinearAt(x);
+}
+
+void ClothSystem::ExternalForce(const std::vector<double>& pos, const std::vector<double>& vel, std::vector<double>& f, bool ports) const
 {
 	const std::uint32_t n = sheet_.Vertices();
 	f.assign(3*static_cast<std::size_t>(n), 0.0);
 	for (std::uint32_t q = 0; q < n; ++q) Put(f, q, Mul(config_.gravity, sheet_.mass[q]));
-	const bool pressure = config_.pressure != 0 || !portPressure.empty();
+	const bool pressure = config_.pressure != 0 || (ports && !portPressure.empty());
 	const bool drag = config_.dragCoefficient > 0;
 	if (pressure || drag) {
 		std::vector<double> area(f.size(), 0.0); // vector area per vertex (current)
@@ -1039,7 +1090,7 @@ void ClothSystem::ExternalForce(const std::vector<double>& pos, const std::vecto
 		for (std::uint32_t q = 0; q < n; ++q) {
 			const V3 an = At(area, q);
 			if (pressure) {
-				const double pq = config_.pressure + (portPressure.empty() ? 0.0 : portPressure[q]);
+				const double pq = config_.pressure + (!ports || portPressure.empty() ? 0.0 : portPressure[q]);
 				Accumulate(f, q, Mul(an, -pq));
 			}
 			if (drag) {
@@ -1052,8 +1103,27 @@ void ClothSystem::ExternalForce(const std::vector<double>& pos, const std::vecto
 			}
 		}
 	}
-	if (!portTraction.empty())
+	if (ports && !portTraction.empty())
 		for (std::uint32_t q = 0; q < n; ++q) Accumulate(f, q, Mul(At(portTraction, q), sheet_.area[q]));
+	// M7e: a per-vertex force (a liquid's hydrodynamic impulse over the macro step, held).
+	if (ports && !portForce.empty())
+		for (std::uint32_t q = 0; q < n; ++q) Accumulate(f, q, At(portForce, q));
+}
+
+void ClothSystem::Mechanics(std::vector<double>& force, BlockMatrix& stiffness) const
+{
+	ExternalForce(x, v, force, false);
+	std::vector<double> g(x.size(), 0.0);
+	ElementEnergies(x, &g, nullptr, true, 0.0);   // elastic and penalty contact
+	for (std::size_t k = 0; k < g.size(); ++k) force[k] -= g[k];
+	if (barrier_) {
+		std::vector<double> c;
+		ContactForces(x, time, c);
+		for (std::size_t k = 0; k < c.size(); ++k) force[k] += c[k];
+	}
+	stiffness = pattern_;
+	stiffness.Zero();
+	ElementEnergies(x, nullptr, &stiffness, false, 0.0);
 }
 
 bool ClothSystem::StepOnce(double h, Scheme scheme, const NewtonOptions& options, StepStats& stats, std::string& error)
@@ -1106,7 +1176,8 @@ bool ClothSystem::StepOnce(double h, Scheme scheme, const NewtonOptions& options
 	if (p.useDamping) {
 		damping_.Zero();
 		if (m.dampingStiffness > 0) {
-			ElementEnergies(x, nullptr, &damping_, false, 0.0);
+			if (linear_) damping_.AddScaled(linearK0_, 1.0);   // M7e: K0, as the partner's copy
+			else ElementEnergies(x, nullptr, &damping_, false, 0.0);
 			BlockMatrix scaled = pattern_;
 			scaled.Zero();
 			scaled.AddScaled(damping_, m.dampingStiffness);

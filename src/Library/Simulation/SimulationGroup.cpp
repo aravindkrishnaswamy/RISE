@@ -827,7 +827,8 @@ bool SimulationGroup::Serve(Link& l, std::shared_ptr<const Bytes>& value, std::s
 	// yet (Jacobi), on every pass alike.
 	const bool jacobi = policy_.order == ExchangeOrder::Jacobi;
 	const double limit = members_[l.from]->cached ? (jacobi ? stepStart_ : stepEnd_) :
-		(jacobi && iteration_ == 0 ? stepStart_ : stepEnd_);
+		// M7e: a port that reads its source's state at the macro step's start gets it in any order.
+		l.accept.startOfStep ? stepStart_ : (jacobi && iteration_ == 0 ? stepStart_ : stepEnd_);
 	std::shared_ptr<const Bytes> raw;
 	if (!Latest(*members_[l.from], l.c.fromPort, limit, raw)) return true;   // nothing yet: Unavailable
 	if (!l.adapter) { value = raw; return true; }
@@ -1038,7 +1039,20 @@ bool SimulationGroup::StepMacro(std::string& error)
 	if (!started_) return Fail(error, "start or restore the group first");
 	if (Finished()) return true;
 	const double a = time_;
-	const double b = members_[order_.front()]->description.cache.startTime + static_cast<double>(steps_ + 1)*macroStep_;
+	double b = members_[order_.front()]->description.cache.startTime + static_cast<double>(steps_ + 1)*macroStep_;
+	// M7e: a macro end within 1e-6 of a macro step of an output time is that output time.
+	// A macro step that should divide the frame interval but is written a few ulp short (or
+	// long) otherwise leaves a sliver segment between the two at every frame (a sheet's
+	// load over it was enormous, and the cloth's step after it tiny: the M7d demo slowed a
+	// hundredfold).  Exact multiples are unchanged.
+	for (std::size_t i : order_) {
+		const CacheDescription& d = members_[i]->description.cache;
+		if (!(d.interval > 0)) continue;
+		const double k = std::nearbyint((b - d.startTime)/d.interval);
+		if (k < 0 || k >= static_cast<double>(d.count)) continue;
+		const double t = d.startTime + k*d.interval;
+		if (t != b && t > a && std::fabs(t - b) <= 1e-6*macroStep_) { b = t; break; }
+	}
 	report_ = StepReport();
 	if (!StepInterval(a, b, 0, error)) return false;
 	time_ = b;

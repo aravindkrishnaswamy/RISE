@@ -35,7 +35,9 @@ constexpr std::size_t CodecBudget = std::size_t(16) << 30;
 constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // m7d.1: sheets (thin open surfaces as moving boundaries, preview) and closed-mesh
 // bodies; bakes without either publish the frames of m7c.1.
-constexpr const char* SolverVersion = "m7d.1";
+// m7e.1: sheets coupled implicitly (the partner's linearised response in the
+// pressure solve, LiquidSheets.h); bakes without them publish the frames of m7d.1.
+constexpr const char* SolverVersion = "m7e.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
@@ -431,6 +433,14 @@ bool ParseBody(const V& item, const V3& gravity, double h, const ISceneInputs& i
 // pressure load as cloth's surface_load; default sheet_load), `relaxation` (the
 // offered load is relaxation x the new one + (1 - relaxation) x the last
 // offered, in (0, 1], default 1)}.
+// m7e: port sheets take `coupling` (staggered: the m7d exchange above, the
+// default; implicit: the partner's linearised response in the pressure solve,
+// LiquidSheets.h, through `mechanics_port` (default sheet_mechanics) and
+// `stiffness_port` (default sheet_stiffness), as cloth.shell offers
+// surface_mechanics and surface_stiffness; the load is offered as a per-vertex
+// force) and `response` (implicit only: stiffness, the default, or lumped, the
+// masses alone with the force at the macro step's start, kept to show why the
+// stiffness is needed).  Written back only when implicit.
 bool ParseSheet(const V& item, LiquidSheet& sh, double& relaxation, V& effective, std::string& error)
 {
 	Reader r(item, "sheet", error);
@@ -443,8 +453,24 @@ bool ParseSheet(const V& item, LiquidSheet& sh, double& relaxation, V& effective
 		sh.motion = LiquidSheet::Motion::Port;
 		sh.port = r.Text("port", "sheet_state");
 		sh.loadPort = r.Text("load_port", "sheet_load");
-		relaxation = r.Real("relaxation", 1.0);
-		if (!(relaxation > 0 && relaxation <= 1)) return r.Bad("relaxation must be in (0, 1]");
+		const std::string coupling = r.Text("coupling", "staggered", {"staggered", "implicit"}, false);
+		sh.implicit = coupling == "implicit";
+		if (sh.implicit) {
+			if (r.Has("relaxation")) return r.Bad("relaxation is for the staggered exchange (an implicit sheet's load is not relaxed)");
+			r.out.emplace_back("coupling", V::String(coupling));
+			sh.mechanicsPort = r.Text("mechanics_port", "sheet_mechanics");
+			sh.stiffnessPort = r.Text("stiffness_port", "sheet_stiffness");
+			sh.stepsPort = r.Text("steps_port", "sheet_load_steps");
+			sh.dyn.useStiffness = r.Text("response", "stiffness", {"stiffness", "lumped"}) == "stiffness";
+			const std::string names[5] = {sh.port, sh.loadPort, sh.mechanicsPort, sh.stiffnessPort, sh.stepsPort};
+			for (int a = 0; a < 5; ++a) for (int b = a + 1; b < 5; ++b)
+				if (names[a] == names[b]) return r.Bad("a sheet's port names must differ");
+		} else {
+			for (const char* key : {"mechanics_port", "stiffness_port", "steps_port", "response"})
+				if (r.Has(key)) return r.Bad(std::string(key) + " is for coupling implicit");
+			relaxation = r.Real("relaxation", 1.0);
+			if (!(relaxation > 0 && relaxation <= 1)) return r.Bad("relaxation must be in (0, 1]");
+		}
 		if (sh.port == sh.loadPort) return r.Bad("port and load_port must differ");
 	} else {
 		sh.motion = LiquidSheet::Motion::Prescribed;
@@ -903,9 +929,11 @@ struct LiquidToken final : SolverStateToken {
 	std::uint64_t contacts = 0;
 	// M7d: sheets.
 	std::vector<LiquidSheet> sheets;
-	std::vector<std::vector<double>> sheetImpulse, sheetLastPressure;
+	std::vector<std::vector<double>> sheetImpulse, sheetLastPressure, sheetHistory;
 	bool sheetOpen = false;
 	double sheetStart = 0;
+	std::vector<std::uint32_t> sheetSegments;   // M7e
+	std::uint32_t sheetSegment = 0;
 };
 
 // The pack of a body's state in checkpoints: x (3), q (4), v (3), pi (3), mass,
@@ -935,6 +963,15 @@ void UnpackBody(const double* p, LiquidBody& b, Vec6& acc)
 	for (int k = 0; k < 3; ++k) b.externalForce[std::size_t(k)] = p[17 + k];
 	for (int k = 0; k < 6; ++k) acc[std::size_t(k)] = p[20 + k];
 }
+// M7e: the stored (upper, row <= column) blocks of a stiffness pattern.
+std::uint64_t UpperBlocks(const Cloth::BlockMatrix& K)
+{
+	std::uint64_t n = 0;
+	for (std::uint32_t r = 0; r < K.Blocks(); ++r)
+		for (std::size_t k = K.RowStart()[r]; k < K.RowStart()[r + 1]; ++k) n += K.Column()[k] >= r;
+	return n;
+}
+
 Bytes DoublesBytes(const std::vector<double>& v)
 {
 	Bytes out(8*v.size());
@@ -1010,8 +1047,12 @@ private:
 	// pressure load offered at its end; one exchange per macro step, or per
 	// segment when free-running with a cached feed).
 	bool AcceptSheets(IPortExchange* ports, std::string& error);
+	bool AcceptSheetDynamics(IPortExchange* ports, LiquidSheet& sh, std::string& error);   // M7e
 	bool OfferSheetLoads(IPortExchange* ports, double time, double span, std::string& error);
 	bool portSheets_ = false, sheetOpen_ = false;
+	bool implicitSheets_ = false;   // M7e
+	std::vector<std::uint32_t> sheetSegments_;   // M7e: per step of the open exchange, its segment ordinal
+	std::uint32_t sheetSegment_ = 0;
 	double sheetStart_ = 0;
 	std::vector<double> sheetRelaxation_;
 	std::vector<std::vector<double>> sheetLastPressure_;
@@ -1174,14 +1215,16 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			for (std::size_t j = 0; j < i; ++j)
 				if (setup.sheets[i].name == setup.sheets[j].name) return Fail(error, "sheet names must be unique: " + setup.sheets[i].name);
 			if (setup.sheets[i].motion != LiquidSheet::Motion::Port) continue;
-			for (const std::string* n : {&setup.sheets[i].port, &setup.sheets[i].loadPort}) {
+			for (const std::string* n : {&setup.sheets[i].port, &setup.sheets[i].loadPort, &setup.sheets[i].mechanicsPort, &setup.sheets[i].stiffnessPort,
+				&setup.sheets[i].stepsPort}) {
+				if (n->empty()) continue;   // m7e: the implicit ports (empty for staggered sheets)
 				if (std::find(portNames.begin(), portNames.end(), *n) != portNames.end()) return Fail(error, "sheet port names must be unique: " + *n);
 				portNames.push_back(*n);
 			}
 		}
 		if (!setup.sheets.empty() && setup.viscosity > 0)
-			return Fail(error, "sheets with viscosity are not supported (m7d: the viscous solve does not see a sheet, so viscous stress would "
-				"cross it and no viscous traction would be returned)");
+			return Fail(error, "sheets with viscosity are not supported (m7d, m7e: the viscous solve does not see a sheet, so viscous stress would "
+				"cross it and no viscous traction would be returned; leave viscosity at 0 with sheets)");
 	}
 	candidate.effectiveParameters = V::MapValue(p.out);
 	setup_ = setup;
@@ -1195,8 +1238,9 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	for (const LiquidBody& b : setup.bodies) if (b.motion == BodyMotion::Port) portBodies_ = true;
 	implicitPorts_ = portBodies_;
 	for (const LiquidBody& b : setup.bodies) if (b.motion == BodyMotion::Port && b.staggered) implicitPorts_ = false;
-	portSheets_ = false;
+	portSheets_ = implicitSheets_ = false;
 	for (const LiquidSheet& sh : setup.sheets) if (sh.motion == LiquidSheet::Motion::Port) portSheets_ = true;
+	for (const LiquidSheet& sh : setup.sheets) if (sh.implicit) implicitSheets_ = true;
 	sheetRelaxation_ = sheetRelaxation;
 	configured_ = true;
 
@@ -1248,12 +1292,29 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	}
 	// M7d: sheets that follow a mesh surface (cloth's surface_state) and return the pressure load
 	// (declared as cloth's ports are, so a direct connection needs no adapter).
+	// M7e: the load's channels include cloth's per-vertex force (an implicit sheet's load), and an
+	// implicit sheet accepts cloth's surface_mechanics and surface_stiffness.  The surface is read
+	// at the macro step's start (`startOfStep`: in Gauss-Seidel order the group serves that value
+	// even when the cloth steps first).
 	for (const LiquidSheet& sh : setup.sheets) {
 		if (sh.motion != LiquidSheet::Motion::Port) continue;
-		candidate.ports.push_back({sh.port, "surface", "m", "mesh.v2", false, "",
-			{{"normal", "normal", "1", 3}, {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""});
+		PortDeclaration state{sh.port, "surface", "m", "mesh.v2", false, "",
+			{{"normal", "normal", "1", 3}, {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""};
+		state.startOfStep = true;
+		candidate.ports.push_back(state);
 		candidate.ports.push_back({sh.loadPort, "surface load", "Pa", "field.v1", true, "",
-			{{"pressure", "pressure", "Pa", 1}, {"traction", "traction", "Pa", 3}}, ""});
+			{{"force", "force", "N", 3}, {"pressure", "pressure", "Pa", 1}, {"traction", "traction", "Pa", 3}}, ""});
+		if (!sh.implicit) continue;
+		PortDeclaration mech{sh.mechanicsPort, "surface mechanics", "kg", "field.v1", false, "",
+			{{"damping_mass", "damping", "1/s", 1}, {"damping_stiffness", "damping", "s", 1}, {"fixed", "fixed", "1", 1},
+			 {"force", "force", "N", 3}, {"mass", "mass", "kg", 1}}, ""};
+		PortDeclaration stiff{sh.stiffnessPort, "surface stiffness", "N/m", "field.v1", false, "",
+			{{"column", "index", "1", 1}, {"row", "index", "1", 1}, {"stiffness", "stiffness", "N/m", 9}}, ""};
+		mech.startOfStep = stiff.startOfStep = true;
+		candidate.ports.push_back(mech);
+		candidate.ports.push_back(stiff);
+		candidate.ports.push_back({sh.stepsPort, "surface load steps", "N s", "field.v1", true, "",
+			{{"impulse", "impulse", "N s", 3}, {"segment", "index", "1", 1}}, ""});
 	}
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17; `threads` does not change results"}};
@@ -1265,6 +1326,11 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	caps.backend = "cpu";
 	// M7b: the coupled pressure solve is the implicit exchange for port bodies.
 	if (implicitPorts_) caps.ownedImplicitPorts = {LoadPort, MassPort, StatePort};
+	// M7e: and for implicit sheets (their surface, mechanics, stiffness and load).
+	for (const LiquidSheet& sh : setup.sheets)
+		if (sh.implicit)
+			for (const std::string* n : {&sh.port, &sh.mechanicsPort, &sh.stiffnessPort, &sh.loadPort, &sh.stepsPort}) caps.ownedImplicitPorts.push_back(*n);
+	std::sort(caps.ownedImplicitPorts.begin(), caps.ownedImplicitPorts.end());
 	// Measured (docs/SIMULATION_M7A_RESULTS.md section 8): peak RSS 356 bytes per cell at
 	// 128^3 (a dam break; 565 at 64^3 with the fixed part), particles about 140 bytes
 	// per cell at 16 per band cell, the fields output 48; declared with a 25% margin.
@@ -1421,7 +1487,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	if (!setup.sheets.empty()) {
 		// M7d: sheets as moving boundaries, always preview.
 		std::vector<std::string> kinds;
-		for (const LiquidSheet& sh : setup.sheets) kinds.push_back(sh.motion == LiquidSheet::Motion::Port ? "port" : "prescribed");
+		for (const LiquidSheet& sh : setup.sheets) kinds.push_back(sh.motion != LiquidSheet::Motion::Port ? "prescribed" : sh.implicit ? "port-implicit" : "port");
 		std::sort(kinds.begin(), kinds.end());
 		kinds.erase(std::unique(kinds.begin(), kinds.end()), kinds.end());
 		candidate.evidence.conditions.push_back({"sheets", kinds});
@@ -1435,11 +1501,23 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			"returned to a cloth is lagged by one macro step of a staggered exchange, which is unstable for sheets light against "
 			"the liquid they move (the added-mass instability, measured in docs/SIMULATION_M7D_RESULTS.md); tangential (viscous) "
 			"traction is not returned; liquid films thinner than a cell on a sheet are not resolved.";
+		if (implicitSheets_)
+			candidate.evidence.scope += " M7e couples a sheet implicitly instead: its partner's linearised response over the macro step "
+				"(lumped masses, pins, the force at the step's start, the projected elastic Hessian and Rayleigh damping) is solved with the "
+				"pressure in one symmetric positive definite system, so the added mass and the elastic response to the pressure are "
+				"implicit, and the impulse on each vertex is returned as a force held over the macro step; this too is preview and not "
+				"certified: the linearisation is about the macro step's start, the partner's own nonlinear step then differs from the "
+				"liquid's linearised copy, and the accuracy cases of docs/SIMULATION_M7E_RESULTS.md are not in this evidence.";
 		candidate.evidence.fidelity = "preview";
 		if (caps.fidelityLimit.empty())
-			caps.fidelityLimit = "sheets: a thin surface as a face-crossing moving boundary with a lagged pressure load (preview, not certified)";
-		candidate.notes.push_back("sheets: face-crossing moving boundaries (preview); a port sheet's load is offered once per macro step "
-			"(the liquid should step before the cloth, or use Jacobi order, so that it reads the sheet's state at the macro step's start)");
+			caps.fidelityLimit = implicitSheets_ ?
+				"sheets: a thin surface as a face-crossing moving boundary coupled implicitly through its partner's linearised response (preview, not certified)" :
+				"sheets: a thin surface as a face-crossing moving boundary with a lagged pressure load (preview, not certified)";
+		candidate.notes.push_back(implicitSheets_ ?
+			"sheets: face-crossing moving boundaries (preview); an implicit sheet's partner must be in an owned exchange of this liquid "
+			"(`owned <liquid> <cloth>`, the liquid first)" :
+			"sheets: face-crossing moving boundaries (preview); a port sheet's load is offered once per macro step from the sheet's "
+			"state at the macro step's start (the group serves that state in either Gauss-Seidel order)");
 		// Measured (docs/SIMULATION_M7D_RESULTS.md): the crossings cost little next to the pressure solve.
 		caps.costEstimate *= 1.05;
 	}
@@ -1460,6 +1538,8 @@ bool LiquidSolver::Start(std::string& error)
 	sheetOpen_ = false;
 	sheetStart_ = 0;
 	sheetLastPressure_.assign(setup_.sheets.size(), {});
+	sheetSegments_.clear();
+	sheetSegment_ = 0;
 	started_ = true;
 	return true;
 }
@@ -1601,9 +1681,82 @@ bool LiquidSolver::AcceptSheets(IPortExchange* ports, std::string& error)
 		sh.x.resize(f.positions.size());
 		sh.v.resize(f.positions.size());
 		for (std::size_t k = 0; k < f.positions.size(); ++k) { sh.x[k] = FromF32(f.positions[k]); sh.v[k] = FromF32(f.velocities[k]); }
+		if (sh.implicit && !AcceptSheetDynamics(ports, sh, error)) return false;
 	}
-	model_.UpdateSheetGeometry();
+	model_.UpdateSheetGeometry(implicitSheets_);
 	model_.ResetSheetImpulses();
+	if (implicitSheets_) model_.ResetSheetDynamics();
+	sheetSegments_.clear();
+	sheetSegment_ = 0;
+	return true;
+}
+
+// M7e: an implicit sheet's partner mechanics (field.v1 over its vertices: mass, fixed,
+// force, Rayleigh coefficients) and stiffness (field.v1 over the upper blocks of its
+// Hessian: row, column, 3x3 block), as cloth.shell offers surface_mechanics and
+// surface_stiffness.  The pattern is fixed at the first accept.
+bool LiquidSolver::AcceptSheetDynamics(IPortExchange* ports, LiquidSheet& sh, std::string& error)
+{
+	const std::size_t n = sh.x.size()/3;
+	auto read = [&](const std::string& port, FieldFrame& f) {
+		std::shared_ptr<const Bytes> bytes;
+		std::string why;
+		if (ports->Accept(port, s_.t, bytes, why) != PortStatus::Ready || !bytes)
+			return Fail(error, "implicit sheet " + sh.name + " needs " + port + " (cloth.shell's surface_mechanics and surface_stiffness, "
+				"connected in an owned exchange)" + (why.empty() ? std::string() : ": " + why));
+		if (!DecodeField(*bytes, InputBudget, f, error)) return Fail(error, "sheet " + sh.name + ": " + port + ": " + error);
+		return true;
+	};
+	auto channel = [](const FieldFrame& f, const char* name, const char* units, int components) -> const FieldChannel* {
+		for (const auto& c : f.channels) if (c.name == name && c.units == units && c.components == components) return &c;
+		return nullptr;
+	};
+	FieldFrame mf, kf;
+	if (!read(sh.mechanicsPort, mf) || !read(sh.stiffnessPort, kf)) return false;
+	if (mf.domain != sh.topology || mf.count != n)
+		return Fail(error, "sheet " + sh.name + ": " + sh.mechanicsPort + " is not over the surface's vertices");
+	const FieldChannel *mass = channel(mf, "mass", "kg", 1), *fixed = channel(mf, "fixed", "1", 1), *force = channel(mf, "force", "N", 3),
+		*alpha = channel(mf, "damping_mass", "1/s", 1), *beta = channel(mf, "damping_stiffness", "s", 1);
+	const FieldChannel *row = channel(kf, "row", "1", 1), *col = channel(kf, "column", "1", 1), *k = channel(kf, "stiffness", "N/m", 9);
+	if (!mass || !fixed || !force || !alpha || !beta || !row || !col || !k)
+		return Fail(error, "sheet " + sh.name + ": the mechanics need mass, fixed, force, damping_mass and damping_stiffness, the stiffness row, "
+			"column and stiffness (cloth.shell m3a.4 with the m7e ports)");
+	SheetDynamics& d = sh.dyn;
+	d.mass.resize(n);
+	d.fixed.resize(n);
+	d.force.resize(3*n);
+	for (std::size_t q = 0; q < n; ++q) {
+		d.mass[q] = FromF32(mass->values[q]);
+		d.fixed[q] = FromF32(fixed->values[q]) != 0;
+		for (int a = 0; a < 3; ++a) d.force[3*q + std::size_t(a)] = FromF32(force->values[3*q + std::size_t(a)]);
+		if (!d.fixed[q] && !(d.mass[q] > 0)) return Fail(error, "sheet " + sh.name + ": a free vertex needs a positive mass");
+	}
+	d.dampingMass = n ? FromF32(alpha->values[0]) : 0.0;
+	d.dampingStiffness = n ? FromF32(beta->values[0]) : 0.0;
+	if (!(d.dampingMass >= 0) || !(d.dampingStiffness >= 0)) return Fail(error, "sheet " + sh.name + ": negative damping");
+	if (kf.domain != d.stiffnessDomain) {
+		std::vector<std::pair<std::uint32_t, std::uint32_t>> pairs;
+		for (std::uint32_t e = 0; e < kf.count; ++e) {
+			const double i = FromF32(row->values[e]), j = FromF32(col->values[e]);
+			if (!(i >= 0 && j >= i && j < double(n)) || std::floor(i) != i || std::floor(j) != j)
+				return Fail(error, "sheet " + sh.name + ": invalid stiffness block indices");
+			if (i != j) pairs.emplace_back(std::uint32_t(i), std::uint32_t(j));
+		}
+		d.stiffness.Build(std::uint32_t(n), pairs);
+		d.stiffnessDomain = kf.domain;
+		d.matrix = Cloth::BlockMatrix();   // the step matrix's pattern follows
+	}
+	d.stiffness.Zero();
+	for (std::uint32_t e = 0; e < kf.count; ++e) {
+		const std::uint32_t i = std::uint32_t(FromF32(row->values[e])), j = std::uint32_t(FromF32(col->values[e]));
+		double* b = d.stiffness.Block(d.stiffness.Slot(i, j));
+		for (int c = 0; c < 9; ++c) b[c] = FromF32(k->values[9*std::size_t(e) + std::size_t(c)]);
+		if (i != j) {
+			double* t = d.stiffness.Block(d.stiffness.Slot(j, i));
+			for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) t[3*c + r] = b[3*r + c];
+		}
+	}
+
 	return true;
 }
 
@@ -1617,6 +1770,37 @@ bool LiquidSolver::OfferSheetLoads(IPortExchange* ports, double time, double spa
 	for (std::size_t i = 0; i < model_.sheets.size(); ++i) {
 		const LiquidSheet& sh = model_.sheets[i];
 		if (sh.motion != LiquidSheet::Motion::Port || sh.topology.empty()) continue;
+		if (sh.implicit) {
+			// M7e: the impulse on each vertex over the macro step as a force held over it (field.v1, binary32).
+			FieldFrame f;
+			f.domain = sh.topology;
+			f.count = static_cast<std::uint32_t>(sh.Vertices());
+			FieldChannel force{"force", "N", 3, {}};
+			for (double x : model_.sheetImpulse[i]) force.values.push_back(bits(span > 0 ? x/span : 0.0));
+			f.channels = {force};
+			auto bytes = std::make_shared<Bytes>();
+			if (!EncodeField(f, CodecBudget, *bytes, error) || !ports->Offer(sh.loadPort, time, bytes, error)) return false;
+			// The impulse in each of the liquid's steps (the cloth takes the same steps).
+			const std::vector<double>& h = model_.sheetHistory[i];
+			const std::size_t n = sh.Vertices(), steps = n ? h.size()/(3*n) : 0;
+			if (steps != sheetSegments_.size()) return Fail(error, "internal: the sheet's step history does not match its segments");
+			FieldFrame st;
+			{
+				Bytes id;
+				V::Values segs;
+				for (std::uint32_t x : sheetSegments_) segs.push_back(V::Unsigned(x));
+				RISECBOR64::Encode(V::ArrayValue({V::String("liquid.mac.sheet_steps.v1"), V::String(sh.topology), V::ArrayValue(segs)}), id, nullptr);
+				st.domain = RISECBOR64::SHA256Hex(id);
+			}
+			st.count = static_cast<std::uint32_t>(steps*n);
+			FieldChannel impulse{"impulse", "N s", 3, {}}, segment{"segment", "1", 1, {}};
+			for (double x : h) impulse.values.push_back(bits(x));
+			for (std::size_t j = 0; j < steps; ++j) for (std::size_t q = 0; q < n; ++q) segment.values.push_back(bits(double(sheetSegments_[j])));
+			st.channels = {impulse, segment};
+			auto sb = std::make_shared<Bytes>();
+			if (!EncodeField(st, CodecBudget, *sb, error) || !ports->Offer(sh.stepsPort, time, sb, error)) return false;
+			continue;
+		}
 		std::vector<double> p;
 		SheetPressure(sh, model_.sheetImpulse[i], span, p);
 		std::vector<double>& last = sheetLastPressure_[i];
@@ -1752,6 +1936,9 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 	// when free-running with a cached feed), their load offered at its end.
 	if (portSheets_ && !ports)
 		return Fail(error, "the liquid's port sheets need their surface: run it in a simulation_group or feed the port with port_source");
+	if (implicitSheets_ && !macro)
+		return Fail(error, "the liquid's implicit sheets need a simulation_group with an owned exchange (`owned <liquid> <cloth>`), "
+			"which exchanges once per macro step");
 	if (portSheets_ && macro && !sheetOpen_ && s_.t < request.macroEnd && !s_.finished) {
 		if (!AcceptSheets(ports, error)) return false;
 		sheetOpen_ = true;
@@ -1818,11 +2005,13 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			StepStats stats;
 			model_.SetTime(s_.t);
 			if (!model_.Step(tn - s_.t, stats, error)) return false;
+			if (implicitSheets_ && sheetOpen_) sheetSegments_.push_back(sheetSegment_);   // M7e
 			if (!model_.bodies.empty()) WallContact(tn - s_.t);
 			s_.t = tn;
 			++s_.segJ;
 		}
 		s_.segN = s_.segJ = 0;
+		if (implicitSheets_ && sheetOpen_) ++sheetSegment_;   // M7e
 		if (!macro && !closeSheets()) return false;
 	}
 }
@@ -1870,12 +2059,26 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 		V::Values list;
 		for (std::size_t i = 0; i < model_.sheets.size(); ++i) {
 			const LiquidSheet& sh = model_.sheets[i];
-			list.push_back(V::MapValue({{"vertices", V::Unsigned(sh.x.size()/3)}, {"triangles", V::Unsigned(sh.triangles.size()/3)},
-				{"pressure", V::Unsigned(sheetLastPressure_[i].size())}, {"topology", V::String(sh.topology)}}));
+			V::Members e{{"vertices", V::Unsigned(sh.x.size()/3)}, {"triangles", V::Unsigned(sh.triangles.size()/3)},
+				{"pressure", V::Unsigned(sheetLastPressure_[i].size())}, {"topology", V::String(sh.topology)}};
+			if (sh.implicit) {
+				// M7e: the accepted dynamics (only for implicit sheets: other streams are m7d's).
+				e.emplace_back("dynamics", V::Unsigned(sh.dyn.Vertices()));
+				e.emplace_back("blocks", V::Unsigned(UpperBlocks(sh.dyn.stiffness)));
+				e.emplace_back("stiffnessDomain", V::String(sh.dyn.stiffnessDomain));
+				e.emplace_back("history", V::Unsigned(model_.sheetHistory[i].size()));
+			}
+			list.push_back(V::MapValue(e));
 		}
 		m.emplace_back("sheets", V::ArrayValue(list));
 		m.emplace_back("sheetOpen", V::Bool(sheetOpen_));
 		m.emplace_back("sheetStart", V::Float(sheetStart_));
+		if (implicitSheets_) {
+			// M7e: the open exchange's steps (their segment ordinals).
+			std::vector<double> segs(sheetSegments_.begin(), sheetSegments_.end());
+			m.emplace_back("sheetSegments", V::BytesValue(DoublesBytes(segs)));
+			m.emplace_back("sheetSegment", V::Unsigned(sheetSegment_));
+		}
 	}
 	Bytes header;
 	if (!RISECBOR64::Encode(V::MapValue(m), header, &error)) return false;
@@ -1894,6 +2097,19 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 		for (std::uint32_t k : sh.triangles) if (!w.U64(k, error)) return false;
 		if (!w.Doubles(sh.x, error) || !w.Doubles(sh.v, error) || !w.Doubles(model_.sheetImpulse[i], error) ||
 			!w.Doubles(sheetLastPressure_[i], error)) return false;
+		if (!sh.implicit || !sh.dyn.Active()) continue;
+		const SheetDynamics& d = sh.dyn;
+		std::vector<double> fixed(d.fixed.begin(), d.fixed.end()), damping{d.dampingMass, d.dampingStiffness}, values;
+		if (!w.Doubles(d.mass, error) || !w.Doubles(fixed, error) || !w.Doubles(d.force, error) || !w.Doubles(d.x0, error) ||
+			!w.Doubles(d.xe, error) || !w.Doubles(damping, error)) return false;
+		const Cloth::BlockMatrix& K = d.stiffness;
+		for (std::uint32_t r = 0; r < K.Blocks(); ++r)
+			for (std::size_t k = K.RowStart()[r]; k < K.RowStart()[r + 1]; ++k) {
+				if (K.Column()[k] < r) continue;
+				if (!w.U64(r, error) || !w.U64(K.Column()[k], error)) return false;
+				values.insert(values.end(), K.Block(k), K.Block(k) + 9);
+			}
+		if (!w.Doubles(values, error) || !w.Doubles(model_.sheetHistory[i], error)) return false;
 	}
 	return true;
 }
@@ -1949,7 +2165,7 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 		}
 	} else if (v.Find("bodies")) return Fail(error, "the liquid checkpoint holds bodies the configuration does not have");
 	// M7d: sheets.
-	struct SheetSizes { std::uint64_t vertices = 0, triangles = 0, pressure = 0; std::string topology; };
+	struct SheetSizes { std::uint64_t vertices = 0, triangles = 0, pressure = 0, dynamics = 0, blocks = 0, history = 0; std::string topology, stiffness; };
 	std::vector<SheetSizes> sheetSizes;
 	bool sheetOpen = false;
 	double sheetStart = 0;
@@ -1966,9 +2182,30 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 				b->GetIntegerArgument() > (std::uint64_t(1) << 28) || c->GetIntegerArgument() > (std::uint64_t(1) << 28))
 				return Fail(error, "invalid liquid checkpoint fields (sheets)");
 			z.vertices = a->GetIntegerArgument(); z.triangles = b->GetIntegerArgument(); z.pressure = c->GetIntegerArgument(); z.topology = t->GetText();
+			const std::size_t at = sheetSizes.size();
+			if (setup_.sheets[at].implicit) {
+				// M7e.
+				const V* dn = e.Find("dynamics"); const V* bn = e.Find("blocks"); const V* sd = e.Find("stiffnessDomain"); const V* hn = e.Find("history");
+				if (!dn || !bn || !sd || !hn || dn->GetType() != V::UnsignedInteger || bn->GetType() != V::UnsignedInteger || sd->GetType() != V::Text ||
+					hn->GetType() != V::UnsignedInteger || (dn->GetIntegerArgument() != 0 && dn->GetIntegerArgument() != z.vertices) ||
+					bn->GetIntegerArgument() > (std::uint64_t(1) << 28) || hn->GetIntegerArgument() > (std::uint64_t(1) << 34))
+					return Fail(error, "invalid liquid checkpoint fields (implicit sheet dynamics)");
+				z.dynamics = dn->GetIntegerArgument(); z.blocks = bn->GetIntegerArgument(); z.stiffness = sd->GetText();
+				z.history = hn->GetIntegerArgument();
+			} else if (e.Find("dynamics")) return Fail(error, "the liquid checkpoint holds sheet dynamics the configuration does not have");
 			sheetSizes.push_back(z);
 		}
 	} else if (v.Find("sheets")) return Fail(error, "the liquid checkpoint holds sheets the configuration does not have");
+	std::vector<std::uint32_t> sheetSegments;
+	std::uint64_t sheetSegment = 0;
+	if (implicitSheets_) {
+		const V* segs = v.Find("sheetSegments");
+		std::vector<double> sd;
+		if (!segs || segs->GetType() != V::ByteString || segs->GetBytes().size() % 8 != 0 || !BytesDoubles(segs, segs->GetBytes().size()/8, sd) ||
+			!count("sheetSegment", sheetSegment))
+			return Fail(error, "the liquid checkpoint does not hold the implicit sheets' open exchange");
+		for (double x : sd) sheetSegments.push_back(std::uint32_t(x));
+	}
 	// The static data (solid fractions) come from the configuration.
 	if (!model_.Initialize(setup_, options_, threads_, error)) return false;
 	const Grid& g = model_.GridSpec();
@@ -1992,7 +2229,7 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 		if (!r.U64(ps[i].id, error)) return false;
 	}
 	std::vector<LiquidSheet> sheets = model_.sheets;
-	std::vector<std::vector<double>> sheetImpulse(sheets.size()), lastPressure(sheets.size());
+	std::vector<std::vector<double>> sheetImpulse(sheets.size()), lastPressure(sheets.size()), history(sheets.size());
 	for (std::size_t i = 0; i < sheets.size(); ++i) {
 		const SheetSizes& z = sheetSizes[i];
 		LiquidSheet& sh = sheets[i];
@@ -2011,6 +2248,43 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 			return false;
 		sh.triangles = std::move(tris);
 		sh.topology = z.topology;
+		if (z.dynamics) {
+			// M7e: the implicit sheet's accepted dynamics.
+			SheetDynamics& d = sh.dyn;
+			const std::size_t n = std::size_t(z.dynamics);
+			std::vector<double> fixed, damping, values;
+			if (8*(13*n + 11*z.blocks) > r.Remaining()) return Fail(error, "liquid checkpoint stream is truncated");
+			if (!r.Doubles(d.mass, n, error) || !r.Doubles(fixed, n, error) || !r.Doubles(d.force, 3*n, error) ||
+				!r.Doubles(d.x0, 3*n, error) || !r.Doubles(d.xe, 3*n, error) || !r.Doubles(damping, 2, error)) return false;
+			d.fixed.assign(n, 0);
+			for (std::size_t q = 0; q < n; ++q) d.fixed[q] = fixed[q] != 0;
+			d.dampingMass = damping[0];
+			d.dampingStiffness = damping[1];
+			std::vector<std::pair<std::uint32_t, std::uint32_t>> blocks(std::size_t(z.blocks)), pairs;
+			for (auto& b : blocks) {
+				std::uint64_t i = 0, j = 0;
+				if (!r.U64(i, error) || !r.U64(j, error)) return false;
+				if (i > j || j >= n) return Fail(error, "invalid liquid checkpoint (sheet stiffness)");
+				b = {std::uint32_t(i), std::uint32_t(j)};
+				if (i != j) pairs.push_back(b);
+			}
+			if (!r.Doubles(values, 9*std::size_t(z.blocks), error)) return false;
+			d.stiffness.Build(std::uint32_t(n), pairs);
+			d.stiffness.Zero();
+			for (std::size_t e = 0; e < blocks.size(); ++e) {
+				const std::uint32_t i = blocks[e].first, j = blocks[e].second;
+				double* b = d.stiffness.Block(d.stiffness.Slot(i, j));
+				for (int c = 0; c < 9; ++c) b[c] = values[9*e + std::size_t(c)];
+				if (i != j) {
+					double* t = d.stiffness.Block(d.stiffness.Slot(j, i));
+					for (int a = 0; a < 3; ++a) for (int c = 0; c < 3; ++c) t[3*c + a] = b[3*a + c];
+				}
+			}
+			d.stiffnessDomain = z.stiffness;
+			d.matrix = Cloth::BlockMatrix();
+			if (!r.Doubles(history[i], std::size_t(z.history), error)) return false;
+
+		}
 	}
 	if (r.Remaining() != 0) return Fail(error, "trailing bytes after the liquid checkpoint");
 	model_.phi = std::move(phi);
@@ -2025,12 +2299,15 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 		// Before the bodies' geometry, which closes the sheets' faces again too.
 		model_.sheets = std::move(sheets);
 		model_.sheetImpulse = std::move(sheetImpulse);
+		model_.sheetHistory = std::move(history);
 		sheetLastPressure_ = std::move(lastPressure);
 		model_.UpdateSheetGeometry();
 		model_.SetTime(seg.t);
 	}
 	sheetOpen_ = sheetOpen;
 	sheetStart_ = sheetStart;
+	sheetSegments_ = std::move(sheetSegments);
+	sheetSegment_ = std::uint32_t(sheetSegment);
 	if (!setup_.bodies.empty()) {
 		for (std::size_t i = 0; i < model_.bodies.size(); ++i) UnpackBody(&packed[BodyDoubles*i], model_.bodies[i], model_.bodyAccumulated[i]);
 		if (!lastImpulse.empty()) {
@@ -2095,6 +2372,9 @@ bool LiquidSolver::SaveState(std::shared_ptr<const SolverStateToken>& token, std
 	t->sheetLastPressure = sheetLastPressure_;
 	t->sheetOpen = sheetOpen_;
 	t->sheetStart = sheetStart_;
+	t->sheetHistory = model_.sheetHistory;
+	t->sheetSegments = sheetSegments_;
+	t->sheetSegment = sheetSegment_;
 	token = std::move(t);
 	return true;
 }
@@ -2115,12 +2395,15 @@ bool LiquidSolver::RestoreState(const SolverStateToken& token, std::string& erro
 	if (!t->sheets.empty()) {
 		model_.sheets = t->sheets;
 		model_.sheetImpulse = t->sheetImpulse;
+		model_.sheetHistory = t->sheetHistory;
 		sheetLastPressure_ = t->sheetLastPressure;
 		model_.UpdateSheetGeometry();
 		model_.SetTime(t->seg.t);
 	}
 	sheetOpen_ = t->sheetOpen;
 	sheetStart_ = t->sheetStart;
+	sheetSegments_ = t->sheetSegments;
+	sheetSegment_ = t->sheetSegment;
 	if (!t->bodies.empty()) {
 		model_.bodies = t->bodies;
 		model_.bodyAccumulated = t->accumulated;

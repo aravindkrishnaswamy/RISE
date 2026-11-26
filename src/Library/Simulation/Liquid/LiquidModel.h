@@ -32,6 +32,12 @@
 //  right-hand side, rho h^3 J^T M^-1 J in the operator; Heun's second stage
 //  starts from w* + M^-1 I1 / 2), so the linearised body-surface coupling is
 //  symplectic Euler as well.
+//  Sheets coupled implicitly (m7e, LiquidSheets.h): each projection solves
+//  the sheet's linearised backward-Euler step with the pressure, the liquid
+//  on the faces it closes moving with it (SheetFaceMass); the sheet's new
+//  velocities and positions follow, each step's impulse on it is kept for
+//  its partner, and cells it swept change sides (SweepSheetCells,
+//  PinFalseInterface).
 //  With the interface advanced by the old velocity and the velocity by the
 //  new interface, the linearised free-surface coupling is the symplectic
 //  Euler scheme: no amplitude error, phase error O((omega dt)^2).
@@ -210,11 +216,20 @@ public:
 	std::vector<LiquidSheet> sheets;
 	std::vector<std::vector<double>> sheetImpulse;
 	std::vector<V3> sheetStepImpulse;
+	//! m7e: per coupled sheet, the impulse on its vertices in each step since
+	//! ResetSheetImpulses (3 per vertex per step, step-major).
+	std::vector<std::vector<double>> sheetHistory;
 	void ResetSheetImpulses();
 	//! Recomputes the faces the sheets close (after their positions were set
-	//! from outside: a port, a restored state).
-	void UpdateSheetGeometry();
+	//! from outside: a port, a restored state).  m7e, `sweep`: the cells a coupled
+	//! sheet moved over change sides (SweepSheetCells; a port, not a restore).
+	void UpdateSheetGeometry(bool sweep = false);
 	const std::vector<SheetCrossing>& SheetFaces() const { return sheetFaces_; }
+	//! m7e: whether a sheet is coupled implicitly (with its accepted dynamics).
+	bool CoupledSheets() const;
+	//! m7e: after a coupled sheet's state was set from outside (a port): its
+	//! elastic positions restart at x, its closed faces carry its velocity.
+	void ResetSheetDynamics();
 
 	// Static data derived from the setup.
 	std::vector<double> solidNodes, openCells;
@@ -251,6 +266,22 @@ private:
 	//! One projection with the bodies: their predicted velocities wStar,
 	//! impulses out (coupled bodies in the solve, kinematic ones measured).
 	bool ProjectBodies(MacField& s, const PressureOptions& po, const std::vector<Vec6>& wStar, std::vector<Vec6>& impulse,
+		PressureStats& stats, std::string& error);
+	//! m7e: the face mass of the coupled sheets (LiquidModel.cpp) from the stage's predicted face velocities `s`.
+	void SheetFaceMass(const MacField& s, std::vector<std::vector<SheetBlock>>& blocks, std::vector<std::vector<double>>& rhs) const;
+	//! m7e: the cells whose centre a coupled sheet swept over in the step (the crossings
+	//! `before` and the current ones, paired in order along each lattice line), each with
+	//! the cell beyond the old crossing on its new side.
+	struct SweptCell { std::size_t cell = 0, ref = 0; double distance = 0, span = 0; };   // span: |ref - cell| (m)
+	//! m7e: the false interface of a one-sided coupled sheet at the sheet (cells changed).
+	std::size_t PinFalseInterface();
+	//! m7e: applies the swept cells' sides (cells and particles changed, counts returned).
+	std::pair<std::size_t, std::size_t> SweepSheetCells(const std::vector<SheetCrossing>& before);
+	void SweptSheetCells(const std::vector<SheetCrossing>& before, std::vector<SweptCell>& swept) const;
+	//! m7e: one projection with the bodies and the implicitly coupled sheets
+	//! (their predicted velocities vStar; impulses out).
+	bool ProjectCoupled(MacField& s, const PressureOptions& po, const std::vector<Vec6>& wStar,
+		const std::vector<std::vector<double>>& vStar, std::vector<Vec6>& impulse, std::vector<std::vector<double>>& sheetImpulse,
 		PressureStats& stats, std::string& error);
 	std::vector<Vec6> BodyVelocities() const;
 	void SetBodyVelocity(std::size_t i, const Vec6& w);

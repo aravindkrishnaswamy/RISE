@@ -1,0 +1,225 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           liquid_cloth_wave.RISEscene                                                             #
+#   Description:    Simulation M7e: cotton cloth coupled implicitly with the liquid (preview).  A dam-break #
+#                   wave (a column 0.3 x 0.45 m against the -x wall of a flume 1 x 0.6 x 0.4 m) runs into a  #
+#                   cotton cloth 0.3 m wide and 0.45 m long (13 x 19 vertices, 0.2 kg/m^2) hanging from a   #
+#                   rod (`cloth_simulation cloth`, pinned along its top edge).  `liquid_simulation pool`     #
+#                   carries it as `sheet cloth port coupling implicit`: at each macro step it reads the     #
+#                   cloth's surface, mass, force and stiffness (surface_state, surface_mechanics,           #
+#                   surface_stiffness), solves the cloth's linearised response with the pressure in every   #
+#                   step, and returns the impulse of each of its steps (sheet_load_steps); the cloth takes  #
+#                   the same steps (`simulation_group flume`, `owned pool cloth`, the liquid first).  The   #
+#                   staggered exchange of M7d diverges for any real cloth; this one is stable from 0.05 to  #
+#                   100 kg/m^2 (docs/SIMULATION_M7E_RESULTS.md).                                            #
+#                   The cloth renders from cloth.surface, the water from pool.surface.                     #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> flume       (one process; caches/pool, caches/cloth)#
+#   Render:         scripts/simulation_m7e_cloth.sh  (a private copy under ~/.cache/rise-m7e; path tracing;#
+#                   frames to rendered/simulation_m7/)                                                      #
+#                                                                                                           #
+#   Frames:         1/30 s apart over 2 s (61 frames); 64 cells along x (1.56 cm cells).  Positions are      #
+#                   metres, y up.  Label: preview (sheets are not certified).                               #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.75 0.8 0.9
+}
+
+uniformcolor_painter
+{
+	name			stone
+	color			0.55 0.5 0.45
+}
+
+uniformcolor_painter
+{
+	name			wall
+	color			0.7 0.72 0.75
+}
+
+uniformcolor_painter
+{
+	name			red
+	color			0.75 0.12 0.08
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		stone
+}
+
+lambertian_material
+{
+	name			mat_wall
+	reflectance		wall
+}
+
+lambertian_material
+{
+	name			mat_cloth
+	reflectance		red
+}
+
+dielectric_material
+{
+	name				water
+	tau					0.92 0.97 0.99
+	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+pinhole_camera
+{
+	location		1.25 0.75 1.35
+	lookat			0.5 0.18 0.2
+	up				0 1 0
+	fov				42.0
+}
+
+cloth_simulation
+{
+	name			cloth
+	frames			61
+	size_u			0.3
+	size_v			0.45
+	vertices_u		13
+	vertices_v		19
+	origin			0.6123 0.55 0.05
+	axis_u			0 0 1
+	axis_v			0 -1 0
+	material		cotton-plain-weave
+	material_density	0.2
+	pin				v0
+}
+
+liquid_simulation
+{
+	name			pool
+	frames			61
+	domain_min		0 0 0
+	domain_size		1 0.6 0.4
+	resolution		64
+	liquid			box -1 -1 -1 0.3 0.45 2
+	sheet			cloth port coupling implicit
+}
+
+simulation_group
+{
+	name			flume
+	members			pool
+	members			cloth
+	connect			cloth.surface_state -> pool.sheet_state
+	connect			cloth.surface_mechanics -> pool.sheet_mechanics
+	connect			cloth.surface_stiffness -> pool.sheet_stiffness
+	connect			pool.sheet_load -> cloth.surface_load
+	connect			pool.sheet_load_steps -> cloth.surface_load_steps
+	policy			staggered
+	order			gauss-seidel
+	member_order	pool cloth
+	owned			pool cloth
+	macro_step		0.008333333333333333
+}
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			pool.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		water
+}
+
+simulated_mesh_geometry
+{
+	name			geo_cloth
+	source			cloth.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			cloth_object
+	geometry		geo_cloth
+	material		mat_cloth
+}
+
+cylinder_geometry
+{
+	name			geo_rod
+	axis			z
+	radius			0.006
+	height			0.4
+}
+
+standard_object
+{
+	name			rod
+	geometry		geo_rod
+	material		mat_wall
+	position		0.6123 0.556 0.2
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-2.0 -0.001 -2.0
+	ptb				 2.0 -0.001 -2.0
+	ptc				 2.0 -0.001  2.0
+	ptd				-2.0 -0.001  2.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+clippedplane_geometry
+{
+	name			geo_back
+	pta				-2.0 -0.001 -0.002
+	ptb				-2.0  2.0   -0.002
+	ptc				 2.0  2.0   -0.002
+	ptd				 2.0 -0.001 -0.002
+}
+
+standard_object
+{
+	name			back_wall
+	geometry		geo_back
+	material		mat_wall
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.3 -1 -0.5
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.7
+	radiance_background	TRUE
+}
