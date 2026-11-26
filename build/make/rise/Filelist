@@ -135,6 +135,13 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Simulation/SimulationTransform.cpp	\
 	$(PATHLIBRARY)Simulation/Rigid/RigidBody.cpp	\
 	$(PATHLIBRARY)Simulation/Rigid/RigidSolver.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidGrid.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidLevelSet.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidFlow.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidModel.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidValidation.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidSolver.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidParameterSchema.cpp	\
 	$(PATHLIBRARY)Utilities/FireSequenceCache.cpp			\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
 	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\

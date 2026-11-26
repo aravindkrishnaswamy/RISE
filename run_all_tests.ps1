@@ -107,8 +107,8 @@ $ExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
 # (RISE_TEST_EXTENDED=1).
 $DualModeExtendedTests = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@(
-        'AgentSkillsTest', 'ClothValidationTest', 'FireSolverTest', 'LightExitanceTest', 'SPFPdfConsistencyTest',
-        'TimeIndexedMotionBlurTest'
+        'AgentSkillsTest', 'ClothValidationTest', 'FireSolverTest', 'LightExitanceTest', 'LiquidValidationTest',
+        'SPFPdfConsistencyTest', 'TimeIndexedMotionBlurTest'
     ),
     [System.StringComparer]::Ordinal
 )

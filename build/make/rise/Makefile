@@ -290,6 +290,9 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, 
 	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 # M6: coupling (group host, adapters, transform codec, rigid bodies): strict IEEE arithmetic.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/, Simulation/SimulationTransform.o Simulation/Rigid/RigidBody.o Simulation/Rigid/RigidSolver.o Simulation/SimulationGroup.o Simulation/SimulationPortAdapters.o Simulation/Coupling/ClothRigidCoupling.o)
+# M7: the liquid solver (strict IEEE arithmetic: thread-count-independent, reproducible checkpoints and evidence).
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Liquid/, \
+	LiquidGrid.o LiquidLevelSet.o LiquidFlow.o LiquidModel.o LiquidValidation.o LiquidSolver.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -665,6 +668,12 @@ $(CLOTH_STRICT_OBJS) : $(PATHLIBRARY)Simulation/Cloth/%.o : $(PATHLIBRARY)Simula
 M6_STRICT_OBJS = $(addprefix $(PATHLIBRARY), Simulation/SimulationTransform.o Simulation/Rigid/RigidBody.o Simulation/Rigid/RigidSolver.o Simulation/SimulationGroup.o Simulation/SimulationPortAdapters.o Simulation/Coupling/ClothRigidCoupling.o)
 $(M6_STRICT_OBJS) : $(PATHLIBRARY)%.o : $(PATHLIBRARY)%.cpp
 	@echo "Compiling (strict coupling): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# M7: the liquid solver without fast-math or FP contraction (deterministic frames, checkpoints and evidence).
+LIQUID_STRICT_OBJS = $(addprefix $(PATHLIBRARY)Simulation/Liquid/, LiquidGrid.o LiquidLevelSet.o LiquidFlow.o LiquidModel.o LiquidValidation.o LiquidSolver.o)
+$(LIQUID_STRICT_OBJS) : $(PATHLIBRARY)Simulation/Liquid/%.o : $(PATHLIBRARY)Simulation/Liquid/%.cpp
+	@echo "Compiling (strict liquid solver): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 .cpp.o:

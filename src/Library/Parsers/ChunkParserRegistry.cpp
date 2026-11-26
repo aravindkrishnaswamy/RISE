@@ -77,6 +77,7 @@
 #include "../Simulation/Cloth/ClothParameterSchema.h"
 #include "../Simulation/Fire/FireParameterSchema.h"
 #include "../Simulation/Rigid/RigidParameterSchema.h"
+#include "../Simulation/Liquid/LiquidParameterSchema.h"
 #include "../Simulation/SceneSimulation.h"
 #include "../Managers/GenericManager.h"			// g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure (reserved camera name)
 // Phase B: descriptor-driven introspection used by
@@ -6851,6 +6852,19 @@ namespace RISE
 				}
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = SimulationChunks::Build( "rigid_simulation", Simulation::RigidParameterSchema() );
+					return d;
+				}
+			};
+
+			// M7: a free-surface liquid (liquid.mac), generated from its schema.
+			struct LiquidSimulationAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return SimulationChunks::FinalizeSolverChunk( Describe(), Simulation::LiquidParameterSchema(), bag, pJob );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = SimulationChunks::Build( "liquid_simulation", Simulation::LiquidParameterSchema() );
 					return d;
 				}
 			};
@@ -15194,6 +15208,7 @@ namespace RISE
 		add( "simulation_cache",                      std::make_unique<SimulationCacheAsciiChunkParser>() );
 		add( "rigid_simulation",                      std::make_unique<RigidSimulationAsciiChunkParser>() );   // M6
 		add( "simulation_group",                      std::make_unique<SimulationGroupAsciiChunkParser>() );   // M6
+		add( "liquid_simulation",                     std::make_unique<LiquidSimulationAsciiChunkParser>() );  // M7
 
 		// Modifiers
 		add( "relief_modifier",                       std::make_unique<ReliefModifierAsciiChunkParser>() );

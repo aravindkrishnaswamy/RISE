@@ -10,6 +10,9 @@
     <Filter Include="Simulation\Rigid">
       <UniqueIdentifier>{F2A222B2-6E54-4A6E-9D2B-A3216BB07512}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Simulation\Liquid">
+      <UniqueIdentifier>{6B0E7C1A-3D44-4F2B-9A61-5C7E2D8F1A93}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Simulation\Coupling">
       <UniqueIdentifier>{E56AF69F-1769-4A6E-9D2B-32B6B826B4DF}</UniqueIdentifier>
     </Filter>
@@ -437,6 +440,27 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.cpp">
       <Filter>Simulation\Rigid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidGrid.cpp">
+      <Filter>Simulation\Liquid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidLevelSet.cpp">
+      <Filter>Simulation\Liquid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidFlow.cpp">
+      <Filter>Simulation\Liquid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.cpp">
+      <Filter>Simulation\Liquid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidValidation.cpp">
+      <Filter>Simulation\Liquid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidSolver.cpp">
+      <Filter>Simulation\Liquid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidParameterSchema.cpp">
+      <Filter>Simulation\Liquid</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp">
       <Filter>Utilities</Filter>
@@ -1895,6 +1919,27 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.h">
       <Filter>Simulation\Rigid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidGrid.h">
+      <Filter>Simulation\Liquid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidLevelSet.h">
+      <Filter>Simulation\Liquid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidFlow.h">
+      <Filter>Simulation\Liquid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.h">
+      <Filter>Simulation\Liquid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidValidation.h">
+      <Filter>Simulation\Liquid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidSolver.h">
+      <Filter>Simulation\Liquid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidParameterSchema.h">
+      <Filter>Simulation\Liquid</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h">
       <Filter>Utilities</Filter>

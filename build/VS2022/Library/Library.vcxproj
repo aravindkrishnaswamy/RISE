@@ -633,6 +633,25 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidGrid.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidLevelSet.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidFlow.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidValidation.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidSolver.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidParameterSchema.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
@@ -1310,6 +1329,13 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTransform.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidBody.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidGrid.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidLevelSet.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidFlow.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidValidation.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidSolver.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidParameterSchema.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />

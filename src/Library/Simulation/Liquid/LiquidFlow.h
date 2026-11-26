@@ -1,0 +1,118 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  LiquidFlow.h - Momentum and pressure of the liquid solver
+//  (simulation M7): velocity extrapolation into the air, momentum
+//  advection (three schemes, chosen by measurement), and the pressure
+//  projection with a ghost-fluid free surface and cut-cell solids, solved
+//  by multigrid-preconditioned conjugate gradients.
+//
+//  Pressure system.  The unknown is the scaled pressure q = p dt / (rho h)
+//  (m/s) in every liquid cell (phi < 0) with an open face.  A face of axis
+//  a between cells L and R with open fraction A (LiquidGrid.h FaceFractions)
+//  carries u = u* - (q_R - q_L); the discrete divergence of a cell weights
+//  each face by A and adds the solid's velocity on the closed part:
+//      sum_f A_f (u*_f - grad_f q) . n_f + (1 - A_f) u_s,f . n_f = 0,
+//  the variational (Batty, Bertails and Bridson 2007) form with face-area
+//  weights (Ng, Min and Gibou 2009).  It is symmetric: the operator is
+//  (A q)_c = sum_f A_f (q_c - q_nb).  A face to an air cell (phi >= 0) puts
+//  p = 0 at the interface, at the fraction theta = phi_L / (phi_L - phi_R)
+//  of the way from the liquid centre (Gibou, Fedkiw, Cheng and Kang 2002;
+//  Enright, Nguyen, Gibou and Fedkiw 2003): the ghost value
+//  q_R = -q_L (1 - theta) / theta adds A / theta to the diagonal only.
+//  theta is clamped to [thetaMin, 1].  An open top boundary puts p = 0 on
+//  the boundary face: theta = clamp(-phi_c / h, thetaMin, 1/2).
+//
+//  Rigid bodies (later pass; seam only).  Batty et al. section 4 couple a
+//  rigid body by appending its six velocity unknowns; eliminating them
+//  gives the symmetric positive semidefinite term J M^-1 J^T added to the
+//  operator, with J the body's face-weighted velocity Jacobian.  The
+//  operator below applies `couplings` (empty in this pass) after the grid
+//  stencil, and the right-hand side is built by the same object, so a body
+//  is one IPressureCoupling; the preconditioner stays the grid's.
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef RISE_SIMULATION_LIQUID_FLOW_H
+#define RISE_SIMULATION_LIQUID_FLOW_H
+
+#include "LiquidGrid.h"
+
+namespace RISE { namespace Simulation { namespace Liquid {
+
+//! Valid (known) faces per axis.
+using FaceMask = std::array<std::vector<std::uint8_t>,3>;
+
+//! Fills unknown faces, layer by layer up to `layers`, with the mean over
+//! their known face neighbours of the same component (a layer reads only
+//! faces known before it) of: in the first `linearLayers` layers the linear
+//! extrapolation 2 u_1 - u_2 along that axis when the second face is known
+//! too, else u_1.  Faces never reached are set to zero.  (Constant
+//! extrapolation alone made the surface velocity first-order accurate: the
+//! standing-wave frequency converged at order one.)
+void ExtrapolateVelocity(const Grid& g, MacField& u, FaceMask& valid, int layers, int linearLayers, Pool* pool);
+
+enum class MomentumScheme { SemiLagrangian, MacCormack, Weno5 };
+
+//! Advects every face component by the (extrapolated) field u over dt:
+//!   SemiLagrangian  second-order Runge-Kutta backtrace, trilinear sampling;
+//!   MacCormack      the semi-Lagrangian step corrected by half the error of a
+//!                   backward step, limited to the range of the forward
+//!                   step's interpolation stencil, else reverted (Selle,
+//!                   Fedkiw, Kim, Liu and Rossignac 2008);
+//!   Weno5           u_t + (u . grad) u = 0 per component on its own face
+//!                   grid: WENO5 upwind derivatives, the advecting velocity
+//!                   averaged to the face, SSP-RK3 (the advecting field
+//!                   recomputed at each stage).
+//! Components along a one-cell axis stay zero.
+void AdvectVelocity(const Grid& g, const MacField& u, double dt, MomentumScheme scheme, MacField& out, Pool* pool);
+//! The semi-Lagrangian or MacCormack step of the field `f` along the
+//! velocity `v` (a second stage advects u^n along the stage average).
+void AdvectFieldAlong(const Grid& g, const MacField& f, const MacField& v, double dt, MomentumScheme scheme, MacField& out, Pool* pool);
+//! rate = -(u . grad) u per face component (the Weno5 spatial operator).
+void VelocityAdvectionRate(const Grid& g, const MacField& u, MacField& rate, Pool* pool);
+
+//! Seam for rigid degrees of freedom in the pressure solve (not used in this pass).
+class IPressureCoupling {
+public:
+	virtual ~IPressureCoupling() = default;
+	//! out += (J M^-1 J^T) q over the cell-centred array.
+	virtual void ApplyAdd(const std::vector<double>& q, std::vector<double>& out) const = 0;
+	//! b += the body's contribution J (prescribed / predicted body velocity).
+	virtual void AddRhs(std::vector<double>& b) const = 0;
+	//! After the solve: the body's new velocity from q (and the hydrodynamic load).
+	virtual void Finish(const std::vector<double>& q) = 0;
+};
+
+struct PressureOptions {
+	double tolerance = 1e-8;     // ||r||_inf <= tolerance ||b||_inf
+	int maxIterations = 1000;
+	double thetaMin = 1e-3;
+	int smoothing = 2;           // red-black Gauss-Seidel sweeps before and after each coarse correction
+	bool openTop = false;        // +y boundary: p = 0 there
+	bool warmStart = false;      // start PCG from the q passed in (else from zero)
+};
+
+struct PressureStats {
+	int iterations = 0, levels = 0;
+	double residual = 0;         // final ||r||_inf / ||b||_inf
+	double seconds = 0;
+	double assemble = 0, components = 0, hierarchy = 0, solve = 0, update = 0;   // wall seconds by phase
+	std::size_t unknowns = 0;
+	bool converged = false;
+};
+
+//! Projects u (on input u*, on output divergence-free on every liquid cell):
+//! builds the system from phi and the face open fractions, solves it, and
+//! updates every face with an open part next to a liquid cell (valid = 1).
+//! Faces with no open part take the solid velocity (zero when `solid` is
+//! null); domain boundary faces are valid, others invalid (to extrapolate).
+//! `q` receives the scaled pressure (0 outside the liquid).
+bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	const MacField* solid, const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings,
+	MacField& u, std::vector<double>& q, FaceMask& valid, PressureStats& stats, Pool* pool, std::string& error);
+
+} } }
+
+#endif

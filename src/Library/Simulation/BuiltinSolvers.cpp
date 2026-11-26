@@ -8,6 +8,8 @@
 #include "Fire/FireParameterSchema.h"
 #include "Rigid/RigidSolver.h"
 #include "Rigid/RigidParameterSchema.h"
+#include "Liquid/LiquidSolver.h"
+#include "Liquid/LiquidParameterSchema.h"
 #include "SimulationPortAdapters.h"
 #include "Coupling/ClothRigidCoupling.h"
 #include "../Utilities/FireSequence.h"
@@ -35,6 +37,11 @@ bool RegisterBuiltinSolvers( std::string& error )
 	if( !RegisterRigidSolver( e ) ) failures += ( failures.empty() ? "" : "; " ) + std::string( "rigid.bodies: " ) + e;
 	e.clear();
 	if( !RegisterSolverSchema( RigidSolverId, &RigidParameterSchema, e ) ) failures += ( failures.empty() ? "" : "; " ) + e;
+	// M7: the liquid solver.
+	e.clear();
+	if( !RegisterLiquidSolver( e ) ) failures += ( failures.empty() ? "" : "; " ) + std::string( "liquid.mac: " ) + e;
+	e.clear();
+	if( !RegisterSolverSchema( LiquidSolverId, &LiquidParameterSchema, e ) ) failures += ( failures.empty() ? "" : "; " ) + e;
 	e.clear();
 	if( !RegisterBuiltinPortAdapters( e ) ) failures += ( failures.empty() ? "" : "; " ) + std::string( "port adapters: " ) + e;
 	e.clear();

@@ -1,0 +1,144 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           liquid_dam_break.RISEscene                                                              #
+#   Description:    Simulation M7: a free-surface liquid (`liquid_simulation pool`, solver liquid.mac).     #
+#                   A 0.3 m column of water against the -x wall of a 1 x 0.5 x 0.5 m box collapses and      #
+#                   runs into a box obstacle (a static cut-cell solid, drawn as `box_geometry` at the same  #
+#                   place).  The surface (`pool.surface`, mesh.v2, a new topology every frame) is drawn     #
+#                   through `simulated_mesh_geometry` as water (dielectric, ior 1.33).                      #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> pool       (caches/pool beside the scene)          #
+#                   bin/tools/rise_sim status <this scene>                                                  #
+#   Render:         scripts/simulation_m7_dam_break.sh  (a private copy under ~/.cache/rise-m7; path        #
+#                   tracing; frames to rendered/simulation_m7/)                                             #
+#                                                                                                           #
+#   Frames:         1/30 s apart over 1.5 s (46 frames); 48 cells along x (2.08 cm cells).  Positions are   #
+#                   metres, y up.  The liquid's walls are free-slip; the surface closes on them.            #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.75 0.8 0.9
+}
+
+uniformcolor_painter
+{
+	name			stone
+	color			0.55 0.5 0.45
+}
+
+uniformcolor_painter
+{
+	name			brick
+	color			0.7 0.25 0.15
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		stone
+}
+
+lambertian_material
+{
+	name			mat_obstacle
+	reflectance		brick
+}
+
+dielectric_material
+{
+	name				water
+	tau					0.92 0.97 0.99
+	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+pinhole_camera
+{
+	location		0.9 0.75 1.25
+	lookat			0 0.08 0
+	up				0 1 0
+	fov				42.0
+}
+
+liquid_simulation
+{
+	name			pool
+	frames			46
+	domain_min		-0.5 0 -0.25
+	domain_size		1 0.5 0.5
+	resolution		48
+	liquid			box -0.5 0 -0.25 -0.2 0.3 0.25
+	solid			box 0.05 0 -0.08 0.15 0.12 0.08
+}
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			pool.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		water
+}
+
+box_geometry
+{
+	name			geo_obstacle
+	width			0.1
+	height			0.12
+	depth			0.16
+}
+
+standard_object
+{
+	name			obstacle
+	geometry		geo_obstacle
+	material		mat_obstacle
+	position		0.1 0.06 0
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-2.0 -0.001 -2.0
+	ptb				 2.0 -0.001 -2.0
+	ptc				 2.0 -0.001  2.0
+	ptd				-2.0 -0.001  2.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.3 -1 -0.5
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.7
+	radiance_background	TRUE
+}

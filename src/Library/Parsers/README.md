@@ -211,7 +211,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` (all 5 cameras accept optional `near_clip` in scene units) |
 | Geometry | 28 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry`, `simulated_mesh_geometry` (a deforming mesh read from a simulation cache's mesh output -- a `cache` directory, or since M4 a producer's output by `source <simulation>.<output>` -- with deformation motion blur; docs/SIMULATION_M3B_RESULTS.md, docs/SIMULATION_M4_RESULTS.md) |
 | Hair guides | 1 | `hair_guides` |
-| Simulations | 5 | `cloth_simulation`, `fire_simulation`, `simulation_cache` (M4), `rigid_simulation`, `simulation_group` (M6) (`ChunkCategory::Simulation`; see "Simulation producers" and "Coupling" below) |
+| Simulations | 6 | `cloth_simulation`, `fire_simulation`, `simulation_cache` (M4), `rigid_simulation`, `simulation_group` (M6), `liquid_simulation` (M7) (`ChunkCategory::Simulation`; see "Simulation producers", "Coupling" and "Liquid" below) |
 | Modifiers | 5 | `relief_modifier`, `modifier_stack`, `blended_modifier`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
 | Media | 6 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `fire_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
@@ -227,7 +227,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 187 unique chunk keywords** -- counted directly from the 187 `add(...)` registrations in `CreateAllChunkParsers()` (pinned by `tests/SceneEditorSuggestionsTest.cpp`). Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), `scalar_painter`'s `painter NAME channel RGB` form is a channel option on `scalar_painter` (not a separate keyword), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
+**Total: 191 chunk keyword entries** -- counted directly from the 191 `add(...)` registrations in `CreateAllChunkParsers()` (pinned by `tests/SceneEditorSuggestionsTest.cpp`). Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), `scalar_painter`'s `painter NAME channel RGB` form is a channel option on `scalar_painter` (not a separate keyword), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
 
 ### Composite chunks (parse-time sugar)
 
@@ -321,6 +321,28 @@ fire_medium { name flame   fidelity_mode preview   source campfire.volume   chan
   does not yet capture and restore a simulation record); its consumers are re-derived with it.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
+
+## Liquid (M7)
+
+docs/SIMULATION_M7A_RESULTS.md.  `liquid_simulation` (solver `liquid.mac`, chunk generated from its schema) is data
+only, like the other producers: a free-surface liquid in a box on a staggered grid, its surface published as a
+changing-topology `mesh.v2` to show with `simulated_mesh_geometry` (a dielectric material for water).  Sample:
+`scenes/Tests/Simulation/liquid_dam_break.RISEscene`.
+
+```text
+liquid_simulation
+{
+    name            pool
+    frames          61
+    domain_min      -0.5 0 -0.25              # the box (m); free-slip walls; `top open` for p = 0 on +y
+    domain_size     1 0.5 0.5
+    resolution      64                        # cells along the longest side (cubic cells)
+    liquid          box -0.5 0 -0.25 -0.2 0.3 0.25   # or sphere cx cy cz r | fill h (repeatable: the union)
+    solid           box 0.1 0 -0.1 0.2 0.1 0.1        # or plane | sphere | cylinder cx cy cz ax ay az r h (static)
+    solid_object    rock                      # a scene object's closed mesh at t = 0, as a static solid
+}
+simulated_mesh_geometry { name water  source pool.surface }
+```
 
 ## Coupling (M6)
 

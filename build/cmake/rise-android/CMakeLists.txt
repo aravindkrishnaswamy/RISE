@@ -199,6 +199,17 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
 
+# M7: the liquid solver: no fast-math or FP contraction (thread-count-independent, reproducible results).
+set_source_files_properties(
+    "${RISE_LIB}/Simulation/Liquid/LiquidGrid.cpp"
+    "${RISE_LIB}/Simulation/Liquid/LiquidLevelSet.cpp"
+    "${RISE_LIB}/Simulation/Liquid/LiquidFlow.cpp"
+    "${RISE_LIB}/Simulation/Liquid/LiquidModel.cpp"
+    "${RISE_LIB}/Simulation/Liquid/LiquidValidation.cpp"
+    "${RISE_LIB}/Simulation/Liquid/LiquidSolver.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+
 # Link rise against vendored libpng + zlib so PNG reader/writer resolve.
 target_link_libraries(rise PUBLIC png_local z_local)
 
