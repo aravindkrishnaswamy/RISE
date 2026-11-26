@@ -37,7 +37,7 @@
 using namespace RISE::HyLIoS;
 using J = RISE::Agent::JsonValue;
 namespace {
-constexpr const char *MeasurementVersion = "hylios-forward-measure-v5";
+constexpr const char *MeasurementVersion = "hylios-forward-measure-v6";
 constexpr double MeasurementPi=3.141592653589793238462643383279502884;
 volatile std::sig_atomic_t interrupted = 0;
 void Signal(int) {
@@ -977,6 +977,8 @@ struct Aggregate {
     Moments reflectance, external, subsurface, absorption, unresolved, accounted;
     std::array<Moments, 6> hostLayerAbsorption, particleLayerAbsorption;
     ExitHistogram exits;
+    std::array<Moments,3> returnedAngularMass;
+    std::array<std::uint64_t,3> returnedAngularCounts{};
     std::uint64_t draws = 0,callerWork=0;
     void Add(const ForwardState &s, std::uint64_t randomDraws,const SurfaceWork& surface,
              ForwardTermination boundaryDiagnostic) {
@@ -1051,6 +1053,16 @@ struct Aggregate {
         }
         const double escaped = Escaped(term) ? s.Weight() : 0,
                      live = Unresolved(term) ? s.Weight() : 0;
+        // Disjoint RETURNED law classes; unfinished and nonreturn trials are
+        // zeros in the same all-history denominator. No direction comparison.
+        std::size_t law=2;
+        if(Escaped(term)) {
+            if(s.ReturnedAtomMap()==ForwardReturnedAtomMap::PlanarSameExteriorMirror) law=0;
+            else if(s.AngularLineage().classification==ForwardAngularClass::AbsolutelyContinuous) law=1;
+            ++returnedAngularCounts[law];
+        }
+        for(std::size_t i=0;i<returnedAngularMass.size();++i)
+            returnedAngularMass[i].Add(Escaped(term)&&i==law ? s.Weight():0);
         reflectance.Add(escaped);
         external.Add(term == ForwardTermination::ExternalReflection ? s.Weight() : 0);
         subsurface.Add(term == ForwardTermination::SubsurfaceReturn ? s.Weight() : 0);
@@ -1174,6 +1186,17 @@ J Measure(const Options &o, const Resolved &r) {
     output.set("incoming_travel_direction",NumberArray(std::array<double,3>{{actualLaunch.x,actualLaunch.y,actualLaunch.z}}));
     output.set("direction_frame",Str("global +x/+y azimuth with +x cross +y=+z inward; outward macro normal is -z; do not treat incoming travel as outward source wi"));
     output.set("exit_distribution",aggregate.exits.Json(o.histories));
+    J angular=J::MakeObject();
+    angular.set("version",Str(ForwardAngularLineageVersion));
+    angular.set("interpretation",Str("ensemble laws conditional on incident direction; returned mass only; not an angular PDF or production bake certificate"));
+    angular.set("unknown_policy",Str("positive unclassified returned mass must not be histogrammed as finite f or counted as absorption in a production bake"));
+    const std::array<const char*,3> lawNames{{"planar_same_exterior_mirror","absolutely_continuous","unclassified_singular"}};
+    for(std::size_t i=0;i<lawNames.size();++i) {
+        J channel=aggregate.returnedAngularMass[i].Json();
+        Put(channel,"returned_history_count",static_cast<double>(aggregate.returnedAngularCounts[i]));
+        angular.set(lawNames[i],channel);
+    }
+    output.set("returned_angular_law",angular);
     output.set("explicit_cli_options", o.explicitOptions);
     output.set("seed_u64", Str(std::to_string(o.seed)));
     output.set(

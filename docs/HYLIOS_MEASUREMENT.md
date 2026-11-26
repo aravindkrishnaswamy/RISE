@@ -139,8 +139,8 @@ axes/measures, radial overflow and marginals derived from the same joint
 observations. No finite detector crop or escape-conditioned normalization is
 applied. Scaled sparse Welford moments merge missing zero histories analytically;
 scalar summaries share this stable implementation. Cells may contain atoms and
-are explicitly not finite PDFs, BSDFs or production bakes. Angular lineage is
-unavailable, not guessed from terminal names or rounded directions. Full measure,
+are explicitly not finite PDFs, BSDFs or production bakes. The separate `returned_angular_law` summary classifies whole-return power; these
+joint cells remain combined mixtures and are not split by lineage. Full measure,
 range and oracle details are in
 [HYLIOS_MEASUREMENT_DISTRIBUTIONS.md](HYLIOS_MEASUREMENT_DISTRIBUTIONS.md).
 
@@ -189,7 +189,7 @@ wording; it does not claim a persistent packed medium or author-code equivalence
 Both variants count inward draws in `inwardPostExitEvents`. Data approximation
 labels are separate from the recorded transport interpretation. At the exact
 zero-angle endpoint, both policies produce identical physical histories and RNG
-consumption. The report schema is `hylios-forward-measure-v5`.
+consumption. The report schema is `hylios-forward-measure-v6`.
 For HyLIoS boundary selection, zero fold is the exact smooth delta. Positive
 source folds must lie in the explicit binary64 working interval
 [sqrt(epsilon),1/sqrt(epsilon)]; unsupported values fail before histories.
@@ -650,3 +650,26 @@ the v4 online implementation. This fixes its tiny-positive-variance underflow
 without changing physical histories or RNG. The v3/v4 experiments above remain
 historical evidence for their recorded binary identities, not a v5 convergence
 or angular-lineage claim.
+
+## Version 6 returned angular laws
+
+`returned_angular_law` reports the versioned kernel classification described in
+[HYLIOS_ANGULAR_LINEAGE.md](HYLIOS_ANGULAR_LINEAGE.md). Three disjoint channels
+record `planar_same_exterior_mirror`, `absolutely_continuous`, and
+`unclassified_singular` returned power, each with a mean, standard error,
+all-incident history count, and returned-history count. Nonreturns and unfinished
+histories enter each mean as zero. The three means sum to escaped reflectance;
+their standard errors are correlated and must not be added in quadrature.
+
+Mirror classification includes proved internal planar returns, not just the
+external-reflection terminal name. Classification follows accepted laws and never
+compares rounded directions. The mirror map is the same-exterior planar map; its
+coefficient here is a fixed-incidence Monte Carlo estimate, not an angular table.
+Positive unclassified returned power precludes treating that response as a
+production finite-density bake. Zero observed unknown power is not proof that
+the underlying model has none. `complete_physical_estimate` still means no
+unresolved histories; it does not certify angular decomposition or a bake.
+
+The joint exit histogram remains a combined diagnostic mixture. Version 6 adds
+no finite PDF, renderer material, response asset, or microscopic adjoint. Physical
+transport, RNG draws, and version 5 incidence/statistical conventions are unchanged.

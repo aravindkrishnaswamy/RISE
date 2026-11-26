@@ -19,6 +19,22 @@ enum class ForwardPlacementPolicy { FixedEventDiagnosticV1, NullCollisionPlaceme
 enum class ForwardPostScatterPolicy { DiagnosticRetainParticleV1, DiscardAfterScatterV1 };
 inline constexpr const char* ForwardDiagnosticPostScatterVersion = "hylios_diagnostic_retain_particle_v1";
 inline constexpr const char* ForwardDiscardPostScatterVersion = "hylios_discard_after_scatter_v1";
+// Ensemble law classification conditional on source direction, not a PDF
+// conditional on realized geometry. Independent of physical transport version.
+inline constexpr const char* ForwardAngularLineageVersion = "hylios_angular_lineage_v1";
+// UnclassifiedSingular may include continuous/mixed mass; no decomposition is
+// asserted, and a future bake must refuse positive unknown returned mass.
+enum class ForwardAngularClass { KnownPlanarMirrorEligible, AbsolutelyContinuous, UnclassifiedSingular };
+enum class ForwardAngularReason {
+    InitialPlanar, UntypedBoundary, FoldReflection, DiffuseBottom, FiberRayleigh,
+    ProjectedParticleReflection, ProjectedParticleTransmission,
+    RetainedCurvedReflection, RetainedCurvedTransmission, ReflectedCosine, ExponentialForward
+};
+struct ForwardAngularLineage {
+    ForwardAngularClass classification=ForwardAngularClass::KnownPlanarMirrorEligible;
+    ForwardAngularReason reason=ForwardAngularReason::InitialPlanar;
+};
+enum class ForwardReturnedAtomMap { None, PlanarSameExteriorMirror };
 enum class ForwardOrganization { IndividualSpheroids, UnsupportedComplexes, ExplicitComplexPackV1 };
 struct ForwardOrganelle {
     ForwardOrganization organization;
@@ -68,6 +84,14 @@ public:
     ForwardTermination Termination() const { return termination_; }
     ForwardFailureDetail FailureDetail() const { return failureDetail_; }
     const ForwardCounters& Counters() const { return counters_; }
+    const ForwardAngularLineage& AngularLineage() const { return angularLineage_; }
+    // In-flight planar eligibility is not returned atomic mass. Only actual
+    // exterior returns expose the same-exterior planar mirror map.
+    ForwardReturnedAtomMap ReturnedAtomMap() const {
+        return (termination_==ForwardTermination::ExternalReflection||termination_==ForwardTermination::SubsurfaceReturn)&&
+            angularLineage_.classification==ForwardAngularClass::KnownPlanarMirrorEligible ?
+            ForwardReturnedAtomMap::PlanarSameExteriorMirror : ForwardReturnedAtomMap::None;
+    }
     const std::array<double,6>& HostAbsorbedByLayer() const { return hostAbsorbed_; }
     const std::array<double,6>& ParticleAbsorbedByLayer() const { return particleAbsorbed_; }
     bool FiberUsedThisPass() const { return fiberUsed_; }
@@ -84,6 +108,7 @@ private:
     ForwardTermination termination_=ForwardTermination::None;
     ForwardFailureDetail failureDetail_=ForwardFailureDetail::None;
     ForwardCounters counters_{};
+    ForwardAngularLineage angularLineage_{};
     std::array<double,6> hostAbsorbed_{},particleAbsorbed_{};
     bool pending_=false,fiberUsed_=false,hasPredecessor_=false;
     std::uint64_t nextToken_=0;
@@ -96,6 +121,9 @@ private:
     ProlateParticle envelope_{};
     ParticleVector complexPoint_{};
     bool complexActive_=false,complexEntryChord_=false;
+    // This chord has an independently sampled projected-area normal, conditional
+    // on the incoming history. Retained chords and complex children lack it.
+    bool independentProjectedChord_=false;
     std::size_t activeChild_=ComplexLayout::MaximumChildren, lastExitedChild_=ComplexLayout::MaximumChildren;
 };
 class HyLIoSForwardTransport {

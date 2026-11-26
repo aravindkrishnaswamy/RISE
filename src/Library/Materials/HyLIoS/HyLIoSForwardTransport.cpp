@@ -134,6 +134,10 @@ void HyLIoSForwardTransport::ResumeBoundary(ForwardState& s,std::uint64_t token,
     s.pending_=false;s.direction_=direction;
     if(!Finite(weight)||(weight==0&&s.weight_>0&&d.weightMultiplier>0)) {s.termination_=ForwardTermination::NumericalFailure;return;}
     s.weight_=weight;
+    if(d.angularLaw==SlabBoundaryAngularLaw::IndependentFoldReflection&&d.action==BoundaryAction::Reflect)
+        s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::FoldReflection};
+    else if(d.angularLaw!=SlabBoundaryAngularLaw::PlanarDielectric)
+        s.angularLineage_={ForwardAngularClass::UnclassifiedSingular,ForwardAngularReason::UntypedBoundary};
     if(weight==0) {s.termination_=ForwardTermination::ZeroWeight;return;}
     if(to==SlabSide::Exterior) {s.layer_=-1;s.termination_=from==SlabSide::Exterior ? ForwardTermination::ExternalReflection : ForwardTermination::SubsurfaceReturn;}
     else s.layer_=0;
@@ -227,7 +231,9 @@ void HyLIoSForwardTransport::Bulk(ForwardState& s,ISampler& rng) const {
     double u,v;
     if(down&&i==5) {
         if(!Draw(rng,u)||!Draw(rng,v)) {s.termination_=ForwardTermination::InvalidSample;return;}
-        s.direction_=Polar({0,0,-1},std::sqrt(1-u),2*Pi*v);++s.counters_.bottomReflections;return;
+        s.direction_=Polar({0,0,-1},std::sqrt(1-u),2*Pi*v);
+        s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::DiffuseBottom};
+        ++s.counters_.bottomReflections;return;
     }
     const auto j=down ? i+1 : i-1;
     if(!Draw(rng,u)) {s.termination_=ForwardTermination::InvalidSample;return;}
@@ -270,6 +276,7 @@ void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
     s.particle_=particle;s.predecessor_=particle;s.hasPredecessor_=true;s.predecessorCentreFromPosition_=P(centre);
     s.particlePoint_=hit.chord.entryPointMetres;s.particleExit_=hit.chord.exitPointMetres;s.exitNormal_=hit.chord.exitOutwardNormal;
     s.chordDistance_=hit.chord.chordLengthMetres;++s.counters_.acceptedParticles;
+    s.independentProjectedChord_=o.organization==ForwardOrganization::IndividualSpheroids;
     s.complexLayout_.reset();s.complexActive_=false;s.complexEntryChord_=false;
     if(o.organization==ForwardOrganization::ExplicitComplexPackV1) {
         s.envelope_=particle;s.complexPoint_=hit.chord.entryPointMetres;s.complexActive_=true;s.complexEntryChord_=true;
@@ -350,7 +357,7 @@ void HyLIoSForwardTransport::ComplexHost(ForwardState& s,ISampler& rng) const {
     s.complexEntryChord_=false;
     if(selected!=ComplexLayout::MaximumChildren) {
         const auto& child=children[selected];
-        s.activeChild_=selected;s.particle_=child.particle;
+        s.activeChild_=selected;s.particle_=child.particle;s.independentProjectedChord_=false;
         s.particlePoint_=selectedHit->entryPointMetres;s.particleExit_=selectedHit->exitPointMetres;
         s.exitNormal_=selectedHit->exitOutwardNormal;s.chordDistance_=selectedHit->chordLengthMetres;
         s.complexPoint_=P(Add(V(child.centreFromEnvelopeMetres),V(s.particlePoint_)));
@@ -380,10 +387,20 @@ void HyLIoSForwardTransport::ParticleFlight(ForwardState& s,ISampler& rng) const
     if(!Draw(rng,u)) {s.termination_=ForwardTermination::InvalidSample;return;}
     if(u<optics.reflectance) {
         s.direction_=optics.reflectedDirection;s.perturbationAxis_=s.direction_;
+        s.angularLineage_=s.independentProjectedChord_ ?
+            ForwardAngularLineage{ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ProjectedParticleReflection} :
+            ForwardAngularLineage{ForwardAngularClass::UnclassifiedSingular,ForwardAngularReason::RetainedCurvedReflection};
+        s.independentProjectedChord_=false;
         s.phase_=ForwardPhase::ReflectedPerturbation;++s.counters_.particleReflections;
         if(s.complexActive_) {++s.counters_.complexChildReflections;s.lastExitedChild_=ComplexLayout::MaximumChildren;}
     } else {
         s.direction_=optics.transmittedDirection;s.perturbationAxis_=s.direction_;
+        // Exact equality is a material-law identity, never a vector comparison.
+        if(o.realIOR!=layers_[static_cast<std::size_t>(s.layer_)].realIOR)
+            s.angularLineage_=s.independentProjectedChord_ ?
+                ForwardAngularLineage{ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ProjectedParticleTransmission} :
+                ForwardAngularLineage{ForwardAngularClass::UnclassifiedSingular,ForwardAngularReason::RetainedCurvedTransmission};
+        s.independentProjectedChord_=false;
         ++s.counters_.particleExits;
         if(s.complexActive_) {
             ++s.counters_.complexChildExits;s.lastExitedChild_=s.activeChild_;
@@ -401,17 +418,21 @@ void HyLIoSForwardTransport::Perturb(ForwardState& s,ISampler& rng) const {
         if(Dot(direction,V(s.exitNormal_))>=0) return; // one conditional-inward proposal
         s.direction_=direction;
         SurfaceExit(s.particle_,s.particlePoint_,direction,s.chordDistance_,s.particleExit_,s.exitNormal_);
-        s.phase_=ForwardPhase::ParticleChord;return;
+        s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ReflectedCosine};
+        s.independentProjectedChord_=false;s.phase_=ForwardPhase::ParticleChord;return;
     }
     if(s.phase_==ForwardPhase::FiberPerturbation) {
         const auto cosine=TrySampleRayleighCosine(u,v);if(!cosine) return;
         if(!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
-        s.direction_=Polar(s.perturbationAxis_,*cosine,2*Pi*a);s.phase_=ForwardPhase::BulkFlight;return;
+        s.direction_=Polar(s.perturbationAxis_,*cosine,2*Pi*a);
+        s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::FiberRayleigh};
+        s.phase_=ForwardPhase::BulkFlight;return;
     }
     if(!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
     const auto angle=TrySampleExponentialForward(forwardAngle_,u,v,a);if(!angle) return;
     if(!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
     s.direction_=Polar(s.perturbationAxis_,std::cos(angle->thetaRadians),2*Pi*a);
+    s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ExponentialForward};
     FinishForwardScatter(s);
 }
 void HyLIoSForwardTransport::FinishForwardScatter(ForwardState& s) const {

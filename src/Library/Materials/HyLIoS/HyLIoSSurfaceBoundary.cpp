@@ -98,11 +98,11 @@ SurfaceBoundaryPhase HyLIoSSurfaceBoundary::TrySample(SurfaceBoundaryState& stat
         const auto from=state.encounter_.incidentSide;
         ++state.workUnits_;
         if (u<state.optics_.reflectance) {
-            state.decision_={BoundaryAction::Reflect,from,state.optics_.reflectedDirection,1};
+            state.decision_={BoundaryAction::Reflect,from,state.optics_.reflectedDirection,1,SlabBoundaryAngularLaw::PlanarDielectric};
             state.phase_=aspect_==0 ? SurfaceBoundaryPhase::Ready : SurfaceBoundaryPhase::NormalProposal;
         } else {
             state.decision_={BoundaryAction::Transmit,from==SlabSide::Exterior ? SlabSide::Interior : SlabSide::Exterior,
-                state.optics_.transmittedDirection,1};
+                state.optics_.transmittedDirection,1,SlabBoundaryAngularLaw::PlanarDielectric};
             state.phase_=SurfaceBoundaryPhase::Ready;
         }
         return state.phase_;
@@ -121,6 +121,7 @@ SurfaceBoundaryPhase HyLIoSSurfaceBoundary::TrySample(SurfaceBoundaryState& stat
     // each retained reflected direction must point into its incident side.
     if (!(side*reflected.z>0)) return state.phase_;
     state.decision_.direction=Unit(reflected);
+    state.decision_.angularLaw=SlabBoundaryAngularLaw::IndependentFoldReflection;
     state.phase_=SurfaceBoundaryPhase::Ready;
     return state.phase_;
 }

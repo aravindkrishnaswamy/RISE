@@ -88,9 +88,9 @@ SmoothDielectricEvaluation EvaluateSlabSmoothDielectric(const SlabBoundaryEncoun
 SlabBoundaryDecision SampleSlabSmoothDielectric(const SlabBoundaryEncounter& e, double u) {
     Require(Uniform(u), "dielectric variate must be finite in [0,1)");
     const auto optics=EvaluateSlabSmoothDielectric(e);
-    if (u<optics.reflectance) return {BoundaryAction::Reflect,e.incidentSide,optics.reflectedDirection,1};
+    if (u<optics.reflectance) return {BoundaryAction::Reflect,e.incidentSide,optics.reflectedDirection,1,SlabBoundaryAngularLaw::PlanarDielectric};
     return {BoundaryAction::Transmit,e.incidentSide==SlabSide::Exterior ? SlabSide::Interior : SlabSide::Exterior,
-        optics.transmittedDirection,1};
+        optics.transmittedDirection,1,SlabBoundaryAngularLaw::PlanarDielectric};
 }
 HyLIoSSlabTransport::HyLIoSSlabTransport(std::array<SlabLayer,6> layers, double wavelengthNm,
     double exteriorIOR, AbsorptionEstimator estimator, double rouletteTargetWeight) :

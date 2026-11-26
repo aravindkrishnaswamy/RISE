@@ -108,6 +108,26 @@ class MeasurementCLI(unittest.TestCase):
         self.assertEqual(a["aggregate_counters"]["fiberEvents"], 0)
         self.assertEqual(list(self.root.glob("measurement.json.tmp.*")), [])
 
+    def test_returned_angular_law_partition(self):
+        cases = [self.run_case(), self.run_case(**{"--max-transitions": "1"}),
+                 self.run_case(specimen(100.))]
+        glass = specimen()
+        for layer in glass["layers"]:
+            layer["real_refractive_index"] = [1.5, 1.5]
+        cases.append(self.run_case(glass, **{"--histories": "2000"}))
+        for result in cases:
+            law = result["returned_angular_law"]
+            self.assertEqual(law["version"], "hylios_angular_lineage_v1")
+            cells = [law[k] for k in ("planar_same_exterior_mirror", "absolutely_continuous", "unclassified_singular")]
+            self.assertAlmostEqual(sum(c["mean"] for c in cells), result["estimates"]["escaped_reflectance"]["mean"])
+            self.assertEqual(sum(c["returned_history_count"] for c in cells),
+                             result["outcomes"]["external_reflection"]["count"] + result["outcomes"]["subsurface_return"]["count"])
+            self.assertTrue(all(c["history_count"] == result["initial_history_count"] for c in cells))
+            self.assertEqual(law["unclassified_singular"]["mean"], 0)
+        self.assertEqual(cases[0]["returned_angular_law"]["absolutely_continuous"]["mean"], 1)
+        self.assertEqual(cases[1]["returned_angular_law"]["absolutely_continuous"]["mean"], 0)
+        self.assertGreater(cases[3]["returned_angular_law"]["planar_same_exterior_mirror"]["mean"], 0)
+
     def test_lossy_metadata_integer_tokens_are_rejected_atomically(self):
         for token in ("9007199254740993", "-9007199254740993",
                       "9.007199254740993e15", "9007199254740993.0"):
@@ -269,7 +289,7 @@ class MeasurementCLI(unittest.TestCase):
     def test_complex_full_child_counters_and_provenance(self):
         p = specimen();p["layers"][1]["particles"] = active_complex()
         a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard", "--histories": "500"})
-        self.assertEqual(a["measurement_version"], "hylios-forward-measure-v5")
+        self.assertEqual(a["measurement_version"], "hylios-forward-measure-v6")
         self.assertEqual(a["complex_layout_policy"], "hylios_complex_explicit_pack_v1")
         self.assertEqual(a["explicit_cli_options"]["--complex-layout"], "explicit-pack-v1")
         convention = a["complex_layout_convention"]
@@ -323,6 +343,8 @@ class MeasurementCLI(unittest.TestCase):
         self.assertGreater(counters["complexChildEntries"], 0)
         self.assertGreater(counters["complexChildReflections"], 0)
         self.assertGreater(sum(a["particle_path_length_m_by_layer"]), 0)
+        self.assertGreater(a["returned_angular_law"]["unclassified_singular"]["mean"], 0)
+        self.assertGreater(a["returned_angular_law"]["unclassified_singular"]["returned_history_count"], 0)
         self.assertGreater(sum(a["particle_absorbed_weight_by_layer"]), 0)
         self.assertGreater(sum(a["host_absorbed_weight_by_layer"]), 0)
         self.assertEqual(a["unresolved_history_count"], 0)

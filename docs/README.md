@@ -175,7 +175,8 @@ historical 2026-06-19 snapshot, not present-day ground truth.
   transport roadmap; [research notes](HYLIOS_RESEARCH_NOTES.md) record sources,
   optical-data gaps and unresolved publication conventions; the experimental
   [measurement CLI](HYLIOS_MEASUREMENT.md) reports individual and explicit-complex
-  forward diagnostics and unresolved power explicitly; [spectral source proposals](SPECTRAL_SOURCE_PROPOSALS.md)
+  forward diagnostics and unresolved power explicitly; [angular lineage](HYLIOS_ANGULAR_LINEAGE.md)
+  distinguishes proved continuous and mirror laws from unclassified returns; [spectral source proposals](SPECTRAL_SOURCE_PROPOSALS.md)
   document the per-caster preparation capability and its integration limits
 - [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md): current fire/smoke state,
   open problems and operating rules; start here

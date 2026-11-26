@@ -133,3 +133,4 @@ HyLIoSComplexForwardTransportTest	pool	5
 HyLIoSSurfaceBoundaryTest	pool	3
 HyLIoSMeasurementStatisticsTest	pool	2
 EnvironmentSamplerDomainTest	pool	2
+HyLIoSAngularLineageTest	pool	3

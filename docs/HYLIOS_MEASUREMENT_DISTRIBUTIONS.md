@@ -160,18 +160,22 @@ a separate independent-seed quarter-turn test checks joint rotation covariance.
 These limit controls do not establish rotation reduction for every selected
 particle/complex/fiber/boundary ensemble.
 
-## Explicitly absent lineage and bake
+## Combined histograms and separate returned-law summary
 
 The response can contain angular atoms or other singular components. Random
 geometry alone does not prove continuity; matched-index transmission and exact
 zero-width kicks can preserve deterministic directions. Terminal outcome names,
 rounded direction equality and proposal counts are not a classification.
 
-The report explicitly describes an unclassified mixture in
-`angular_measure_classification`, and states `is_density=false`, `continuous_pdf_available=false` and
-`production_bake_available=false`. No atomic lineage, atomic map/coefficient,
-finite BSDF, response interpolation or bake file is implemented. A future local
-response needs actual accepted-event lineage and explicit incoming/outgoing
-projected measures, with a separate production-key and passivity contract. These
-histograms preserve diagnostic mass and uncertainty without guessing those
-missing semantics.
+`exit_distribution.angular_measure_classification` describes the combined
+per-cell mixture, and the histogram retains `is_density=false`,
+`continuous_pdf_available=false`, and `production_bake_available=false`. Version 6
+adds a separate whole-return `returned_angular_law` summary, with mirror, proved
+continuous and unclassified mass estimates. See
+[the lineage contract](HYLIOS_ANGULAR_LINEAGE.md) and
+[measurement version 6](HYLIOS_MEASUREMENT.md#version-6-returned-angular-laws).
+The per-cell histogram does not split these laws and cannot be divided by its
+cell measure to create a finite BSDF. No response interpolation or bake file is
+implemented. A future local response still requires explicit incoming/outgoing
+projected measures, a production key, passivity checks and refusal of positive
+unclassified returned mass.

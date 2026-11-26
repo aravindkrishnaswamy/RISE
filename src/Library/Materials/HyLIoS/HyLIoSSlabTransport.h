@@ -25,14 +25,19 @@ struct SlabBoundaryEncounter {
     SlabSide incidentSide;
     SlabVector position, incidentDirection;
     double wavelengthNm, weight, incidentIOR, targetIOR;
-    // Frame: outward normal (0,0,-1), tangents (1,0,0),(0,1,0).
+    // Oracle coordinates: depth +Z, outward normal -Z; legacy XY azimuth.
+    // Right-handed outward local basis is (+X,-Y,-Z), not (+X,+Y,-Z).
     // Physical power convention: analog Fresnel R/T, no radiance eta factor.
 };
+// Law contract supplied by the sampler, never inferred from the numeric direction.
+// Arbitrary caller decisions remain unclassified unless they declare a proved law.
+enum class SlabBoundaryAngularLaw { Unclassified, PlanarDielectric, IndependentFoldReflection };
 struct SlabBoundaryDecision {
     BoundaryAction action;
     SlabSide targetSide;
     SlabVector direction;
     double weightMultiplier;
+    SlabBoundaryAngularLaw angularLaw=SlabBoundaryAngularLaw::Unclassified;
 };
 struct SmoothDielectricEvaluation {
     double reflectance;
