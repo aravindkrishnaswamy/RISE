@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
@@ -66,20 +67,20 @@ SumPair TwoSum(double a, double b) {
 	const double second=head-a;
 	return {head,(a-(head-second))+(b-second)};
 }
-// Fixed-size expansion for exactly three products and their FMA residuals.
-// Its tail stays separate until all cancellation has happened; adding it into
-// a large operand before that cancellation would silently erase it.
-double SumSix(double (&terms)[6]) {
-	std::sort(terms,terms+6,[](double a,double b){ return std::abs(a)>std::abs(b); });
-	for (int i=1; i<6; ++i) if (std::signbit(terms[i]) != std::signbit(terms[0])) {
+// Fixed-size expansion for three products, their FMA residuals, and an
+// optional constant. Its tail stays separate until cancellation is complete.
+template<std::size_t Count> double SumComponents(double (&terms)[Count]) {
+	static_assert(Count==6 || Count==7,"bounded particle arithmetic expansion");
+	std::sort(terms,terms+Count,[](double a,double b){ return std::abs(a)>std::abs(b); });
+	for (std::size_t i=1; i<Count; ++i) if (std::signbit(terms[i]) != std::signbit(terms[0])) {
 		std::swap(terms[1],terms[i]); break;
 	}
-	double components[6]={};
-	int count=0;
+	double components[Count]={};
+	std::size_t count=0;
 	for (double term : terms) {
-		double next[6]={};
-		int nextCount=0;
-		for (int i=0; i<count; ++i) {
+		double next[Count]={};
+		std::size_t nextCount=0;
+		for (std::size_t i=0; i<count; ++i) {
 			const SumPair sum=TwoSum(term,components[i]);
 			if (sum.tail != 0.0) next[nextCount++]=sum.tail;
 			term=sum.head;
@@ -89,7 +90,7 @@ double SumSix(double (&terms)[6]) {
 		count=nextCount;
 	}
 	double result=0.0;
-	for (int i=0; i<count; ++i) result+=components[i];
+	for (std::size_t i=0; i<count; ++i) result+=components[i];
 	if (!std::isfinite(result)) throw std::overflow_error("particle compensated dot exceeds binary64 range");
 	return result;
 }
@@ -127,6 +128,13 @@ Extended ExtendedAdd(Extended a, Extended b) {
 Extended ExtendedMultiply(Extended a, double value) {
 	const Extended factor = ExtendedProduct({value},{});
 	return Canonical(a.fraction*factor.fraction,a.exponent+factor.exponent);
+}
+Extended ExtendedMultiply(Extended a, Extended b) {
+	return Canonical(a.fraction*b.fraction,a.exponent+b.exponent);
+}
+Extended ExtendedSqrt(Extended value) {
+	if (value.exponent%2 != 0) { value.fraction*=2.0; --value.exponent; }
+	return Canonical(std::sqrt(value.fraction),value.exponent/2);
 }
 Extended ExtendedDivide(Extended a, Extended b) {
 	return Canonical(a.fraction/b.fraction,a.exponent-b.exponent);
@@ -192,7 +200,7 @@ double Dot(ParticleVector a, ParticleVector b) {
 	if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
 		throw std::overflow_error("particle dot product exceeds binary64 range");
 	double terms[6]={x,y,z,std::fma(a.x,b.x,-x),std::fma(a.y,b.y,-y),std::fma(a.z,b.z,-z)};
-	return SumSix(terms);
+	return SumComponents(terms);
 }
 ParticleVector Combine(ParticleVector a, double x, ParticleVector b, double y, ParticleVector c, double z) {
 	const ParticleVector result{Dot({x,y,z},{a.x,b.x,c.x}),Dot({x,y,z},{a.y,b.y,c.y}),Dot({x,y,z},{a.z,b.z,c.z})};
@@ -236,6 +244,15 @@ Projection Project(const ProlateParticle& particle, ParticleVector direction) {
 	// huge aspect ratios then make that basis error visible in the normal.
 	return {a,b,c,s,radius,B,d,e,f,Unit(Cross(f,axis)),axis};
 }
+ParticleVector NormalizeGradient(const Projection& p, Extended radial, Extended side, Extended axial) {
+	const Extended gradients[3]={radial,side,axial};
+	int maximum=-10000;
+	for (const Extended value : gradients) if (value.fraction != 0.0) maximum=std::max(maximum,value.exponent);
+	ParticleVector local{std::ldexp(radial.fraction,radial.exponent-maximum+1),
+		std::ldexp(side.fraction,side.exponent-maximum+1),std::ldexp(axial.fraction,axial.exponent-maximum+1)};
+	local=Unit(local);
+	return Unit(Combine(p.radial,local.x,p.f,local.y,p.axis,local.z));
+}
 ParticleVector Normal(const Projection& p, double X, double Y, double w, double sign) {
 	// Differentiate the ellipsoid before rounding its unit-sphere coordinates:
 	// (A*X +/- B*w)/a = c*X/L +/- b*s*w/(a*L), and likewise for the
@@ -245,13 +262,67 @@ ParticleVector Normal(const Projection& p, double X, double Y, double w, double 
 	const Extended side=ExtendedProduct({Y},{p.a});
 	const Extended axial=ExtendedAdd(ExtendedProduct({p.s,X},{p.radius}),
 		ExtendedProduct({-sign,p.a,p.c,w},{p.b,p.radius}));
-	const Extended gradients[3]={radial,side,axial};
-	int maximum=-10000;
-	for (const Extended value : gradients) if (value.fraction != 0.0) maximum=std::max(maximum,value.exponent);
-	ParticleVector local{std::ldexp(radial.fraction,radial.exponent-maximum+1),
-		std::ldexp(side.fraction,side.exponent-maximum+1),std::ldexp(axial.fraction,axial.exponent-maximum+1)};
-	local=Unit(local);
-	return Unit(Combine(p.radial,local.x,p.f,local.y,p.axis,local.z));
+	return NormalizeGradient(p,radial,side,axial);
+}
+ParticleVector EndpointNormal(const Projection& p, ParticleVector point) {
+	return NormalizeGradient(p,
+		ExtendedProduct({Dot(point,p.radial)},{p.a,p.a}),
+		ExtendedProduct({Dot(point,p.f)},{p.a,p.a}),
+		ExtendedProduct({Dot(point,p.axis)},{p.b,p.b}));
+}
+// Only on/inside origins use this branch. C<=0 makes the discriminant
+// B*B-A*C a sum of nonnegative terms; external distant origins instead use
+// the perpendicular silhouette, where that subtraction would lose the radius.
+bool TryInsideChord(const Projection& p, ParticleVector origin, ParticleVector direction,
+	std::optional<ParticleChord>& result) {
+	const ParticleVector localOrigin{Dot(origin,p.radial),Dot(origin,p.f),Dot(origin,p.axis)};
+	if (std::abs(localOrigin.x)>p.a || std::abs(localOrigin.y)>p.a || std::abs(localOrigin.z)>p.b) return false;
+	const ParticleVector q{ProductRatio({localOrigin.x},{p.a}),ProductRatio({localOrigin.y},{p.a}),ProductRatio({localOrigin.z},{p.b})};
+	// A unit coordinate already exhausts the implicit surface budget; any
+	// other nonzero coordinate is strictly outside, even if its square would
+	// underflow before entering the compensated expansion.
+	if ((std::abs(q.x)==1.0 && (q.y!=0.0 || q.z!=0.0)) ||
+		(std::abs(q.y)==1.0 && (q.x!=0.0 || q.z!=0.0)) ||
+		(std::abs(q.z)==1.0 && (q.x!=0.0 || q.y!=0.0))) return false;
+	const double xx=q.x*q.x,yy=q.y*q.y,zz=q.z*q.z;
+	// Include -1 in the expansion BEFORE rounding. round(sum(q*q))-1
+	// could label a strictly inside/outside point as exactly on the surface.
+	double terms[7]={xx,yy,zz,std::fma(q.x,q.x,-xx),std::fma(q.y,q.y,-yy),std::fma(q.z,q.z,-zz),-1.0};
+	const double constant=SumComponents(terms);
+	if (constant>0.0) return false;
+	const ParticleVector localDirection{Dot(direction,p.radial),Dot(direction,p.f),Dot(direction,p.axis)};
+	const Extended A=ExtendedDot(
+		ExtendedProduct({localDirection.x,localDirection.x},{p.a,p.a}),
+		ExtendedProduct({localDirection.y,localDirection.y},{p.a,p.a}),
+		ExtendedProduct({localDirection.z,localDirection.z},{p.b,p.b}),{1,1,1});
+	const Extended B=ExtendedDot(
+		ExtendedProduct({localOrigin.x,localDirection.x},{p.a,p.a}),
+		ExtendedProduct({localOrigin.y,localDirection.y},{p.a,p.a}),
+		ExtendedProduct({localOrigin.z,localDirection.z},{p.b,p.b}),{1,1,1});
+	Extended first{0.0,0},second{0.0,0};
+	if (constant==0.0) {
+		// Deflate the known surface root. No range test or ray-origin epsilon
+		// may move that exact zero to the wrong side of the boundary.
+		first=ExtendedDivide(ExtendedMultiply(B,-2.0),A);
+	} else {
+		const Extended discriminant=ExtendedAdd(ExtendedMultiply(B,B),ExtendedMultiply(A,-constant));
+		const Extended root=ExtendedSqrt(discriminant);
+		const double sign=B.fraction<0.0 ? -1.0 : 1.0;
+		const Extended numerator=ExtendedAdd(ExtendedMultiply(B,-1.0),ExtendedMultiply(root,-sign));
+		first=ExtendedDivide(numerator,A);
+		second=ExtendedDivide(ExtendedProduct({constant},{}),numerator);
+	}
+	double entryParameter=Rounded(first),exitParameter=Rounded(second);
+	if (entryParameter>exitParameter) { std::swap(first,second); std::swap(entryParameter,exitParameter); }
+	if (exitParameter<0.0) { result=std::nullopt; return true; }
+	const Extended directionLength=DirectionLength(direction);
+	const double entry=Rounded(ExtendedMultiply(first,directionLength));
+	const double exit=Rounded(ExtendedMultiply(second,directionLength));
+	const double length=Rounded(ExtendedMultiply(ExtendedAdd(second,ExtendedMultiply(first,-1.0)),directionLength));
+	const ParticleVector entryPoint{std::fma(entryParameter,direction.x,origin.x),std::fma(entryParameter,direction.y,origin.y),std::fma(entryParameter,direction.z,origin.z)};
+	const ParticleVector exitPoint{std::fma(exitParameter,direction.x,origin.x),std::fma(exitParameter,direction.y,origin.y),std::fma(exitParameter,direction.z,origin.z)};
+	result=ParticleChord{entry,exit,length,entryPoint,exitPoint,EndpointNormal(p,entryPoint),EndpointNormal(p,exitPoint)};
+	return true;
 }
 double HalfChord(const Projection& p, double w) {
 	return w == 0.0 ? 0.0 : ProductRatio({p.a,p.b,w},{p.radius},true);
@@ -280,6 +351,8 @@ double ProlateProjectedArea(const ProlateParticle& particle, ParticleVector dire
 std::optional<ParticleChord> IntersectProlateRay(const ProlateParticle& particle, ParticleVector origin, ParticleVector direction) {
 	Finite(origin);
 	const Projection p = Project(particle,direction);
+	std::optional<ParticleChord> insideChord;
+	if (TryInsideChord(p,origin,direction,insideChord)) return insideChord;
 	// Project the raw line's perpendicular displacement, not the distant
 	// origin onto a rounded normalized frame. The latter can turn an exact
 	// central chord into a miss by amplifying one basis ulp by |origin|.

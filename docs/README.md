@@ -171,7 +171,9 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 - [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md): refreshed HyLIoS hyperspectral skin
   implementation design, scientific validation gates, PT integration and spatial
   transport roadmap; [research notes](HYLIOS_RESEARCH_NOTES.md) record sources,
-  optical-data gaps and unresolved publication conventions
+  optical-data gaps and unresolved publication conventions; the experimental
+  [measurement CLI](HYLIOS_MEASUREMENT.md) reports individual-particle forward
+  diagnostics and unresolved power explicitly
 - [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md): current fire/smoke state,
   open problems and operating rules; start here
 - [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md): r82

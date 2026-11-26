@@ -37,8 +37,9 @@ struct ProjectedParticleHit {
 // Finite positive axes with major >= minor, and finite nonzero axis/direction
 // vectors are required. Vectors are normalized internally without squaring their
 // unscaled components. Invalid inputs throw invalid_argument; unrepresentable
-// positive full chord lengths/areas throw overflow_error or underflow_error. Signed
-// distances, positions and normal components may round to zero. A nonzero
+// full chord lengths/areas and nonzero signed distances that cannot be represented
+// throw overflow_error or underflow_error. Exact surface/tangent zero distances
+// are retained; position and normal components may round to zero. A nonzero
 // projected displacement or normalized disk component that rounds to zero
 // raises an explicit range exception, never a physical miss or altered normal.
 // This is binary64 geometry; it does not promise arbitrary exponent ranges.
@@ -47,6 +48,9 @@ double ProlateProjectedArea(const ProlateParticle& particle, ParticleVector dire
 
 // nullopt means the infinite line misses, or its exit lies strictly behind the
 // ray origin. Tangency is a valid zero-length chord, including at distance zero.
+// On/inside origins use an implicit quadric, with known surface roots deflated.
+// Its raw-direction parameter roots must be representable, otherwise a range
+// exception is raised even when a corresponding physical distance might fit.
 // No ray-origin epsilon or self-intersection policy is imposed by this math.
 std::optional<ParticleChord> IntersectProlateRay(const ProlateParticle& particle,
 	ParticleVector originRelativeMetres, ParticleVector direction);

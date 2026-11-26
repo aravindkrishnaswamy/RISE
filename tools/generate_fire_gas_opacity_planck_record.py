@@ -97,8 +97,22 @@ def _rows(path: Path, columns: int,
     return result
 
 
+def sequential_float_sum(values) -> float:
+    """Keep published transform/validation bytes independent of Python's sum.
+
+    The source record used sequential binary64 accumulation. Newer Python
+    versions compensate float sums, which otherwise changes record identities
+    despite unchanged physical inputs.
+    """
+    total = 0.0
+    for value in values:
+        total += value
+    return total
+
+
 def _matmul(left: list[list[float]], right: list[list[float]]) -> list[list[float]]:
-    return [[sum(left[row][k] * right[k][column] for k in range(len(right)))
+    return [[sequential_float_sum(left[row][k] * right[k][column]
+                                  for k in range(len(right)))
              for column in range(len(right[0]))] for row in range(len(left))]
 
 
@@ -192,8 +206,8 @@ def species_payload(data: Path, species: str) -> dict:
         coefficients = bicubic_coefficients(corners, 50.0)
         u = (direct[0] - AXIS[gas]) / 50.0
         v = (direct[1] - AXIS[radiation]) / 50.0
-        interpolated = sum(coefficients[i][j] * u ** i * v ** j
-                           for i in range(4) for j in range(4))
+        interpolated = sequential_float_sum(
+            coefficients[i][j] * u ** i * v ** j for i in range(4) for j in range(4))
         worst_interpolation = max(
             worst_interpolation, abs(interpolated - direct[2]) / direct[2])
     declared_interpolation = INTERPOLATION_ERROR[species]

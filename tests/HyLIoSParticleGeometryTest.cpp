@@ -150,6 +150,35 @@ int main() {
 		if(extremeTangent && extremeTangent->chordLengthMetres==0)
 			Absolute(Dot(extremeTangent->exitOutwardNormal,{0.8,0,0.6}),0,2e-15,"underflowing spheroid coefficients cannot produce a non-tangent tangent normal");
 	}
+	for(double major : {0x1p20,0x1p52,0x1p100}) {
+		const ProlateParticle grazing{1,major,z};
+		const ParticleVector rawDirection{1/major,0,1};
+		const auto surfaceChord=IntersectProlateRay(grazing,{1,0,0},rawDirection);
+		Check(surfaceChord && surfaceChord->exitDistanceMetres==0,"implicit surface deflation retains exact zero exit for long grazing chord");
+		if(surfaceChord) {
+			VectorNear(surfaceChord->entryPointMetres,{0,0,-major},0,"implicit surface deflation retains exact opposite pole");
+			VectorNear(surfaceChord->entryOutwardNormal,{0,0,-1},0,"implicit surface deflation retains exact polar normal");
+			Near(surfaceChord->chordLengthMetres,std::hypot(major,1.0),2e-15,"implicit surface chord length uses physical normalized-direction distance");
+		}
+		const auto reversedSurface=IntersectProlateRay(grazing,{-1,0,0},rawDirection);
+		Check(reversedSurface && reversedSurface->entryDistanceMetres==0,"implicit surface deflation retains exact zero entry with opposite incidence");
+		if(reversedSurface) VectorNear(reversedSurface->exitOutwardNormal,{0,0,1},0,"implicit surface deflation retains opposite-incidence polar normal");
+		const double insideX=std::nextafter(1.0,0.0);
+		const auto nearSurface=IntersectProlateRay(grazing,{insideX,0,0},rawDirection);
+		Check(nearSurface.has_value(),"implicit near-surface inside origin retains grazing intersection");
+		if(nearSurface) {
+			const double mass=(1-insideX)*(1+insideX);
+			const double expected=major*mass/(insideX+std::sqrt(1+mass))*std::hypot(1.0,1/major);
+			Near(nearSurface->exitDistanceMetres,expected,3e-15,"implicit near-surface small root matches factored analytic Vieta oracle");
+		}
+		const auto midpoint=IntersectProlateRay(grazing,{0.5,0,-major/2},rawDirection);
+		Check(midpoint.has_value(),"implicit inside-origin grazing chord retains intersection");
+		if(midpoint) {
+			VectorNear(midpoint->entryPointMetres,{0,0,-major},0,"implicit midpoint chord retains exact opposite pole");
+			VectorNear(midpoint->entryOutwardNormal,{0,0,-1},0,"implicit midpoint chord retains exact polar normal");
+			VectorNear(midpoint->exitPointMetres,{1,0,0},0,"implicit midpoint chord retains exact equator exit");
+		}
+	}
 	// Independent reference and rotation/scale/axis-sign covariance.
 	std::mt19937_64 generator(0x82b43a6);
 	std::uniform_real_distribution<double> uniform(0,1);

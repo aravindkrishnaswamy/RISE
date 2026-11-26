@@ -4,6 +4,17 @@
 #include <cstdlib>
 #include <limits>
 #include <cfenv>
+#include <cstdint>
+#include <cstring>
+#if defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+#define HYLIOS_TEST_FPCR 1
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define HYLIOS_TEST_MXCSR 1
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+#endif
 using namespace RISE::HyLIoS;
 using S=ParticleOverlapStatus;
 unsigned checks=0;
@@ -24,6 +35,75 @@ ProlateParticle Scaled(ProlateParticle p,int k) {
     p.semiMajorMetres=std::ldexp(p.semiMajorMetres,k);
     return p;
 }
+#if defined(HYLIOS_TEST_FPCR) || defined(HYLIOS_TEST_MXCSR)
+// Observe the classification under a non-gradual environment, but restore the
+// register before any assertion can terminate the standalone test process.
+class SubnormalModeGuard {
+public:
+    static std::uint64_t Read() {
+#if defined(HYLIOS_TEST_FPCR)
+        std::uint64_t value=0;
+        asm volatile("mrs %0, fpcr" : "=r"(value));
+        return value;
+#else
+        return _mm_getcsr();
+#endif
+    }
+    SubnormalModeGuard() : saved_(Read()) {
+        Check(std::fegetenv(&environment_)==0,"save FTZ/DAZ complete floating environment");
+#if defined(HYLIOS_TEST_FPCR)
+        Write(saved_ | (std::uint64_t{1}<<24)); // FPCR.FZ, binary32/binary64.
+#else
+        // DAZ is optional on historical x86 CPUs. FXSAVE's MXCSR_MASK is the
+        // architectural supported-bit oracle; a zero mask uses its legacy
+        // default, which excludes DAZ. FTZ is available on every SSE2 target.
+        alignas(16) unsigned char state[512]{};
+        _fxsave(state);
+        std::uint32_t mask=0;
+        std::memcpy(&mask,state+28,sizeof(mask));
+        if (mask==0) mask=0xffbf;
+        Write(saved_ | 0x8000U | (mask & 0x40U));
+#endif
+    }
+    ~SubnormalModeGuard() {
+        std::fesetenv(&environment_);
+        Write(saved_);
+    }
+    SubnormalModeGuard(const SubnormalModeGuard&)=delete;
+    SubnormalModeGuard& operator=(const SubnormalModeGuard&)=delete;
+private:
+    static void Write(std::uint64_t value) {
+#if defined(HYLIOS_TEST_FPCR)
+        asm volatile("msr fpcr, %0\n\tisb" : : "r"(value) : "memory");
+#else
+        _mm_setcsr(static_cast<unsigned>(value));
+#endif
+    }
+    std::uint64_t saved_;
+    std::fenv_t environment_;
+};
+void TestNonGradualEnvironment() {
+    const ProlateParticle normal{1,1,{1,0,0}};
+    const double tiny=std::numeric_limits<double>::denorm_min();
+    const ProlateParticle tinyDimensions{tiny,tiny,{1,0,0}};
+    const ProlateParticle tinyAxis{1,1,{tiny,0,0}};
+    const std::uint64_t saved=SubnormalModeGuard::Read();
+    const int savedFlags=std::fetestexcept(FE_ALL_EXCEPT);
+    ParticleOverlapResult normalResult,tinyDimensionsResult,tinyAxisResult;
+    {
+        SubnormalModeGuard nonGradual;
+        normalResult=ClassifyProlateOverlap(normal,normal,{0,0,0});
+        tinyDimensionsResult=ClassifyProlateOverlap(tinyDimensions,tinyDimensions,{0,0,0});
+        tinyAxisResult=ClassifyProlateOverlap(tinyAxis,normal,{0,0,0});
+    }
+    Check(SubnormalModeGuard::Read()==saved,"FTZ/DAZ environment register restored");
+    Check(std::fetestexcept(FE_ALL_EXCEPT)==savedFlags,"FTZ/DAZ exception flags restored");
+    Check(normalResult.status==S::UnsupportedRange,"FTZ/DAZ normal dimensions unsupported environment");
+    Check(tinyDimensionsResult.status==S::UnsupportedRange,"FTZ/DAZ subnormal dimensions unsupported environment");
+    Check(tinyAxisResult.status==S::UnsupportedRange,"FTZ/DAZ subnormal axis unsupported environment");
+    std::puts("PASS: FTZ/DAZ normal and subnormal inputs report unsupported environment");
+}
+#endif
 int main() {
     const ProlateParticle unit{1,1,{1,0,0}}, sphere2{2,2,{0,7,0}};
     Is(unit,unit,{0,0,0},S::Overlap,"coincident spheres");
@@ -91,5 +171,8 @@ int main() {
     Check(std::fesetround(FE_DOWNWARD)==0,"set directed test environment");
     Is(unit,unit,{0,0,0},S::UnsupportedRange,"rounding mode contract");
     Check(std::fesetround(saved)==0,"restore rounding environment");
+#if defined(HYLIOS_TEST_FPCR) || defined(HYLIOS_TEST_MXCSR)
+    TestNonGradualEnvironment();
+#endif
     std::printf("PASS: %u overlap contract checks\n",checks);
 }

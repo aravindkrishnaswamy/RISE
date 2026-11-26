@@ -363,22 +363,36 @@ def assumption_envelope(value: float, magnitude: float, basis: str,
     }
 
 
+def sequential_float_sum(values) -> float:
+    """Preserve the published record's ordered binary64 accumulation.
+
+    Python's built-in float sum changed across interpreter releases. Its newer
+    compensated reduction changes record bytes and hashes despite unchanged
+    source data. Keep this reduction explicit; exact rational sums still use
+    the built-in implementation below.
+    """
+    total = 0.0
+    for value in values:
+        total += value
+    return total
+
+
 def linear_increment_fit(values: list[float]) -> dict:
     if len(values) != 5 or not all(math.isfinite(value) for value in values):
         raise ValueError("CH2 increment fit requires five finite C4-C8 values")
     carbon_numbers = (4.0, 5.0, 6.0, 7.0, 8.0)
     mean_x = 6.0
-    mean_y = sum(values) / len(values)
-    denominator = sum((value - mean_x) ** 2 for value in carbon_numbers)
-    slope = sum((x - mean_x) * (y - mean_y)
-                for x, y in zip(carbon_numbers, values)) / denominator
+    mean_y = sequential_float_sum(values) / len(values)
+    denominator = sequential_float_sum((value - mean_x) ** 2 for value in carbon_numbers)
+    slope = sequential_float_sum((x - mean_x) * (y - mean_y)
+                                 for x, y in zip(carbon_numbers, values)) / denominator
     increments = [values[index + 1] - values[index]
                   for index in range(len(values) - 1)]
     residuals = [increment - slope for increment in increments]
     fitted = [mean_y + slope * (x - mean_x) for x in carbon_numbers]
-    sum_squared_residual = sum((value - prediction) ** 2
-                               for value, prediction in zip(values, fitted))
-    sum_squared_total = sum((value - mean_y) ** 2 for value in values)
+    sum_squared_residual = sequential_float_sum(
+        (value - prediction) ** 2 for value, prediction in zip(values, fitted))
+    sum_squared_total = sequential_float_sum((value - mean_y) ** 2 for value in values)
     r_squared = (1.0 - sum_squared_residual / sum_squared_total
                  if sum_squared_total > 0.0 else 1.0)
     if not all(math.isfinite(value) for value in
@@ -798,11 +812,11 @@ def orthonormalize_exact_columns(basis):
         # deterministic and comfortably tighter than the §3.7 envelopes.
         for _ in range(2):
             for prior in orthonormal:
-                projection = sum(vector[i] * prior[i]
-                                 for i in range(len(vector)))
+                projection = sequential_float_sum(
+                    vector[i] * prior[i] for i in range(len(vector)))
                 vector = [vector[i] - projection * prior[i]
                           for i in range(len(vector))]
-        norm = math.sqrt(sum(value * value for value in vector))
+        norm = math.sqrt(sequential_float_sum(value * value for value in vector))
         if not math.isfinite(norm) or norm == 0.0:
             raise ValueError("exact nullspace produced a singular numerical basis")
         vector = [value / norm for value in vector]
@@ -914,26 +928,27 @@ def nullspace_certificate(name: str, row_order: list[str], state_order: list[str
         matrix_multiply(exact_basis, matrix_inverse(gram)),
         matrix_transpose(exact_basis))
     numerical_basis = orthonormalize_exact_columns(exact_basis)
-    numeric_projector = [[sum(numerical_basis[i][k] * numerical_basis[j][k]
-                              for k in range(len(numerical_basis[0])))
-                          for j in range(len(numerical_basis))]
-                         for i in range(len(numerical_basis))]
-    projector_error = max(sum(abs(numeric_projector[i][j] - float(projector[i][j]))
-                              for j in range(len(projector)))
-                          for i in range(len(projector)))
-    residual = max(sum(abs(sum(float(constraint[i][j]) * numerical_basis[j][k]
-                               for j in range(len(state_order))))
-                       for k in range(len(numerical_basis[0])))
-                   for i in range(len(constraint)))
-    orthonormality = max(sum(abs(sum(numerical_basis[k][i] * numerical_basis[k][j]
-                                       for k in range(len(state_order))) -
-                                   (1.0 if i == j else 0.0))
-                               for j in range(len(numerical_basis[0])))
-                           for i in range(len(numerical_basis[0])))
+    numeric_projector = [[sequential_float_sum(
+        numerical_basis[i][k] * numerical_basis[j][k]
+        for k in range(len(numerical_basis[0])))
+        for j in range(len(numerical_basis))]
+        for i in range(len(numerical_basis))]
+    projector_error = max(sequential_float_sum(
+        abs(numeric_projector[i][j] - float(projector[i][j]))
+        for j in range(len(projector))) for i in range(len(projector)))
+    residual = max(sequential_float_sum(abs(sequential_float_sum(
+        float(constraint[i][j]) * numerical_basis[j][k]
+        for j in range(len(state_order))))
+        for k in range(len(numerical_basis[0]))) for i in range(len(constraint)))
+    orthonormality = max(sequential_float_sum(abs(sequential_float_sum(
+        numerical_basis[k][i] * numerical_basis[k][j]
+        for k in range(len(state_order))) - (1.0 if i == j else 0.0))
+        for j in range(len(numerical_basis[0])))
+        for i in range(len(numerical_basis[0])))
     eps = sys.float_info.epsilon
-    if projector_error > 1024.0 * eps or residual > 128.0 * eps * max(
-            1.0, max(sum(abs(float(value)) for value in row) for row in constraint)) or \
-            orthonormality > 128.0 * eps:
+    if (projector_error > 1024.0 * eps or residual > 128.0 * eps * max(
+            1.0, max(sequential_float_sum(abs(float(value)) for value in row)
+                     for row in constraint)) or orthonormality > 128.0 * eps):
         raise ValueError("numerical nullspace does not meet the §3.7 fp64 certificate")
     conditioning = (singular_value_lower_bound_certificate(constraint)
                     if require_conditioning else {
@@ -1040,7 +1055,7 @@ def accepted_state_feasibility_certificate() -> dict:
             "source_packet": "fixed_leaf_and_packet_expression_units<=127<128",
             "ledger_reduction": "fixed_pairwise_tree_and_leaf_units<=127<128",
         },
-        "derived_union_factor_epsilon64": sum(terms.values()),
+        "derived_union_factor_epsilon64": sequential_float_sum(terms.values()),
         "kappa_epsilon64": 4096.0,
         "kappa_derivation": "next_power_of_two(2384)=4096",
     }
@@ -1075,7 +1090,7 @@ def accepted_state_binary32_feasibility_extension() -> dict:
             "restoration_projection": "3e-5/epsilon32<252<256",
             "source": "pre_thermo_resident_source_increment_is_positive_zero",
         },
-        "derived_union_factor_epsilon32": sum(terms.values()),
+        "derived_union_factor_epsilon32": sequential_float_sum(terms.values()),
         "kappa_epsilon32": 1024.0,
         "kappa_derivation": "next_power_of_two(832)=1024",
     }

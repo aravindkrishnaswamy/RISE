@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
+#include <string>
 #include <stdexcept>
 #include <vector>
 using namespace RISE::HyLIoS;
@@ -54,6 +56,27 @@ void ExactControls() {
     Reject([&]{HyLIoSForwardTransport bad(invalid,550,1,0,AbsorptionEstimator::Analog,0,ForwardPlacementPolicy::FixedEventDiagnosticV1);},"complexes explicitly unsupported even at zero authored fraction");
     invalid=Particles(0,0,.0005);Reject([&]{HyLIoSForwardTransport bad(invalid,550,1,0,AbsorptionEstimator::Analog,0,ForwardPlacementPolicy::FixedEventDiagnosticV1);},"minimum diameter cannot fit layer");
     auto a=Enter(k);Sequence badSample{1};k.Advance(a,badSample,1);Check(a.Termination()==ForwardTermination::InvalidSample&&a.Weight()==1&&Absorbed(a)==0,"invalid RNG is not absorption");
+}
+void AbsorbedTallyOverflow() {
+    // A weighted round trip leaves a finite host absorption tally. A caller's
+    // valid boundary proposal then promotes live power close to DBL_MAX and
+    // sends it into an absorbing tangent, which samples complete absorption.
+    // The final addition must fail before changing tally or live power.
+    HyLIoSForwardTransport k(Layers(1),1400,1,0,AbsorptionEstimator::Weighted,0,ForwardPlacementPolicy::FixedEventDiagnosticV1);
+    auto s=k.Begin({0,0,0},{0,0,1});auto e=s.PendingBoundary();
+    k.ResumeBoundary(s,e.token,{BoundaryAction::Transmit,SlabSide::Interior,{0,0,1},1e308});
+    Sequence roundTrip{.5,.5,.5,.5,.5,0,0,.5,.5,.5,.5,.5};k.Advance(s,roundTrip,12);
+    Check(s.HasPendingBoundary(),"hylios_absorbed_tally_overflow reaches return boundary");
+    const double before=s.HostAbsorbedByLayer()[0];
+    Check(std::isfinite(before)&&before>0,"hylios_absorbed_tally_overflow starts with finite nonzero tally");
+    e=s.PendingBoundary();k.ResumeBoundary(s,e.token,{BoundaryAction::Reflect,SlabSide::Interior,{1,0,0},std::numeric_limits<double>::max()/s.Weight()});
+    const double live=s.Weight();Check(std::isfinite(live)&&live>1e308,"hylios_absorbed_tally_overflow starts with finite live weight");
+    Sequence absorb{.5};k.Advance(s,absorb,1);
+    Check(s.Termination()==ForwardTermination::NumericalFailure,"hylios_absorbed_tally_overflow is numerical failure, not physical absorption");
+    Check(s.HostAbsorbedByLayer()[0]==before&&std::isfinite(s.HostAbsorbedByLayer()[0]),"hylios_absorbed_tally_overflow preserves finite prior tally");
+    Check(s.Weight()==live,"hylios_absorbed_tally_overflow preserves unresolved live weight");
+    Check(s.FailureDetail()==ForwardFailureDetail::ArithmeticOrGeometry,"hylios_absorbed_tally_overflow retains arithmetic diagnostic");
+    std::cout<<"PASS hylios_absorbed_tally_overflow\n";
 }
 void ParticleOracles() {
     constexpr double radius=.0001,rate=3*.2/(4*radius),distance=.0003;
@@ -120,6 +143,62 @@ void AnalogSphereSurvival() {
     Sequence ta{.3},tb{.3};weighted.Advance(a,ta,1);weighted.Advance(b,tb,1);Sequence pa{.5,0,0,0},pb{.5,0,0,0};weighted.Advance(a,pa,1);weighted.Advance(b,pb,1);Sequence ea{.5},eb{.5};weighted.Advance(a,ea,1);weighted.Advance(b,eb,1);
     Near(a.Weight(),b.Weight(),1e-15,"sphere transport rotates about planar normal");Near(a.Counters().particlePathLengthMetres[0],.0002,1e-18,"oblique sphere chord uses real path not layer depth");
 }
+void SingleSphereReentryProbability() {
+    HyLIoSForwardTransport k(Particles(),550,1,0,AbsorptionEstimator::Analog,0,ForwardPlacementPolicy::FixedEventDiagnosticV1);
+    Random rng(987123);constexpr int count=100000;int reentries=0,failures=0;
+    constexpr double rate=1500,distance=.0003;
+    for(int trial=0;trial<count;++trial) {
+        auto s=Enter(k);Sequence travel{-std::expm1(-rate*distance)};k.Advance(s,travel,1);
+        k.Advance(s,rng,1);k.Advance(s,rng,1);
+        while(s.Termination()==ForwardTermination::None&&s.Phase()==ForwardPhase::ForwardPerturbation)k.Advance(s,rng,1);
+        reentries+=s.Termination()==ForwardTermination::ForwardPerturbationReentry;
+        failures+=s.Termination()!=ForwardTermination::None&&s.Termination()!=ForwardTermination::ForwardPerturbationReentry;
+        Check(s.Weight()==1&&Absorbed(s)==0,"matched first-sphere reentry keeps unit live power");
+    }
+    // Independent geometric integral: uniform projected sphere hits give
+    // P(reentry|theta)=(1-cos(theta))/2. Integrating against the normalized
+    // exp(-theta/t)*sin(theta) polar law yields this exact probability.
+    constexpr double pi=3.141592653589793238462643383279502884;
+    const double t=5*pi/180;
+    const double expected=(1-(1+t*t)/(1+4*t*t)*std::tanh(pi/(2*t)))/2;
+    const double observed=static_cast<double>(reentries)/count;
+    const double standardError=std::sqrt(expected*(1-expected)/count);
+    Check(failures==0,"single matched sphere has no numerical or unresolved placement failures");
+    Check(std::abs(observed-expected)<=5*standardError,"single sphere reentry matches independent projected-area angular integral");
+    std::cout<<"sphere reentry n="<<count<<" count="<<reentries<<" observed="<<observed<<" exact="<<expected<<" SE="<<standardError<<" failures="<<failures<<'\n';
+}
+void AbsorbingMismatchedSphereEstimators() {
+    auto layers=Particles(40,2000);layers[0].organelle->realIOR=1.7;
+    HyLIoSForwardTransport analog(layers,1400,1,500,AbsorptionEstimator::Analog,0,ForwardPlacementPolicy::NullCollisionPlacementV1);
+    HyLIoSForwardTransport weighted(layers,1400,1,500,AbsorptionEstimator::Weighted,0,ForwardPlacementPolicy::NullCollisionPlacementV1);
+    Moments analogReturn,weightedReturn,analogHost,weightedHost,analogParticle,weightedParticle;
+    constexpr int count=12000;std::uint64_t analogReflections=0,weightedReflections=0;
+    int analogRepeated=0,weightedRepeated=0,failures=0;
+    for(int seed=1;seed<=count;++seed) {
+        Random ra(static_cast<std::uint64_t>(seed)*23+9087),rw(static_cast<std::uint64_t>(seed)*31+2345);
+        const auto a=Run(analog,ra),w=Run(weighted,rw);
+        failures+=!(Returned(a)||a.Termination()==ForwardTermination::Absorbed);
+        failures+=!(Returned(w)||w.Termination()==ForwardTermination::Absorbed);
+        analogReturn.Add(Returned(a)?a.Weight():0);weightedReturn.Add(Returned(w)?w.Weight():0);
+        analogHost.Add(Sum(a.HostAbsorbedByLayer()));weightedHost.Add(Sum(w.HostAbsorbedByLayer()));
+        analogParticle.Add(Sum(a.ParticleAbsorbedByLayer()));weightedParticle.Add(Sum(w.ParticleAbsorbedByLayer()));
+        analogReflections+=a.Counters().particleReflections;weightedReflections+=w.Counters().particleReflections;
+        analogRepeated+=a.Counters().particleReflections>=2;weightedRepeated+=w.Counters().particleReflections>=2;
+        Near(Absorbed(w)+w.Weight(),1,256*std::numeric_limits<double>::epsilon()*static_cast<double>(w.Counters().flights+1),"absorbing mismatched weighted host/particle accounting");
+    }
+    const auto Agreement=[](const Moments& a,const Moments& b){return std::abs(a.Mean()-b.Mean())<=5*std::hypot(a.SE(),b.SE());};
+    Check(failures==0,"absorbing mismatched sphere estimators finish every history");
+    Check(analogReflections>0&&weightedReflections>0&&analogRepeated>0&&weightedRepeated>0,"absorbing mismatched sphere exercises repeated internal reflections and chords");
+    Check(Agreement(analogReturn,weightedReturn),"absorbing mismatched sphere escaped power agrees within combined sampling SE");
+    Check(Agreement(analogHost,weightedHost),"absorbing mismatched sphere host absorption agrees within combined sampling SE");
+    Check(Agreement(analogParticle,weightedParticle),"absorbing mismatched sphere particle absorption agrees within combined sampling SE");
+    std::cout<<"absorbing mismatched sphere n="<<count
+        <<" R_analog="<<analogReturn.Mean()<<" SE="<<analogReturn.SE()<<" R_weighted="<<weightedReturn.Mean()<<" SE="<<weightedReturn.SE()
+        <<" hostA_analog="<<analogHost.Mean()<<" SE="<<analogHost.SE()<<" hostA_weighted="<<weightedHost.Mean()<<" SE="<<weightedHost.SE()
+        <<" particleA_analog="<<analogParticle.Mean()<<" SE="<<analogParticle.SE()<<" particleA_weighted="<<weightedParticle.Mean()<<" SE="<<weightedParticle.SE()
+        <<" reflections_analog="<<analogReflections<<" reflections_weighted="<<weightedReflections
+        <<" repeated_histories_analog="<<analogRepeated<<" repeated_histories_weighted="<<weightedRepeated<<" failures="<<failures<<'\n';
+}
 void FiberAndReflection() {
     HyLIoSForwardTransport k(Layers(),1400,1,1e8,AbsorptionEstimator::Analog,0,ForwardPlacementPolicy::FixedEventDiagnosticV1);auto s=Enter(k);
     Sequence interfaces{.5,.5,.5,.5};k.Advance(s,interfaces,4);Check(s.Layer()==4&&s.Counters().fiberPasses==1,"PD actual entry starts one pass");
@@ -182,4 +261,4 @@ void QuantumAndStatistics() {
     std::cout<<"statistics n="<<count<<" analog="<<ma.Mean()<<" weighted="<<mw.Mean()<<" roulette="<<mrr.Mean()<<" slab="<<ms.Mean()<<" control="<<mc.Mean()<<" unresolved="<<unresolved<<'\n';
 }
 }
-int main(){try {std::cout<<"exact\n";ExactControls();std::cout<<"particle\n";ParticleOracles();std::cout<<"sphere\n";AnalogSphereSurvival();std::cout<<"fiber\n";FiberAndReflection();std::cout<<"quanta\n";BothPolicyQuantum();std::cout<<"stats\n";QuantumAndStatistics();std::cout<<"PASS "<<checks<<" forward transport checks\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){try {if(argc==2&&std::string(argv[1])=="--absorption-overflow-only"){AbsorbedTallyOverflow();return 0;}AbsorbedTallyOverflow();std::cout<<"exact\n";ExactControls();std::cout<<"particle\n";ParticleOracles();std::cout<<"sphere\n";AnalogSphereSurvival();SingleSphereReentryProbability();AbsorbingMismatchedSphereEstimators();std::cout<<"fiber\n";FiberAndReflection();std::cout<<"quanta\n";BothPolicyQuantum();std::cout<<"stats\n";QuantumAndStatistics();std::cout<<"PASS "<<checks<<" forward transport checks\n";return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}

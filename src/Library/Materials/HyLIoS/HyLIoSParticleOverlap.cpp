@@ -178,15 +178,18 @@ Evaluation Evaluate(const Matrix& a,const Matrix& b,Vec r,double t) {
 }
 ParticleOverlapResult ClassifyProlateOverlap(const ProlateParticle& first,
     const ProlateParticle& second,ParticleVector relativeCentre) {
-    Vec r=Components(relativeCentre);
-    if (!Valid(first) || !Valid(second) || !Finite(r)) return {Status::InvalidInput,0};
-    // Also reject FTZ/DAZ modes that invalidate outward nextafter intervals.
+    // Check the environment before validating floating-point inputs: FTZ/DAZ
+    // can make valid subnormal dimensions or orientation components compare
+    // equal to zero and would otherwise misreport them as malformed inputs.
+    // These modes also invalidate outward nextafter intervals.
     volatile double minimumNormal=std::numeric_limits<double>::min();
     volatile double half=0.5;
     volatile double minimumSubnormal=std::numeric_limits<double>::denorm_min();
     volatile double lift=0x1p+1023;
     if (std::fegetround()!=FE_TONEAREST || minimumNormal*half==0 || minimumSubnormal*lift==0)
         return {Status::UnsupportedRange,0};
+    Vec r=Components(relativeCentre);
+    if (!Valid(first) || !Valid(second) || !Finite(r)) return {Status::InvalidInput,0};
     Shape a{first.semiMinorMetres,first.semiMajorMetres,Components(first.axis)};
     Shape b{second.semiMinorMetres,second.semiMajorMetres,Components(second.axis)};
     if (!ScaleAxis(a.axis) || !ScaleAxis(b.axis)) return {Status::UnsupportedRange,0};

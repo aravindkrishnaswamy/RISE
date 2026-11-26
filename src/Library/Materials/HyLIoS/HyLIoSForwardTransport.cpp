@@ -141,7 +141,17 @@ bool HyLIoSForwardTransport::Flight(ForwardState& s,double distance,double absor
     s.position_=position;s.counters_.pathLengthMetres+=distance;s.counters_.layerPathLengthMetres[i]+=distance;path+=distance;++s.counters_.flights;
     if(s.hasPredecessor_) s.predecessorCentreFromPosition_=P(Add(V(s.predecessorCentreFromPosition_),Mul(step,-1)));
     auto& tally=inside ? s.particleAbsorbed_[i] : s.hostAbsorbed_[i];
-    if(absorbed) {tally+=s.weight_;s.weight_=0;s.termination_=ForwardTermination::Absorbed;return false;}
+    if(absorbed) {
+        // Shared by host and organelle analog absorption, including the
+        // weighted estimator's infinite absorbing tangent. Preserve both the
+        // accumulated physical absorption and unresolved live power on failure.
+        if(!Finite(tally+s.weight_)) {
+            s.termination_=ForwardTermination::NumericalFailure;
+            s.failureDetail_=ForwardFailureDetail::ArithmeticOrGeometry;
+            return false;
+        }
+        tally+=s.weight_;s.weight_=0;s.termination_=ForwardTermination::Absorbed;return false;
+    }
     if(estimator_==AbsorptionEstimator::Weighted&&absorption>0) {
         const double optical=absorption*distance,loss=s.weight_*(-std::expm1(-optical)),remaining=s.weight_*std::exp(-optical);
         if(!Finite(loss)||!Finite(remaining)||!Finite(tally+loss)) {s.termination_=ForwardTermination::NumericalFailure;return false;}
