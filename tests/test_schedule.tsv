@@ -65,7 +65,7 @@ FabricRenderTest	pool	11
 FileRasterizerOutputShimTest	exclusive	1	timing windows (concurrent file writers)
 FireSequenceTest	exclusive	0	not measured here (needs OpenVDB); Metal fire solver steps
 FireSimulationSolverTest	pool	31
-FireSolverTest	exclusive	172	Metal fire solver steps (rise-sim bake, stop and resume of a tier-6 window)
+FireSolverTest	exclusive	200	Metal fire solver steps (rise-sim bake, stop and resume of a tier-6 window)
 GGXHemisphericalAlbedoTest	pool	9
 GeometryPanelJumpTest	exclusive	1	timing windows (30 ms negative windows)
 GradedIndexInteriorFactorTest	pool	13

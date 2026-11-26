@@ -493,9 +493,30 @@ void CheckBake(const fs::path& root, const fs::path& cache)
 
 // The bound is one binary64 ULP below the third nominal output. The binary32
 // event step may round across that time; the schedule must still have two entries.
-void CheckFrameClockBoundaries(const fs::path& root)
+void CheckFrameClockBoundaries(const fs::path& root, bool extended)
 {
 	const auto parameters = root/"clock.json";
+	struct WindowCase { const char* label; const char* end; std::size_t count; };
+	const auto window = [&](const WindowCase edge) {
+		std::string error;
+		const auto edgeCache = root/(std::string("clock-") + edge.label);
+		const auto log = root/(std::string("clock-") + edge.label + ".log");
+		WriteText(parameters, std::string("{\"tier\":6,\"frame_origin_s\":0,\"end_time_s\":") + edge.end + "}");
+		const int edgeCode = Bake(parameters, edgeCache, log);
+		CacheSnapshot edgeSnapshot;
+		bool correct = edgeCode == WorkerFinished && CacheSnapshot::Open(edgeCache, budget, edgeSnapshot, error) &&
+			edgeSnapshot.Complete() && edgeSnapshot.Entries().size() == edge.count;
+		for (std::size_t index = 0; correct && index < edge.count; ++index) {
+			const float scheduled = static_cast<float>(index) * 0.0625f;
+			const double actual = edgeSnapshot.Entries()[index].time;
+			correct = actual >= scheduled && actual <= std::nextafter(scheduled, 1.0f);
+		}
+		Check(correct, std::string("zero-origin window has the scheduled frames at end ") + edge.end,
+			error + ReadText(log));
+	};
+	// The full boundary study is five tier-6 bakes (about 5 minutes); the fast tier keeps the
+	// shortest zero-origin window, which still publishes and checks the time-zero frame.
+	if (!extended) { window(WindowCase{"early", "0.03", 1}); return; }
 	WriteText(parameters, "{\"tier\":6,\"frame_origin_s\":0,\"end_time_s\":0.12499999999999999}");
 	const auto cache = root/"clock", resumed = root/"clock-resumed";
 	const int code = Bake(parameters, cache, root/"clock.log");
@@ -535,24 +556,8 @@ void CheckFrameClockBoundaries(const fs::path& root)
 		"resuming at the time-zero frame reproduces both frames without duplicating the initial one",
 		ReadText(root/"clock-resume.log"));
 
-	struct WindowCase { const char* label; const char* end; std::size_t count; };
 	for (const WindowCase edge : {WindowCase{"early", "0.03", 1}, WindowCase{"exact", "0.125", 3},
-			WindowCase{"above", "0.12500000000000003", 3}}) {
-		const auto edgeCache = root/(std::string("clock-") + edge.label);
-		const auto log = root/(std::string("clock-") + edge.label + ".log");
-		WriteText(parameters, std::string("{\"tier\":6,\"frame_origin_s\":0,\"end_time_s\":") + edge.end + "}");
-		const int edgeCode = Bake(parameters, edgeCache, log);
-		CacheSnapshot edgeSnapshot;
-		bool correct = edgeCode == WorkerFinished && CacheSnapshot::Open(edgeCache, budget, edgeSnapshot, error) &&
-			edgeSnapshot.Complete() && edgeSnapshot.Entries().size() == edge.count;
-		for (std::size_t index = 0; correct && index < edge.count; ++index) {
-			const float scheduled = static_cast<float>(index) * 0.0625f;
-			const double actual = edgeSnapshot.Entries()[index].time;
-			correct = actual >= scheduled && actual <= std::nextafter(scheduled, 1.0f);
-		}
-		Check(correct, std::string("zero-origin window has the scheduled frames at end ") + edge.end,
-			error + ReadText(log));
-	}
+			WindowCase{"above", "0.12500000000000003", 3}}) window(edge);
 }
 
 void BakeAndResume(const fs::path& root, bool extended)
@@ -679,7 +684,7 @@ int main(int argc, char** argv)
 		fs::create_directories(root);
 		Configuration(root, capability.available);
 		if (capability.available) {
-			CheckFrameClockBoundaries(root);
+			CheckFrameClockBoundaries(root, extended);
 			BakeAndResume(root, extended);
 		}
 		else std::cout << "SKIP: fire bakes need a Metal device (" << capability.structuredError << ")\n";

@@ -17,6 +17,7 @@
 #include "../../Utilities/FireSequence.h"
 #if defined(RISE_ENABLE_OPENVDB)
 #include "FireRun.h"
+#include "FireParameterSchema.h"   // M5c: FireEstimateCapabilities
 #endif
 
 #include <algorithm>
@@ -701,6 +702,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	out.capabilities.externalMacroStep=false;
 	out.capabilities.modes={"certified","fast"};
 	out.capabilities.backend="metal";   // M4: the backend this configuration runs on (not keyed)
+	FireEstimateCapabilities(tier_,fast_,launch_.launchCase.dimensions,out.capabilities);   // M5c: not keyed
 	out.capabilities.earnableFidelity={"preview"};
 	out.capabilities.fidelityLimit="no computed, digest-bound validation case exists for a fire configuration yet";
 	// The sealed fire sequences are preview_only; no computed, digest-bound
