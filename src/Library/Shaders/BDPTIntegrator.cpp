@@ -2784,7 +2784,27 @@ namespace {
 			if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
 				GlobalLog()->PrintSourceError( "BDPTIntegrator:: unresolved MixMaterial reached eye subpath shading", __FILE__, __LINE__ );
 			}
-			v.isConnectible = ( ri.pMaterial != 0 && ri.pMaterial->GetBSDF() != 0 && ri.pMaterial->GetSPF() != 0 );
+			// "Absorber" means NO BSDF, not "no SPF": a BSDF with a null SPF
+			// (DL-430's fixture, `datadriven_material` before DL-325) is
+			// still evaluable for connections and stays connectible, the
+			// same rule the continuing walk applies below
+			// (`isConnectible = GetBSDF() != 0`).
+			//
+			// A BSDF-less EMITTER also stays connectible here.  When the
+			// walk ends on it (no SPF, or an emission-only segment) this is
+			// the (s=0) eye END, and `MISWeight`'s eye-side walk reads this
+			// flag at j == t-1 to decide whether the s >= 1 family exists.
+			// It does: light sampling generates this very point as
+			// `lightVerts[0]` (`isConnectible = !ls.isDelta`) and those
+			// strategies weight themselves against s=0.  Marking the end
+			// non-connectible gave s=0 the full MIS weight while NEE and the
+			// light-subpath strategies still paid theirs, so every area
+			// emitter was counted about twice (BDPT/PT ~1.85-2.0).  No
+			// connection is evaluated FROM a null-BSDF vertex
+			// (PathVertexEval returns 0), and a walk that continues past
+			// this point re-derives the flag from the BSDF alone below.
+			v.isConnectible = ( ri.pMaterial != 0 &&
+				( ri.pMaterial->GetBSDF() != 0 || ri.pMaterial->GetEmitter() != 0 ) );
 
 			if( !ri.pMaterial ) {
 				CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
@@ -7848,7 +7868,10 @@ unsigned int GenerateLightSubpathImpl(
 		if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
 			GlobalLog()->PrintSourceError( "BDPTIntegrator:: unresolved MixMaterial reached light subpath shading", __FILE__, __LINE__ );
 		}
-		v.isConnectible = ( ri.pMaterial != 0 && ri.pMaterial->GetBSDF() != 0 && ri.pMaterial->GetSPF() != 0 );
+		// Absorber = no BSDF (not "no SPF"): a BSDF with a null SPF is still
+		// evaluable for the camera / eye connections made at this vertex
+		// (DL-430), matching the continuing walk's rule below.
+		v.isConnectible = ( ri.pMaterial != 0 && ri.pMaterial->GetBSDF() != 0 );
 
 		if( !ri.pMaterial ) {
 			vertices.push_back( v );

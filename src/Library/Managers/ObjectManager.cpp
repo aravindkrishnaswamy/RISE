@@ -46,6 +46,7 @@
 #include "../Materials/WeaveMaterial.h"
 #include "../Materials/OrenNayarMaterial.h"
 #include "../Materials/CookTorranceMaterial.h"
+#include <typeinfo>
 #include <unordered_map>
 #include <unordered_set>
 #include "../Materials/IsotropicPhongMaterial.h"
@@ -3341,7 +3342,15 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
     if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !IMaterial::AnyMixMaterials() && !shadows && maxDistance == RISE_INFINITY && startDistance == 0) {
         IntersectRay(ri, front, back, exit); return;
     }
-    const ObjectManager* om = dynamic_cast<const ObjectManager*>(this);
+    // The traversal-only / finalize split below calls ObjectManager's own
+    // non-virtual halves, so it is taken only when this IS an ObjectManager
+    // and not a subclass: a subclass that overrides the virtual
+    // `IntersectRay` (the scripted managers the transport tests drive the
+    // real tracers with) must keep being asked through that override, as it
+    // was before the split.  Routing a subclass to `IntersectRayTraversalOnly`
+    // traversed its empty item list instead and every sampled ray missed.
+    const ObjectManager* om = ( typeid( *this ) == typeid( ObjectManager ) )
+        ? dynamic_cast<const ObjectManager*>(this) : nullptr;
     if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY && startDistance == 0) {
         if (om) {
             om->IntersectRayTraversalOnly(ri, front, back, exit);

@@ -1179,6 +1179,28 @@ bool LightSampler::AcceptEmitterAlpha(
     return material->AcceptAlpha(alphaRI, sampler);
 }
 
+namespace
+{
+	//! True iff two exitances agree to floating-point rounding.  The emitter's
+	//! cached `averageRadiantExitance()` is `(sum of 100 painter reads) *
+	//! (scale/100)` and a point read is `painter * scale`: equal quantities for
+	//! a constant painter, but NOT bit-equal for most values (0.1-style
+	//! constants do not survive the 100-term sum exactly).  A bit-exact compare
+	//! here declared every such constant emitter "different from its own
+	//! average" and flipped it to non-uniform.
+	inline bool SameExitanceUpToRounding( const RISEPel& a, const RISEPel& b )
+	{
+		static const Scalar kRel = 1e-9;
+		for( int c = 0; c < 3; c++ ) {
+			const Scalar scaleMag = r_max( fabs( a[c] ), fabs( b[c] ) );
+			if( fabs( a[c] - b[c] ) > kRel * scaleMag ) {
+				return false;
+			}
+		}
+		return true;
+	}
+}
+
 LightSampler::LuminaryExitance LightSampler::AverageLuminaryExitance( const IObject* pLum )
 {
 	LuminaryExitance result;
@@ -1234,7 +1256,7 @@ LightSampler::LuminaryExitance LightSampler::AverageLuminaryExitance( const IObj
 	if( !uniform ) {
 		result.average = sum * ( Scalar( 1 ) / Scalar( kGrid * kGrid ) );
 		result.uniform = false;
-	} else if( !( first.r == result.average.r && first.g == result.average.g && first.b == result.average.b ) ) {
+	} else if( !SameExitanceUpToRounding( first, result.average ) ) {
 		// Spatially uniform across this luminary (e.g. keyed on per-object
 		// ObjectInfo or Location), yet different from the object-free
 		// `averageRadiantExitance()`: record this object's true exitance and
