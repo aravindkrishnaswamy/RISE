@@ -234,6 +234,7 @@ SRCLIBPAINTERS =\
 
 # Materials
 SRCLIBMATERIALS =\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSOpticalData.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongBRDF.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\

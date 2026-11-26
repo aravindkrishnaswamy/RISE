@@ -115,6 +115,9 @@
     <Filter Include="Materials\Dielectrics">
       <UniqueIdentifier>{b090d48a-b748-4167-891a-b13e8323c1e7}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Materials\HyLIoS">
+      <UniqueIdentifier>{ac00d8bf-7775-47be-bd92-8576ea81cf93}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Materials\BioSpec">
       <UniqueIdentifier>{7aabbaf2-c8ce-4a91-910e-0fa84a948b23}</UniqueIdentifier>
     </Filter>
@@ -941,6 +944,9 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\RoughDielectricEnergy.cpp">
       <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOpticalData.cpp">
+      <Filter>Materials\HyLIoS</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp">
       <Filter>Materials\BioSpec</Filter>
@@ -2666,6 +2672,9 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\RoughDielectricEnergyData.h">
       <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOpticalData.h">
+      <Filter>Materials\HyLIoS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h">
       <Filter>Materials\BioSpec</Filter>

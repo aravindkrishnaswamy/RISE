@@ -1,0 +1,598 @@
+{
+  "schema_version": 1,
+  "purpose": "Source evidence and transcription inventory only; not executable model data or physiological certification.",
+  "sources": [
+    {
+      "id": "chen2015_paper",
+      "citation": "T. F. Chen et al., Hyperspectral Modeling of Skin Appearance, ACM Transactions on Graphics 34(3), Article 31, 2015. DOI: 10.1145/2701416.",
+      "sha256": "9b72cc0887fc931ea64a554faabb2705acef58d59935423365d37cba6c3e8637",
+      "relevant_locations": [
+        "\u00a73.1, printed pp. 31:3\u201331:4",
+        "\u00a74, printed pp. 31:5\u201331:7",
+        "Table I, printed p. 31:8"
+      ],
+      "local_cache_note": "Research copy held outside repository under /tmp/rise-hylios-research; not required by this manifest.",
+      "url": "https://www.npsg.uwaterloo.ca/resources/docs/a31-chen.pdf"
+    },
+    {
+      "id": "chen2015_appendix",
+      "citation": "T. F. Chen et al., online appendix to Hyperspectral Modeling of Skin Appearance, 2015, Figure 26 and Tables III\u2013IV.",
+      "sha256": "83ddcaf906c58280cfe585a57df235ff31b0fea530ea1e5174ed266f75b7ab38",
+      "relevant_locations": [
+        "Figure 26, appendix p. 1",
+        "Table III, appendix p. 2",
+        "Table IV, appendix p. 2"
+      ],
+      "local_cache_note": "Research copy held outside repository under /tmp/rise-hylios-research; not required by this manifest.",
+      "url": "https://www.npsg.uwaterloo.ca/resources/docs/a31-chen-app.pdf"
+    },
+    {
+      "id": "chen_thesis",
+      "citation": "T. F. Chen, thesis containing the HyLIoS derivation, Appendix A, printed pp. 93\u201395.",
+      "sha256": "a90c8212f861eb34e80ffbbf0ed75b88e4f1f7244fafc0312303f8d0ca9a35cb",
+      "relevant_locations": [
+        "Figure A.1 and Appendix A, printed pp. 93\u201395"
+      ],
+      "local_cache_note": "Research copy held outside repository under /tmp/rise-hylios-research; not required by this manifest.",
+      "url": "https://www.npsg.uwaterloo.ca/resources/docs/theses/Chen_Tenn_PhD_Thesis.pdf"
+    }
+  ],
+  "layer_order": {
+    "outer_to_inner": [
+      "stratum_corneum",
+      "stratum_granulosum",
+      "stratum_spinosum",
+      "stratum_basale",
+      "papillary_dermis",
+      "reticular_dermis"
+    ],
+    "source": "chen2015_paper",
+    "location": "\u00a73.1, printed p. 31:4; \u00a74.1, printed p. 31:5",
+    "note": "The publication's six tissue layers use these names. The broader anatomy discussion also mentions stratum lucidum, but it is not a seventh HyLIoS layer in the six-layer model."
+  },
+  "curve_inventory": {
+    "coverage_is_certified": false,
+    "status_vocabulary": [
+      "candidate_unverified",
+      "missing_numeric_data",
+      "plotted_only",
+      "partial_range",
+      "requires_primary_source"
+    ],
+    "items": [
+      {
+        "id": "existing_eumelanin",
+        "quantity": "extinction coefficient",
+        "candidate_domain_nm": [
+          209.99,
+          820.26
+        ],
+        "status": "partial_range",
+        "evidence": "Repository array inventory recorded in docs/HYLIOS_RESEARCH_NOTES.md lines 65-75; provenance and transform not yet certified."
+      },
+      {
+        "id": "existing_pheomelanin",
+        "quantity": "extinction coefficient",
+        "candidate_domain_nm": [
+          213.54,
+          829.42
+        ],
+        "status": "partial_range",
+        "evidence": "Repository array inventory recorded in docs/HYLIOS_RESEARCH_NOTES.md lines 65-75; provenance and transform not yet certified."
+      },
+      {
+        "id": "existing_oxy_deoxy_hemoglobin",
+        "quantity": "molar extinction coefficients",
+        "candidate_domain_nm": [
+          250,
+          1000
+        ],
+        "status": "partial_range",
+        "evidence": "Repository array inventory recorded in docs/HYLIOS_RESEARCH_NOTES.md lines 65-75; species conversions and tails unverified."
+      },
+      {
+        "id": "existing_bilirubin",
+        "quantity": "extinction coefficient",
+        "candidate_domain_nm": [
+          239.75,
+          700
+        ],
+        "status": "partial_range",
+        "evidence": "Repository array inventory recorded in docs/HYLIOS_RESEARCH_NOTES.md lines 65-75; basis and tails unverified."
+      },
+      {
+        "id": "existing_beta_carotene",
+        "quantity": "extinction coefficient",
+        "candidate_domain_nm": [
+          219.75,
+          700
+        ],
+        "status": "partial_range",
+        "evidence": "Repository array inventory recorded in docs/HYLIOS_RESEARCH_NOTES.md lines 65-75; basis and tails unverified."
+      },
+      {
+        "id": "full_model_curves",
+        "quantity": "modeled reflectance",
+        "status": "missing_numeric_data",
+        "evidence": "Paper describes online model and supplementary material, but no numeric reference output is present in the retained local source set."
+      },
+      {
+        "id": "water_real_ior",
+        "quantity": "spectral real refractive index, distinct from absorption",
+        "status": "candidate_unverified",
+        "evidence": "NPSG water data index links Palmer-Williams 400\u20132500 nm; IAPWS 200\u20131100 and Hale-Querry 200\u20132500 interpolated candidates. Source-specific suitability/splices require audit.",
+        "candidate_domain_nm": [
+          400,
+          2500
+        ]
+      },
+      {
+        "id": "keratin_dna_urocanic_acid",
+        "quantity": "author numeric absorptance tables available in external data index",
+        "status": "candidate_unverified",
+        "evidence": "NPSG author data index and numeric tables now acquired; raw .txt files are interpolated absorbance, while MATLAB plots convert to absorptance. Normalization and coefficient conversion are separate and still unresolved."
+      },
+      {
+        "id": "water_absorption",
+        "quantity": "absorption coefficient cm^-1",
+        "status": "candidate_unverified",
+        "candidate_domain_nm": [
+          380,
+          2500
+        ],
+        "evidence": "Author-linked numeric table; per-source split 380\u2013725 and 730\u20132500 nm; splice validation and gap review required."
+      },
+      {
+        "id": "lipid_absorption",
+        "quantity": "absorption coefficient cm^-1",
+        "status": "candidate_unverified",
+        "candidate_domain_nm": [
+          429,
+          2445
+        ],
+        "evidence": "Author-linked numeric table; source regions have splice/gap and end below 2500 nm."
+      },
+      {
+        "id": "dysfunctional_hemoglobins",
+        "quantity": "molar extinction coefficients",
+        "status": "candidate_unverified",
+        "evidence": "Author-linked numeric tables exist for COHb 450\u2013650, metHb 450\u2013700, sulfHb 450\u2013750 nm; source species basis and tails remain."
+      }
+    ],
+    "policy": "No endpoint-held, extrapolated, digitized, substituted, or synthetic values are supplied here. A candidate range is not verified HyLIoS coverage."
+  },
+  "unresolved_blockers": [
+    "Table III melanosome dimensions are reported as two dimensions; source does not settle full axes versus semi-axes for internal representation.",
+    "Table III pigment percentages and Table IV constituent contents have different/overlapping bases; layer-specific scaling and combination rules must be reconciled before executable presets.",
+    "Thesis Appendix A keratin printed multiplier 4e4 conflicts with inverse 4 micrometre path dimensional conversion (2500 cm^-1); author data arrays provide decadic absorbance (converted only for plotting), not the resolution of that discrepancy.",
+    "DNA/UCA public author tables now confirm sample concentrations and 1 cm path; the printed absorbance normalization and tissue coefficient scaling must be reconciled (DNA is normalized at a sampled wavelength near 260 nm).",
+    "Although author candidates cover water absorption and real index broadly, complete justified active spectral coverage over 250\u20132500 nm, model-specific source choice, and splices/overlap remain unverified; lipid ends below 2500 nm.",
+    "Author data redistribution/license status is not established; files were inspected from /tmp only and are not vendored."
+  ],
+  "author_data_index": {
+    "url": "https://www.npsg.uwaterloo.ca/data/skin.php",
+    "retrieved_local_date": "2026-11-25",
+    "retrieval_timezone": "America/Los_Angeles",
+    "index_local_copy": "/tmp/rise-hylios-research/skin-index.html",
+    "note": "Index states ranges/resolution/reference specimens and links author-provided MATLAB conversion files and numeric text tables. Files were fetched as bytes and inspected as text; MATLAB was not executed. Redistribution/license status is not established; source files remain under /tmp and are not vendored.",
+    "items": [
+      {
+        "id": "eumelanin_extinction",
+        "files": [
+          "skin/eumelanin_extinction.m",
+          "skin/eumelanin_extinction.txt"
+        ],
+        "reported_quantity": "extinction coefficient cm^-1/(mg/mL)",
+        "reported_range_nm": [
+          210,
+          820
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched; provenance/conversion must be verified against thesis convention",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/eumelanin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/eumelanin_extinction.txt"
+        ],
+        "sha256": [
+          "d49b17798fae2eb30ed8b13e69bba230883abe14d52c2113eb94ba7e94a6f121",
+          "229d5ef50ee35144f198d78699267d66e95101a94603b7f0ae0aa59d8d7c5f3b"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "pheomelanin_extinction",
+        "files": [
+          "skin/pheomelanin_extinction.m",
+          "skin/pheomelanin_extinction.txt"
+        ],
+        "reported_quantity": "extinction coefficient cm^-1/(mg/mL)",
+        "reported_range_nm": [
+          215,
+          825
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched; provenance/conversion must be verified against thesis convention",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/pheomelanin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/pheomelanin_extinction.txt"
+        ],
+        "sha256": [
+          "bd1625eabe8b9a0fd406aeb85e094f639cff46f6586039c7d66d0a7b67b27a11",
+          "a7aa203d0994aa057f2cd4802e3df2398ff24bff1fe261236bdadeaa6f89a8c0"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "oxy_deoxy_hemoglobin",
+        "files": [
+          "skin/oxy_hemoglobin_extinction.m",
+          "skin/oxy_hemoglobin_extinction.txt",
+          "skin/deoxy_hemoglobin_extinction.m",
+          "skin/deoxy_hemoglobin_extinction.txt"
+        ],
+        "reported_quantity": "molar extinction coefficient cm^-1/(mol/L)",
+        "reported_range_nm": [
+          250,
+          1000
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched; molar mass convention reconciliation remains",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/oxy_hemoglobin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/oxy_hemoglobin_extinction.txt",
+          "https://www.npsg.uwaterloo.ca/data/skin/deoxy_hemoglobin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/deoxy_hemoglobin_extinction.txt"
+        ],
+        "sha256": [
+          "83181c17b382a65f3a9ab325b5d588f296bc063cad081f906f5b467a3950b461",
+          "5e96480d8d67e9d9506d81c0ec8d0d9f3cee3bc0280836391bcffee48810648b",
+          "c6833d5b857194f3751d25b3b4e7b650a1b64fc32652e7c5b2a0a88abe4da34d",
+          "03351b3c576c44d06764e1de1fcc22f6bb9e69cac327bce2542b211941d29cbc"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "carboxyhemoglobin",
+        "files": [
+          "blood/carboxyhemoglobin_extinction.m",
+          "blood/carboxyhemoglobin_extinction.txt"
+        ],
+        "reported_quantity": "molar extinction coefficient cm^-1/(mol/L)",
+        "reported_range_nm": [
+          450,
+          650
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/blood/carboxyhemoglobin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/blood/carboxyhemoglobin_extinction.txt"
+        ],
+        "sha256": [
+          "ef8f88460136ec0b8ee67a776878bae85fa7508a5087b4abce11ef71894de1be",
+          "d6056fade812cb1b15ccde8a05e3d54c6fb8f248f6399441980038d5630155ba"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "methemoglobin",
+        "files": [
+          "blood/methemoglobin_extinction.m",
+          "blood/methemoglobin_extinction.txt"
+        ],
+        "reported_quantity": "molar extinction coefficient cm^-1/(mol/L)",
+        "reported_range_nm": [
+          450,
+          700
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/blood/methemoglobin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/blood/methemoglobin_extinction.txt"
+        ],
+        "sha256": [
+          "8944e6b7064ad101602c0d566ab4f57f0edfd16177f49740c7c00c16f39b4e20",
+          "cf723fbfde1164e9d7d677df8f155a8c69cbcbeebe2b94eaeadd799b9f7e0f4c"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "sulfhemoglobin",
+        "files": [
+          "blood/sulfhemoglobin_extinction.m",
+          "blood/sulfhemoglobin_extinction.txt"
+        ],
+        "reported_quantity": "molar extinction coefficient cm^-1/(mol/L)",
+        "reported_range_nm": [
+          450,
+          750
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/blood/sulfhemoglobin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/blood/sulfhemoglobin_extinction.txt"
+        ],
+        "sha256": [
+          "e2c5b5661a5f3d7860817401cdf9c880f864dfc9d492b78617593389f0d6a3d0",
+          "1a84ffb35bc853d2b8a3194750b051d3e5f37e0e586e34fbc6c56587c58708cf"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "beta_carotene",
+        "files": [
+          "skin/betacarotene_extinction.m",
+          "skin/betacarotene_extinction.txt"
+        ],
+        "reported_quantity": "molar extinction coefficient cm^-1/(mol/L)",
+        "reported_range_nm": [
+          220,
+          700
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/betacarotene_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/betacarotene_extinction.txt"
+        ],
+        "sha256": [
+          "d5b5f5e32cc6e94654074c47ce7cd1005c41f22db7a9538c27cf91d2b64da7e5",
+          "ebb2d13b9000e8e9a6e559f6c6baab0591c1d1e72ffa59ca86c8fe889648c3f9"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "bilirubin",
+        "files": [
+          "skin/bilirubin_extinction.m",
+          "skin/bilirubin_extinction.txt"
+        ],
+        "reported_quantity": "molar extinction coefficient cm^-1/(mol/L)",
+        "reported_range_nm": [
+          240,
+          700
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric arrays fetched",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/bilirubin_extinction.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/bilirubin_extinction.txt"
+        ],
+        "sha256": [
+          "d3f46b15f718715b3634d124cf25418baea75732f905b2845572da21e0e6216c",
+          "6080a3f5bf5c5152fca79d4b18734b49ad5e537509a05667b03e7d41f0ae1453"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "water_absorption",
+        "files": [
+          "skin/water_absorption.m",
+          "skin/water_absorption.txt"
+        ],
+        "reported_quantity": "absorption coefficient cm^-1",
+        "reported_range_nm": [
+          380,
+          2500
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "index states 380\u2013725 nm Pope-Fry and 730\u20132500 nm Palmer-Williams; splice and original units require audit",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/water_absorption.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/water_absorption.txt"
+        ],
+        "sha256": [
+          "6dd37d351fe524e659d126625b9434803c1c13260101765c9a7af3ac6d0ce05c",
+          "3beab8955d37390b60840ac6337b50a85118390dfd1eb4f9958c28e35d7eef69"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "lipid_absorption",
+        "files": [
+          "skin/lipid_absorption.m",
+          "skin/lipid_absorption.txt"
+        ],
+        "reported_quantity": "absorption coefficient cm^-1",
+        "reported_range_nm": [
+          429,
+          2445
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "index lists source regions 429\u20131098 nm and 1110.2\u20132449.5 nm; inspect gap/splice, not full 250\u20132500 coverage",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/lipid_absorption.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/lipid_absorption.txt"
+        ],
+        "sha256": [
+          "001f170532d87c8f40901ecf6edaabdda369bd53b8e3d0aa392b26553312b0f4",
+          "f9aabfbc715398459821371308afdd27f8005bb3d1ab72f1675c10e05cf7ed82"
+        ],
+        "local_cache_note": "Fetched as bytes under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source file not vendored."
+      },
+      {
+        "id": "keratin_abs",
+        "files": [
+          "skin/keratin_abs.m",
+          "skin/keratin_abs.txt"
+        ],
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/keratin_abs.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/keratin_abs.txt"
+        ],
+        "sha256": [
+          "1230071458f8fde95d6ae46b32396453b4199fe939ebb13f9440f7a14921473f",
+          "f3087f4494d7bd13a89cf61a2fd2afe0fa3192e4eebd3508865865dd94547cc8"
+        ],
+        "reported_quantity": "absorptance percent of solid keratin over 4 \u00b5m",
+        "reported_range_nm": [
+          245,
+          420
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric text table 245\u2013420 nm",
+        "formula_observation": "MATLAB array data are absorbance; .txt is interpolated absorbance. Plot expression converts to absorptance percent with (1-10^(-data))*100. No coefficient conversion in these files.",
+        "local_cache_note": "Fetched under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source files not vendored."
+      },
+      {
+        "id": "dna_abs",
+        "files": [
+          "skin/dna_abs.m",
+          "skin/dna_abs.txt"
+        ],
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/dna_abs.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/dna_abs.txt"
+        ],
+        "sha256": [
+          "aff3f34d149df747cb4cfe97050e561343afe6660df78ec1470e87f09a75aa6a",
+          "a620eccd5d006977668a305187a3e7c2450f680d7705a81f916a32e1cd70f661"
+        ],
+        "reported_quantity": "absorptance percent, 50 \u00b5g/mL DNA over 1 cm",
+        "reported_range_nm": [
+          205,
+          355
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric text table 205\u2013355 nm",
+        "formula_observation": "MATLAB array and .txt are normalized absorbance (not absorptance); data0 is divided by sample 12 at 257.9556 nm, with comment \u201cnormalize to A260 = 1\u201d. Plot expression converts to absorptance percent. Tissue scaling remains separate.",
+        "local_cache_note": "Fetched under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source files not vendored."
+      },
+      {
+        "id": "uro_acid_abs",
+        "files": [
+          "skin/uro_acid_abs.m",
+          "skin/uro_acid_abs.txt"
+        ],
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/skin/uro_acid_abs.m",
+          "https://www.npsg.uwaterloo.ca/data/skin/uro_acid_abs.txt"
+        ],
+        "sha256": [
+          "10f5d7db89513ba923c3690258d417f659d29f05f20c56311bfddbb015794f2d",
+          "705885d5e1151c0d239657218ffc983c44207bcc953787cfe61d35506f1d61c5"
+        ],
+        "reported_quantity": "absorptance percent, 15 \u00b5mol/L urocanic acid over 1 cm",
+        "reported_range_nm": [
+          205,
+          325
+        ],
+        "resolution_nm": 5,
+        "source_table_coverage": "numeric text table 205\u2013325 nm",
+        "formula_observation": "MATLAB array and .txt are absorbance; plot expression converts to absorptance percent. No tissue coefficient conversion in these files.",
+        "local_cache_note": "Fetched under /tmp/rise-hylios-research/skin-data; MATLAB not executed; source files not vendored."
+      }
+    ],
+    "sha256": "f3ac0a6b0f2aa416af29d3f965ce6c10870faea97a95ad49f5cb90227996fe5d"
+  },
+  "author_water_data_index": {
+    "url": "https://www.npsg.uwaterloo.ca/data/water.php",
+    "sha256": "ea284d9f9c24725620c93cc49666164ea2c23f77535e08de1fe33f3f8ad577e7",
+    "retrieved_local_date": "2026-11-25",
+    "retrieval_timezone": "America/Los_Angeles",
+    "items": [
+      {
+        "id": "palmer_williams_real_ior",
+        "files": [
+          "water/water1.m",
+          "water/riW.txt"
+        ],
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/water/water1.m",
+          "https://www.npsg.uwaterloo.ca/data/water/riW.txt"
+        ],
+        "sha256": [
+          "108ecbf943256281eda216a5d1bfebcdec5b6563a503c1a0f78d0aa46cb761fc",
+          "4dc7a47c314c8a49792efa4d766613b3eb960836181989c6cd33126ad9b84f24"
+        ],
+        "quantity": "real refractive index of water",
+        "reported_range_nm": [
+          400,
+          2500
+        ],
+        "source": "Palmer and Williams 1974, as indicated by index"
+      },
+      {
+        "id": "iapws_water_real_ior",
+        "files": [
+          "water/water2.m",
+          "water/riW2.txt"
+        ],
+        "sha256": [
+          "634dd22c37d274e9ef77223902f636d8de8eaab734fe8a743f996d274fd7e65f",
+          "6efe55fb9f51c5751d6af1b4673e444f0d273c8079a86bd78d39c30c962fe901"
+        ],
+        "quantity": "real refractive index of water",
+        "reported_range_nm": [
+          200,
+          1100
+        ],
+        "source": "IAPWS 1997 release"
+      },
+      {
+        "id": "hale_querry_water_real_ior",
+        "files": [
+          "water/water2_n.m",
+          "water/riW2.txt"
+        ],
+        "sha256": [
+          "ef4b8b77e910612c59af10acc470152c560f73f59845402577bccc6df55be280",
+          "6efe55fb9f51c5751d6af1b4673e444f0d273c8079a86bd78d39c30c962fe901"
+        ],
+        "quantity": "real refractive index of water, linearly interpolated",
+        "reported_range_nm": [
+          200,
+          2500
+        ],
+        "source": "Hale and Querry 1973; index explicitly says linearly interpolated"
+      },
+      {
+        "id": "hale_querry_water_extinction",
+        "files": [
+          "water/water2_k.m",
+          "water/ecW2.txt"
+        ],
+        "sha256": [
+          "cb0c5f1fe9f58683e542f031c577ff1db5e1feb473d06f35487acbb2cfd43456",
+          "22a13caf095a5dc8fdb8c6f4c13f08b4a5d0e5a75a6b482a1c20729459fa964c"
+        ],
+        "quantity": "imaginary refractive index/extinction coefficient",
+        "reported_range_nm": [
+          200,
+          2500
+        ],
+        "source": "Hale and Querry; not interchangeable with water absorption coefficient"
+      }
+    ],
+    "note": "Candidate sources, not yet reconciled to the specific HyLIoS formulation. MATLAB was not executed."
+  },
+  "scientific_decisions": [
+    {
+      "id": "melanosome_dimension_convention",
+      "status": "unresolved",
+      "evidence": "Appendix Table III reports two dimensions; full dimensions versus semi-axes not stated."
+    },
+    {
+      "id": "keratin_absorptance_to_coefficient",
+      "status": "unresolved",
+      "evidence": "Author table provides interpolated absorbance; plot converts to absorptance. Thesis printed scaling conflicts dimensionally with inverse 4 \u00b5m path; choose explicit dimensional correction for implementation, preserve any reproduction option separately."
+    },
+    {
+      "id": "dna_concentration_scaling",
+      "status": "unresolved",
+      "evidence": "Author data confirm 50 \u00b5g/mL and 1 cm; MATLAB normalizes absorbance by point 12 at 257.9556 nm, labeled A260=1. Tissue scaling still needs model formula interpretation."
+    },
+    {
+      "id": "urocanic_acid_concentration_scaling",
+      "status": "unresolved",
+      "evidence": "Author data confirm 15 \u00b5mol/L and 1 cm; convert absorbance to absorptance before path/coefficient calculation; tissue scaling requires explicit basis."
+    },
+    {
+      "id": "full_range_spectral_coverage",
+      "status": "unresolved",
+      "evidence": "Multiple author tables exist but each constituent and splices/active ranges need coverage audit; lipid range stops before 2500 nm."
+    }
+  ]
+}
