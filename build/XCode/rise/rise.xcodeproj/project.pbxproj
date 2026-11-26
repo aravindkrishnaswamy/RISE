@@ -10058,6 +10058,7 @@
 					"-lopenvdb",
 					"-ltbb",
 					"-lblosc",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = "rise-sim";
 				WARNING_CFLAGS = (
@@ -10145,6 +10146,7 @@
 					"-lopenvdb",
 					"-ltbb",
 					"-lblosc",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = "rise-sim";
 				WARNING_CFLAGS = (
@@ -10233,6 +10235,7 @@
 					"-lopenvdb",
 					"-ltbb",
 					"-lblosc",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = "rise-sim";
 				WARNING_CFLAGS = (
@@ -10319,6 +10322,7 @@
 					"-lopenvdb",
 					"-ltbb",
 					"-lblosc",
+					"-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe",
 				);
 				PRODUCT_NAME = "rise-sim";
 				WARNING_CFLAGS = (
