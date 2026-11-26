@@ -48,6 +48,8 @@
 #include "../Materials/TranslucentMaterial.h"
 #include "../Materials/SheenMaterial.h"
 #include "../Materials/DonnerJensenSkinBSSRDFMaterial.h"
+#include "../Materials/MixMaterial.h"
+#include "../Materials/DiffuseTransmissionMaterial.h"
 #include "../Materials/GenericHumanTissueMaterial.h"
 #include "../Utilities/RString.h"
 #include <string_view>
@@ -211,6 +213,8 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	if( dynamic_cast<const SheenMaterial*>( &material ) )                               return String( "Sheen" );
 	if( dynamic_cast<const DonnerJensenSkinBSSRDFMaterial*>( &material ) )              return String( "Donner-Jensen Skin BSSRDF" );
 	if( dynamic_cast<const GenericHumanTissueMaterial*>( &material ) )                  return String( "Generic Human Tissue" );
+	if( dynamic_cast<const MixMaterial*>( &material ) )                                 return String( "Mix" );
+	if( dynamic_cast<const DiffuseTransmissionMaterial*>( &material ) )                 return String( "Diffuse Transmission" );
 	return String( "(unknown type)" );
 }
 
@@ -733,6 +737,41 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"base_material", String( "edit separately" ),
 			"This luminaire wraps a base material.  Pick that material in the panel to edit its slots." ) );
 	}
+	else if( const DiffuseTransmissionMaterial* dtm = dynamic_cast<const DiffuseTransmissionMaterial*>( &material ) ) {
+		rows.push_back( BuildPainterSlot( "reflectance", dtm->GetReflectance(),
+			painters, composed,
+			"Front/back diffuse reflectance painter (IPainter colour pipe).  Energy-conserved per channel/wavelength with transmittance." ) );
+		rows.push_back( BuildPainterSlot( "transmittance", dtm->GetTransmittance(),
+			painters, composed,
+			"Two-sided diffuse transmittance painter (IPainter colour pipe).  Energy-conserved per channel/wavelength with reflectance." ) );
+	}
+	else if( const MixMaterial* mix = dynamic_cast<const MixMaterial*>( &material ) ) {
+		const unsigned int n = mix->GetChildCount();
+		for( unsigned int i = 0; i < n; ++i ) {
+			const MixMaterialChild& ch = mix->GetChild( i );
+			char key[48];
+			std::snprintf( key, sizeof( key ), "child[%u]", i );
+			const String childType = ch.pMaterial ? GetTypeName( *ch.pMaterial ) : String( "none (absorber)" );
+			rows.push_back( MakeReadOnlyRow( key, childType,
+				"Child material mixed at this slot (edit the child material chunk directly or re-author the mix_material chunk)." ) );
+			if( ch.pWeight ) {
+				std::snprintf( key, sizeof( key ), "child[%u].weight", i );
+				const String wn = FindScalarPainterName( scalarPainters, ch.pWeight );
+				rows.push_back( MakeReadOnlyRow( key, wn.size() > 1 ? wn : String( "(inline scalar)" ),
+					"Scalar weight painter for this mix child (bounded response coefficient)." ) );
+			}
+			if( ch.pModifier ) {
+				std::snprintf( key, sizeof( key ), "child[%u].modifier", i );
+				rows.push_back( MakeReadOnlyRow( key, String( "per-leaf override" ),
+					"Per-child surface modifier overriding the object's modifier when this leaf is selected." ) );
+			}
+		}
+		if( const IScalarPainter* pw = mix->GetPassthroughWeight() ) {
+			const String pwn = FindScalarPainterName( scalarPainters, pw );
+			rows.push_back( MakeReadOnlyRow( "passthrough", pwn.size() > 1 ? pwn : String( "(inline scalar)" ),
+				"Optional pass-through weight scalar painter (acts as alpha transparency 1 - w_clear)." ) );
+		}
+	}
 
 	// Read-only volumetric / SSS indicators — useful diagnostic info
 	// that costs nothing extra to surface.
@@ -971,6 +1010,10 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 	else if( const PhongLuminaireMaterial* plm = dynamic_cast<const PhongLuminaireMaterial*>( &material ) ) {
 		if( slot == "exitance" ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &plm->GetRadEx(); return out; }
 		if( slot == "N" )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &plm->GetN();     return out; }
+	}
+	else if( const DiffuseTransmissionMaterial* dtm = dynamic_cast<const DiffuseTransmissionMaterial*>( &material ) ) {
+		if( slot == "reflectance" )   { out.kind = MaterialSlotRef::Painter; out.painter = &dtm->GetReflectance();   return out; }
+		if( slot == "transmittance" ) { out.kind = MaterialSlotRef::Painter; out.painter = &dtm->GetTransmittance(); return out; }
 	}
 
 	// Unknown slot for this material type — out.kind stays None.
@@ -1260,6 +1303,11 @@ bool MaterialIntrospection::SetSlot(
 	if( PhongLuminaireMaterial* plm = dynamic_cast<PhongLuminaireMaterial*>( &material ) ) {
 		if( slot == "exitance" ) { if( !painter ) return false; plm->SetRadEx( *painter ); return true; }
 		if( slot == "N" )     { if( !scalarPainter ) return false; plm->SetN( *scalarPainter ); return true; }
+		return false;
+	}
+	if( DiffuseTransmissionMaterial* dtm = dynamic_cast<DiffuseTransmissionMaterial*>( &material ) ) {
+		if( slot == "reflectance" )   { if( !painter ) return false; dtm->SetReflectance( *painter );   return true; }
+		if( slot == "transmittance" ) { if( !painter ) return false; dtm->SetTransmittance( *painter ); return true; }
 		return false;
 	}
 

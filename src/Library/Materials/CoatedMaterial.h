@@ -238,6 +238,7 @@ namespace RISE
 
 			//! Same forwarding, same reason.
 			inline bool CouldLightPassThrough() const { return pBase->CouldLightPassThrough(); }
+			inline bool TracksInteriorContainment() const { return pBase->TracksInteriorContainment(); }
 
 			//! DL-05: CoatedSPF re-prices the substrate's delta
 			//! pass-through by the coat's two crossings; the capability is
@@ -247,6 +248,20 @@ namespace RISE
 			/// \return NULL: a coated surface never emits (the
 			///         allowlist refuses emissive substrates).
 			inline IEmitter* GetEmitter() const { return 0; }
+
+			unsigned int GetPathDependence() const
+			{
+				unsigned int mask = IMaterial::GetPathDependence() |
+					( pBase ? pBase->GetPathDependence() : 0u ) |
+					pBRDF->GetCoatWeight().GetPathDependence() |
+					pBRDF->GetCoatIOR().GetPathDependence() |
+					pBRDF->GetCoatRoughness().GetPathDependence() |
+					pBRDF->GetCoatThickness().GetPathDependence() |
+					pBRDF->GetCoatAbsorption().GetPathDependence() |
+					pBRDF->GetCoatTint().GetPathDependence();
+				if( pBRDF->GetCoatNormal() ) mask |= pBRDF->GetCoatNormal()->GetPathDependence();
+				return mask;
+			}
 
 			//! Read-back for the interactive editor / snapshot clone.
 			inline const IMaterial&      GetBase()           const { return *pBase; }

@@ -29,6 +29,8 @@
 #include "../Materials/WardIsotropicGaussianMaterial.h"
 #include "../Materials/WardAnisotropicEllipticalGaussianMaterial.h"
 #include "../Materials/TranslucentMaterial.h"
+#include "../Materials/MixMaterial.h"
+#include "../Materials/DiffuseTransmissionMaterial.h"
 
 // Factories used to rebuild lights / media / cameras from their public
 // construction state (same approach the material clones use — see header).
@@ -156,6 +158,28 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 		return NewClone( mat, new TranslucentMaterial(
 			m->GetRefFront(), m->GetTrans(), m->GetExtinction(),
 			m->GetN(), m->GetScat() ) );
+	}
+	if( const DiffuseTransmissionMaterial* m = dynamic_cast<const DiffuseTransmissionMaterial*>( mat ) ) {
+		return NewClone( mat, new DiffuseTransmissionMaterial(
+			m->GetReflectance(), m->GetTransmittance() ) );
+	}
+	if( const MixMaterial* m = dynamic_cast<const MixMaterial*>( mat ) ) {
+		const unsigned int n = m->GetChildCount();
+		std::vector<const IMaterial*> clonedKids( n, 0 );
+		std::vector<const IScalarPainter*> weights( n, 0 );
+		std::vector<const IRayIntersectionModifier*> mods( n, 0 );
+		for( unsigned int i = 0; i < n; ++i ) {
+			const MixMaterialChild& ch = m->GetChild( i );
+			clonedKids[i] = ch.pMaterial ? CloneMaterialForSnapshot( ch.pMaterial ) : 0;
+			weights[i] = ch.pWeight;
+			mods[i] = ch.pModifier;
+		}
+		const IMaterial* clonedMix = NewClone( mat, new MixMaterial(
+			clonedKids.data(), weights.data(), mods.data(), n, m->GetPassthroughWeight() ) );
+		for( unsigned int i = 0; i < n; ++i ) {
+			if( clonedKids[i] ) clonedKids[i]->release();
+		}
+		return clonedMix;
 	}
 
 	// ---- Addref fallback ------------------------------------------------
@@ -336,8 +360,9 @@ ICamera* RISE::Implementation::CloneCameraForSnapshot( const ICamera* camera )
 	const Vector3  orient = cc->GetEulerOrientation();
 	const Vector2  torient= cc->GetTargetOrientation();
 
+	ICamera* clone = 0;
+	const char* logTag = 0;
 	if( const ThinLensCamera* m = dynamic_cast<const ThinLensCamera*>( camera ) ) {
-		ICamera* clone = 0;
 		RISE_API_CreateThinlensCamera( &clone, loc, lookAt, up,
 			m->GetSensorSize(), m->GetFocalLengthStored(), m->GetFstop(),
 			m->GetFocusDistanceStored(), m->GetSceneUnitMeters(),
@@ -345,40 +370,33 @@ ICamera* RISE::Implementation::CloneCameraForSnapshot( const ICamera* camera )
 			m->GetApertureBlades(), m->GetApertureRotation(), m->GetAnamorphicSqueeze(),
 			m->GetTiltX(), m->GetTiltY(), m->GetShiftX(), m->GetShiftY(),
 			m->GetIsoStored() );
-		if( clone ) {
-			GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot thinlens camera clone" );
-			return clone;
-		}
+		logTag = "snapshot thinlens camera clone";
 	}
 	else if( const OrthographicCamera* m = dynamic_cast<const OrthographicCamera*>( camera ) ) {
-		ICamera* clone = 0;
 		RISE_API_CreateOrthographicCamera( &clone, loc, lookAt, up,
 			w, h, m->GetViewportScaleStored(), pAR, expo, scan, prate, orient, torient );
-		if( clone ) {
-			GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot orthographic camera clone" );
-			return clone;
-		}
+		logTag = "snapshot orthographic camera clone";
 	}
 	else if( const FisheyeCamera* m = dynamic_cast<const FisheyeCamera*>( camera ) ) {
-		ICamera* clone = 0;
 		RISE_API_CreateFisheyeCamera( &clone, loc, lookAt, up,
 			w, h, pAR, expo, scan, prate, orient, torient, m->GetScaleStored() );
-		if( clone ) {
-			GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot fisheye camera clone" );
-			return clone;
-		}
+		logTag = "snapshot fisheye camera clone";
 	}
 	else if( const PinholeCamera* m = dynamic_cast<const PinholeCamera*>( camera ) ) {
 		// Pinhole last: ThinLens does NOT derive from PinholeCamera, but
 		// keep pinhole after the more-specific perspective type for clarity.
-		ICamera* clone = 0;
 		RISE_API_CreatePinholeCamera( &clone, loc, lookAt, up,
 			m->GetFovStored(), w, h, pAR, expo, scan, prate, orient, torient,
 			m->GetIsoStored(), m->GetFstop() );
-		if( clone ) {
-			GlobalLog()->PrintNew( clone, __FILE__, __LINE__, "snapshot pinhole camera clone" );
-			return clone;
+		logTag = "snapshot pinhole camera clone";
+	}
+
+	if( clone ) {
+		if( CameraCommon* cloneCC = dynamic_cast<CameraCommon*>( clone ) ) {
+			cloneCC->SetNearClip( cc->GetNearClip() );
 		}
+		GlobalLog()->PrintNew( clone, __FILE__, __LINE__, logTag );
+		return clone;
 	}
 
 	// Known CameraCommon subtype we don't have a factory branch for: refuse

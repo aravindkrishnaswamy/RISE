@@ -112,8 +112,17 @@ namespace RISE
 			//! cannot be that flag.  Not copied by any clone: a clone's own
 			//! AssignObjects re-establishes it.
 			unsigned int									nConsumedBy;
+			//! How many ancestor `csg_object` composites currently own an
+			//! interior_medium (directly or inherited) with no container-level
+			//! material override, so this object's material would become the
+			//! boundary of that interior medium.  Prevents assigning a
+			//! MixMaterial to an already-attached CSG operand.
+			unsigned int									nMediumInheritingCsgConsumers;
 
 			Scalar											SURFACE_INTERSEC_ERROR;
+
+			//! Per-object Cycles Object Info attributes stamped onto hits.
+			ObjectInfoData									m_objectInfo;
 
 			// Transpose of the inverse matrix, used for normal transformations
 			// We do( M^-1)^T instead of M*n because this will work with shears and reflections
@@ -531,6 +540,17 @@ namespace RISE
 			virtual void RemoveConsumer() override;
 			virtual bool IsConsumed() const override { return nConsumedBy != 0; }
 			inline bool IsSharedConsumerTarget() const { return nConsumedBy > 1; }
+			inline bool HasMediumInheritingCsgConsumer() const { return nMediumInheritingCsgConsumers != 0; }
+			virtual void AdjustMediumInheritingCsgConsumers( int delta )
+			{
+				if( delta > 0 ) {
+					nMediumInheritingCsgConsumers += static_cast<unsigned int>( delta );
+				} else if( delta < 0 ) {
+					const unsigned int dec = static_cast<unsigned int>( -delta );
+					nMediumInheritingCsgConsumers = ( nMediumInheritingCsgConsumers > dec )
+						? ( nMediumInheritingCsgConsumers - dec ) : 0;
+				}
+			}
 
 			virtual bool DoesCastShadows() const override { return bCastsShadows; }
 			virtual bool DoesReceiveShadows() const override { return bReceivesShadows; }
@@ -679,6 +699,18 @@ namespace RISE
 			{
 				MaterialBindingEpochCounter().fetch_add( 1, std::memory_order_acq_rel );
 			}
+
+			void SetObjectInfo( const ObjectInfoData& info ) override
+			{
+				Transformable::PreparedExternalMutationScope mutation;
+				if( !mutation.IsValid() ) return;
+				m_objectInfo = info;
+			}
+			const ObjectInfoData* GetObjectInfo() const override { return &m_objectInfo; }
+			const Matrix4* GetFinalTransformMatrixPtr() const override
+				{ const Object* c = TimeClone(); return c ? &c->m_mxFinalTrans : &m_mxFinalTrans; }
+			const Matrix4* GetFinalInverseTransformMatrixPtr() const override
+				{ const Object* c = TimeClone(); return c ? &c->m_mxInvFinalTrans : &m_mxInvFinalTrans; }
 		};
 	}
 }

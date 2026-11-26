@@ -4,9 +4,15 @@
 //    uses, copied from intern/cycles/kernel/svm/util.h (Apache-2.0,
 //    Blender Foundation) for the golden dumper.  util.h itself includes
 //    the kernel-globals machinery, which this harness does not build; the
-//    node needs only these six helpers.  Their bodies are util.h's, minus
+//    node needs only these six helpers (svm_node_stubs.h adds what the
+//    Voronoi node needs beyond them).  Their bodies are util.h's, minus
 //    the kernel_assert bounds checks (the dumper defines kernel_assert
 //    empty), with stack_store_float3's copy_v3_v3 written out.
+//
+//  The copied code's notice, as util.h carries it:
+//    SPDX-FileCopyrightText: 2011-2022 Blender Foundation
+//    SPDX-License-Identifier: Apache-2.0
+//  (licenses/Apache-2.0.txt).
 //
 //  Tabs: 2 (matches the Cycles sources it accompanies)
 //

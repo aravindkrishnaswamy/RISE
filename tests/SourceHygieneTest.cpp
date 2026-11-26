@@ -2110,6 +2110,7 @@ int main()
 			{ "name", "cameraKind" }, { "location", "GetLocation()" },
 			{ "lookat", "GetMatrix()" }, { "up", "GetMatrix()" },
 			{ "exposure", "GetExposureTime()" },
+			{ "near_clip", "GetNearClip()" },
 			{ "scanning_rate", "GetScanningRate()" }, { "pixel_rate", "GetPixelRate()" },
 			{ "pitch", "GetMatrix()" }, { "roll", "GetMatrix()" },
 			{ "yaw", "GetMatrix()" }, { "orientation", "GetMatrix()" },
@@ -6852,16 +6853,17 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 9
+		Check( claimers.size() == 10
 		    && claimers[0] == "CoatedMaterial.h"
 		    && claimers[1] == "CompositeMaterial.h"
-		    && claimers[2] == "FabricMaterial.h"
-		    && claimers[3] == "HairMaterial.h"
-		    && claimers[4] == "LambertianLuminaireMaterial.h"
-		    && claimers[5] == "PhongLuminaireMaterial.h"
-		    && claimers[6] == "RoughDielectricMaterial.h"
-		    && claimers[7] == "TranslucentMaterial.h"
-		    && claimers[8] == "WeaveMaterial.h",
+		    && claimers[2] == "DiffuseTransmissionMaterial.h"
+		    && claimers[3] == "FabricMaterial.h"
+		    && claimers[4] == "HairMaterial.h"
+		    && claimers[5] == "LambertianLuminaireMaterial.h"
+		    && claimers[6] == "PhongLuminaireMaterial.h"
+		    && claimers[7] == "RoughDielectricMaterial.h"
+		    && claimers[8] == "TranslucentMaterial.h"
+		    && claimers[9] == "WeaveMaterial.h",
 		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
 		       "`transmission thin`, P2-B), TranslucentMaterial (unconditional, DL-157), "
 		       "CompositeMaterial (DL-157 P2-1, CACHED at construction), FabricMaterial and "
@@ -7000,10 +7002,23 @@ int main()
 	// ---- Painter `ri` reads must be a subset of the L2 memo key's cover ----
 	{
 		const char* kKeyedPainterRiFields[] = {
+			"GeomNormalOpposesArrival",
+			"HasTrueGeomSide",
+			"arrivalGeomFacing",
+			"bGeomNormalOrientedToRay",
+			"bHasCoatDecodeOnb",
+			"bHasNormalMapFrame",
 			"bHasTexCoord1",
 			"bHasVertexColor",
 			"bHit",
+			"bIsCameraRay",
+			"coatDecodeOnb",
 			"derivatives",
+			"normalMapOnb",
+			"pCamera",
+			"pObjectInfo",
+			"pmxObjectToWorld",
+			"pmxWorldToObject",
 			"ptCoord",
 			"ptCoord1",
 			"ptIntersection",
@@ -7012,7 +7027,9 @@ int main()
 			"signals",
 			"txFootprint",
 			"vColor",
+			"vGeomNormal",
 			"vNormal",
+			"vReliefObjStep",
 		};
 		const size_t nKeyed = sizeof( kKeyedPainterRiFields ) / sizeof( kKeyedPainterRiFields[0] );
 

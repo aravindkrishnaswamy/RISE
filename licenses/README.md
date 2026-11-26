@@ -8,9 +8,10 @@ see [Not covered by these notices](#not-covered-by-these-notices).
 
 | File | Covers |
 |---|---|
-| [Cycles-NOTICE.txt](Cycles-NOTICE.txt) | The copyright notices for the code ported from Blender's Cycles renderer, which licence covers which part, and what was modified: `src/Library/Utilities/OslNoise.h` and `OslNoise.cpp`. |
-| [Apache-2.0.txt](Apache-2.0.txt) | Cycles' fractal noise, Noise Texture and White Noise nodes, and hashes (Blender Foundation). On Android it also covers the Kotlin, kotlinx.coroutines, AndroidX and Compose libraries. |
+| [Cycles-NOTICE.txt](Cycles-NOTICE.txt) | The copyright notices for the code ported from Blender's Cycles renderer, which licence covers which part, and what was modified: `src/Library/Utilities/OslNoise.{h,cpp}`, `OslVoronoi.{h,cpp}`, `OslColor.{h,cpp}`, `OslMath.{h,cpp}`, `OslVector.{h,cpp}` and `OslShaderNodes.{h,cpp}`. |
+| [Apache-2.0.txt](Apache-2.0.txt) | Cycles' fractal noise, Noise Texture, White Noise, Voronoi Texture, Mix Color, Math, Vector Math, Clamp, Map Range, Vector Rotate, Gradient Texture, Brick Texture, Fresnel and Layer Weight nodes, colour conversions, hashes and vector helpers (Blender Foundation; Intel Corporation for `util/math_float3.h` and `math_float4.h`). On Android it also covers the Kotlin, kotlinx.coroutines, AndroidX and Compose libraries. |
 | [BSD-3-Clause.txt](BSD-3-Clause.txt) | The Perlin noise core Cycles adapted from Open Shading Language (Sony Pictures Imageworks Inc., et al.). |
+| [MIT-Inigo-Quilez.txt](MIT-Inigo-Quilez.txt) | The Smooth F1 and Distance to Edge code inside Cycles' Voronoi node (Inigo Quilez), in `src/Library/Utilities/OslVoronoi.cpp`. |
 | [Sobol-Joe-Kuo-LICENSE.txt](Sobol-Joe-Kuo-LICENSE.txt) | The Sobol' direction numbers in `src/Library/Sampling/SobolDirectionNumbers.cpp` (Frances Y. Kuo and Stephen Joe). |
 | [Unicode-LICENSE.txt](Unicode-LICENSE.txt) | The Unicode NFC tables in `src/Library/Utilities/UnicodeNFCData.inc`, generated from Unicode 17.0.0 data (Unicode License v3). |
 | [zlib-LICENSE.txt](zlib-LICENSE.txt) | The vendored zlib in `extlib/zlib`, whose notice lives only in `zlib.h`. |

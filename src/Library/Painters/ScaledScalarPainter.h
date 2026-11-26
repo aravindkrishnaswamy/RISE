@@ -81,6 +81,7 @@ namespace RISE
 				return scale == Scalar( 0 ) || CompositeIsPositionIndependent( pChild, 0 );
 			}
 			bool ReadsWorldPosition() const override { return CompositeReadsWorldPosition( pChild, 0 ); }
+			unsigned int GetPathDependence() const override { return CompositeGetPathDependence( pChild, 0 ); }
 
 			//! DL-09/precision-slice P2-1: forward the single-scalar-slot
 			//! view through the composite instead of losing it. Before

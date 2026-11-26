@@ -468,7 +468,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
 			/// Traces the indirect-only estimator once while also returning the
@@ -485,7 +486,8 @@ namespace RISE
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
 				RISEPel& direct,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit.
@@ -673,7 +675,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				bool* pPrimaryHit = 0
 				) const;
 
 			/// Traces one complete path for a bundle of HWSS wavelengths.
@@ -687,7 +690,8 @@ namespace RISE
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
 				Scalar result[SampledWavelengths::N],
-				PixelAOV* pAOV = 0
+				PixelAOV* pAOV = 0,
+				bool* pPrimaryHit = 0
 				) const;
 
 			/// Accessors for NM/HWSS code in PathTracingShaderOp
@@ -764,7 +768,8 @@ namespace RISE
 				const IRadianceMap* pRadianceMap,
 				PixelAOV* pAOV,
 				typename SpectralDispatch::SpectralValueTraits<Tag>::value_type* pDirectResult,
-				const Tag& tag
+				const Tag& tag,
+				bool* pPrimaryHit = 0
 				) const;
 
 			/// Tag-dispatched delegation to IntegrateFromHit / IntegrateFromHitNM

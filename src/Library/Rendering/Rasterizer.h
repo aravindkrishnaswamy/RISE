@@ -166,6 +166,7 @@ namespace RISE
 			//! Auxiliary-surface selection is also consumed by agent
 			//! perception AOVs, so it must survive in builds without OIDN.
 			OidnPrefilter							mDenoisingPrefilter;
+			bool									bTransparentBackground = false;
 
 #ifdef RISE_ENABLE_OIDN
 			bool									bDenoisingEnabled;
@@ -341,6 +342,8 @@ namespace RISE
 			//! the same fast-versus-accurate surface semantics.
 			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }
 			OidnPrefilter GetDenoisingPrefilter() const { return mDenoisingPrefilter; }
+			void SetTransparentBackground( bool enabled ) override { bTransparentBackground = enabled; }
+			bool GetTransparentBackground() const override { return bTransparentBackground; }
 		};
 	}
 }

@@ -4281,6 +4281,8 @@ namespace RISE
 #include "Painters/PainterToScalarAdapter.h"	// Bridge IPainter chains into IScalarPainter slots
 #include "Materials/SheenMaterial.h"
 #include "Materials/OrenNayarMaterial.h"
+#include "Materials/MixMaterial.h"
+#include "Materials/DiffuseTransmissionMaterial.h"
 #include "Materials/SchlickMaterial.h"
 #include "Materials/DataDrivenMaterial.h"
 #include "Materials/HairMaterial.h"
@@ -4820,6 +4822,11 @@ namespace RISE
 			return false;
 		}
 
+		if( top.IsUnresolvedMix() || bottom.IsUnresolvedMix() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "composite_material: a mix_material cannot be wrapped inside a composite_material (mix_material must be outermost)", __FILE__, __LINE__ );
+			return false;
+		}
 		// DL-422: a layered subsurface jump needs entry/exit transport
 		// through the other layer. The surface-only composite has no such
 		// model, so fail explicitly instead of silently dropping the jump.
@@ -5202,6 +5209,43 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateMixMaterial(
+								IMaterial** ppi,
+								const IMaterial* const* pChildren,
+								const IScalarPainter* const* pWeights,
+								const IRayIntersectionModifier* const* pModifiers,
+								const unsigned int numChildren,
+								const IScalarPainter* pPassthroughWeight
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		if( !MixMaterial::ValidateChildren( pChildren, pWeights, numChildren ) ) {
+			*ppi = 0;
+			return false;
+		}
+
+		(*ppi) = new MixMaterial( pChildren, pWeights, pModifiers, numChildren, pPassthroughWeight );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mix material" );
+		return true;
+	}
+
+	bool RISE_API_CreateDiffuseTransmissionMaterial(
+								IMaterial** ppi,
+								const IPainter& reflectance,
+								const IPainter& transmittance
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new DiffuseTransmissionMaterial( reflectance, transmittance );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "diffuse transmission material" );
+		return true;
+	}
+
 	//! Creates a Schlick material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSchlickMaterial(
@@ -5250,6 +5294,12 @@ namespace RISE
 			return false;
 		}
 
+		if( mat.IsUnresolvedMix() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "lambertian_luminaire_material: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)", __FILE__, __LINE__ );
+			return false;
+		}
+
 		(*ppi) = new LambertianLuminaireMaterial( radEx, scale, mat );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "lambertian luminaire material" );
 		return true;
@@ -5266,6 +5316,12 @@ namespace RISE
 								)
 	{
 		if( !ppi ) {
+			return false;
+		}
+
+		if( mat.IsUnresolvedMix() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "phong_luminaire_material: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)", __FILE__, __LINE__ );
 			return false;
 		}
 
@@ -7266,6 +7322,19 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreatePainterRGBScalarPainter(
+		IScalarPainter** ppi,
+		const IPainter& source,
+		Scalar scale,
+		Scalar bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Implementation::PainterRGBScalarPainter( source, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter RGB scalar painter" );
+		return true;
+	}
+
 	//! Creates a camera manager
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCameraManager(
@@ -7369,6 +7438,7 @@ namespace RISE
 #include "Modifiers/GlintModifier.h"
 #include "Modifiers/ReliefModifier.h"
 #include "Modifiers/ModifierStack.h"
+#include "Modifiers/BlendedModifier.h"
 
 namespace RISE
 {
@@ -7547,6 +7617,22 @@ namespace RISE
 
 		(*ppi) = new ModifierStack( mods, count );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "modifierstack" );
+		return true;
+	}
+
+	bool RISE_API_CreateBlendedModifier(
+								IRayIntersectionModifier** ppi,
+								const IRayIntersectionModifier* pModA,
+								const IRayIntersectionModifier* pModB,
+								const IScalarPainter& weight
+								)
+	{
+		if( !ppi || ( !pModA && !pModB ) ) {
+			return false;
+		}
+
+		(*ppi) = new BlendedModifier( pModA, pModB, &weight );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blendedmodifier" );
 		return true;
 	}
 

@@ -208,6 +208,7 @@ bool PinholeCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2&
 	r.diffs.rxDir = dx - d;
 	r.diffs.ryDir = dy - d;
 	r.hasDifferentials = true;
+	ApplyNearClip( r );
 
 	return true;
 }

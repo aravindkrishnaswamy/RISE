@@ -50,6 +50,7 @@ namespace RISE
 		protected:
 			HairBRDF*		pBRDF;
 			HairSPF*		pSPF;
+			unsigned int	pathDependence;
 
 			virtual ~HairMaterial( )
 			{
@@ -60,7 +61,19 @@ namespace RISE
 		public:
 			//! Both halves are built from the SAME HairPainters, so the
 			//! evaluated BSDF and the sampled SPF can never drift.
-			explicit HairMaterial( const HairPainters& painters )
+			explicit HairMaterial( const HairPainters& painters ) :
+				pathDependence(
+					( painters.eumelanin ? painters.eumelanin->GetPathDependence() : 0u ) |
+					( painters.pheomelanin ? painters.pheomelanin->GetPathDependence() : 0u ) |
+					( painters.sigma_a ? painters.sigma_a->GetPathDependence() : 0u ) |
+					( painters.color ? painters.color->GetPathDependence() : 0u ) |
+					( painters.beta_m ? painters.beta_m->GetPathDependence() : 0u ) |
+					( painters.beta_n ? painters.beta_n->GetPathDependence() : 0u ) |
+					( painters.alpha ? painters.alpha->GetPathDependence() : 0u ) |
+					( painters.ior ? painters.ior->GetPathDependence() : 0u ) |
+					( painters.medulla_ratio ? painters.medulla_ratio->GetPathDependence() : 0u ) |
+					( painters.medulla_scatter ? painters.medulla_scatter->GetPathDependence() : 0u ) |
+					( painters.medulla_g ? painters.medulla_g->GetPathDependence() : 0u ) )
 			{
 				pBRDF = new HairBRDF( painters );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
@@ -98,6 +111,7 @@ namespace RISE
 			//! under `-Wall` -- fires on the others the moment one method
 			//! here carries it.)
 			inline bool ScattersFullSphere() const { return true; }
+			inline unsigned int GetPathDependence() const { return IMaterial::GetPathDependence() | pathDependence; }
 		};
 	}
 }

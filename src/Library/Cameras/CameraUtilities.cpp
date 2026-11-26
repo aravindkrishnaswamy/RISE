@@ -870,3 +870,43 @@ bool BDPTCameraUtilities::IsDeltaDirection(
 	// legitimate sampling strategy for them.
 	return dynamic_cast<const OrthographicCamera*>( &cam ) != 0;
 }
+
+Scalar BDPTCameraUtilities::ComputeNearClipDistance(
+	const ICamera& cam,
+	const Vector3& rayDir )
+{
+	const CameraCommon* pCommon = dynamic_cast<const CameraCommon*>( &cam );
+	if( !pCommon ) return Scalar( 0 );
+	const Scalar nc = pCommon->GetNearClip();
+	if( nc <= Scalar( 0 ) ) return Scalar( 0 );
+	if( dynamic_cast<const FisheyeCamera*>( &cam ) != 0 ) {
+		return nc;
+	}
+	return pCommon->ComputePlanarNearClipT( rayDir );
+}
+
+bool BDPTCameraUtilities::IsPointPastNearClip(
+	const ICamera& cam,
+	const Point3& worldPoint )
+{
+	const CameraCommon* pCommon = dynamic_cast<const CameraCommon*>( &cam );
+	if( !pCommon ) return true;
+	const Scalar nc = pCommon->GetNearClip();
+	if( nc <= Scalar( 0 ) ) return true;
+	if( dynamic_cast<const FisheyeCamera*>( &cam ) != 0 ) {
+		return Point3Ops::Distance( worldPoint, cam.GetLocation() ) >= nc;
+	}
+	return pCommon->IsPointPastPlanarNearClip( worldPoint );
+}
+
+Point3 BDPTCameraUtilities::ApplyNearClipToConnectionEndpoint(
+	const ICamera& cam,
+	const Point3& camPos,
+	const Vector3& dirFromCam )
+{
+	const Scalar tNear = ComputeNearClipDistance( cam, dirFromCam );
+	if( tNear <= Scalar( 0 ) ) {
+		return camPos;
+	}
+	return Point3Ops::mkPoint3( camPos, dirFromCam * tNear );
+}

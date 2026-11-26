@@ -358,6 +358,7 @@ Object::Object( ) :
   bCastsShadows( true ),
   bReceivesShadows( true ),
   nConsumedBy( 0 ),
+  nMediumInheritingCsgConsumers( 0 ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 ),
@@ -393,6 +394,7 @@ Object::Object( const IGeometry* pGeometry_ ) :
   bCastsShadows( true ),
   bReceivesShadows( true ),
   nConsumedBy( 0 ),
+  nMediumInheritingCsgConsumers( 0 ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 ),
@@ -474,6 +476,7 @@ IObjectPriv* Object::CloneFull()
 	Object* pClone = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "Clone" );
 	pClone->bIsWorldVisible = IsWorldVisible();
+	pClone->m_objectInfo = m_objectInfo;
 
 	if( pMaterial ) {
 		pClone->AssignMaterial( *pMaterial );
@@ -500,6 +503,7 @@ IObjectPriv* Object::CloneGeometric()
 	Object* pMe = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pMe, __FILE__, __LINE__, "cloned object" );
 	pMe->bIsWorldVisible = IsWorldVisible();
+	pMe->m_objectInfo = m_objectInfo;
 	return pMe;
 }
 
@@ -562,6 +566,7 @@ void Object::CopySnapshotStateInto( Object& dst, const bool bCloneMaterial ) con
 	dst.bCastsShadows          = bCastsShadows;
 	dst.bReceivesShadows       = bReceivesShadows;
 	dst.SURFACE_INTERSEC_ERROR = SURFACE_INTERSEC_ERROR;
+	dst.m_objectInfo           = m_objectInfo;
 	dst.m_tangentFrameSign     = m_tangentFrameSign;
 	dst.m_worldAreaScale       = m_worldAreaScale;
 	// DL-448: same geometry, same transform -> the immutable sampling
@@ -695,6 +700,11 @@ void Object::RefreshIorCatalogFlag()
 
 bool Object::AssignMaterial( const IMaterial& pMat )
 {
+	if( pMat.IsUnresolvedMix() && ( pInteriorMedium || nMediumInheritingCsgConsumers > 0 ) ) {
+		GlobalLog()->PrintEasyError(
+			"Object::AssignMaterial:: cannot assign a MixMaterial to an object that carries or inherits an interior medium" );
+		return false;
+	}
 	const bool hadMaterial = ( pMaterial != 0 );
 	const bool prevMayAffect = m_mayAffectIorCatalog;
 	safe_release( pMaterial );
@@ -787,6 +797,20 @@ void Object::SetShadowParams( const bool bCasts, const bool bReceives )
 
 bool Object::AssignInteriorMedium( const IMedium& medium )
 {
+	struct MixScan : public IEnumCallback<IMaterial>
+	{
+		bool found = false;
+		bool operator()( const IMaterial& m ) override {
+			if( m.IsUnresolvedMix() ) { found = true; return false; }
+			return true;
+		}
+	} scan;
+	EnumerateEffectiveMaterials( scan );
+	if( scan.found ) {
+		GlobalLog()->PrintEasyError(
+			"Object::AssignInteriorMedium:: cannot assign an interior medium to an object carrying a MixMaterial" );
+		return false;
+	}
 	const bool hadMedium = ( pInteriorMedium != 0 );
 	const bool prevMayAffect = m_mayAffectIorCatalog;
 	safe_release( pInteriorMedium );
@@ -1711,6 +1735,8 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// the field's doc comment in RayIntersectionGeometric.h for the
 		// direction-vs-point rule and for why CSGObject clears it instead.
 		ri.geometric.pmxWorldToObject = &m_mxInvFinalTrans;
+		ri.geometric.pmxObjectToWorld = &m_mxFinalTrans;
+		ri.geometric.pObjectInfo = &m_objectInfo;
 
 		// Tell which material
 		ri.pMaterial = pMaterial;
@@ -1765,6 +1791,25 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
+	// Wave C R1-C-P1-1: check self-exclusion BEFORE delegating to TimeClone()!
+	// Under DL-465 motion blur, `ri.pObject` (and `selfExcl.pSelf`) is always the
+	// SHARED Object*, never the per-thread clone `c`.  Setting `activeForCurrentGeometry`
+	// here on the shared object preserves originating-triangle exclusion inside `c`.
+	struct SelfExclActiveGuard
+	{
+		bool* pFlag;
+		bool  prev;
+		~SelfExclActiveGuard() { if( pFlag ) *pFlag = prev; }
+	} selfExclGuard{ 0, false };
+	if( SurfaceSignalSelfExclusionActive() ) {
+		SelfPrimExclusionState& selfExcl = SurfaceSignalSelfExclusion();
+		if( selfExcl.pSelf == static_cast<const IObject*>( this ) ) {
+			selfExclGuard.pFlag = &selfExcl.activeForCurrentGeometry;
+			selfExclGuard.prev = selfExcl.activeForCurrentGeometry;
+			selfExcl.activeForCurrentGeometry = true;
+		}
+	}
+
 	if( const Object* c = TimeClone() ) {	// DL-465: this thread's pose
 		return c->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
 	}

@@ -316,6 +316,7 @@ namespace RISE
 			//! Same forwarding, same reason: a sheen layer neither opens
 			//! nor closes an aperture the substrate does not have.
 			inline bool CouldLightPassThrough() const { return pBase->CouldLightPassThrough(); }
+			inline bool TracksInteriorContainment() const { return pBase->TracksInteriorContainment(); }
 
 			//! DL-05: FabricSPF re-prices (never removes) the substrate's
 			//! delta pass-through, so the capability is the substrate's;
@@ -344,6 +345,15 @@ namespace RISE
 			inline void SetSheenColor( const IPainter& v )           { pBRDF->SetSheenColor( v ); }
 			inline void SetSheenRoughness( const IScalarPainter& v ) { pBRDF->SetSheenRoughness( v ); }
 			inline void SetWeaveRotation( const IScalarPainter& v )  { pBRDF->SetWeaveRotation( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					( pBase ? pBase->GetPathDependence() : 0u ) |
+					pBRDF->GetSheenColor().GetPathDependence() |
+					pBRDF->GetSheenRoughness().GetPathDependence() |
+					pBRDF->GetWeaveRotation().GetPathDependence();
+			}
 		};
 	}
 }

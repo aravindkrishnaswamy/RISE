@@ -104,8 +104,10 @@ namespace RISE
 			static_assert( kCertBitsEnd <= ( 1 << 30 ), "CSGObject certificate flags overflow their 31-bit field" );
 			mutable std::atomic<long long>			m_certBits;
 			mutable std::atomic<std::uint64_t>		m_realizedEpoch{ 0 };
+			bool									m_propagatedMediumToOperands = false;
 			int CertificateBits() const;
 			int ComputeCertificateBits() const;
+			void SyncOperandMediumInheritance();
 
 			virtual ~CSGObject( );
 
@@ -114,6 +116,11 @@ namespace RISE
 			CSGObject( const CSG_OP& op_ );
 
 			bool AssignObjects( IObjectPriv* objA, IObjectPriv* objB );
+			bool AssignMaterial( const IMaterial& pMat );
+			void ClearMaterial();
+			bool AssignInteriorMedium( const IMedium& medium );
+			void ClearInteriorMedium();
+			void AdjustMediumInheritingCsgConsumers( int delta );
 
 			//! Re-set the CSG operation in place (CST incremental re-point).  `op` is a read-only
 			//! runtime field (read by getBoundingBox + IntersectRay), so this is a plain field set --
@@ -246,6 +253,10 @@ namespace RISE
 			bool HasNegativeOpenSignedVolume() const;
 			unsigned long long ShapeRevision() const;
 			bool EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) const;
+			// CSG composites have no single operand object frame, matching
+			// CSGObject::IntersectRay clearing pmxWorldToObject/pmxObjectToWorld.
+			const Matrix4* GetFinalTransformMatrixPtr() const { return 0; }
+			const Matrix4* GetFinalInverseTransformMatrixPtr() const { return 0; }
 
 		protected:
 			//! THE DIAGONAL OF THIS COMPOSITE'S OWN LOCAL BOX -- A's box

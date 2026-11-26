@@ -168,6 +168,8 @@ void VCMPelRasterizer::IntegratePixel(
 				cret = RISEColor(
 					px.colorSum * ( Scalar( 1 ) / px.alphaSum ),
 					px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -434,6 +436,13 @@ void VCMPelRasterizer::IntegratePixel(
 			const double mergeLum  = ( mergeColor[0] + mergeColor[1] + mergeColor[2] ) / 3.0;
 			AccumulateSampleFlux( sampleLum, mergeLum );
 
+			const bool transparentBg = GetTransparentBackground();
+			const bool primaryHit = ( eyeVerts.size() >= 2 && !eyeVerts[1].IsInfiniteLight() );
+			const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+			if( sampleAlpha == Scalar( 0.0 ) ) {
+				sampleColor = RISEPel( 0, 0, 0 );
+			}
+
 			// Approach C: cross-pixel filter-weighted splat — see
 			// BDPTPelRasterizer::IntegratePixel for the rationale.
 			if( pFilteredFilm ) {
@@ -441,11 +450,12 @@ void VCMPelRasterizer::IntegratePixel(
 					ptOnScreen.x,
 					static_cast<Scalar>(height) - ptOnScreen.y,
 					sampleColor,
-					*pPixelFilter );
+					*pPixelFilter,
+					sampleAlpha );
 			}
 
 			colAccrued = colAccrued + sampleColor * weight;
-			alphasAccrued += weight;
+			alphasAccrued += sampleAlpha * weight;
 
 			// Welford update on luminance.  Gated on `adaptive` only:
 			// progressive multi-pass mode must NOT trigger convergence-

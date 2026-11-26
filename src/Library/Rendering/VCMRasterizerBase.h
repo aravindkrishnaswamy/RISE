@@ -110,6 +110,7 @@ namespace RISE
 			/// LightVertexStore, and build the KD-tree.  The eye pass
 			/// then queries this store from IntegratePixel.
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
+			virtual bool ValidateSceneForRasterizer( const IScene& pScene ) const;
 
 		/// VCM runs 1 SPP per pass (paper-correct iteration model).
 		/// Per-block intermediate output is wasted I/O; the end-of-pass

@@ -164,10 +164,27 @@
 //  `Eval(ctx)`, `EvalVec3`, `CallFunc` and `CallFuncVec3` are byte-
 //  identical to the commit before (brace-matched and hash-compared), and
 //  TextureExpressionVMTest's exact-`==` checks stay green.  The two new
-//  cases are now part of RunAny's pinned text.  They read no `fw` and
-//  add no key field: an `osl_` builtin is a pure function of its
-//  arguments.  ComputeMemoWorthiness counts a call whose signature is
-//  marked expensive (every noise builtin) as worth an L2 entry.
+//  cases are now part of RunAny's pinned text (updated 2026-11-23 to
+//  forward `pHit` into OslBuiltins::Call for Group 7 live space
+//  transforms, and to append `kMeshAttr3`/`kMeshAttrAlpha` with trailing
+//  `pMeshAttrNames` for named per-corner mesh attributes, and 2026-11-24
+//  to append `kSampleAlpha`/`kSampleUv`/`kSampleUvAlpha` for UV-overridden
+//  and alpha painter sampling; `vReliefObjStep`
+//  is non-zero only on ReliefModifier 4-tap evaluations where `P`/`Po`
+//  already separate every tap from the centre hit).  Groups 1-6 read no `fw` and are pure functions of
+//  their arguments; Group 7 (`osl_to_object_*`, `osl_to_world_*`,
+//  `osl_to_camera_*`, `osl_camera_to_world_*`) reads the hit's object
+//  transforms and live camera frame, keyed in `SpaceTransformHitKey`
+//  (short-circuited when `usesSpaceTransform == false`).
+//  ComputeMemoWorthiness counts a call whose signature is marked
+//  expensive (the gradient and fractal noise and Voronoi builtins; not
+//  White Noise, colour conversions, Mix Color, Safe Math, componentwise
+//  vec3/rotations, or space transforms) as worth an L2 entry.  All
+//  double key fields in L1 and L2 are compared bit for bit
+//  via `SameDoubleBits` (integer bit-pattern equality via `memcpy`)
+//  rather than `==`, so `-0.0` and `+0.0` stay distinct even under
+//  `-ffast-math` / `-fno-signed-zeros` whenever a body distinguishes
+//  them (e.g. 1D Voronoi Distance to Edge, White Noise, or Mix Dodge).
 //
 //  ⚠ THE FIRST IMPLEMENTATION CLAIMED THE KEY NEED NOT GROW, AND IT WAS
 //  WRONG.  It said: `sample()`/`sample_scalar()` evaluate the bound painter
@@ -249,6 +266,8 @@
 #include "../Interfaces/IOptions.h"
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 namespace RISE
@@ -310,13 +329,18 @@ namespace RISE
 		//! THE CEILING WAS A REGRESSION GUARD, NOT A BUDGET, which is what
 		//! makes raising it the right move here rather than a concession.
 		//! Eight ways put `Tables` at 2432 bytes (2976 since DL-25's
-		//! PainterSampleHitKey joined the L2 key), over the 2048-byte TLS
-		//! ceiling `ExpressionMemoTest` (g) asserted (1824 bytes at four
-		//! ways after `proximity`'s key growth); that ceiling exists to
-		//! catch an unnoticed growth, not to cap the structure, so it is
-		//! raised to 4096 with the reason recorded in the test.  The whole
-		//! table is 53.6 kB decimal across this machine's 18 workers
-		//! (43.8 kB before DL-25's key growth).  Phase 1
+		//! PainterSampleHitKey joined the L2 key, 3552 since Group 7's
+		//! SpaceTransformHitKey with transform-pose epochs, 3648 since
+		//! ObjectInfoData's 6 float fields joined SpaceTransformHitKey,
+		//! 3840 since osl_ao's geometric normal, pre-modifier N0, and
+		//! arrival-facing fields joined SpaceTransformHitKey), over the
+		//! 2048-byte TLS ceiling `ExpressionMemoTest` (g) asserted (1824
+		//! bytes at four ways after `proximity`'s key growth); that
+		//! ceiling exists to catch an unnoticed growth, not to cap the
+		//! structure, so it is raised to 4096 with the reason recorded
+		//! in the test.  The whole table is 69.1 kB decimal across this
+		//! machine's 18 workers (65.7 kB before osl_ao, 63.9 kB before
+		//! ObjectInfo, 53.6 kB after DL-25, 43.8 kB before).  Phase 1
 		//! wave 2 MEASURES the L1 hit rate on `plank_closeup` (three
 		//! distinct queries per hit) rather than assuming it, and Phase 3
 		//! re-measures it unchanged.  A body that needs nine should be
@@ -616,6 +640,32 @@ namespace RISE
 			return n.fetch_add( 1, std::memory_order_relaxed ) + 1ull;
 		}
 
+		//! Bit-exact IEEE-754 double comparison.  Unlike `==`, separates
+		//! -0.0 from +0.0 (and survives -ffast-math / -fno-signed-zeros,
+		//! because the comparison is on integer bit patterns) while
+		//! treating identical bit patterns as equal.  Load-bearing for
+		//! memo soundness whenever a body distinguishes -0 and +0
+		//! (e.g. 1D Voronoi Distance to Edge, White Noise, or Mix Dodge).
+		inline bool SameDoubleBits( const double a, const double b )
+		{
+			static_assert( sizeof( double ) == sizeof( std::uint64_t ),
+				"SameDoubleBits requires 64-bit IEEE double" );
+			std::uint64_t ba, bb;
+			std::memcpy( &ba, &a, sizeof( ba ) );
+			std::memcpy( &bb, &b, sizeof( bb ) );
+			return ba == bb;
+		}
+
+		inline bool SameFloatBits( const float a, const float b )
+		{
+			static_assert( sizeof( float ) == sizeof( std::uint32_t ),
+				"SameFloatBits requires 32-bit IEEE float" );
+			std::uint32_t ba, bb;
+			std::memcpy( &ba, &a, sizeof( ba ) );
+			std::memcpy( &bb, &b, sizeof( bb ) );
+			return ba == bb;
+		}
+
 		//! The part of a hit's SurfaceSignalInfo that a provider's answer
 		//! can depend on -- every field of it, compared EXACTLY.  Held as
 		//! plain scalars rather than as a SurfaceSignalInfo so this header
@@ -671,14 +721,14 @@ namespace RISE
 				// describe the hit, not the query), so they decide a mismatch
 				// almost never and belong past the fields that do.
 				return pProvider == o.pProvider
-					&& ptx == o.ptx && pty == o.pty && ptz == o.ptz
+					&& SameDoubleBits( ptx, o.ptx ) && SameDoubleBits( pty, o.pty ) && SameDoubleBits( ptz, o.ptz )
 					&& primId == o.primId
-					&& baryA == o.baryA && baryB == o.baryB
-					&& nx == o.nx && ny == o.ny && nz == o.nz
+					&& SameDoubleBits( baryA, o.baryA ) && SameDoubleBits( baryB, o.baryB )
+					&& SameDoubleBits( nx, o.nx ) && SameDoubleBits( ny, o.ny ) && SameDoubleBits( nz, o.nz )
 					&& bComplementedField == o.bComplementedField
 					&& pScene == o.pScene && pSelf == o.pSelf
-					&& wx == o.wx && wy == o.wy && wz == o.wz
-					&& time == o.time;
+					&& SameDoubleBits( wx, o.wx ) && SameDoubleBits( wy, o.wy ) && SameDoubleBits( wz, o.wz )
+					&& SameDoubleBits( time, o.time );
 			}
 		};
 
@@ -760,14 +810,68 @@ namespace RISE
 			bool Equals( const PainterSampleHitKey& o ) const
 			{
 				return hasHit == o.hasHit
-					&& dudx == o.dudx && dudy == o.dudy
-					&& dvdx == o.dvdx && dvdy == o.dvdy
+					&& SameDoubleBits( dudx, o.dudx ) && SameDoubleBits( dudy, o.dudy )
+					&& SameDoubleBits( dvdx, o.dvdx ) && SameDoubleBits( dvdy, o.dvdy )
 					&& footprintValid == o.footprintValid
-					&& rdx == o.rdx && rdy == o.rdy && rdz == o.rdz
-					&& u1 == o.u1 && v1 == o.v1
+					&& SameDoubleBits( rdx, o.rdx ) && SameDoubleBits( rdy, o.rdy ) && SameDoubleBits( rdz, o.rdz )
+					&& SameDoubleBits( u1, o.u1 ) && SameDoubleBits( v1, o.v1 )
 					&& hasTexCoord1 == o.hasTexCoord1
-					&& vcr == o.vcr && vcg == o.vcg && vcb == o.vcb
+					&& SameDoubleBits( vcr, o.vcr ) && SameDoubleBits( vcg, o.vcg ) && SameDoubleBits( vcb, o.vcb )
 					&& hasVertexColor == o.hasVertexColor;
+			}
+		};
+
+		//! Per-hit space-transform and object-info key for programs that
+		//! call Group 7 live space-transform (`osl_to_object_*`,
+		//! `osl_to_world_*`, `osl_to_camera_*`, `osl_camera_to_world_*`)
+		//! or object-attribute (`osl_object_*`) builtins.  Captures the
+		//! object's world<->object matrix identities, pose epochs, live
+		//! camera frame, and per-object ObjectInfoData (color, alpha,
+		//! index, random) so differently-transformed or differently-seeded
+		//! instances sharing a material never collide.  Zero-filled and
+		//! short-circuited in ProgramKey::Equals for programs that call
+		//! neither space/object-info builtins nor `sample()`.
+		struct SpaceTransformHitKey
+		{
+			const void*			pWorldToObject;
+			const void*			pObjectToWorld;
+			unsigned long long	globalPoseEpoch;
+			unsigned long long	threadPoseEpoch;
+			bool				hasCamera;
+			signed char			geomOpposesArrival;		//!< -1=opposes, +1=same-side, 0=no hit (`osl_ao` / `osl_true_normal`)
+			bool				geomBackfacing;			//!< true geometric backfacing honoring `bGeomNormalOrientedToRay` / `HasTrueGeomSide()`
+			bool				isCameraRay;			//!< pHit->bIsCameraRay (`osl_is_camera_ray`, fits in 1-byte alignment hole before particleRand -> 0 struct growth!)
+			float				particleRand;			//!< pHit->pObjectInfo->particleRandom
+			double				camOx, camOy, camOz;
+			double				camRx, camRy, camRz;
+			double				camUx, camUy, camUz;
+			double				camFx, camFy, camFz;
+			double				gnx, gny, gnz;			//!< pHit->vGeomNormal (`osl_ao` facing & standoff)
+			double				n0x, n0y, n0z;			//!< pre-modifier shading normal N0 (`osl_ao` / `osl_shading_normal`)
+			float				objR, objG, objB, objA;
+			float				objIdx, objRand;
+
+			static const int kFields = 33;
+
+			bool Equals( const SpaceTransformHitKey& o ) const
+			{
+				return pWorldToObject == o.pWorldToObject
+					&& pObjectToWorld == o.pObjectToWorld
+					&& globalPoseEpoch == o.globalPoseEpoch
+					&& threadPoseEpoch == o.threadPoseEpoch
+					&& hasCamera == o.hasCamera
+					&& geomOpposesArrival == o.geomOpposesArrival
+					&& geomBackfacing == o.geomBackfacing
+					&& isCameraRay == o.isCameraRay
+					&& SameDoubleBits( camOx, o.camOx ) && SameDoubleBits( camOy, o.camOy ) && SameDoubleBits( camOz, o.camOz )
+					&& SameDoubleBits( camRx, o.camRx ) && SameDoubleBits( camRy, o.camRy ) && SameDoubleBits( camRz, o.camRz )
+					&& SameDoubleBits( camUx, o.camUx ) && SameDoubleBits( camUy, o.camUy ) && SameDoubleBits( camUz, o.camUz )
+					&& SameDoubleBits( camFx, o.camFx ) && SameDoubleBits( camFy, o.camFy ) && SameDoubleBits( camFz, o.camFz )
+					&& SameDoubleBits( gnx, o.gnx ) && SameDoubleBits( gny, o.gny ) && SameDoubleBits( gnz, o.gnz )
+					&& SameDoubleBits( n0x, o.n0x ) && SameDoubleBits( n0y, o.n0y ) && SameDoubleBits( n0z, o.n0z )
+					&& SameFloatBits( objR, o.objR ) && SameFloatBits( objG, o.objG ) && SameFloatBits( objB, o.objB )
+					&& SameFloatBits( objA, o.objA ) && SameFloatBits( objIdx, o.objIdx )
+					&& SameFloatBits( objRand, o.objRand ) && SameFloatBits( particleRand, o.particleRand );
 			}
 		};
 
@@ -788,7 +892,7 @@ namespace RISE
 				// distinct query the body makes, so this is the field that
 				// usually decides a mismatch.
 				return fn == o.fn
-					&& radius == o.radius
+					&& SameDoubleBits( radius, o.radius )
 					&& bRadiusIsConstant == o.bRadiusIsConstant
 					&& hit.Equals( o.hit );
 			}
@@ -860,9 +964,8 @@ namespace RISE
 			//! DL-25 review P1-1: the fields a SAMPLED painter can read
 			//! that none of the above determines.  Zero-filled (and
 			//! `hasHit` false) for the overwhelming majority of programs,
-			//! which call neither `sample()` nor `sample_scalar()` -- see
-			//! PainterSampleHitKey for why it is compared unconditionally
-			//! rather than gated on that.
+			//! which call neither `sample()` nor `sample_scalar()`, and
+			//! short-circuited in `Equals` via `usesPainterSample` below.
 			PainterSampleHitKey	sampleHit;
 			//! Does THIS program call `sample()` / `sample_scalar()` at
 			//! all?  A property of the program, so two entries sharing a
@@ -873,20 +976,26 @@ namespace RISE
 			//! the key must stay self-describing: nothing here may depend
 			//! on a fact only the program object knows.
 			bool				usesPainterSample;
+			SpaceTransformHitKey	spaceHit;
+			bool				usesSpaceTransform;
 
 			//! FIELDS THIS COMPARES: 18 of its own (progId, pipe, u, v,
 			//! P.xyz, Po.xyz, N.xyz, fw, fwo, time, curv, curvR) plus the
 			//! signal channel's 17 plus `usesPainterSample` plus the
-			//! painter-sample channel's 16 (DL-25 review P1-1) = 52.
-			//! (The last 16 are SHORT-CIRCUITED away for a program that
-			//! does not sample; they are counted anyway, because
-			//! `kFields`'s consumer is a cost threshold for the WORST
+			//! painter-sample channel's 16 (DL-25 review P1-1) plus
+			//! `usesSpaceTransform` plus the space-transform channel's 33
+			//! (Group 7 live space transforms + pose epochs + 7 ObjectInfo floats
+			//! + osl_ao/osl_backfacing/osl_shading_normal/osl_is_camera_ray geometric normal,
+			//! pre-modifier N0, arrival facing, true geometric backfacing, isCameraRay) = 86.
+			//! (The painter-sample and space-transform blocks are SHORT-CIRCUITED
+			//! away for programs that do not use them; they are counted anyway,
+			//! because `kFields`'s consumer is a cost threshold for the WORST
 			//! case, not for the common one.)  THE NUMBER IS LOAD-BEARING, not
 			//! decoration: ExpressionProgram::Builder::ComputeMemoWorthiness
-			//! uses it as the instruction count at or above which a body
-			//! cannot be cheaper to re-run than to look up.  Adding a
-			//! context variable means a field here, a compare in the body
-			//! below, and a bump of the 18.
+			//! uses `kFieldsNonSampling` as the instruction count at or above
+			//! which a body cannot be cheaper to re-run than to look up.  Adding
+			//! a context variable means a field here, a compare in the body
+			//! below, and a bump of the count.
 			//!
 			//! `ptWorld` (three of the hit channel's six new fields) is a
 			//! REDUNDANT compare against this key's own `P` -- the two are
@@ -895,25 +1004,22 @@ namespace RISE
 			//! there is ONE key layout rather than an L1-only tail on
 			//! SignalHitKey, and disclosed in
 			//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 / §10.
-			static const int kFields = 19 + SignalHitKey::kFields + PainterSampleHitKey::kFields;
+			static const int kFields = 20 + SignalHitKey::kFields + PainterSampleHitKey::kFields + SpaceTransformHitKey::kFields;
 
-			//! WHAT A NON-SAMPLING PROGRAM ACTUALLY PAYS, and the number
-			//! `ExpressionProgram::Builder::ComputeMemoWorthiness` thresholds
-			//! on -- 19 own fields (18 plus `usesPainterSample`) and the
-			//! signal channel's 17, after which `Equals` SHORT-CIRCUITS: 36.
+			//! WHAT A NON-SAMPLING, NON-SPACE-TRANSFORM PROGRAM ACTUALLY PAYS,
+			//! and the number `ExpressionProgram::Builder::ComputeMemoWorthiness`
+			//! thresholds on -- 20 own fields (18 plus `usesPainterSample` plus
+			//! `usesSpaceTransform`) and the signal channel's 17, after which
+			//! `Equals` SHORT-CIRCUITS: 37.
 			//!
 			//! IT IS A SEPARATE CONSTANT BECAUSE THE TWO NUMBERS ANSWER TWO
 			//! DIFFERENT QUESTIONS (DL-25 round-3 review, P2-2).  `kFields`
 			//! is the key's WORST-CASE WIDTH, which is what a
 			//! "how big is this structure" claim wants.  The cost gate asks
 			//! something narrower: "would THIS body be cheaper to re-run
-			//! than to look up", and a body that never calls `sample()`
-			//! never runs the 16 compares `kFields` counts.  Thresholding
-			//! the gate on 52 silently de-memoised every pure-arithmetic
-			//! body of 36..51 instructions when DL-25 widened the key --
-			//! a perf regression with no correctness component and no test,
-			//! which is exactly how it went unnoticed.
-			static const int kFieldsNonSampling = 19 + SignalHitKey::kFields;
+			//! than to look up", and a body that never calls `sample()` or
+			//! space transforms never runs the short-circuited compares.
+			static const int kFieldsNonSampling = 20 + SignalHitKey::kFields;
 
 			bool Equals( const ProgramKey& o ) const
 			{
@@ -925,12 +1031,12 @@ namespace RISE
 				// function is this".
 				return progId == o.progId
 					&& pipe == o.pipe
-					&& Px == o.Px && Py == o.Py && Pz == o.Pz
-					&& u == o.u && v == o.v
-					&& Pox == o.Pox && Poy == o.Poy && Poz == o.Poz
-					&& Nx == o.Nx && Ny == o.Ny && Nz == o.Nz
-					&& fw == o.fw && fwo == o.fwo && time == o.time
-					&& curv == o.curv && curvR == o.curvR
+					&& SameDoubleBits( Px, o.Px ) && SameDoubleBits( Py, o.Py ) && SameDoubleBits( Pz, o.Pz )
+					&& SameDoubleBits( u, o.u ) && SameDoubleBits( v, o.v )
+					&& SameDoubleBits( Pox, o.Pox ) && SameDoubleBits( Poy, o.Poy ) && SameDoubleBits( Poz, o.Poz )
+					&& SameDoubleBits( Nx, o.Nx ) && SameDoubleBits( Ny, o.Ny ) && SameDoubleBits( Nz, o.Nz )
+					&& SameDoubleBits( fw, o.fw ) && SameDoubleBits( fwo, o.fwo ) && SameDoubleBits( time, o.time )
+					&& SameDoubleBits( curv, o.curv ) && SameDoubleBits( curvR, o.curvR )
 					&& signals.Equals( o.signals )
 					// LAST, and SHORT-CIRCUITED for the overwhelming
 					// majority of programs, which never call `sample()`:
@@ -959,7 +1065,9 @@ namespace RISE
 					// moves ptCoord and misses higher up anyway) -- the
 					// gate keeps it structurally impossible.
 					&& usesPainterSample == o.usesPainterSample
-					&& ( !usesPainterSample || sampleHit.Equals( o.sampleHit ) );
+					&& ( !usesPainterSample || sampleHit.Equals( o.sampleHit ) )
+					&& usesSpaceTransform == o.usesSpaceTransform
+					&& ( !usesSpaceTransform || spaceHit.Equals( o.spaceHit ) );
 			}
 		};
 
@@ -976,10 +1084,45 @@ namespace RISE
 		//! no guard at all.  Zero is the right cold state anyway:
 		//! `gen == 0` never equals the live generation (which starts at 1),
 		//! so the first look is always stale and Refresh() fills it in.
+		//! 1-way last-hit cache key for ray-traced `SurfaceSignalInfo::AmbientOcclusion`
+		//! (MIX §III.3): eliminates 4x redundant ray-tracing across ReliefModifier taps
+		//! and N-x reuse across material slots at the same hit while staying trivially
+		//! default-constructible and inside the 4,096 B per-thread TLS budget.
+		struct AOCacheKey
+		{
+			const void*        pScene;
+			const void*        pSelf;
+			const void*        pProvider;
+			unsigned long long globalPoseEpoch;
+			unsigned long long threadPoseEpoch;
+			int                primId;
+			int                numSamples;
+			int                flags;
+			double             wx, wy, wz;
+			double             ox, oy, oz;
+			double             time;
+			double             dist;
+			double             hnx, hny, hnz;
+			double             odx, ody, odz;
+
+			bool Equals( const AOCacheKey& o ) const
+			{
+				return pScene == o.pScene && pSelf == o.pSelf && pProvider == o.pProvider
+					&& globalPoseEpoch == o.globalPoseEpoch && threadPoseEpoch == o.threadPoseEpoch
+					&& primId == o.primId && numSamples == o.numSamples && flags == o.flags
+					&& SameDoubleBits( wx, o.wx ) && SameDoubleBits( wy, o.wy ) && SameDoubleBits( wz, o.wz )
+					&& SameDoubleBits( ox, o.ox ) && SameDoubleBits( oy, o.oy ) && SameDoubleBits( oz, o.oz )
+					&& SameDoubleBits( time, o.time ) && SameDoubleBits( dist, o.dist )
+					&& SameDoubleBits( hnx, o.hnx ) && SameDoubleBits( hny, o.hny ) && SameDoubleBits( hnz, o.hnz )
+					&& SameDoubleBits( odx, o.odx ) && SameDoubleBits( ody, o.ody ) && SameDoubleBits( odz, o.odz );
+			}
+		};
+
 		struct Tables
 		{
 			unsigned long long	gen;		//!< generation these entries were filled under
 			bool				enabled;	//!< kill switch, re-read whenever `gen` moves
+			bool				aoValid;	//!< 1-way AO cache entry valid under `gen`
 
 			int					l1Next;		//!< round-robin victim
 			int					l1Fill;		//!< entries written so far (< kL1Ways while warming)
@@ -990,6 +1133,9 @@ namespace RISE
 			int					l2Fill;
 			ProgramKey			l2Key[ kL2Ways ];
 			double				l2Val[ kL2Ways ][ 3 ];
+
+			AOCacheKey			aoKey;
+			double				aoVal;
 		};
 
 		//! THE TWO PROPERTIES THE PARAGRAPH ABOVE CLAIMS, ASSERTED so they
@@ -1029,6 +1175,7 @@ namespace RISE
 			if( t.gen != g ) {
 				t.gen     = g;
 				t.enabled = EnabledSlow();
+				t.aoValid = false;
 				t.l1Fill  = 0; t.l1Next = 0;
 				t.l2Fill  = 0; t.l2Next = 0;
 			}
@@ -1088,6 +1235,26 @@ namespace RISE
 			t.l2Val[ slot ][2] = (double)v.z;
 			t.l2Next = ( slot + 1 ) % kL2Ways;
 			if( t.l2Fill < kL2Ways ) ++t.l2Fill;
+		}
+
+		inline bool AOFind( const AOCacheKey& k, Scalar& out )
+		{
+			Tables& t = Local();
+			if( !Refresh( t ) ) return false;
+			if( t.aoValid && t.aoKey.Equals( k ) ) {
+				out = (Scalar)t.aoVal;
+				return true;
+			}
+			return false;
+		}
+
+		inline void AOInsert( const AOCacheKey& k, const Scalar v )
+		{
+			Tables& t = Local();
+			if( !Refresh( t ) ) return;
+			t.aoKey = k;
+			t.aoVal = (double)v;
+			t.aoValid = true;
 		}
 
 		//! Bytes of thread-local storage one render worker pays.  Reported

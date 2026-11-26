@@ -23,6 +23,7 @@
 #include <cerrno>    // errno / ERANGE for non-finite + overflow rejection
 #include <climits>   // UINT_MAX for max_bounces validation
 #include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
+#include "Cameras/CameraCommon.h"
 #include "Managers/LightManager.h"   // H3: self-invalidating light add/remove
 #include "Managers/GenericManager.h" // D35 record-during-derive sinks (media bypass the GenericManager chokepoint, so hook mediaMap here)
 #include "Objects/CSGObject.h"     // workstream #3: CSG re-point (dynamic_cast<CSGObject*> + SetOperation/CsgOpFromChar)
@@ -1124,6 +1125,7 @@ namespace
 				{ "kind", Value::String(cameraKind) },
 				{ "location", Value::ArrayValue(cameraLocation) },
 				{ "matrix", Value::ArrayValue(cameraMatrix) },
+				{ "near_clip", Value::Float(dynamic_cast<const RISE::Implementation::CameraCommon*>(camera) ? dynamic_cast<const RISE::Implementation::CameraCommon*>(camera)->GetNearClip() : 0.0) },
 				{ "pixel_rate", Value::Float(camera ? camera->GetPixelRate() : 0.0) },
 				{ "projection", projection },
 				{ "scanning_rate", Value::Float(camera ? camera->GetScanningRate() : 0.0) } }) },
@@ -2493,6 +2495,42 @@ bool Job::SetActiveCamera( const char* name )
 		PushJobFrameStoreToRasterizers();
 	}
 	return ok;
+}
+
+bool Job::SetCameraNearClip( const char* name, const double nearClip )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !pScene ) return false;
+	if( !RISE::IsFiniteDouble( nearClip ) || nearClip < 0.0 ) {
+		char msg[160];
+		std::snprintf( msg, sizeof( msg ), "invalid nearClip %g (must be finite and >= 0)", nearClip );
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetCameraNearClip: %s", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+	Implementation::Scene* pSceneImpl = dynamic_cast<Implementation::Scene*>( pScene );
+	if( !pSceneImpl ) return false;
+	ICamera* pCam = nullptr;
+	if( name && name[0] ) {
+		ICameraManager* pCamMgr = pSceneImpl->GetCamerasMutable();
+		if( pCamMgr ) {
+			pCam = pCamMgr->GetItem( name );
+		}
+	} else {
+		pCam = pSceneImpl->GetCameraMutable();
+	}
+	Implementation::CameraCommon* pCamCommon = dynamic_cast<Implementation::CameraCommon*>( pCam );
+	if( !pCamCommon ) {
+		char msg[192];
+		std::snprintf( msg, sizeof( msg ), "camera '%s' not found or does not support near clip",
+			( name && name[0] ) ? name : "<active>" );
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetCameraNearClip: %s", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+	pCamCommon->SetNearClip( Scalar( nearClip ) );
+	return true;
 }
 
 std::string Job::GetActiveCameraName() const
@@ -6202,6 +6240,13 @@ bool Job::AddCompositeMaterial(
 	if( !pTop || !pBottom ) {
 		return false;
 	}
+	if( pTop->IsUnresolvedMix() || pBottom->IsUnresolvedMix() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"composite_material `%s`: a mix_material cannot be wrapped inside a composite_material (mix_material must be outermost)",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "a mix_material cannot be wrapped inside a composite_material" );
+		return false;
+	}
 
 	// `extinction` is a Beer-Lambert coefficient (an inverse length), not a
 	// colour: authored values well above 1 are ordinary.  Routing it through
@@ -7072,6 +7117,142 @@ bool Job::AddOrenNayarMaterialModel(
 	return ok;
 }
 
+bool Job::AddMixMaterial(
+	const char* name,
+	const char* const* children,
+	const char* const* weights,
+	const char* const* modifiers,
+	const unsigned int numChildren,
+	const char* passthroughWeight
+	)
+{
+	if( numChildren == 0 || !children || !weights ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"mix_material `%s`: requires at least one child entry", name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "mix_material requires at least one child entry" );
+		return false;
+	}
+
+	std::vector<const IMaterial*> childMats( numChildren, 0 );
+	std::vector<const IScalarPainter*> childWeights( numChildren, 0 );
+	std::vector<const IRayIntersectionModifier*> childMods( numChildren, 0 );
+	std::vector<IScalarPainter*> ownedScalars;
+	ownedScalars.reserve( numChildren + 1 );
+
+	auto cleanupOwned = [&]() {
+		for( size_t k = 0; k < ownedScalars.size(); ++k ) {
+			safe_release( ownedScalars[k] );
+		}
+	};
+
+	for( unsigned int i = 0; i < numChildren; ++i ) {
+		const char* matName = children[i];
+		if( matName && matName[0] != '\0' && std::strcmp( matName, "none" ) != 0 ) {
+			IMaterial* pMat = pMatManager->GetItem( matName );
+			if( !pMat ) {
+				char msg[256];
+				std::snprintf( msg, sizeof( msg ),
+					"child %u material `%s` is not a registered material", i, matName );
+				GlobalLog()->PrintEx( eLog_Error, "mix_material `%s`: %s", name ? name : "", msg );
+				RISE::SetFinalizeDiagIfEmpty( msg );
+				cleanupOwned();
+				return false;
+			}
+			childMats[i] = pMat;
+		}
+
+		IScalarPainter* pW = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "mix_material", name, "weight", weights[i], /*requireSingle*/ true );
+		if( !pW ) {
+			cleanupOwned();
+			return false;
+		}
+		ownedScalars.push_back( pW );
+		childWeights[i] = pW;
+
+		const char* modName = modifiers ? modifiers[i] : 0;
+		if( modName && modName[0] != '\0' && std::strcmp( modName, "none" ) != 0 ) {
+			IRayIntersectionModifier* pMod = pModManager->GetItem( modName );
+			if( !pMod ) {
+				char msg[256];
+				std::snprintf( msg, sizeof( msg ),
+					"child %u modifier `%s` is not a registered modifier", i, modName );
+				GlobalLog()->PrintEx( eLog_Error, "mix_material `%s`: %s", name ? name : "", msg );
+				RISE::SetFinalizeDiagIfEmpty( msg );
+				cleanupOwned();
+				return false;
+			}
+			childMods[i] = pMod;
+		}
+	}
+
+	const IScalarPainter* pPass = 0;
+	if( passthroughWeight && passthroughWeight[0] != '\0' && std::strcmp( passthroughWeight, "none" ) != 0 ) {
+		IScalarPainter* pPW = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "mix_material", name, "passthrough", passthroughWeight, /*requireSingle*/ true );
+		if( !pPW ) {
+			cleanupOwned();
+			return false;
+		}
+		ownedScalars.push_back( pPW );
+		pPass = pPW;
+	}
+
+	IMaterial* pMaterial = 0;
+	if( !RISE_API_CreateMixMaterial(
+			&pMaterial, childMats.data(), childWeights.data(), childMods.data(),
+			numChildren, pPass ) || !pMaterial )
+	{
+		RISE::SetFinalizeDiagIfEmpty(
+			"mix_material child validation failed (nested mix or containment-tracking/refracting child)" );
+		cleanupOwned();
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	cleanupOwned();
+	return ok;
+}
+
+bool Job::AddDiffuseTransmissionMaterial(
+	const char* name,
+	const char* reflectance,
+	const char* transmittance
+	)
+{
+	const char* refName   = ( reflectance && reflectance[0] ) ? reflectance : "none";
+	const char* transName = ( transmittance && transmittance[0] ) ? transmittance : "none";
+
+	IPainter* pRefl = pPntManager->GetItem( refName );
+	if( !pRefl ) {
+		char msg[256];
+		std::snprintf( msg, sizeof( msg ), "reflectance painter `%s` not found", refName );
+		GlobalLog()->PrintEx( eLog_Error, "diffuse_transmission_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
+	IPainter* pTrans = pPntManager->GetItem( transName );
+	if( !pTrans ) {
+		char msg[256];
+		std::snprintf( msg, sizeof( msg ), "transmittance painter `%s` not found", transName );
+		GlobalLog()->PrintEx( eLog_Error, "diffuse_transmission_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	if( !RISE_API_CreateDiffuseTransmissionMaterial( &pMaterial, *pRefl, *pTrans ) || !pMaterial ) {
+		RISE::SetFinalizeDiagIfEmpty( "diffuse_transmission_material creation failed" );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
+}
+
 //! Adds Schlick material
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddSchlickMaterial(
@@ -7143,6 +7324,13 @@ bool Job::AddLambertianLuminaireMaterial(
 	if( !pRadEx || !pMaterial ) {
 		return false;
 	}
+	if( pMaterial->IsUnresolvedMix() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"lambertian_luminaire_material `%s`: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "a mix_material cannot be wrapped inside a lambertian_luminaire_material" );
+		return false;
+	}
 
 	IMaterial* pLumMaterial = 0;
 	RISE_API_CreateLambertianLuminaireMaterial( &pLumMaterial, *pRadEx, *pMaterial, scale );
@@ -7167,6 +7355,13 @@ bool Job::AddPhongLuminaireMaterial(
 	IMaterial* pMaterial = pMatManager->GetItem(mat);
 
 	if( !pRadEx || !pMaterial ) {
+		return false;
+	}
+	if( pMaterial->IsUnresolvedMix() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"phong_luminaire_material `%s`: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "a mix_material cannot be wrapped inside a phong_luminaire_material" );
 		return false;
 	}
 
@@ -9026,6 +9221,77 @@ bool Job::AddModifierStack(
 	return ok;
 }
 
+bool Job::AddBlendedModifier(
+	const char* name,
+	const char* modAName,
+	const char* modBName,
+	const char* weight
+	)
+{
+	const auto isUnset = []( const char* s ) -> bool {
+		return !s || !s[0] || std::strcmp( s, "none" ) == 0;
+	};
+
+	const IRayIntersectionModifier* pModA = 0;
+	if( !isUnset( modAName ) ) {
+		pModA = pModManager->GetItem( modAName );
+		if( !pModA ) {
+			char msg[256];
+			std::snprintf( msg, sizeof( msg ), "modifier_a `%s` not found", modAName );
+			GlobalLog()->PrintEx( eLog_Error,
+				"blended_modifier `%s`: %s",
+				name ? name : "noname", msg );
+			RISE::SetFinalizeDiagIfEmpty( msg );
+			return false;
+		}
+	}
+
+	const IRayIntersectionModifier* pModB = 0;
+	if( !isUnset( modBName ) ) {
+		pModB = pModManager->GetItem( modBName );
+		if( !pModB ) {
+			char msg[256];
+			std::snprintf( msg, sizeof( msg ), "modifier_b `%s` not found", modBName );
+			GlobalLog()->PrintEx( eLog_Error,
+				"blended_modifier `%s`: %s",
+				name ? name : "noname", msg );
+			RISE::SetFinalizeDiagIfEmpty( msg );
+			return false;
+		}
+	}
+
+	if( !pModA && !pModB ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"blended_modifier `%s`: at least one of `modifier_a` or `modifier_b` must name a modifier",
+			name ? name : "noname" );
+		RISE::SetFinalizeDiagIfEmpty( "at least one of `modifier_a` or `modifier_b` must name a modifier" );
+		return false;
+	}
+
+	IScalarPainter* pWeight = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager,
+		"blended_modifier", name ? name : "noname", "weight",
+		weight ? weight : "0.5", /*requireSingle*/ true );
+	if( !pWeight ) {
+		return false;
+	}
+
+	IRayIntersectionModifier* pBlend = 0;
+	const bool created = RISE_API_CreateBlendedModifier( &pBlend, pModA, pModB, *pWeight );
+	safe_release( pWeight );
+	if( !created || !pBlend ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"blended_modifier `%s`: RISE_API_CreateBlendedModifier failed",
+			name ? name : "noname" );
+		RISE::SetFinalizeDiagIfEmpty( "blended_modifier creation failed" );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pModManager, pBlend, name, "modifier" );
+	safe_release( pBlend );
+	return ok;
+}
+
 //
 // Adding objects
 //
@@ -9331,10 +9597,29 @@ bool Job::ComposeObjectHierarchy( )
 // proves that this geometry cannot bound a volume. Do not infer this from
 // bOpenSheet or failed watertightness:
 // those also describe closed imported meshes the certificate cannot classify.
+static bool ObjectHasMixMaterial_( const IObject* pObj )
+{
+	if( !pObj ) return false;
+	struct MixScan : public IEnumCallback<IMaterial>
+	{
+		bool found = false;
+		bool operator()( const IMaterial& m ) override
+		{
+			if( m.IsUnresolvedMix() ) {
+				found = true;
+				return false;
+			}
+			return true;
+		}
+	} scan;
+	pObj->EnumerateEffectiveMaterials( scan );
+	return scan.found;
+}
+
 static bool RefuseVolumeFreeRandomWalk_(const IGeometry* geometry, const IMaterial* material,
     const char* objectName)
 {
-    if(!geometry || !material || !material->GetRandomWalkSSSParams()) return false;
+    if(!geometry || !material || !material->HasRandomWalkSSSLeaf()) return false;
     const auto* indexed=dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>(geometry);
     const auto* triangles=dynamic_cast<const Implementation::TriangleMeshGeometry*>(geometry);
     const bool certified=(indexed && indexed->IsZeroVolumeSheet()) ||
@@ -9427,16 +9712,26 @@ bool Job::AddObject(
 			"become a container node -- the boolean would have nothing to intersect", name );
 		return false;
 	}
-	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );  // re-point swaps geometry (or clears it)
-	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );        // create binds geometry via the ctor
-
 	// A CONTAINER has no surface, so it takes no surface bindings.  Dropping
 	// them (loudly) rather than assigning them is what keeps "an object with
 	// null geometry and an emissive material" a csg_object-only shape -- the
 	// premise the agent's non-sampling-emitter audit is built on.  A container
 	// carrying an emissive material would be an emitter that no light sampler
 	// can ever sample, which is exactly the class that audit exists to catch.
+	// Run BEFORE ApplyGeometryOrContainer_ so any semantic refusal below
+	// leaves an existing object's geometry untouched (Slice 3 R2 P1-3).
 	DropContainerSurfaceBindings_( name, bContainer, pMat, pMod, pShaderObj, pRadPnt );
+
+	if( repoint && pMat && pMat->IsUnresolvedMix() && object->GetInteriorMedium() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObject:: `%s` already has an interior_medium and cannot be reassigned a mix_material",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "cannot assign mix_material to an object with an interior_medium" );
+		return false;
+	}
+
+	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );  // re-point swaps geometry (or clears it)
+	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );        // create binds geometry via the ctor
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 	if( pMat )       object->AssignMaterial( *pMat );
@@ -9542,10 +9837,23 @@ bool Job::AddObjectMatrix(
 			"and become a container node", name );
 		return false;
 	}
+	// Validate all semantic refusals BEFORE mutating `object`'s geometry on
+	// incremental repoint (Slice 3 R2 P1-3).
+	DropContainerSurfaceBindings_( name, bContainer, pMat, pMod, pShaderObj, pRadPnt );   // see AddObject
+
+	if( RefuseVolumeFreeRandomWalk_( pGeometry, pMat, name ) ) {
+		return false;
+	}
+	if( repoint && pMat && pMat->IsUnresolvedMix() && object->GetInteriorMedium() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObjectMatrix:: `%s` already has an interior_medium and cannot be reassigned a mix_material",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "cannot assign mix_material to an object with an interior_medium" );
+		return false;
+	}
+
 	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );
 	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );
-
-	DropContainerSurfaceBindings_( name, bContainer, pMat, pMod, pShaderObj, pRadPnt );   // see AddObject
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 	if( pMat )       object->AssignMaterial( *pMat );
@@ -11335,6 +11643,13 @@ bool Job::SetObjectInteriorMedium(
 			"bind it to a child that has geometry", object_name );
 		return false;
 	}
+	if( ObjectHasMixMaterial_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectInteriorMedium:: `%s` uses a mix_material (directly or via CSG operand) and cannot host an interior_medium (containment cannot enter through one leaf and exit through another)",
+			object_name );
+		RISE::SetFinalizeDiagIfEmpty( "an object carrying a mix_material cannot host an interior_medium" );
+		return false;
+	}
 
 	MediumMap::iterator it = mediaMap.find( medium_name );
 	if( it == mediaMap.end() ) {
@@ -11623,6 +11938,16 @@ bool Job::AddCSGObject(
 		repoint = ( object != 0 && dynamic_cast<CSGObject*>( object ) != 0 );
 	}
 	if( repoint ) {
+		if( object->GetInteriorMedium() &&
+			( ( pMat && pMat->IsUnresolvedMix() ) ||
+			  ( !pMat && ( ObjectHasMixMaterial_( pA ) || ObjectHasMixMaterial_( pB ) ) ) ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddCSGObject:: `%s` already has an interior_medium and cannot be bound to a mix_material",
+				name ? name : "" );
+			RISE::SetFinalizeDiagIfEmpty( "cannot assign mix_material to a CSG object with an interior_medium" );
+			return false;
+		}
 		CSGObject* csg = dynamic_cast<CSGObject*>( object );
 		csg->AssignObjects( pA, pB );
 		csg->SetOperation( CsgOpFromChar( op ) );
@@ -16381,6 +16706,13 @@ bool Job::SetObjectMaterial(
 	}
 
 	if(RefuseVolumeFreeRandomWalk_(pObj->GetGeometry(),pMat,objName)) return false;
+	const Implementation::Object* pObjImpl = dynamic_cast<const Implementation::Object*>( pObj );
+	if( pMat->IsUnresolvedMix() && ( pObj->GetInteriorMedium() || ( pObjImpl && pObjImpl->HasMediumInheritingCsgConsumer() ) ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMaterial:: `%s` carries or inherits an interior_medium and cannot be assigned mix_material `%s`",
+			objName, materialName );
+		return false;
+	}
 
 	// Mirrors the interactive editor's material-swap path
 	// (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).

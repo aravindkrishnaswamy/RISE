@@ -55,7 +55,9 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 	const unsigned int maxBounces,
 	ISampler& sampler,
 	const Scalar nm,
-	const Scalar maxDepth
+	const Scalar maxDepth,
+	const IMaterial* pExitLeafMaterial,
+	const IRayIntersectionModifier* pExitLeafModifier
 	)
 {
 	BSSRDFSampling::SampleResult result;
@@ -209,20 +211,35 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
         // This also covers the front-face fallback above. Internal Fresnel
         // boundaries still define the opaque-domain proposal: no alpha draw
         // occurs until this boundary is selected as the final exit below.
+        // Round 3 P1-4: on a MixMaterial on the originating body, compose mix
+        // coverage with the resolved SSS leaf's alpha and inherit its modifier.
+        // Slice 3 R1 A-P2-4: stamp signals & pCamera on exitRI before coverage
+        // and modifier evaluation.
+        exitRI.geometric.rast = ri.rast;
+        exitRI.geometric.pCamera = ri.pCamera;
+        exitRI.geometric.signals.pScene = ri.signals.pScene;
+        exitRI.geometric.signals.pSelf = pCur;
+        exitRI.geometric.signals.ptWorld = exitRI.geometric.ptIntersection;
         Scalar exitCoverage = 1;
-        if( exitRI.pMaterial && exitRI.pMaterial->GetAlphaMode() != eAlphaOpaque ) {
-            // Supply scene/raster context only to coverage. Preserve the raw
-            // probe record and existing modifier/proposal inputs.
-            RayIntersectionGeometric alphaRI(exitRI.geometric);
-            alphaRI.rast = ri.rast;
-            alphaRI.signals.pScene = ri.signals.pScene;
-            alphaRI.signals.pSelf = pCur;
-            alphaRI.signals.ptWorld = alphaRI.ptIntersection;
-            exitCoverage = exitRI.pMaterial->AlphaCoverage(alphaRI);
+        const bool sameBodyAsOrigin = ( pCur == pObject );
+        const IMaterial* pLeafMat = sameBodyAsOrigin ? pExitLeafMaterial : 0;
+        if( ( exitRI.pMaterial && exitRI.pMaterial->HasAlphaCoverage() ) ||
+            ( pLeafMat && pLeafMat->GetAlphaMode() != eAlphaOpaque ) )
+        {
+            if( exitRI.pMaterial && exitRI.pMaterial->IsUnresolvedMix() ) {
+                const Scalar mixCov = exitRI.pMaterial->AlphaCoverage( exitRI.geometric );
+                const Scalar leafCov = ( pLeafMat && pLeafMat->GetAlphaMode() != eAlphaOpaque )
+                    ? pLeafMat->AlphaCoverage( exitRI.geometric ) : Scalar( 1 );
+                exitCoverage = mixCov * leafCov;
+            } else if( exitRI.pMaterial && exitRI.pMaterial->HasAlphaCoverage() ) {
+                exitCoverage = exitRI.pMaterial->AlphaCoverage( exitRI.geometric );
+            }
         }
 
-		if( exitRI.pModifier ) {
-			exitRI.pModifier->Modify( exitRI.geometric );
+		const IRayIntersectionModifier* pEffectiveMod =
+			( sameBodyAsOrigin && pExitLeafModifier ) ? pExitLeafModifier : exitRI.pModifier;
+		if( pEffectiveMod ) {
+			pEffectiveMod->Modify( exitRI.geometric );
 		}
 
 		const Scalar exitDist = exitRI.geometric.range;
@@ -639,6 +656,10 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			result.ptObjIntersec = exitRI.geometric.ptObjIntersec;
 			result.vColor = exitRI.geometric.vColor;
 			result.bHasVertexColor = exitRI.geometric.bHasVertexColor;
+			result.pmxWorldToObject = exitRI.geometric.pmxWorldToObject ? exitRI.geometric.pmxWorldToObject : ri.pmxWorldToObject;
+			result.pmxObjectToWorld = exitRI.geometric.pmxObjectToWorld ? exitRI.geometric.pmxObjectToWorld : ri.pmxObjectToWorld;
+			result.pCamera = exitRI.geometric.pCamera ? exitRI.geometric.pCamera : ri.pCamera;
+			result.pObjectInfo = exitRI.geometric.pObjectInfo ? exitRI.geometric.pObjectInfo : ri.pObjectInfo;
 
 			// Cross-object signals triple (DL-22):
 			result.signals.pScene = ri.signals.pScene;

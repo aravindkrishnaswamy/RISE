@@ -4994,6 +4994,64 @@ namespace RISE
 			return false;
 		}
 
+		//! Adds a physically-based bounded N-ary mix material (`mix_material`).
+		//! `children[i]` names a registered material (or `"none"` / empty for
+		//! black absorber); `weights[i]` names a scalar painter (or inline
+		//! scalar); `modifiers` (or `modifiers[i]`) is optional (`nullptr` /
+		//! empty / `"none"` = keep object modifier); `passthroughWeight` is
+		//! optional (`nullptr` / empty = no pass-through).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMixMaterial(
+			const char* /*name*/,
+			const char* const* /*children*/,
+			const char* const* /*weights*/,
+			const char* const* /*modifiers*/,
+			const unsigned int /*numChildren*/,
+			const char* /*passthroughWeight*/
+			)
+		{
+			return false;
+		}
+
+		//! Adds a blended_modifier: weighted blend of two previously-registered
+		//! modifiers (`modAName` at weight 0, `modBName` at weight 1; either
+		//! may be null/empty/"none" for the unperturbed surface normal, at
+		//! least one must name a modifier).  `weight` names an IScalarPainter
+		//! or inline numeric literal in [0, 1].
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddBlendedModifier(
+			const char* /*name*/,
+			const char* /*modAName*/,
+			const char* /*modBName*/,
+			const char* /*weight*/
+			)
+		{
+			return false;
+		}
+
+		//! Sets the planar near-clip distance (in scene units; 0 disables)
+		//! on a named camera (or the active camera when `name` is null/empty).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetCameraNearClip(
+			const char* /*name*/,
+			const double /*nearClip*/
+			)
+		{
+			return false;
+		}
+
+		//! Adds a thin two-sided diffuse reflection + diffuse transmission
+		//! material (`diffuse_transmission_material`).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddDiffuseTransmissionMaterial(
+			const char* /*name*/,
+			const char* /*reflectance*/,
+			const char* /*transmittance*/
+			)
+		{
+			return false;
+		}
+
 		//! Simulation M6: `standard_object { transform_source <simulation>.<output>[<body>] }`
 		//! -- the object follows a rigid body of a transform.v1 output: its
 		//! authored transform is its pose at time 0, moved by the body's motion

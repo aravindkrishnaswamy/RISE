@@ -54,7 +54,13 @@ def build():
     tbb = Path(os.environ.get("TBB_PREFIX", prefix / "opt/tbb"))
     blosc = Path(os.environ.get("BLOSC_PREFIX", prefix / "opt/c-blosc"))
     if not (vdb / "include/openvdb/openvdb.h").is_file():
-        raise SystemExit(f"OpenVDB headers for rise-cache-import are missing at {vdb}")
+        if os.environ.get("RISE_RELEASE_PACKAGING") == "YES":
+            raise SystemExit(f"OpenVDB headers for rise-cache-import are missing at {vdb}")
+        print(
+            f"note: OpenVDB headers not found at {vdb}; skipping optional rise-cache-import helper "
+            f"(install Homebrew openvdb or set OPENVDB_PREFIX to enable VDB import)."
+        )
+        return
     compiler = output("xcrun", "--find", "clang++")
     sdk = os.environ.get("SDKROOT") or output("xcrun", "--sdk", "macosx", "--show-sdk-path")
     flags = ["-std=c++17", "-O2", "-ffp-contract=off", "-fno-fast-math", "-Wall",

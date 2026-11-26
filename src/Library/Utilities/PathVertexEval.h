@@ -329,6 +329,11 @@ namespace RISE
 			ri.derivatives     = vertex.derivatives;
 			ri.signals         = vertex.signals;
 			ri.txFootprint     = vertex.txFootprint;
+			ri.pmxWorldToObject = vertex.pmxWorldToObject;
+			ri.pmxObjectToWorld = vertex.pmxObjectToWorld;
+			ri.pCamera          = vertex.pCamera;
+			ri.pObjectInfo      = vertex.pObjectInfo;
+			ri.bIsCameraRay     = vertex.bIsCameraRay;
 			// G6: replay the enclosing (ambient) medium IOR captured at trace
 			// time (BDPTVertex::mediumIOR = IORStack::top() at hit production;
 			// SetCurrentObject does NOT push, so this is the medium the ray was

@@ -33,6 +33,7 @@ namespace RISE
 			IEmitter*					pEmitter;
 			bool          bScattersFullSphere;   //!< DL-157 P2-1 / DL-24; see the ctor
 			bool          bHasDeltaPassThrough;  //!< DL-05; see the ctor
+			unsigned int  pathDependence;        //!< Part 0: union of layers + extinction
 
 			virtual ~CompositeMaterial( )
 			{
@@ -57,7 +58,8 @@ namespace RISE
 			pSPF( 0 ), 
 			pEmitter( 0 ),
 			bScattersFullSphere( false ),
-			bHasDeltaPassThrough( false )
+			bHasDeltaPassThrough( false ),
+			pathDependence( top.GetPathDependence() | bottom.GetPathDependence() | extinction.GetPathDependence() )
 			{
 				if( top.GetSPF() && bottom.GetSPF() ) {
 					// DL-24 (2026-09-28): the composite prices its own
@@ -184,6 +186,9 @@ namespace RISE
 
 			//! DL-05: see the constructor (IMaterial::HasDeltaPassThrough).
 			inline bool HasDeltaPassThrough() const { return bHasDeltaPassThrough; }
+
+			inline bool TracksInteriorContainment() const { return true; }
+			inline unsigned int GetPathDependence() const { return IMaterial::GetPathDependence() | pathDependence; }
 		};
 	}
 }

@@ -45,6 +45,7 @@
 #include "FrameStore.h"  // L6e-1.1 — FrameStoreBulkBracket RAII guard
 #include "FilteredFilm.h"
 #include "../RISE_API.h"
+#include "../Managers/ObjectManager.h"
 #include <cstring>
 
 using namespace RISE;
@@ -353,6 +354,23 @@ void BDPTRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect
 	mSplatTotalSamples *= GetSplatSampleScale();
 }
 
+bool BDPTRasterizerBase::ValidateSceneForRasterizer( const IScene& pScene ) const
+{
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		const unsigned int pdMask = pObjMgr->ComputeScenePathDependence( &offender );
+		if( pdMask != 0u ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"BDPTRasterizerBase:: Refusing scene with non-physical path/view-dependent inputs or "
+				"spatially varying subsurface mix weights (first object '%s', mask=0x%x). "
+				"Use pathtracing_pel_rasterizer or pathtracing_spectral_rasterizer.",
+				offender.c_str(), pdMask );
+			return false;
+		}
+	}
+	return true;
+}
+
 void BDPTRasterizerBase::RasterizeScene(
 	const IScene& pScene,
 	const Rect* pRect,
@@ -411,6 +429,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	// AttachScene also creates and Prepare()s the unified LightSampler.
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
+
+	if( !ValidateSceneForRasterizer( pScene ) ) {
+		return;
+	}
 
 	// Per-render setup shared with every animation frame (DL-458):
 	// light sampler -> integrator, fresh splat film, splat region,
@@ -1352,6 +1374,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	// After denoising we add the splatted contributions raw — they
 	// may carry residual noise but their energy is unbiased.
 	if( bWillDenoise ) {
+		if( pProgressFunc ) {
+			pProgressFunc->SetTitle( "Denoising: " );
+		}
 		// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 		// OIDN realistically can throw (CUDA / Metal device errors,
 		// OOM in scratch buffers); RAII unwinds correctly in that

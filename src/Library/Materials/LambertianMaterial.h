@@ -96,6 +96,11 @@ namespace RISE
 				pBRDF->SetReflectance( reflectance );
 				pSPF->SetReflectance( reflectance );
 			}
+
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() | pBRDF->GetReflectance().GetPathDependence();
+			}
 		};
 	}
 }

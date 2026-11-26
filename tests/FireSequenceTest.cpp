@@ -2075,7 +2075,7 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			{"exposure_compensation_ev",Value::Float(0.0)},{"exposure_time",Value::Float(0.04)},
 			{"kind",Value::String("pinhole")},{"location",Value::ArrayValue({Value::Float(location.x),
 				Value::Float(location.y),Value::Float(location.z)})},{"matrix",Value::ArrayValue(matrixValues)},
-			{"pixel_rate",Value::Float(0.02)},{"projection",Value::MapValue({
+			{"near_clip",Value::Float(0.0)},{"pixel_rate",Value::Float(0.02)},{"projection",Value::MapValue({
 				{"fov_radians",Value::Float(45.0*DEG_TO_RAD)},{"fstop",Value::Float(0.0)},
 				{"iso",Value::Float(0.0)}})},{"scanning_rate",Value::Float(-0.1)}});
 		auto equal=[](const Value* actual,const Value& expected){RISECBOR64::Bytes a,b;

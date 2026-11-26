@@ -24,6 +24,7 @@
 
 namespace RISE
 {
+	class ICamera;
 	class IObjectPriv;
 	class ISampler;
 
@@ -567,8 +568,8 @@ namespace RISE
             bool front = true, bool back = true, bool exit = false,
             Scalar maxDistance = RISE_INFINITY, bool shadows = false, MediumBoundaryHits* boundaries = nullptr, bool boundariesOnly = false, Scalar occlusionEnd = RISE_INFINITY, Scalar occlusionStart = 0, Scalar startDistance = 0) const;
         //! Collect accepted medium boundaries over the full segment, ignoring ordinary occluders.
-        void CollectMediumBoundaryHitsSampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits& boundaries) const;
-        bool IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const;
+        void CollectMediumBoundaryHitsSampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits& boundaries, const ICamera* pCamera = nullptr) const;
+        bool IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0, const ICamera* pCamera = nullptr) const;
     };
 }
 

@@ -20,6 +20,101 @@ def get_last_auto_resolution():
     return dict(_LAST_AUTO_RESOLUTION)
 
 
+def _format_duration(seconds: float) -> str:
+    """Format a duration in Blender/Cycles render-header timecode form:
+    ``MM:SS.CC`` below one hour, ``HH:MM:SS.CC`` at or above one hour.
+    Non-finite or negative inputs clamp to ``00:00.00``."""
+    if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0.0:
+        return "00:00.00"
+    clamped = min(float(seconds), 359999.99)
+    total_cs = int(round(clamped * 100.0))
+    cs = total_cs % 100
+    total_s = total_cs // 100
+    s = total_s % 60
+    m = (total_s // 60) % 60
+    h = total_s // 3600
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}.{cs:02d}"
+    return f"{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _live_remaining_seconds(
+    remaining_seconds: float,
+    has_remaining: bool,
+    received_at: float,
+    now: float,
+) -> float:
+    """Count down a RenderETAEstimator remaining-time snapshot in real time
+    between progress callbacks (mirrors RISE::RenderETAEstimator::RemainingSeconds)."""
+    if not has_remaining or not math.isfinite(remaining_seconds):
+        return -1.0
+    dt = max(0.0, float(now) - float(received_at))
+    return max(0.0, float(remaining_seconds) - dt)
+
+
+def _normalize_stage_title(title: str) -> str:
+    cleaned = (title or "").strip().rstrip(":").strip()
+    return cleaned or "Rendering"
+
+
+def _format_render_status(
+    title: str,
+    progress: float,
+    remaining_seconds: float,
+    has_remaining: bool,
+) -> str:
+    """Build the non-empty ``info`` string for ``RenderEngine.update_stats("", info)``.
+
+    Keeping ``info`` non-empty activates Blender's live elapsed ``Time:`` readout
+    in the Render View header (and prints clean ``Fra: N | <info>`` lines in
+    background mode); passing ``""`` for ``stats`` matches Cycles and avoids
+    replacing the stats column with a static engine label."""
+    stage = _normalize_stage_title(title)
+    has_pct = isinstance(progress, (int, float)) and math.isfinite(progress) and progress >= 0.0
+    if has_pct:
+        pct = max(0, min(100, int(progress * 100.0)))
+        stage_text = f"{stage} {pct}%"
+    else:
+        stage_text = stage
+
+    if (
+        has_remaining
+        and isinstance(remaining_seconds, (int, float))
+        and math.isfinite(remaining_seconds)
+        and (not has_pct or progress < 1.0)
+    ):
+        return f"Remaining: {_format_duration(max(0.0, remaining_seconds))} | {stage_text}"
+    return stage_text
+
+
+def _should_refresh_stats(
+    *,
+    is_background: bool,
+    stage_changed: bool,
+    pct_changed: bool,
+    eta_became_ready: bool,
+    elapsed_since_update: float,
+    status_interval: float = 0.25,
+) -> bool:
+    """Decide whether to emit a new ``RenderEngine.update_stats`` call.
+
+    In GUI mode, refreshes on every stage change, at least every
+    ``status_interval`` seconds (keeping Blender's ``Time:`` and ``Remaining:``
+    ticking smoothly), or promptly when integer percentage advances.
+    In headless/background mode, refreshes only on meaningful transitions
+    (stage change, percentage advance, or ETA warmup completion) so stdout
+    stays clean."""
+    if stage_changed:
+        return True
+    if is_background:
+        return pct_changed or eta_became_ready
+    if elapsed_since_update >= status_interval:
+        return True
+    if pct_changed and elapsed_since_update >= 0.05:
+        return True
+    return eta_became_ready
+
+
 class RISEBlenderRenderEngine(bpy.types.RenderEngine):
     bl_idname = "RISE_RENDER"
     bl_label = "RISE"
@@ -36,20 +131,51 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
             ]
 
     @staticmethod
-    def _flip_full_image_rows(pixels, width, height):
-        expected_value_count = width * height * 4
-        if width <= 0 or height <= 0 or len(pixels) != expected_value_count:
+    def _extract_flipped_region(
+        pixels,
+        full_width,
+        full_height,
+        crop_left,
+        crop_top,
+        crop_width,
+        crop_height,
+    ):
+        expected_full = full_width * full_height * 4
+        if (
+            full_width <= 0
+            or full_height <= 0
+            or crop_width <= 0
+            or crop_height <= 0
+            or len(pixels) != expected_full
+        ):
             return pixels
 
-        flipped = array.array("f", [0.0]) * expected_value_count
-        row_width = width * 4
-        for src_row in range(height):
-            src_base = src_row * row_width
-            dst_base = (height - 1 - src_row) * row_width
-            row_values = array.array("f", pixels[src_base:src_base + row_width])
-            flipped[dst_base:dst_base + row_width] = row_values
+        cropped = array.array("f", [0.0]) * (crop_width * crop_height * 4)
+        dst_row_values = crop_width * 4
+        src_row_stride = full_width * 4
+        for row in range(crop_height):
+            src_y = crop_top + row
+            if src_y < 0 or src_y >= full_height:
+                continue
+            src_x0 = max(crop_left, 0)
+            src_x1 = min(crop_left + crop_width, full_width)
+            if src_x1 <= src_x0:
+                continue
+            copy_values = (src_x1 - src_x0) * 4
+            src_base = src_y * src_row_stride + src_x0 * 4
+            # Blender render passes expect rows in bottom-up order.
+            dst_y = crop_height - 1 - row
+            dst_base = dst_y * dst_row_values + (src_x0 - crop_left) * 4
+            cropped[dst_base:dst_base + copy_values] = array.array(
+                "f", pixels[src_base:src_base + copy_values]
+            )
+        return cropped
 
-        return flipped
+    @staticmethod
+    def _flip_full_image_rows(pixels, width, height):
+        return RISEBlenderRenderEngine._extract_flipped_region(
+            pixels, width, height, 0, 0, width, height
+        )
 
     @staticmethod
     def _apply_region_to_buffer(
@@ -61,12 +187,22 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         full_height,
         region_top,
         region_left,
+        crop_left=0,
+        crop_top=0,
+        crop_width=None,
+        crop_height=None,
     ):
+        if crop_width is None:
+            crop_width = full_width
+        if crop_height is None:
+            crop_height = full_height
         if (
             region_width <= 0
             or region_height <= 0
             or full_width <= 0
             or full_height <= 0
+            or crop_width <= 0
+            or crop_height <= 0
         ):
             return
 
@@ -84,24 +220,26 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         if len(values) != expected_value_count:
             return
 
+        # Clip incoming full-frame tile against the active crop window.
+        x0 = max(region_left, crop_left)
+        x1 = min(region_left + region_width, crop_left + crop_width)
+        y0 = max(region_top, crop_top)
+        y1 = min(region_top + region_height, crop_top + crop_height)
+        if x1 <= x0 or y1 <= y0:
+            return
+
         scale = 1.0 / 65535.0
-        for row in range(region_height):
-            src_base = row * region_width * 4
+        copy_cols = x1 - x0
+        for full_y in range(y0, y1):
+            src_row = full_y - region_top
+            src_col = x0 - region_left
+            src_base = (src_row * region_width + src_col) * 4
             # Blender render passes expect rows in bottom-up order.
-            dst_row = full_height - 1 - (region_top + row)
-            dst_base = (dst_row * full_width + region_left) * 4
-            for offset in range(region_width * 4):
+            dst_row = crop_height - 1 - (full_y - crop_top)
+            dst_col = x0 - crop_left
+            dst_base = (dst_row * crop_width + dst_col) * 4
+            for offset in range(copy_cols * 4):
                 buffer[dst_base + offset] = values[src_base + offset] * scale
-
-    def _progress(self, progress, title):
-        if title:
-            info = "" if progress < 0.0 else f"{max(int(progress * 100.0), 0)}%"
-            self.update_stats(title, info)
-
-        if progress >= 0.0 and math.isfinite(progress):
-            self.update_progress(max(0.0, min(progress, 1.0)))
-
-        return not self.test_break()
 
     def update_render_passes(self, scene, render_layer):
         if render_layer.use_pass_combined:
@@ -144,8 +282,7 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
             # uses a separate isolated export-time child, not this driver.
             missing = [
                 mat.name
-                for mat in bpy.data.materials
-                if material_bake.needs_bake_attempt(scene, mat)
+                for mat in material_bake.materials_needing_bake(scene, depsgraph=depsgraph)
             ]
             if missing:
                 names = ", ".join(missing[:3])
@@ -160,13 +297,13 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
                 self.error_set(msg)
                 return
 
-            self.update_stats("RISE", "Exporting scene")
+            self.update_stats("", "Exporting scene")
             scene_data, render_settings = exporter.export_scene(depsgraph)
 
             for warning in scene_data.warnings:
                 self.report({"WARNING"}, warning)
 
-            self.update_stats("RISE", "Rendering")
+            self.update_stats("", "Building scene")
         except Exception as exc:
             message = str(exc)
             self.report({"ERROR"}, message)
@@ -175,18 +312,50 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
 
         state_lock = threading.Lock()
         cancel_requested = threading.Event()
-        progress_state = {"seq": 0, "progress": -1.0, "title": ""}
+        progress_state = {
+            "seq": 0,
+            "progress": -1.0,
+            "elapsed": 0.0,
+            "remaining": -1.0,
+            "has_remaining": False,
+            "title": "Building scene",
+            "received_at": time.monotonic(),
+        }
         preview_state = {"payloads": []}
         final_state = {"done": False, "image": None, "error": None}
-        preview_buffer = array.array("f", [0.0]) * (render_settings.width * render_settings.height * 4)
-        result = self.begin_result(0, 0, render_settings.width, render_settings.height)
+        if getattr(render_settings, "use_region", False):
+            crop_left = int(render_settings.region_left)
+            crop_top = int(render_settings.region_top)
+            crop_width = int(render_settings.region_right) - crop_left + 1
+            crop_height = int(render_settings.region_bottom) - crop_top + 1
+        else:
+            crop_left = 0
+            crop_top = 0
+            crop_width = int(render_settings.width)
+            crop_height = int(render_settings.height)
+        result = self.begin_result(0, 0, crop_width, crop_height)
+        # Always match Blender's allocated pass extents (guards against any
+        # 1px border rounding edge case between Python and Blender C), and
+        # keep the rasterizer's region bounds synchronized before rendering.
+        crop_width = int(result.resolution_x)
+        crop_height = int(result.resolution_y)
+        if getattr(render_settings, "use_region", False) and crop_width > 0 and crop_height > 0:
+            render_settings.region_right = min(int(render_settings.width) - 1, crop_left + crop_width - 1)
+            render_settings.region_bottom = min(int(render_settings.height) - 1, crop_top + crop_height - 1)
+        preview_buffer = array.array("f", [0.0]) * (crop_width * crop_height * 4)
         layer = result.layers[0].passes["Combined"]
 
-        def _queue_progress(progress_value, title):
+        def _queue_progress_info(progress_value, elapsed_seconds, remaining_seconds, has_remaining, title):
+            now_mono = time.monotonic()
             with state_lock:
                 progress_state["seq"] += 1
                 progress_state["progress"] = float(progress_value)
-                progress_state["title"] = title
+                progress_state["elapsed"] = float(elapsed_seconds)
+                progress_state["remaining"] = float(remaining_seconds)
+                progress_state["has_remaining"] = bool(has_remaining)
+                if title:
+                    progress_state["title"] = title
+                progress_state["received_at"] = now_mono
             return not cancel_requested.is_set()
 
         def _queue_image(rgba16_bytes, region_width, region_height, full_width, full_height, region_top, region_left):
@@ -210,7 +379,7 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
                     scene_data,
                     render_settings,
                     bridge_path=bridge_path,
-                    progress=_queue_progress,
+                    progress_info=_queue_progress_info,
                     image_update=_queue_image,
                 )
                 with state_lock:
@@ -225,31 +394,83 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         worker.start()
 
         last_progress_seq = -1
+        last_stats_update = time.monotonic()
+        last_stats_title = "Building scene"
+        last_stats_pct = -1
+        last_stats_has_remaining = False
         last_preview_update = 0.0
+        status_interval = 0.25
         preview_interval = 0.1
         preview_dirty = False
+        is_background = bool(getattr(bpy.app, "background", False))
 
         while True:
             with state_lock:
                 progress_seq = progress_state["seq"]
                 progress_value = progress_state["progress"]
+                remaining_seconds = progress_state["remaining"]
+                has_remaining = progress_state["has_remaining"]
                 progress_title = progress_state["title"]
+                received_at = progress_state["received_at"]
                 preview_payloads = preview_state["payloads"]
                 preview_state["payloads"] = []
                 done = final_state["done"]
                 image = final_state["image"]
                 error = final_state["error"]
 
+            now = time.monotonic()
+
             if progress_seq != last_progress_seq:
                 last_progress_seq = progress_seq
-                self._progress(progress_value, progress_title)
+                if progress_value >= 0.0 and math.isfinite(progress_value):
+                    self.update_progress(max(0.0, min(progress_value, 1.0)))
+
+            pct = (
+                max(0, min(100, int(progress_value * 100.0)))
+                if (progress_value >= 0.0 and math.isfinite(progress_value))
+                else -1
+            )
+            stage_changed = progress_title != last_stats_title
+            pct_changed = pct != last_stats_pct
+            eta_became_ready = bool(has_remaining and not last_stats_has_remaining)
+            if _should_refresh_stats(
+                is_background=is_background,
+                stage_changed=stage_changed,
+                pct_changed=pct_changed,
+                eta_became_ready=eta_became_ready,
+                elapsed_since_update=now - last_stats_update,
+                status_interval=status_interval,
+            ):
+                live_remaining = _live_remaining_seconds(
+                    remaining_seconds,
+                    has_remaining,
+                    received_at,
+                    now,
+                )
+                status_text = _format_render_status(
+                    progress_title,
+                    progress_value,
+                    live_remaining,
+                    has_remaining,
+                )
+                self.update_stats("", status_text)
+                last_stats_update = now
+                last_stats_title = progress_title
+                last_stats_pct = pct
+                last_stats_has_remaining = bool(has_remaining)
 
             if preview_payloads:
                 for payload in preview_payloads:
-                    self._apply_region_to_buffer(preview_buffer, *payload)
+                    self._apply_region_to_buffer(
+                        preview_buffer,
+                        *payload,
+                        crop_left=crop_left,
+                        crop_top=crop_top,
+                        crop_width=crop_width,
+                        crop_height=crop_height,
+                    )
                 preview_dirty = True
 
-            now = time.monotonic()
             if preview_dirty and (now - last_preview_update) >= preview_interval:
                 last_preview_update = now
                 self._set_pass_rect(layer, preview_buffer)
@@ -269,7 +490,7 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         if error:
             self.end_result(result, cancel=True)
             if cancel_requested.is_set() and "canceled" in error.lower():
-                self.update_stats("RISE", "Canceled")
+                self.update_stats("", "Canceled")
                 return
 
             self.report({"ERROR"}, error)
@@ -285,7 +506,15 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
 
         self._set_pass_rect(
             layer,
-            self._flip_full_image_rows(image.rgba, image.width, image.height),
+            self._extract_flipped_region(
+                image.rgba,
+                image.width,
+                image.height,
+                crop_left,
+                crop_top,
+                crop_width,
+                crop_height,
+            ),
         )
         self.update_result(result)
         self.end_result(result)
@@ -303,11 +532,11 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
                 "integrator": image.resolved_integrator,
                 "reason": image.resolve_reason,
             }
-            self.update_stats("RISE", f"{image.width} x {image.height}  \u00b7  {summary}")
+            self.update_stats("", f"RISE  \u00b7  {image.width} x {image.height}  \u00b7  {summary}")
             self.report({"INFO"}, f"RISE: {summary} ({image.resolve_reason})")
         else:
             _LAST_AUTO_RESOLUTION = {"is_auto": False, "integrator": "", "reason": ""}
-            self.update_stats("RISE", f"{image.width} x {image.height}")
+            self.update_stats("", f"RISE  \u00b7  {image.width} x {image.height}")
 
 
 def register():

@@ -188,7 +188,9 @@ RISEPel ExpressionPainter::EvalRGB( const RayIntersectionGeometric& ri ) const
 	const ExprEvalContext ctx = BuildContext( ri );
 
 	ExpressionMemo::ProgramKey key;
-	const bool memoable = m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
+	const bool hasReliefStep =
+		( ri.vReliefObjStep.x != Scalar( 0 ) || ri.vReliefObjStep.y != Scalar( 0 ) || ri.vReliefObjStep.z != Scalar( 0 ) );
+	const bool memoable = !hasReliefStep && m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
 	if( memoable ) {
 		m_prog.MakeMemoKey( ctx, ExpressionMemo::ePipeColour, key );
 		Vector3 hit;
@@ -432,7 +434,9 @@ ScalarTriple ExpressionScalarPainter::GetValuesAt( const RayIntersectionGeometri
 	const bool isVec3 = ( m_prog.ResultType() == ExpressionProgram::kVec3 );
 
 	ExpressionMemo::ProgramKey key;
-	const bool memoable = m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
+	const bool hasReliefStep =
+		( ri.vReliefObjStep.x != Scalar( 0 ) || ri.vReliefObjStep.y != Scalar( 0 ) || ri.vReliefObjStep.z != Scalar( 0 ) );
+	const bool memoable = !hasReliefStep && m_prog.MemoWorthy() && m_prog.ProgramId() != 0;
 	if( memoable ) {
 		m_prog.MakeMemoKey( ctx, ExpressionMemo::ePipeScalar, key );
 		Vector3 hit;

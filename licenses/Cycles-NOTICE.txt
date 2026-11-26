@@ -1,10 +1,15 @@
 RISE contains code ported from Blender's Cycles renderer (intern/cycles),
 Blender commit afc6d7a4 (5.2 alpha, 2026-03-17), in
-src/Library/Utilities/OslNoise.h and src/Library/Utilities/OslNoise.cpp.
-The port was modified for RISE: it was rewritten as standalone C++
-functions, the four per-dimension overloads of each fractal were merged
-into one, and guards were added for non-finite coordinates (gradient noise)
-and runaway detail.
+src/Library/Utilities/OslNoise.h, OslNoise.cpp, OslVoronoi.h,
+OslVoronoi.cpp, OslColor.h, OslColor.cpp, OslMath.h, OslMath.cpp,
+OslVector.h, OslVector.cpp, OslShaderNodes.h and OslShaderNodes.cpp.
+The port was modified for RISE: it was
+rewritten as standalone C++ functions, the four per-dimension overloads of
+each noise fractal were merged into one, as were the 2D, 3D and 4D copies
+of each Voronoi feature, and guards were added for non-finite coordinates
+(gradient noise and Voronoi), runaway detail, Voronoi cell ids and
+safe_powf exponents beyond the int32 range, and out-of-range Voronoi,
+Mix, Math, Vector Math, Clamp, Map Range or Vector Rotate enum values.
 
 Gradient noise (from intern/cycles/kernel/svm/noise.h), adapted by
 Blender from Open Shading Language:
@@ -15,16 +20,34 @@ Blender from Open Shading Language:
 
   Licensed under the BSD 3-Clause License; see BSD-3-Clause.txt.
 
-Fractal noise, the Noise Texture and White Noise nodes, the hashes and
-three small helpers (from intern/cycles/kernel/svm/fractal_noise.h,
-kernel/svm/noisetex.h, kernel/svm/white_noise.h, util/hash.h and
-util/math_base.h):
+Fractal noise, the Noise Texture, White Noise, Voronoi Texture, Mix Color,
+Math, Vector Math, Clamp, Map Range, Vector Rotate, Gradient Texture, Brick
+Texture, Fresnel and Layer Weight nodes, the colour-space conversions, the
+hashes and small helpers (from
+intern/cycles/kernel/svm/fractal_noise.h, kernel/svm/noisetex.h,
+kernel/svm/white_noise.h, kernel/svm/voronoi.h, kernel/svm/color_util.h,
+kernel/svm/mix.h, kernel/svm/math_util.h, kernel/svm/math.h,
+kernel/svm/clamp.h, kernel/svm/map_range.h, kernel/svm/vector_rotate.h,
+kernel/svm/gradient.h, kernel/svm/brick.h, kernel/svm/fresnel.h,
+kernel/closure/bsdf_util.h, util/color.h, util/hash.h, util/math_base.h,
+util/math_float{2,3,4}.h and util/transform.h):
 
+  Copyright (c) 2011-2013 Intel Corporation (util/math_float3.h and
+  util/math_float4.h)
   Copyright (c) 2011-2022 Blender Foundation
 
   Licensed under the Apache License, Version 2.0; see Apache-2.0.txt.
   Distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
   ANY KIND, either express or implied.
 
+The Voronoi Texture node's Smooth F1 and Distance to Edge features (inside
+intern/cycles/kernel/svm/voronoi.h):
+
+  Copyright (c) 2013 Inigo Quilez
+
+  Licensed under the MIT License; see MIT-Inigo-Quilez.txt.
+
 The lookup3 hash inside util/hash.h is Bob Jenkins's public-domain code
-(http://burtleburtle.net/bob/c/lookup3.c).
+(http://burtleburtle.net/bob/c/lookup3.c).  The PCG hashes inside it are
+from Jarzynski and Olano, "Hash Functions for GPU Rendering", JCGT 9(3),
+2020, as modified by Blender.

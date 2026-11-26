@@ -130,6 +130,9 @@ private:
 
 	static RISEPel MaterialAlbedo( const RayIntersection& ri )
 	{
+		if( ri.bMaterialFromMix && !ri.pMaterial ) {
+			return RISEPel( 0.0, 0.0, 0.0 );
+		}
 		RISEPel albedo( 0.72, 0.72, 0.72 );
 		if( ri.pMaterial ) {
 			const IBSDF* bsdf = ri.pMaterial->GetBSDF();
@@ -358,6 +361,9 @@ private:
 		}
 
 		if( !bsdf ) {
+			if( ri.bMaterialFromMix && !ri.pMaterial ) {
+				return RISEPel( 0, 0, 0 );
+			}
 			return color * ( nDotL * intensity );
 		}
 
@@ -413,6 +419,9 @@ private:
 
 	RISEPel PreviewPel( const RayIntersection& ri, const IRayCaster& caster ) const
 	{
+		if( ri.bMaterialFromMix && !ri.pMaterial ) {
+			return RISEPel( 0.0, 0.0, 0.0 );
+		}
 		Vector3 n = ri.geometric.vNormal;
 		Vector3 v = -ri.geometric.ray.Dir();
 		Vector3Ops::NormalizeMag( n );

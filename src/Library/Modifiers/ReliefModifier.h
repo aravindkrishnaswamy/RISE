@@ -127,7 +127,8 @@ namespace RISE
 				const Scalar maxSlope_			///< [in] Tangent-plane tilt bound (a slope: 1 = 45deg); <= 0 = no clamp
 				);
 
-			void Modify( RayIntersectionGeometric& ri ) const;
+			void Modify( RayIntersectionGeometric& ri ) const override;
+			unsigned int GetPathDependence() const override { return height.GetPathDependence(); }
 
 			//! Structural introspection (CstDeriveGoldenTest's DumpJob
 			//! composition digest): height field + amplitude/domain/step/clamp.

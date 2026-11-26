@@ -62,13 +62,18 @@ namespace
 	//! coordinate (u,v) -- see PainterPreview.h's domain-conventions note.
 	RayIntersectionGeometric MakePreviewRi( double u, double v )
 	{
-		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
-		ri.bHit = true;
-		ri.ptCoord = Point2( Scalar( u ), Scalar( v ) );
 		const Vector3 p = UnitPatchPos( u, v );
+		RayIntersectionGeometric ri(
+			Ray( Point3( p.x, p.y, p.z + Scalar( 1 ) ), Vector3( Scalar( 0 ), Scalar( 0 ), Scalar( -1 ) ) ),
+			nullRasterizerState );
+		ri.bHit = true;
+		ri.bIsCameraRay = true;
+		ri.range = Scalar( 1 );
+		ri.ptCoord = Point2( Scalar( u ), Scalar( v ) );
 		ri.ptIntersection = Point3( p.x, p.y, p.z );
 		ri.ptObjIntersec  = Point3( p.x, p.y, p.z );
 		ri.vNormal = Vector3( Scalar( 0 ), Scalar( 0 ), Scalar( 1 ) );
+		ri.vGeomNormal = ri.vNormal;
 		// `widthValid`, not `valid`: `fw` is a footprint WIDTH, and
 		// `valid` means "the UV Jacobian is usable" -- which the preview has
 		// nothing to offer for.  Setting `valid` in addition would falsely

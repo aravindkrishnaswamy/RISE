@@ -97,7 +97,8 @@ namespace RISE
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
 				PixelAOV* pAOV,
-				RISEPel* pDirectCompanion
+				RISEPel* pDirectCompanion,
+				bool* pPrimaryHit = 0
 				) const;
 
 			void PostRenderCleanup() const override;

@@ -289,14 +289,16 @@ class RISE_RENDER_PT_bridge(_RISEPanel):
 class RISE_OT_bake_materials(bpy.types.Operator):
     """Explicit manual DIFFUSE COLOR / Roughness / Normal approximation.
 
-    Visits complex materials on scene MESH objects once using the first
-    encountered object, temporarily switches to Cycles, saves successful
-    channels, and restores the engine. Existing diffuse selects a synthetic
-    dielectric (metallic0), with optional roughness/normal, on later exports.
-    Other lobes are not preserved. Failed channels can retain prior cache.
-    Default retries regardless of metadata; optional skip uses any existing
-    channel file, even stale. Simple materials translate directly; supported
-    Noise can be simple. Tangent has its separate automatic corner producer.
+    Visits complex materials and materials with active procedural texture
+    nodes (e.g. Voronoi, Noise, White Noise, Checker) on scene MESH objects
+    once using the first encountered object, temporarily switches to Cycles,
+    saves successful channels, and restores the engine. Existing diffuse
+    selects a synthetic dielectric (metallic0), with optional roughness/normal,
+    on later exports. Other lobes are not preserved. Failed channels can
+    retain prior cache. Default retries regardless of metadata; optional skip
+    uses any existing channel file, even stale. Simple materials (including
+    natively translated Voronoi/Noise/White Noise) also render directly
+    without baking. Tangent has its separate automatic corner producer.
     Retry explicitly after shader changes: the limited fingerprint does not
     detect every edit. See docs/BLENDER_MATERIAL_TRANSLATION.md.
     """
@@ -304,9 +306,10 @@ class RISE_OT_bake_materials(bpy.types.Operator):
     bl_idname = "rise.bake_materials"
     bl_label = "Bake Procedural Materials for RISE"
     bl_description = (
-        "Manually approximate complex materials with Diffuse COLOR, Roughness "
-        "and Normal PNGs. Existing diffuse enables a dielectric cache; other "
-        "lobes are dropped. Retry after edits; not every edit is detected."
+        "Manually approximate complex or procedural-texture materials with "
+        "Diffuse COLOR, Roughness and Normal PNGs. Existing diffuse enables a "
+        "dielectric cache; other lobes are dropped. Retry after edits; not "
+        "every edit is detected."
     )
     bl_options = {"REGISTER"}
 
@@ -351,7 +354,7 @@ class RISE_OT_bake_materials(bpy.types.Operator):
                 "RISE: No new channel images saved (no eligible materials, skipped, or failed)",
             )
         else:
-            self.report({"INFO"}, f"RISE: Saved channel images for {count} complex material(s)")
+            self.report({"INFO"}, f"RISE: Saved channel images for {count} material(s)")
         return {"FINISHED"}
 
 
@@ -420,8 +423,7 @@ class RISE_RENDER_PT_materials(_RISEPanel):
         scene = context.scene
         needs_bake = [
             mat.name
-            for mat in bpy.data.materials
-            if material_bake.needs_bake_attempt(scene, mat)
+            for mat in material_bake.materials_needing_bake(scene)
         ]
         already_baked: list[tuple[str, str, bool]] = []
         for mat in bpy.data.materials:
@@ -457,8 +459,8 @@ class RISE_RENDER_PT_materials(_RISEPanel):
         layout.separator()
         layout.label(
             text=(
-                "RISE renders simple materials (Image Texture, "
-                "Mapping, single Principled BSDF) directly."
+                "RISE renders simple materials (Image Texture, Voronoi/Noise/"
+                "White Noise, Mapping, single Principled BSDF) directly."
             ),
             icon="INFO",
         )

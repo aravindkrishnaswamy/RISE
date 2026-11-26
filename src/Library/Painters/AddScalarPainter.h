@@ -106,6 +106,7 @@ namespace RISE
 			}
 			bool IsPositionIndependent() const override { return CompositeIsPositionIndependent( pA, pB ); }
 			bool ReadsWorldPosition() const override { return CompositeReadsWorldPosition( pA, pB ); }
+			unsigned int GetPathDependence() const override { return CompositeGetPathDependence( pA, pB ); }
 
 			//! DL-09/precision-slice P2-1: forward the single-scalar-slot
 			//! view through the composite (see ScaledScalarPainter.h's

@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "ObjectManager.h"
+#include "../Interfaces/IScene.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -26,6 +27,8 @@
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Materials/CoatedMaterial.h"
 #include "../Materials/FabricMaterial.h"
+#include "../Materials/MixMaterial.h"
+#include "../Materials/DiffuseTransmissionMaterial.h"
 #include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/BSSRDFSampling.h"
 #include "../Materials/DielectricMaterial.h"
@@ -105,8 +108,17 @@ bool AuditedMaterialGraph(const IMaterial& material)
         return AuditedMaterialGraph(dynamic_cast<const CoatedMaterial&>(material).GetBase());
     if(type==typeid(FabricMaterial))
         return AuditedMaterialGraph(dynamic_cast<const FabricMaterial&>(material).GetBase());
+    if(type==typeid(MixMaterial)) {
+        const MixMaterial& mm = dynamic_cast<const MixMaterial&>(material);
+        for( unsigned int i = 0; i < mm.GetChildCount(); ++i ) {
+            const IMaterial* pChild = mm.GetChild( i ).pMaterial;
+            if( pChild && !AuditedMaterialGraph( *pChild ) ) return false;
+        }
+        return true;
+    }
     return type==typeid(NullMaterial)
         || type==typeid(LambertianMaterial)
+        || type==typeid(DiffuseTransmissionMaterial)
         || type==typeid(PerfectReflectorMaterial)
         || type==typeid(PerfectRefractorMaterial)
         || type==typeid(DielectricMaterial)
@@ -157,6 +169,57 @@ bool ObjectHasClearTransmissionMemo(const IObject& object, std::unordered_map<co
         return res;
     }
     return false;
+}
+unsigned int ObjectPathDependenceImpl( const IObject& object, std::unordered_set<const CSGObject*>& visited )
+{
+    unsigned int mask = 0u;
+    if( const IMaterial* mat = object.GetMaterial() ) {
+        mask |= mat->GetPathDependence();
+    }
+    if( const IRayIntersectionModifier* mod = object.GetModifier() ) {
+        mask |= mod->GetPathDependence();
+    }
+    if( const CSGObject* csg = dynamic_cast<const CSGObject*>( &object ) ) {
+        if( visited.insert( csg ).second ) {
+            if( const IObjectPriv* a = csg->GetOperandA() ) {
+                mask |= ObjectPathDependenceImpl( *a, visited );
+            }
+            if( const IObjectPriv* b = csg->GetOperandB() ) {
+                mask |= ObjectPathDependenceImpl( *b, visited );
+            }
+        }
+    }
+    return mask;
+}
+bool ObjectHasMixMaterialImpl( const IObject& object, std::unordered_set<const CSGObject*>& visited )
+{
+    if( const IMaterial* mat = object.GetMaterial() ) {
+        if( mat->IsUnresolvedMix() ) return true;
+    }
+    if( const CSGObject* csg = dynamic_cast<const CSGObject*>( &object ) ) {
+        if( visited.insert( csg ).second ) {
+            if( const IObjectPriv* a = csg->GetOperandA() ) {
+                if( ObjectHasMixMaterialImpl( *a, visited ) ) return true;
+            }
+            if( const IObjectPriv* b = csg->GetOperandB() ) {
+                if( ObjectHasMixMaterialImpl( *b, visited ) ) return true;
+            }
+        }
+    }
+    return false;
+}
+std::string FormatPathDependenceFlags( const unsigned int mask )
+{
+    std::string s;
+    auto add = [&]( const char* label ) {
+        if( !s.empty() ) s += ", ";
+        s += label;
+    };
+    if( mask & PathDependence::kViewDirection ) add( "view-direction" );
+    if( mask & PathDependence::kCameraRay )     add( "camera-ray" );
+    if( mask & PathDependence::kBackfacing )    add( "backfacing" );
+    if( mask & PathDependence::kVaryingSSSMix ) add( "varying-sss-mix" );
+    return s;
 }
 // DL-382: a clear transmissive surface whose geometry is neither certified
 // closed nor certified open (a non-planar open mesh, a slab authored as one
@@ -1821,7 +1884,7 @@ bool ObjectManager::DeepestOtherContainment(
 	return true;
 }
 
-void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
+void ObjectManager::IntersectRayTraversalOnly( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
     SMSRecordSceneIntersection();
 	RISE_PROFILE_PHASE(GeomPrimary);
@@ -1885,16 +1948,46 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 			}
 		}
 	}
+}
 
-	// DL-408 round 4: an SSS entry that ties with a coincident partner face
-	// (a sheet emitter under the body, a closed room's floor) yields to it.
-	BSSRDFSampling::ResolveCoincidentEntry( *this, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+void ObjectManager::FinalizeIntersectionHit(
+	RayIntersection& ri,
+	ISampler* pSampler,
+	const bool bHitFrontFaces,
+	const bool bHitBackFaces,
+	const bool bComputeExitInfo
+	) const
+{
+	// MIX §I.2 post-traversal order:
+	// 1. Stamp scene signals so mix weight painters (osl_ao/proximity/mesh_attr)
+	//    evaluate safely outside BVH traversal with live scene provenance.
+	// 2. Resolve MixMaterial once on the winning hit (pre-modifier).
+	// 3. DL-408 round 4: ResolveCoincidentEntry sees the resolved SSS leaf.
+	// 4. If replaced, re-stamp signals and resolve any mix on the partner.
+	CompleteShadingSignals( ri.geometric, ri.pObject );
 
-    CompleteShadingSignals(ri.geometric,ri.pObject);
+	if( ri.geometric.bHit && ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
+		ri.pMaterial->ResolveMixHit( ri, pSampler );
+	}
+
+	if( ri.geometric.bHit &&
+		BSSRDFSampling::ResolveCoincidentEntry( *this, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo ) )
+	{
+		CompleteShadingSignals( ri.geometric, ri.pObject );
+		if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
+			ri.pMaterial->ResolveMixHit( ri, pSampler );
+		}
+	}
 
 	if( !ri.geometric.bHit ) {
 		RISE_PROFILE_INC(nMisses);
 	}
+}
+
+void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
+{
+	IntersectRayTraversalOnly( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+	FinalizeIntersectionHit( ri, 0, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 }
 
 void ObjectManager::CompleteShadingSignals(RayIntersectionGeometric& geometry,const IObject* object) const
@@ -1950,7 +2043,6 @@ void ObjectManager::CompleteShadingSignals(RayIntersectionGeometric& geometry,co
 	geometry.signals.pScene  = this;
 	geometry.signals.pSelf   = object;
 	geometry.signals.ptWorld = geometry.ptIntersection;
-
 }
 
 bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
@@ -2158,6 +2250,9 @@ void ObjectManager::IntersectSingleObject( RayIntersection& ri, const IObject* p
 		return;
 	}
 	CompleteShadingSignals( ri.geometric, ri.pObject );
+	if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
+		ri.pMaterial->ResolveMixHit( ri, 0 );
+	}
 }
 
 const IObject* ObjectManager::ObjectContaining_( const Point3& ptWorld, const Vector3& probeDir, const IObject* self, const bool bRandomWalkOnly ) const
@@ -2820,6 +2915,40 @@ bool ObjectManager::ComposeWorldTransforms() const
 	return anyChanged;
 }
 
+unsigned int ObjectManager::ComputeScenePathDependence( std::string* outFirstOffender ) const
+{
+	unsigned int mask = 0u;
+	std::unordered_set<const CSGObject*> visited;
+	for( const auto& item : items ) {
+		const IObjectPriv* obj = item.second.first;
+		if( !obj || !obj->IsWorldVisible() ) continue;
+		const unsigned int objMask = ObjectPathDependenceImpl( *obj, visited );
+		if( objMask != 0u ) {
+			if( mask == 0u && outFirstOffender ) {
+				*outFirstOffender = item.first.c_str();
+			}
+			mask |= objMask;
+		}
+	}
+	return mask;
+}
+
+bool ObjectManager::SceneHasMixMaterial( std::string* outFirstOffender ) const
+{
+	std::unordered_set<const CSGObject*> visited;
+	for( const auto& item : items ) {
+		const IObjectPriv* obj = item.second.first;
+		if( !obj || !obj->IsWorldVisible() ) continue;
+		if( ObjectHasMixMaterialImpl( *obj, visited ) ) {
+			if( outFirstOffender ) {
+				*outFirstOffender = item.first.c_str();
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
 void ObjectManager::PrepareForRendering() const
 {
 	RISE_PROFILE_PHASE(AccelBuild);
@@ -2933,8 +3062,12 @@ void ObjectManager::PrepareForRendering() const
             if(RejectedTransmissiveCaster(*object, entry.facts, entry.isCSG, clearTransMemo))
                 smsRejectedTransmissiveCaster = true;
             if(PotentialCasterLive(object->GetMaterial(), entry.facts)
-                && object->GetGeometry() && object->GetGeometry()->CanBeAreaLight())
-                smsExtendedCasters.push_back(object);
+                && object->GetGeometry() && object->GetGeometry()->CanBeAreaLight()) {
+                std::unordered_set<const CSGObject*> pdVisited;
+                if( ObjectPathDependenceImpl( *object, pdVisited ) == 0u ) {
+                    smsExtendedCasters.push_back(object);
+                }
+            }
         }
     }
     if(smsHasComposite) {
@@ -2948,6 +3081,25 @@ void ObjectManager::PrepareForRendering() const
         GlobalLog()->PrintEx(eLog_Warning,
             "Extended SMS is inert for this prepared scene: object '%s' has an interior medium; using legacy SMS and suppression.",
             smsFirstMediumObject.c_str());
+    }
+    // Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): warn once per scene
+    // when any world-visible object uses non-physical path/view-dependent inputs
+    // or spatially varying subsurface mix weights (PT-only).
+    {
+        std::string firstOffender;
+        const unsigned int pdMask = ComputeScenePathDependence( &firstOffender );
+        const std::string key = pdMask ? ( firstOffender + "|" + std::to_string( pdMask ) ) : std::string();
+        if( key != pathDepWarningKey ) {
+            pathDepWarningKey = key;
+            if( pdMask != 0u ) {
+                GlobalLog()->PrintEx( eLog_Warning,
+                    "ObjectManager: scene uses non-physical / PT-only shading inputs [%s] (first object '%s'). "
+                    "Only path tracing (pathtracing_pel_rasterizer / pathtracing_spectral_rasterizer) is supported; "
+                    "BDPT, VCM, MLT, and SMS casters refuse or skip these surfaces.",
+                    FormatPathDependenceFlags( pdMask ).c_str(),
+                    firstOffender.c_str() );
+            }
+        }
     }
     // DL-382: warn ONCE per scene (this manager), not per preparation --
     // an animation prepares every frame.  Re-armed only when the set of
@@ -3186,8 +3338,18 @@ void ObjectManager::InvalidateSpatialStructure() const
 void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
     bool front, bool back, bool exit, Scalar maxDistance, bool shadows, MediumBoundaryHits* boundaries, bool boundariesOnly, Scalar occlusionEnd, Scalar occlusionStart, Scalar startDistance) const
 {
-    if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY) {
+    if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !IMaterial::AnyMixMaterials() && !shadows && maxDistance == RISE_INFINITY && startDistance == 0) {
         IntersectRay(ri, front, back, exit); return;
+    }
+    const ObjectManager* om = dynamic_cast<const ObjectManager*>(this);
+    if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY && startDistance == 0) {
+        if (om) {
+            om->IntersectRayTraversalOnly(ri, front, back, exit);
+            om->FinalizeIntersectionHit(ri, &sampler, front, back, exit);
+        } else {
+            IntersectRay(ri, front, back, exit);
+        }
+        return;
     }
     const Ray original = ri.geometric.ray;
     const RasterizerState rast = ri.geometric.rast;
@@ -3205,40 +3367,81 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
     };
     if (offset > 0) advanceRay(offset);
     for (;;) {
-        IntersectRay(ri, front, back, exit);
+        if (om) om->IntersectRayTraversalOnly(ri, front, back, exit);
+        else IntersectRay(ri, front, back, exit);
         const Scalar localBoundary = ri.hasBoundaryRange ? ri.boundaryRange : ri.geometric.range;
         if (!ri.geometric.bHit || localBoundary >= maxDistance - offset) {
             ri.geometric.bHit = false;
             ri.geometric.ray = original;
             return;
         }
-        // Coverage painters see the same ray/range context as an unobstructed
+        // Coverage & mix weight painters see the same ray/range context as an unobstructed
         // full-segment hit. Keep the local distance only for recast progress.
         ri.geometric.range += offset;
         if (ri.hasBoundaryRange) ri.boundaryRange += offset;
         if (ri.hasBoundaryRange2) ri.boundaryRange2 += offset;
         if (exit) ri.geometric.range2 += offset;
         ri.geometric.ray = original;
-        const bool mediumBoundary = ri.pObject && ri.pObject->GetInteriorMedium();
-        // Physical membership does not depend on requesting boundary records.
-        // Keep the published shading range/context unchanged for painters.
-        const Scalar physicalRange = offset + localBoundary;
-        const bool inOcclusionInterval = physicalRange >= occlusionStart && physicalRange < occlusionEnd;
-        const bool casts = !boundariesOnly && inOcclusionInterval && (!shadows || !ri.pObject || ri.pObject->DoesCastShadows());
-        // Outside visibility's endpoint exclusions only medium events matter.
-        const bool needsCoverage = casts || (boundaries && mediumBoundary) || (!shadows && !boundariesOnly);
-        const Scalar coverage = ri.pMaterial && needsCoverage ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
-        const bool accepted = coverage >= 1 || (coverage > 0 && sampler.GetAlpha1D() < coverage);
-        ri.acceptedAlphaCoverage = coverage;
-        if (accepted && boundaries && mediumBoundary) {
-            boundaries->push_back(ri);
+
+        // Round 3 P1-2 (Slice 3 R1 A-P1-6): if ResolveCoincidentEntry swaps an
+        // SSS entry hit `S` for a coincident transparent decal `D`, and `D` is
+        // rejected by alpha, fall back to `S` instead of advancing `offset` past
+        // `S`'s boundary face.
+        bool hasCoincidentFallback = false;
+        RayIntersection coincidentFallback( original, rast );
+        if (om) {
+            om->CompleteShadingSignals( ri.geometric, ri.pObject );
+            if (ri.geometric.bHit && ri.pMaterial && ri.pMaterial->IsUnresolvedMix()) {
+                ri.pMaterial->ResolveMixHit( ri, &sampler );
+            }
+            if (ri.geometric.bHit) {
+                RayIntersection candidate( ri );
+                if (BSSRDFSampling::ResolveCoincidentEntry( *om, candidate, front, back, exit )) {
+                    coincidentFallback = ri;
+                    hasCoincidentFallback = true;
+                    ri = candidate;
+                    om->CompleteShadingSignals( ri.geometric, ri.pObject );
+                    if (ri.pMaterial && ri.pMaterial->IsUnresolvedMix()) {
+                        ri.pMaterial->ResolveMixHit( ri, &sampler );
+                    }
+                }
+            }
         }
+        const auto testCandidate = [&]( RayIntersection& cand, Scalar& outPhysicalRange, bool& outCasts ) -> bool {
+            const bool mediumBoundary = cand.pObject && cand.pObject->GetInteriorMedium();
+            outPhysicalRange = cand.hasBoundaryRange ? cand.boundaryRange : (offset + localBoundary);
+            const bool inOcclusionInterval = outPhysicalRange >= occlusionStart && outPhysicalRange < occlusionEnd;
+            outCasts = !boundariesOnly && inOcclusionInterval && (!shadows || !cand.pObject || cand.pObject->DoesCastShadows());
+            const bool needsCoverage = outCasts || (boundaries && mediumBoundary) || (!shadows && !boundariesOnly);
+            const Scalar coverage = needsCoverage ? cand.HitCoverage() : Scalar(1);
+            const bool accepted = coverage >= 1 || (coverage > 0 && sampler.GetAlpha1D() < coverage);
+            cand.acceptedAlphaCoverage = coverage;
+            if (accepted && boundaries && mediumBoundary) {
+                boundaries->push_back(cand);
+            }
+            return accepted;
+        };
+        Scalar physicalRange = offset + localBoundary;
+        bool casts = false;
+        bool accepted = testCandidate( ri, physicalRange, casts );
         if (casts && accepted) return;
+        // Slice 3 R2 P1-2: if ResolveCoincidentEntry swapped an SSS body `S`
+        // for a coincident neighbor `D` and `D` did not terminate the ray
+        // (whether due to alpha rejection, `!DoesCastShadows()` on a shadow
+        // ray, or `boundariesOnly` when `D` lacks an interior medium), test
+        // `S` before advancing `offset` past the shared boundary face.
+        if (hasCoincidentFallback) {
+            Scalar fallbackRange = offset + localBoundary;
+            ri = coincidentFallback;
+            accepted = testCandidate( ri, fallbackRange, casts );
+            if (casts && accepted) return;
+            physicalRange = r_max(physicalRange, fallbackRange);
+        }
         // Resume beyond the true boundary when available, so a published
         // shading backoff cannot cause another alpha decision at this event.
         // Advance by one representable segment parameter to ensure progress,
         // rather than skipping a world-space epsilon-sized slab of geometry.
-        offset = std::nextafter(offset + localBoundary, RISE_INFINITY);
+        offset = std::nextafter(physicalRange, RISE_INFINITY);
         if (!(offset < maxDistance)) {
             ri.geometric.bHit = false;
             ri.geometric.ray = original;
@@ -3248,7 +3451,7 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
     }
 }
 
-bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
+bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart, const ICamera* pCamera) const
 {
     if (boundaries) boundaries->clear();
     if (!IMaterial::AnyAlphaMaterials() && !boundaries) {
@@ -3257,15 +3460,17 @@ bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, 
     }
     RasterizerState rast = {0};
     RayIntersection ri(ray, rast);
+    ri.geometric.pCamera = pCamera;
     const Scalar physicalEnd = boundaries && physicalDistance >= 0 ? physicalDistance : distance;
     IntersectRaySampled(ri, sampler, true, true, false, physicalEnd, true, boundaries, false, distance, occlusionStart);
     return ri.geometric.bHit;
 }
 
 void IObjectManager::CollectMediumBoundaryHitsSampled(const Ray& ray, Scalar distance,
-    ISampler& sampler, MediumBoundaryHits& boundaries) const
+    ISampler& sampler, MediumBoundaryHits& boundaries, const ICamera* pCamera) const
 {
     boundaries.clear();
     RayIntersection ri(ray, nullRasterizerState);
+    ri.geometric.pCamera = pCamera;
     IntersectRaySampled(ri, sampler, true, true, false, distance, false, &boundaries, true);
 }

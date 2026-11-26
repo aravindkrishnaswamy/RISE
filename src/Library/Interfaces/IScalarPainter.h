@@ -274,6 +274,11 @@ namespace RISE
 		//! interior point.  Default false (a painter that does not say is
 		//! treated as a surface quantity).
 		virtual bool ReadsWorldPosition() const { return false; }
+
+		//! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): non-zero bitmask
+		//! of `PathDependence::Flags` when this scalar painter depends on
+		//! non-physical path/view state.  Default 0.
+		virtual unsigned int GetPathDependence() const { return 0u; }
 	};
 
 	//! DL-292: the world-position-field rule for a COMPOSITE of up to two
@@ -309,6 +314,12 @@ namespace RISE
 	inline bool CompositeReadsWorldPosition( const IScalarPainter* pA, const IScalarPainter* pB )
 	{
 		return ( pA && pA->ReadsWorldPosition() ) || ( pB && pB->ReadsWorldPosition() );
+	}
+
+	//! Part 0: a composite carries the union of its operands' path-dependence flags.
+	inline unsigned int CompositeGetPathDependence( const IScalarPainter* pA, const IScalarPainter* pB )
+	{
+		return ( pA ? pA->GetPathDependence() : 0u ) | ( pB ? pB->GetPathDependence() : 0u );
 	}
 }
 

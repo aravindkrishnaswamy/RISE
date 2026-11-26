@@ -49,6 +49,7 @@
 #include "pch.h"
 #include "../Utilities/RenderParallelScope.h"
 #include "MLTSpectralRasterizer.h"
+#include "../Managers/ObjectManager.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
@@ -1095,6 +1096,18 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
+			pObjMgr->SceneHasMixMaterial( &offender ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"MLTSpectralRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"(first object '%s'). Use pathtracing_spectral_rasterizer.",
+				offender.c_str() );
+			return;
+		}
+	}
 	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
 
 	IRasterImage* pImage = 0;
@@ -1120,6 +1133,10 @@ void MLTSpectralRasterizer::RasterizeScene(
 #ifdef RISE_ENABLE_OIDN
 		if( bDenoisingEnabled ) {
 			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
+
+			if( pProgressFunc ) {
+				pProgressFunc->SetTitle( "Denoising: " );
+			}
 
 			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
@@ -1175,6 +1192,18 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
+			pObjMgr->SceneHasMixMaterial( &offender ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"MLTSpectralRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"(first object '%s'). Use pathtracing_spectral_rasterizer.",
+				offender.c_str() );
+			return;
+		}
+	}
 	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
 
 	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();

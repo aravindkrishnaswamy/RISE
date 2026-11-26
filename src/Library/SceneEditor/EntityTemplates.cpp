@@ -467,6 +467,86 @@ namespace
 		return d;
 	}
 
+	const EntityTemplateDef& DiffuseTransmissionMaterialTemplate()
+	{
+		static const EntityTemplateDef d = []{
+			EntityTemplateDef t;
+			t.category = Category::Material;
+			t.label = "Diffuse Transmission";
+			t.baseName = "diffuse_trans";
+			t.hasNamedIdentity = true;
+			t.needsMaterial = false;
+			t.needsTexture = false;
+			t.chunkTexts.push_back(
+				"uniformcolor_painter\n"
+				"{\n"
+				"name @NAME@_reflectance\n"
+				"color 0.4 0.4 0.4\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"uniformcolor_painter\n"
+				"{\n"
+				"name @NAME@_transmittance\n"
+				"color 0.4 0.4 0.4\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"diffuse_transmission_material\n"
+				"{\n"
+				"name @NAME@\n"
+				"reflectance @NAME@_reflectance\n"
+				"transmittance @NAME@_transmittance\n"
+				"}\n" );
+			return t;
+		}();
+		return d;
+	}
+
+	const EntityTemplateDef& MixMaterialTemplate()
+	{
+		static const EntityTemplateDef d = []{
+			EntityTemplateDef t;
+			t.category = Category::Material;
+			t.label = "Mix Material";
+			t.baseName = "mix";
+			t.hasNamedIdentity = true;
+			t.needsMaterial = false;
+			t.needsTexture = false;
+			t.chunkTexts.push_back(
+				"uniformcolor_painter\n"
+				"{\n"
+				"name @NAME@_a_color\n"
+				"color 0.7 0.7 0.7\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"uniformcolor_painter\n"
+				"{\n"
+				"name @NAME@_b_color\n"
+				"color 0.2 0.2 0.2\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"lambertian_material\n"
+				"{\n"
+				"name @NAME@_a\n"
+				"reflectance @NAME@_a_color\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"lambertian_material\n"
+				"{\n"
+				"name @NAME@_b\n"
+				"reflectance @NAME@_b_color\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"mix_material\n"
+				"{\n"
+				"name @NAME@\n"
+				"child @NAME@_a weight 0.5\n"
+				"child @NAME@_b weight 0.5\n"
+				"}\n" );
+			return t;
+		}();
+		return d;
+	}
+
 	// -------------------------------------------------------------
 	// Painters
 	// -------------------------------------------------------------
@@ -754,7 +834,7 @@ namespace
 		};
 		static const std::vector<const EntityTemplateDef*> kMaterial = {
 			&NullBoundaryMaterialTemplate(), &LambertianMaterialTemplate(), &LambertianLuminaireMaterialTemplate(), &DielectricMaterialTemplate(), &RoughDielectricMaterialTemplate(),
-			&GGXMaterialTemplate(), &PerfectRefractorMaterialTemplate()
+			&GGXMaterialTemplate(), &PerfectRefractorMaterialTemplate(), &DiffuseTransmissionMaterialTemplate(), &MixMaterialTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kPainter = {
 			&UniformColorPainterTemplate(), &ScalarPainterTemplate(), &SpectralPainterTemplate(),
@@ -895,6 +975,8 @@ namespace
 		// or `sigma_a`, so an agent-inserted hair material renders
 		// sensibly out of the box.
 		{ "hair_material",         "eumelanin", "1.3" },
+		// mix_material: Finalize requires at least one `child` entry.
+		{ "mix_material",          "child",     "none weight 1.0" },
 	};
 
 	//! Requirements the descriptor's `required` flag does not carry, so

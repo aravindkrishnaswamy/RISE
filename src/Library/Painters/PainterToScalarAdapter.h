@@ -98,6 +98,8 @@ namespace RISE
 			{
 				return true;
 			}
+			bool ReadsWorldPosition() const override { return source.ReadsWorldPosition(); }
+			unsigned int GetPathDependence() const override { return source.GetPathDependence(); }
 		};
 	}
 }

@@ -241,6 +241,14 @@ namespace RISE
 			const bool, const bool, IRenderPreparationController&, const Rect*,
 			const unsigned int*, IRasterizeSequence* ) const {}
 
+		//! Enables or disables transparent background alpha (camera rays
+		//! that miss all geometry contribute alpha 0 instead of 1, matching
+		//! Blender's `film_transparent`).  Defaulted + declared last ->
+		//! ABI-stable.  MLT rasterizers (and the frozen spectral pixel
+		//! rasterizer) ignore this setting.
+		virtual void SetTransparentBackground( bool ) {}
+		virtual bool GetTransparentBackground() const { return false; }
+
 	};
 
 	//! Queryable completion capability kept outside IRasterizer's historical

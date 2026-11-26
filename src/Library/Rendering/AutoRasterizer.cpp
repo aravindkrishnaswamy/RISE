@@ -22,6 +22,7 @@
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IFilm.h"
 #include "../Interfaces/IObjectManager.h"
+#include "../Managers/ObjectManager.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IMedium.h"
@@ -564,6 +565,16 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 		return AutoIntegratorChoice::PT;
 	}
 
+	// Part 0 containment (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md):
+	// non-physical path/view-dependent inputs and spatially varying SSS mixes
+	// are PT-only; route away from BDPT/VCM before any probe or static rule.
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( scene->GetObjects() ) ) {
+		if( pObjMgr->ComputeScenePathDependence() != 0u ) {
+			SetResolveReason("path-dependent or varying-SSS-mix material (PT-only)");
+			return AutoIntegratorChoice::PT;
+		}
+	}
+
 	const bool hasTransmissive = SceneHasTransmissiveMaterial( *scene );
 	const bool hasPositional   = SceneHasPositionalLight( *scene );
 	const bool hasEnvIBL       = ( scene->GetGlobalRadianceMap() != 0 );
@@ -1090,6 +1101,9 @@ IRasterizer* AutoRasterizer::BuildDelegate( AutoIntegratorChoice choice ) const
 	try {
 		delegate = BuildDelegate( choice, mSamples, frameStore,
 			mOidnDenoise, mGuiding, mAdaptive );
+		if( delegate ) {
+			delegate->SetTransparentBackground( GetTransparentBackground() );
+		}
 	}
 	catch( ... ) {
 		safe_release(frameStore);
@@ -1884,6 +1898,30 @@ int AutoRasterizer::GetDenoisingOverride() const
 #else
 	return 0;
 #endif
+}
+
+void AutoRasterizer::SetTransparentBackground( bool enabled )
+{
+	auto transaction = AcquireAutoMutationLock(mDelegateMutationMutex);
+	Rasterizer::SetTransparentBackground( enabled );
+	IRasterizer* delegate = RetainDelegate();
+	try {
+		if( delegate ) delegate->SetTransparentBackground( enabled );
+	}
+	catch( ... ) {
+		safe_release(delegate);
+		throw;
+	}
+	safe_release(delegate);
+}
+
+bool AutoRasterizer::GetTransparentBackground() const
+{
+	IRasterizer* delegate = RetainDelegate();
+	const bool value = delegate ? delegate->GetTransparentBackground() :
+		Rasterizer::GetTransparentBackground();
+	safe_release(delegate);
+	return value;
 }
 
 unsigned int AutoRasterizer::PredictTimeToRasterizeScene(

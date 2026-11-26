@@ -212,7 +212,39 @@ namespace RISE
 		//! above, and for every composite kind except the ones that override
 		//! this method to recurse.
 		virtual bool IsSpectrallyDefined() const { return false; }
+
+		//! DL-292: true if this colour painter reads world position `P`
+		//! (overridden by `ExpressionPainter` so `PainterChannelScalarPainter`
+		//! and `PainterRGBScalarPainter` forward it to `RefuseUngradableWorldPositionIor`).
+		virtual bool ReadsWorldPosition() const { return false; }
+
+		//! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): non-zero bitmask
+		//! of `PathDependence::Flags` when this painter (or any painter it wraps
+		//! or samples) depends on non-physical path/view state (incoming ray
+		//! direction, camera-ray flag, geometric backfacing) or integrator-
+		//! restricted constructs.  Default 0 (physically based, path-independent).
+		virtual unsigned int GetPathDependence() const { return 0u; }
 	};
+
+	//! Part 0 containment bitmask (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md).
+	//! Returned by `GetPathDependence()` on `IPainter`, `IScalarPainter`,
+	//! `IRayIntersectionModifier`, and `IMaterial`.
+	namespace PathDependence
+	{
+		enum Flags : unsigned int
+		{
+			kNone          = 0u,
+			kViewDirection = 1u << 0,	///< reads arriving ray direction (`osl_layer_weight`, `osl_fresnel`)
+			kCameraRay     = 1u << 1,	///< reads `bIsCameraRay` (`osl_is_camera_ray`)
+			kBackfacing    = 1u << 2,	///< reads true geometric side (`osl_backfacing`)
+			kVaryingSSSMix = 1u << 3	///< `MixMaterial` with SSS leaf and spatially varying weight (MIX §I.3)
+		};
+
+		inline unsigned int NonPhysicalMask()
+		{
+			return kViewDirection | kCameraRay | kBackfacing;
+		}
+	}
 
 	//! An authored colour is "untinted white" iff its minimum RGB
 	//! component is >= 1 - 1e-6 (same epsilon as

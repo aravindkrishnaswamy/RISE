@@ -387,10 +387,12 @@ namespace RISE
 		//! carried on `LightSample::ptObjIntersec` for the consumers
 		//! that rebuild their own record.
 		//!
-		//! `pmxWorldToObject` is likewise not carried: its only consumer is an
-		//! `IRayIntersectionModifier`, and no modifier runs on an emitter
-		//! record (`Modify` would perturb `vNormal`, which the paragraph above
-		//! forbids).
+		//! `pObjectInfo`, `pmxObjectToWorld`, `pmxWorldToObject`, and `pCamera`
+		//! are likewise NOT part of the gated signal probe payload: they are
+		//! filled ungated and ray-free by `LightSampler::FillEmitterRecord`
+		//! from the luminary (`pLum->GetObjectInfo()`, `pLum->GetFinal*TransformMatrixPtr()`)
+		//! and the scene camera, so emissive meshes reading `ShaderNodeObjectInfo`
+		//! or Group 7 space transforms agree between direct hits, NEE, and BDPT/VCM.
 		struct EmitterSurfacePayload
 		{
 			SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature -- drives `curv` / `curvR`
@@ -830,7 +832,9 @@ namespace RISE
 				const Point3&				position,		///< [in] the sampled point, world space
 				const Vector3&				normal,			///< [in] unit emitting-face normal (mirrored into `vGeomNormal`)
 				const Point2&				coord,			///< [in] sampled surface UV
-				const Point3&				ptObjIntersec	///< [in] object-space point (`EmitterObjectPoint`)
+				const Point3&				ptObjIntersec,	///< [in] object-space point (`EmitterObjectPoint`)
+				const IObject*				pLum = 0,		///< [in] optional luminary for ObjectInfo & world/object matrices
+				const ICamera*				pCamera = 0		///< [in] optional live scene camera for camera-space transforms
 				);
 
             //! Coverage-only context for sampled emitter endpoints. Known scene,

@@ -38,10 +38,12 @@
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IContinuationClosure.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): emissive non-area-light geometries (SDF) get full BSDF weight
+#include "../Interfaces/IPainter.h"
 #include "../Utilities/MediumTransport.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/AOVBuffers.h"
+#include "../Cameras/CameraUtilities.h"
 #include <optional>
 #ifdef RISE_ENABLE_OPENPGL
 #include "../Utilities/PathGuidingField.h"
@@ -115,6 +117,7 @@ namespace
 		const RayIntersection& initialHit,
 		const RasterizerState& rast,
 		const IScene& scene,
+		ISampler& sampler,
 		RayIntersection& resolvedHit,
 		Scalar& resolvedDepth
 		)
@@ -150,7 +153,9 @@ namespace
 
 			resolvedHit = RayIntersection( nextRay, rast );
 			resolvedHit.geometric.minimumSurfaceRange = 0.0;
-			scene.GetObjects()->IntersectRay( resolvedHit, true, true, true );
+			resolvedHit.geometric.bIsCameraRay = true;
+			resolvedHit.geometric.pCamera = scene.GetCamera();
+			scene.GetObjects()->IntersectRaySampled( resolvedHit, sampler, true, true, true );
 		}
 
 		resolvedDepth = resolvedHit.geometric.bHit
@@ -881,7 +886,7 @@ namespace
 		if( !bSMSEnabled ) {
 			return false;
 		}
-		return !( ri.pMaterial && ri.pMaterial->GetSpecularInfo( ri.geometric, iorStack ).isSpecular );
+		return !( !ri.bMaterialFromMix && ri.pMaterial && ri.pMaterial->GetSpecularInfo( ri.geometric, iorStack ).isSpecular );
 	}
 
 	static inline Scalar GuidingTrainingLuminance( const RISEPel& pel )
@@ -2335,6 +2340,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 	unsigned int depthIncrement = 1;
 	bool continueSameTransportSegment = false;
+	bool isCameraRaySegment = firstHit.geometric.bIsCameraRay;
 	for( unsigned int depth = startDepth; ; depth += depthIncrement )
 	{
 		depthIncrement = 1;
@@ -2413,9 +2419,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			bool bContactHit = false;
 			if( pLoopContactTarget ) {
 				ri = RayIntersection( BSSRDFSampling::ContactRay( loopContactPoint, currentRay.Dir() ), rast );
+				ri.geometric.pCamera = scene.GetCamera();
 				ri.geometric.glossyFilterWidth = glossyFilterWidth;
 				bContactHit = BSSRDFSampling::IntersectContactRay(
-					*scene.GetObjects(), pLoopContactTarget, pLoopContactSource, ri );
+					*scene.GetObjects(), pLoopContactTarget, pLoopContactSource, ri, &sampler );
 				pLoopContactTarget = 0;
 				pLoopContactSource = 0;
 			}
@@ -2424,9 +2431,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			} else {
 				ri = RayIntersection( currentRay, rast );
 				ri.geometric.glossyFilterWidth = glossyFilterWidth;
+				ri.geometric.bIsCameraRay = ( isCameraRaySegment && volumeBounces == 0 );
 				// Fire null boundaries: the segment that continues across an
 				// exact null boundary must not re-accept that boundary at
 				// zero distance.
+				ri.geometric.pCamera = scene.GetCamera();
 				if( rejectZeroDistanceBoundary ) {
 					ri.geometric.minimumSurfaceRange = 0.0;
 				}
@@ -3305,6 +3314,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// Update IOR stack
 		iorStack.SetCurrentObject( ri.pObject );
 
+		if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
+			GlobalLog()->PrintSourceError( "PathTracingIntegrator:: unresolved MixMaterial reached shading loop", __FILE__, __LINE__ );
+		}
+
 		// GUI render modes P2b `clay_lights`: substitute the shared clay
 		// BRDF for EVERY hit when the mode is active -- see mClayOverride's
 		// doc.  This also makes pBRDF non-null for materials that
@@ -3340,6 +3353,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		bool surfaceUnsupportedFallback = false;
 		bool surfaceVolumeNEECompetes = false;
 		bool surfaceVolumeEndpointAttempted = false;
+#ifdef RISE_ENABLE_OPENPGL
+		const bool hitPathDependent =
+			( ri.pMaterial && ( ri.pMaterial->GetPathDependence() & PathDependence::NonPhysicalMask() ) != 0u ) ||
+			( ri.pUnresolvedMix && ( ri.pUnresolvedMix->GetPathDependence() & PathDependence::NonPhysicalMask() ) != 0u ) ||
+			( ri.pModifier && ( ri.pModifier->GetPathDependence() & PathDependence::NonPhysicalMask() ) != 0u );
+#endif
 		if constexpr ( Traits::is_nm ) {
 			const bool clayOverride =
 				EffectivePathTracingClayOverride( rc, mClayOverride );
@@ -3353,7 +3372,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				pLS && pLS->SceneHasFireMedia() && depth+1 >= maxDepth;
 			bool needsGuidedFireClosure = false;
 #ifdef RISE_ENABLE_OPENPGL
-			needsGuidedFireClosure = materialSupported &&
+			needsGuidedFireClosure = !hitPathDependent && materialSupported &&
 				!IsSSSContainmentActive() &&
 				pCurrentMedium && pCurrentMedium->IsFireMedium() &&
 				rc.pGuidingField && rc.pGuidingField->IsTrained() &&
@@ -3830,7 +3849,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						ISampler& bssrdfSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
 						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
-							ri.geometric, ri.pObject, ri.pMaterial, bssrdfSampler, PTTagNm( tag ) );
+							ri.geometric, ri.pObject, ri.pMaterial, bssrdfSampler, PTTagNm( tag ),
+							( ri.bMaterialFromMix && ri.pModifier != ri.pPreMixModifier ) ? ri.pModifier : 0 );
 
 						if( bssrdf.valid )
 						{
@@ -3854,6 +3874,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							entryRI.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryRI.vColor = bssrdf.vColor;
 							entryRI.bHasVertexColor = bssrdf.bHasVertexColor;
+							entryRI.pmxWorldToObject = bssrdf.pmxWorldToObject;
+							entryRI.pmxObjectToWorld = bssrdf.pmxObjectToWorld;
+							entryRI.pCamera = bssrdf.pCamera;
+							entryRI.pObjectInfo = bssrdf.pObjectInfo;
 							// DL-49: the entry point sits in the same exterior
 							// medium as the exit hit (the continuation below
 							// carries the same IOR stack); the adapter's Fresnel
@@ -4134,7 +4158,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							ri.geometric, ri.pObject,
 							pRWParams->sigma_a, pRWParams->sigma_s, pRWParams->sigma_t,
 							pRWParams->g, pRWParams->ior, pRWParams->maxBounces,
-							rwSampler, PTTagNm( tag ), pRWParams->maxDepth );
+							rwSampler, PTTagNm( tag ), pRWParams->maxDepth,
+							ri.pMaterial, ( ri.bMaterialFromMix && ri.pModifier != ri.pPreMixModifier ) ? ri.pModifier : 0 );
 
 						if( bssrdf.valid )
 						{
@@ -4159,6 +4184,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							entryRI.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryRI.vColor = bssrdf.vColor;
 							entryRI.bHasVertexColor = bssrdf.bHasVertexColor;
+							entryRI.pmxWorldToObject = bssrdf.pmxWorldToObject;
+							entryRI.pmxObjectToWorld = bssrdf.pmxObjectToWorld;
+							entryRI.pCamera = bssrdf.pCamera;
+							entryRI.pObjectInfo = bssrdf.pObjectInfo;
 							// DL-49: exterior index of the exit hit; the adapter
 							// prices Sw for ior / ambientIOR.
 							entryRI.ambientIOR = ri.geometric.ambientIOR;
@@ -4389,6 +4418,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			const ISPF* pSPF = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClaySPF :
 				( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 			if( !pSPF ) {
+				if constexpr ( Traits::supports_aov ) {
+					if( pAOV && !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
+						EvaluateMaterialAOVGuides( ri, ri.geometric,
+							EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+							pAOV->albedo, pAOV->normal );
+						pAOV->valid = true;
+					}
+				}
 				break;
 			}
 
@@ -4466,10 +4503,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					if( pAOV && !pAOV->valid && !pS->isDelta &&
 					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 					{
-						pAOV->normal = ri.geometric.vNormal;
-						pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-							: RISEPel( 1, 1, 1 );
+						EvaluateMaterialAOVGuides( ri, ri.geometric,
+							EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+							pAOV->albedo, pAOV->normal );
 						pAOV->valid = true;
 					}
 				}
@@ -4570,6 +4606,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					}
 				}
 
+				// MIX §II.3(a): preserve `bIsCameraRay` ONLY across undeviated
+				// delta pass-through; clear on mirror reflection / refraction.
+				const bool bStraightDeltaPassThrough =
+					pS->isDelta && ri.pMaterial && ri.pMaterial->HasDeltaPassThrough() &&
+					Vector3Ops::Dot( pS->ray.Dir(), currentRay.Dir() ) > Scalar( 1 ) - Scalar( 1e-6 );
+				if( !bStraightDeltaPassThrough ) {
+					isCameraRaySegment = false;
+				}
 				currentRay = pS->ray;
 				activeVolumeSegmentState = VolumeEmissionSegmentState();
 				if constexpr ( Traits::is_nm ) {
@@ -4642,7 +4686,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// one runs the closure branch's own guiding distribution, so this
 		// shared distribution (and its sampler draw) is skipped there and
 		// PART 2's NEE weights against the plain closure material pdf.
-		if( !surfaceClosureActive &&
+		if( !surfaceClosureActive && !hitPathDependent &&
 			rc.pGuidingField && rc.pGuidingField->IsTrained() &&
 			depth <= rc.maxGuidingDepth &&
 			rc.guidingAlpha > NEARZERO &&
@@ -4887,9 +4931,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			if( surfaceClosureActive ) {
 				if( pAOV && !pAOV->valid &&
 					rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
-					pAOV->normal = ri.geometric.vNormal;
-					pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric ) :
-						RISEPel( 1, 1, 1 );
+					EvaluateMaterialAOVGuides( ri, ri.geometric,
+						EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+						pAOV->albedo, pAOV->normal );
 					pAOV->valid = true;
 				}
 				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
@@ -4902,7 +4946,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					surfaceAvailability.vertexMask != marchMask;
 				bool closureGuidingRequested = false;
 #ifdef RISE_ENABLE_OPENPGL
-				closureGuidingRequested = !surfaceVolumeNEECompetes &&
+				closureGuidingRequested = !hitPathDependent && !surfaceVolumeNEECompetes &&
 					!sourceOnlySegment && rc.pGuidingField &&
 					rc.pGuidingField->IsTrained() &&
 					rc.guidingAlpha > NEARZERO && depth <= rc.maxGuidingDepth;
@@ -5120,6 +5164,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					}
 				}
 
+				isCameraRaySegment = false;
 				currentRay = continuation.ray;
 				activeVolumeSegmentState = VolumeEmissionSegmentState(
 					surfaceVolumeEndpointAttempted,continuation.singular,
@@ -5150,6 +5195,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		const ISPF* pSPF = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClaySPF :
 			( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 		if( !pSPF ) {
+			if constexpr ( Traits::supports_aov ) {
+				if( pAOV && !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
+					EvaluateMaterialAOVGuides( ri, ri.geometric,
+						EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+						pAOV->albedo, pAOV->normal );
+					pAOV->valid = true;
+				}
+			}
 			break;
 		}
 
@@ -5519,9 +5572,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				if( pAOV && !pAOV->valid && aovSelectedNonDelta &&
 				    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 				{
-					pAOV->normal = ri.geometric.vNormal;
-					pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
-					                     : RISEPel( 1, 1, 1 );
+					EvaluateMaterialAOVGuides( ri, ri.geometric,
+						EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+						pAOV->albedo, pAOV->normal );
 					pAOV->valid = true;
 				}
 			}
@@ -5850,6 +5903,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 			}
 
+			// MIX §II.3(a): preserve `bIsCameraRay` across an undeviated delta
+			// pass-through lobe (e.g. weave gap), clear on any other surface scatter.
+			const bool bStraightDeltaPassThrough =
+				pS->isDelta && ri.pMaterial && ri.pMaterial->HasDeltaPassThrough() &&
+				Vector3Ops::Dot( traceRay.Dir(), currentRay.Dir() ) > Scalar( 1 ) - Scalar( 1e-6 );
+			if( !bStraightDeltaPassThrough ) {
+				isCameraRaySegment = false;
+			}
 			currentRay = traceRay;
 			activeVolumeSegmentState = VolumeEmissionSegmentState();
 			if constexpr ( Traits::is_nm ) {
@@ -6054,7 +6115,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	const IRadianceMap* pRadianceMap,
 	PixelAOV* pAOV,
 	typename SpectralValueTraits<Tag>::value_type* pDirectResult,
-	const Tag& tag
+	const Tag& tag,
+	bool* pPrimaryHit
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -6089,7 +6151,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
+	ri.geometric.bIsCameraRay = true;
+	ri.geometric.pCamera = scene.GetCamera();
 	scene.GetObjects()->IntersectRaySampled( ri, sampler );
+	if( pPrimaryHit ) {
+		*pPrimaryHit = ri.geometric.bHit;
+	}
 	if constexpr ( Traits::supports_aov ) {
 		// Primary depth is independent of Accurate-mode albedo/normal
 		// traversal.  Never replace this camera-ray range with a later
@@ -6097,7 +6164,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		if( pAOV ) {
 			RayIntersection aovHit( ri );
 			Scalar aovDepth = 0.0;
-			ResolvePrimaryAOVSurface( ri, rast, scene, aovHit, aovDepth );
+			ResolvePrimaryAOVSurface( ri, rast, scene, sampler, aovHit, aovDepth );
+			if( aovHit.geometric.bHit && scene.GetCamera() ) {
+				aovDepth += BDPTCameraUtilities::ComputeNearClipDistance( *scene.GetCamera(), cameraRay.Dir() );
+			}
 			pAOV->primaryDepthCaptured = true;
 			pAOV->depth = aovDepth;
 
@@ -6106,13 +6176,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			if( aovHit.geometric.bHit && aovUseFirstHit )
 			{
 				RayIntersectionGeometric aovGeom( aovHit.geometric );
-				if( aovHit.pModifier ) aovHit.pModifier->Modify( aovGeom );
-				pAOV->normal = aovGeom.vNormal;
-				pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
-					? pClayBRDF->albedo( aovGeom )
-					: ( ( aovHit.pMaterial && aovHit.pMaterial->GetBSDF() )
-						? aovHit.pMaterial->GetBSDF()->albedo( aovGeom )
-						: RISEPel( 1, 1, 1 ) );
+				if( aovHit.pModifier && !aovHit.pUnresolvedMix ) aovHit.pModifier->Modify( aovGeom );
+				EvaluateMaterialAOVGuides( aovHit, aovGeom,
+					EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+					pAOV->albedo, pAOV->normal );
 				pAOV->valid = true;
 			}
 		}
@@ -6819,6 +6886,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// --- follow the continuation ---------------------------
 				//
 				RayIntersection ri2( walkRay, rast );
+				ri2.geometric.pCamera = scene.GetCamera();
 				scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 				const Scalar maxDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
@@ -7168,11 +7236,12 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
 	return IntegrateRayTemplated<PelTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, nullptr, PelTag{} );
+		sampler, pRadianceMap, pAOV, nullptr, PelTag{}, pPrimaryHit );
 }
 
 RISEPel PathTracingIntegrator::IntegrateRayDirectIndirect(
@@ -7184,12 +7253,13 @@ RISEPel PathTracingIntegrator::IntegrateRayDirectIndirect(
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
 	RISEPel& direct,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
 	direct = RISEPel( 0, 0, 0 );
 	return IntegrateRayTemplated<PelTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, &direct, PelTag{} );
+		sampler, pRadianceMap, pAOV, &direct, PelTag{}, pPrimaryHit );
 }
 
 
@@ -7348,14 +7418,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		!IsExactNullBoundaryMaterial( firstHit.pMaterial ) &&
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
-		pAOV->normal = firstHit.geometric.vNormal;
-		// GUI render modes P2b `clay_lights` (review-p2c P2-d fix, HWSS
-		// twin of the RGB/NM IntegrateRay fast-mode hook -- see that
-		// site's fuller comment).
-		pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( firstHit.geometric ) :
-			( ( firstHit.pMaterial && firstHit.pMaterial->GetBSDF() )
-				? firstHit.pMaterial->GetBSDF()->albedo( firstHit.geometric )
-				: RISEPel( 1, 1, 1 ) );
+		EvaluateMaterialAOVGuides( firstHit, firstHit.geometric,
+			EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+			pAOV->albedo, pAOV->normal );
 		pAOV->valid = true;
 	}
 
@@ -7613,6 +7678,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// segment (no vertex, no depth increment, no new sampler stream).
 	unsigned int depthIncrement = 1;
 	bool continueSameTransportSegment = false;
+	bool isCameraRaySegment = firstHit.geometric.bIsCameraRay;
 	for( unsigned int depth = startDepth; depth < maxDepth; depth += depthIncrement )
 	{
 		depthIncrement = 1;
@@ -7646,6 +7712,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
+			ri.geometric.bIsCameraRay = ( isCameraRaySegment && volumeBounces == 0 );
+			ri.geometric.pCamera = scene.GetCamera();
 			if( rejectZeroDistanceBoundary ) {
 				ri.geometric.minimumSurfaceRange = 0.0;
 			}
@@ -7933,6 +8001,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							//
 							RayIntersection ri2( walkRay, rast );
 							ri2.geometric.glossyFilterWidth = glossyFilterWidth;
+							ri2.geometric.pCamera = scene.GetCamera();
 							scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 							//
@@ -8260,6 +8329,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		}
 
 		iorStack.SetCurrentObject( ri.pObject );
+
+		if( ri.pMaterial && ri.pMaterial->IsUnresolvedMix() ) {
+			GlobalLog()->PrintSourceError( "PathTracingIntegrator:: unresolved MixMaterial reached HWSS shading loop", __FILE__, __LINE__ );
+		}
 
 		// GUI render modes P2b `clay_lights` (HWSS twin of the Pel/NM
 		// acquisition above): substituting clay here also makes the
@@ -8790,12 +8863,19 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// ============================================================
 		// PART 3: BSDF sampling (HWSS — hero drives, companions eval)
 		// ============================================================
+
 		// GUI render modes P2b `clay_lights` (HWSS twin of the Pel/NM PART 3
 		// substitution): keeps NEE (pBRDFCur) and the continuation (pSPF)
 		// consistent under clay_lights, same reasoning as the Pel/NM loop.
 		const ISPF* pSPF = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClaySPF :
 			( ri.pMaterial ? ri.pMaterial->GetSPF() : 0 );
 		if( !pSPF ) {
+			if( pAOV && !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
+				EvaluateMaterialAOVGuides( ri, ri.geometric,
+					EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+					pAOV->albedo, pAOV->normal );
+				pAOV->valid = true;
+			}
 			break;
 		}
 
@@ -8836,9 +8916,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		if( pAOV && !pAOV->valid && !pS->isDelta &&
 		    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 		{
-			pAOV->normal = ri.geometric.vNormal;
-			pAOV->albedo = pBRDFCur ? pBRDFCur->albedo( ri.geometric )
-			                        : RISEPel( 1, 1, 1 );
+			EvaluateMaterialAOVGuides( ri, ri.geometric,
+				EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+				pAOV->albedo, pAOV->normal );
 			pAOV->valid = true;
 		}
 
@@ -9167,6 +9247,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
 		}
 
+		// MIX §II.3(a): preserve `bIsCameraRay` across an undeviated delta
+		// pass-through lobe (HWSS twin of Pel/NM site).
+		const bool bStraightDeltaPassThroughHW =
+			pS->isDelta && ri.pMaterial && ri.pMaterial->HasDeltaPassThrough() &&
+			Vector3Ops::Dot( traceRay.Dir(), currentRay.Dir() ) > Scalar( 1 ) - Scalar( 1e-6 );
+		if( !bStraightDeltaPassThroughHW ) {
+			isCameraRaySegment = false;
+		}
 		currentRay = traceRay;
 		currentRay.Advance( 1e-8 );
 
@@ -9196,11 +9284,12 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
 	return IntegrateRayTemplated<NMTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, pAOV, nullptr, NMTag( nm ) );
+		sampler, pRadianceMap, pAOV, nullptr, NMTag( nm ), pPrimaryHit );
 }
 
 
@@ -9221,7 +9310,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
 	Scalar result[SampledWavelengths::N],
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
     // Phase 4: HWSS evaluates extended SMS per lane (see
@@ -9278,10 +9368,17 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			}
 		}
 		if( dispersiveContainment ) {
+			bool anyHit = false;
 			for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
-				if( !swl.terminated[w] ) result[w] = IntegrateRayNM( rc, rast, cameraRay,
-					swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV );
+				if( !swl.terminated[w] ) {
+					bool laneHit = false;
+					result[w] = IntegrateRayNM( rc, rast, cameraRay,
+						swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV,
+						pPrimaryHit ? &laneHit : nullptr );
+					if( laneHit ) anyHit = true;
+				}
 			}
+			if( pPrimaryHit ) *pPrimaryHit = anyHit;
 			return;
 		}
 		if( IORStackSeeding::StackHasOpenSheet( iorStack ) ) {
@@ -9293,25 +9390,30 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
+	ri.geometric.bIsCameraRay = true;
+	ri.geometric.pCamera = scene.GetCamera();
 	scene.GetObjects()->IntersectRaySampled( ri, sampler );
+	if( pPrimaryHit ) {
+		*pPrimaryHit = ri.geometric.bHit;
+	}
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
 	if( pAOV ) {
 		RayIntersection aovHit( ri );
 		Scalar aovDepth = 0.0;
-		ResolvePrimaryAOVSurface( ri, rast, scene, aovHit, aovDepth );
+		ResolvePrimaryAOVSurface( ri, rast, scene, sampler, aovHit, aovDepth );
+		if( aovHit.geometric.bHit && scene.GetCamera() ) {
+			aovDepth += BDPTCameraUtilities::ComputeNearClipDistance( *scene.GetCamera(), cameraRay.Dir() );
+		}
 		pAOV->primaryDepthCaptured = true;
 		pAOV->depth = aovDepth;
 		if( !pAOV->valid && aovHit.geometric.bHit &&
 			rc.aovPrefilterMode == OidnPrefilter::Fast ) {
 			RayIntersectionGeometric aovGeom( aovHit.geometric );
-			if( aovHit.pModifier ) aovHit.pModifier->Modify( aovGeom );
-			pAOV->normal = aovGeom.vNormal;
-			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
-				? pClayBRDF->albedo( aovGeom )
-				: ( ( aovHit.pMaterial && aovHit.pMaterial->GetBSDF() )
-					? aovHit.pMaterial->GetBSDF()->albedo( aovGeom )
-					: RISEPel( 1, 1, 1 ) );
+			if( aovHit.pModifier && !aovHit.pUnresolvedMix ) aovHit.pModifier->Modify( aovGeom );
+			EvaluateMaterialAOVGuides( aovHit, aovGeom,
+				EffectivePathTracingClayOverride( rc, mClayOverride ), pClayBRDF,
+				pAOV->albedo, pAOV->normal );
 			pAOV->valid = true;
 		}
 	}
@@ -9547,6 +9649,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					// --- follow the continuation ------------------------
 					//
 					RayIntersection ri2( walkRay, rast );
+					ri2.geometric.pCamera = scene.GetCamera();
 					scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 					//

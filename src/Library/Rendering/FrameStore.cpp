@@ -247,13 +247,15 @@ namespace
 		std::string& error )
 	{
 		if( !ExactMapKeys(camera,{ "exposure_compensation_ev", "exposure_time",
-			"kind", "location", "matrix", "pixel_rate", "projection",
+			"kind", "location", "matrix", "near_clip", "pixel_rate", "projection",
 			"scanning_rate" },"resolved camera",error) ||
 			!FieldType(camera,"exposure_compensation_ev",RISECBOR64::Value::Float64,
 				"resolved camera",error) ||
 			!FieldType(camera,"exposure_time",RISECBOR64::Value::Float64,
 				"resolved camera",error) ||
 			!FieldType(camera,"kind",RISECBOR64::Value::Text,"resolved camera",error) ||
+			!FieldType(camera,"near_clip",RISECBOR64::Value::Float64,
+				"resolved camera",error) ||
 			!FieldType(camera,"pixel_rate",RISECBOR64::Value::Float64,
 				"resolved camera",error) ||
 			!FieldType(camera,"scanning_rate",RISECBOR64::Value::Float64,

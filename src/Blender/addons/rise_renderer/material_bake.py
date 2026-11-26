@@ -64,6 +64,7 @@ bake side and the classifier that routes between them.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import os
 import tempfile
@@ -87,59 +88,635 @@ _SIMPLE_TRAVERSABLE_NODES = frozenset({
     "ShaderNodeValue",
     "ShaderNodeTexImage",
     "ShaderNodeTexCoord",
+    "ShaderNodeUVMap",          # named/active UV layers compiled natively via mesh_attr3 (ABI v23)
     "ShaderNodeMapping",
-    # Noise / Voronoi / Checker stay "simple" although the exporter does
-    # not translate them (it resolves image textures only): the manual
-    # bake replaces the whole material with a metallic-0 PBR built from
-    # the baked channels, which would turn a noise-bumped metal or a
-    # noise-roughened glass into an opaque diffuse surface.  The exporter
-    # warns, per input, that such an input renders its socket default.
+    # Noise, Voronoi, and White Noise compile natively via `procedural_expr`
+    # into RISE `expression_painter` expressions on supported Principled
+    # sockets (and Checker stays "simple" with a per-input fallback warning
+    # so it does not trigger a lossy metallic-0 bake gate on F12).
     "ShaderNodeTexNoise",
     "ShaderNodeTexVoronoi",
+    "ShaderNodeTexWhiteNoise",
     "ShaderNodeTexChecker",
-    "ShaderNodeValToRGB",       # Color Ramp
-    "ShaderNodeMix",            # 4.x mix node
-    "ShaderNodeMixRGB",         # legacy mix node
-    "ShaderNodeMath",           # Classifier admits Math; the exporter folds no operation
-    "ShaderNodeRGBCurve",       # currently lossy pass-through
-    "ShaderNodeHueSaturation",  # currently lossy pass-through
-    "ShaderNodeBrightContrast", # currently lossy pass-through
-    "ShaderNodeGamma",          # currently lossy pass-through
-    "ShaderNodeInvert",         # currently lossy pass-through
+    "ShaderNodeTexGradient",    # all 7 Cycles gradient types compiled natively via osl_gradient
+    "ShaderNodeTexBrick",       # Cycles brick pattern compiled natively via osl_brick
+    "ShaderNodeValToRGB",       # Color Ramp (RGB LINEAR/CONSTANT/EASE + HSV/HSL + Alpha compiled natively)
+    "ShaderNodeMix",            # 4.x mix node (FLOAT/VECTOR uniform+non-uniform/RGBA compiled natively)
+    "ShaderNodeMixRGB",         # legacy mix node (compiled natively)
+    "ShaderNodeMath",           # all 41 ops + use_clamp compiled natively via osl_math
+    "ShaderNodeVectorMath",     # all 30 ops compiled natively via osl_vmath / osl_vmath_scalar
+    "ShaderNodeClamp",          # MINMAX + RANGE compiled natively via osl_clamp
+    "ShaderNodeMapRange",       # FLOAT + FLOAT_VECTOR compiled natively via osl_map_range / osl_vmap_range
+    "ShaderNodeVectorRotate",   # AXIS/X/Y/Z/EULER_XYZ compiled natively via osl_vector_rotate
+    "ShaderNodeVectorTransform",# WORLD/OBJECT/CAMERA compiled natively via Group 7 space transforms
+    "ShaderNodeObjectInfo",     # Location/Color/Alpha/Object Index/Material Index/Random compiled natively
+    "ShaderNodeAttribute",      # GEOMETRY attributes compiled natively via mesh_attr3 / mesh_attr_alpha (ABI v21)
+    "ShaderNodeVertexColor",    # vertex/color attributes compiled natively via mesh_attr3 / mesh_attr_alpha
+    "ShaderNodeNewGeometry",    # Backfacing / Random Per Island / Position / Normal / True Normal
+    "ShaderNodeParticleInfo",   # Random compiled natively via osl_particle_random (ABI v23)
+    "ShaderNodeLightPath",      # Is Camera Ray compiled natively via osl_is_camera_ray (Phase 3)
+    "ShaderNodeLayerWeight",    # Fresnel / Facing compiled natively via osl_layer_weight (Phase 3)
+    "ShaderNodeFresnel",        # Fresnel IOR compiled natively via osl_fresnel (Phase 3)
+    "ShaderNodeAmbientOcclusion",  # ray-traced AO compiled natively via osl_ao (ABI v21)
+    "ShaderNodeGroup",          # pure-node group inlining (depth <= 8, cycle-guarded)
+    "NodeGroupInput",
+    "ShaderNodeRGBToBW",        # Rec.709 luminance compiled natively
+    "ShaderNodeRGBCurve",       # compiled natively via exact Cycles R(C(t))/G(C(t))/B(C(t)) ramp
+    "ShaderNodeHueSaturation",  # compiled natively in procedural subgraphs
+    "ShaderNodeBrightContrast", # compiled natively in procedural subgraphs
+    "ShaderNodeGamma",          # compiled natively in procedural subgraphs
+    "ShaderNodeInvert",         # compiled natively in procedural subgraphs
+    "ShaderNodeSeparateXYZ",    # compiled natively in procedural subgraphs
+    "ShaderNodeCombineXYZ",     # compiled natively in procedural subgraphs
+    "ShaderNodeSeparateColor",  # compiled natively in procedural subgraphs
+    "ShaderNodeCombineColor",   # compiled natively in procedural subgraphs
     "ShaderNodeBump",
     "ShaderNodeNormalMap",
 })
 
 # Public alias for cross-module reuse.  exporter.py's hair-material
 # upstream-graph classifier (`_hair_graph_supported`) walks the nodes
-# feeding a Principled Hair BSDF against this SAME set -- a hair
-# material has no bake fallback (baking is meaningless for curves), so
-# "not simple" there means "refuse with a warning" rather than "fall
-# back to a bake pass".  Keep in sync with `_SIMPLE_TRAVERSABLE_NODES`
-# (this literally IS that set -- there is no hair-specific node
-# support beyond what the regular translator already handles).
-SUPPORTED_UPSTREAM_NODES = _SIMPLE_TRAVERSABLE_NODES
+# feeding a Principled Hair BSDF against this set -- a hair material has
+# no bake fallback (baking is meaningless for curves), and curves carry no
+# named mesh attributes and do not run procedural_expr, so
+# mesh/hit-context/group nodes are intentionally excluded here so hair
+# materials refuse them loudly instead of silently falling back to defaults.
+SUPPORTED_UPSTREAM_NODES = _SIMPLE_TRAVERSABLE_NODES - frozenset({
+    "ShaderNodeAttribute",
+    "ShaderNodeVertexColor",
+    "ShaderNodeNewGeometry",
+    "ShaderNodeParticleInfo",
+    "ShaderNodeLightPath",
+    "ShaderNodeLayerWeight",
+    "ShaderNodeFresnel",
+    "ShaderNodeAmbientOcclusion",
+    "ShaderNodeUVMap",
+    "ShaderNodeGroup",
+    "NodeGroupInput",
+})
 
 # Nodes that force the bake fallback — see docs/BLENDER_MATERIAL_TRANSLATION.md
 # "Force-bake list". On ordinary inputs other than Tangent, nodes not in
 # _SIMPLE_TRAVERSABLE_NODES classify complex for the manual workflow.
 # This set is for documentation / fast-path diagnostics, not Tangent.
 _FORCE_BAKE_NODES = frozenset({
-    "ShaderNodeAmbientOcclusion",
-    "ShaderNodeMixShader",
     "ShaderNodeAddShader",
     "ShaderNodeGeometry",
-    "ShaderNodeLayerWeight",
-    "ShaderNodeFresnel",
     "ShaderNodeWireframe",
     "ShaderNodeTexWave",
     "ShaderNodeTexMagic",
-    "ShaderNodeTexBrick",
-    "ShaderNodeTexGradient",
     "ShaderNodeTexIES",
     "ShaderNodeTexPointDensity",
-    "ShaderNodeGroup",
 })
+
+
+@dataclass(frozen=True)
+class MixLeafSpec:
+    """One flattened leaf of a supported ``ShaderNodeMixShader`` tree."""
+
+    kind: str  # "principled" | "diffuse" | "glossy" | "emission" | "transparent" | "absorber"
+    node: object | None
+    # Root-to-leaf chain of (fac_socket, fac_default, is_second_branch).
+    factors: tuple[tuple[object | None, float, bool], ...]
+
+
+def _live_socket_links(socket) -> list:
+    if socket is None or not getattr(socket, "is_linked", False):
+        return []
+    return [lk for lk in socket.links if not getattr(lk, "is_muted", False)]
+
+
+def _unwrap_reroute_node(node, max_depth: int = 16) -> tuple[object | None, bool]:
+    """Unwrap ``NodeReroute`` chains.  Returns ``(node_or_none, True)`` on a
+    valid chain or genuinely unlinked reroute, or ``(None, False)`` on cycles
+    or depth overflow so callers fail closed instead of fabricating absorbers."""
+    seen: set[int] = set()
+    depth = 0
+    while node is not None and getattr(node, "bl_idname", "") == "NodeReroute":
+        depth += 1
+        if depth > max_depth:
+            return (None, False)
+        nid = rna_key(node)
+        if nid in seen:
+            return (None, False)
+        seen.add(nid)
+        inp = node.inputs[0] if getattr(node, "inputs", None) else None
+        links = _live_socket_links(inp)
+        if not links:
+            return (None, True)
+        node = links[0].from_node
+    return (node, True)
+
+
+def _principled_is_transmission_heavy(node) -> bool:
+    """Mirror exporter.py's transmission_heavy predicate (MixMaterial refuses
+    containment-tracking DielectricMaterial leaves)."""
+    for sock_name in ("Transmission Weight", "Transmission"):
+        sock = node.inputs.get(sock_name) if hasattr(node.inputs, "get") else None
+        if sock is None:
+            for inp in getattr(node, "inputs", ()):
+                if inp.name == sock_name:
+                    sock = inp
+                    break
+        if sock is not None:
+            if _live_socket_links(sock):
+                return True
+            try:
+                if float(sock.default_value) >= 0.05:
+                    return True
+            except (TypeError, ValueError):
+                pass
+            break
+    return False
+
+
+def _transparent_passthrough_factor(node) -> tuple[object | None, float, bool] | None:
+    """Return a MixShader weight-factor tuple ``(socket_or_None, default_val, True)``
+    iff ``node`` is a grayscale ``ShaderNodeBsdfTransparent`` whose color maps
+    exact-physically to ``w_clear = w * clamp(gray, 0, 1)`` (with ``1 - gray``
+    absorbed in MixMaterial's shortfall).  Returns ``None`` for chromatic
+    transparent shaders."""
+    color_sock = None
+    for inp in getattr(node, "inputs", ()):
+        if inp.name == "Color":
+            color_sock = inp
+            break
+    if color_sock is None:
+        return (None, 1.0, True)
+    links = _live_socket_links(color_sock)
+    if links:
+        # Walk reroutes and muted passthrough nodes to inspect the true upstream
+        # output socket type (failing closed if a muted node has no passthrough).
+        from . import procedural_expr as _procedural_expr
+        src_node = links[0].from_node
+        src_sock = links[0].from_socket
+        seen: set[tuple[int, str]] = set()
+        steps = 0
+        while src_node is not None and steps < 16:
+            steps += 1
+            out_key = _procedural_expr.canonical_output_name(src_node, src_sock) if src_sock is not None else ""
+            vkey = (rna_key(src_node), out_key if getattr(src_node, "mute", False) else "")
+            if vkey in seen:
+                return None
+            seen.add(vkey)
+            if getattr(src_node, "bl_idname", "") == "NodeReroute":
+                rin = src_node.inputs[0] if getattr(src_node, "inputs", None) else None
+                rlinks = _live_socket_links(rin)
+                if not rlinks:
+                    return None
+                src_node = rlinks[0].from_node
+                src_sock = rlinks[0].from_socket
+                continue
+            if getattr(src_node, "mute", False):
+                pass_inp = _procedural_expr.resolve_muted_input_socket(src_node, out_key)
+                if pass_inp is None:
+                    return None
+                plinks = _live_socket_links(pass_inp)
+                if not plinks:
+                    # Muted node with unlinked scalar passthrough input -> scalar default
+                    if getattr(pass_inp, "type", "") in ("VALUE", "INT"):
+                        return (color_sock, 1.0, True)
+                    return None
+                src_node = plinks[0].from_node
+                src_sock = plinks[0].from_socket
+                continue
+            break
+        # Any scalar (VALUE/INT) socket feeding Transparent.Color broadcasts
+        # (s, s, s) in Cycles -> exact grayscale passthrough.
+        if src_sock is not None and getattr(src_sock, "type", "") in ("VALUE", "INT"):
+            return (color_sock, 1.0, True)
+        return None
+    try:
+        val = color_sock.default_value
+        r, g, b = float(val[0]), float(val[1]), float(val[2])
+        if not (math.isfinite(r) and math.isfinite(g) and math.isfinite(b)):
+            return None
+        if abs(r - g) <= 1e-3 and abs(g - b) <= 1e-3 and -1e-4 <= r <= 1.01:
+            return (None, max(0.0, min(1.0, r)), True)
+        return None
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def flatten_mix_shader_surface(
+    output_node,
+    *,
+    max_mix_depth: int = 8,
+    max_leaves: int = 16,
+) -> list[MixLeafSpec] | None:
+    """If ``output_node.Surface`` is driven by a ``ShaderNodeMixShader`` tree
+    whose leaves are supported non-refracting shaders, flatten it into a list
+    of :class:`MixLeafSpec` entries.  Returns ``None`` otherwise (including
+    when the surface is a single Principled BSDF or uses unsupported shaders
+    or carries an interior Volume).
+    """
+    if output_node is None:
+        return None
+    surface_socket = output_node.inputs.get("Surface") if hasattr(output_node.inputs, "get") else None
+    if surface_socket is None:
+        for inp in getattr(output_node, "inputs", ()):
+            if inp.name == "Surface":
+                surface_socket = inp
+                break
+    surf_links = _live_socket_links(surface_socket)
+    if not surf_links:
+        return None
+
+    # MixMaterial refuses interior_medium; if Volume is linked, fail closed.
+    vol_socket = output_node.inputs.get("Volume") if hasattr(output_node.inputs, "get") else None
+    if vol_socket is None:
+        for inp in getattr(output_node, "inputs", ()):
+            if inp.name == "Volume":
+                vol_socket = inp
+                break
+    if _live_socket_links(vol_socket):
+        return None
+
+    root, root_ok = _unwrap_reroute_node(surf_links[0].from_node)
+    if not root_ok or root is None or getattr(root, "bl_idname", "") != "ShaderNodeMixShader":
+        return None
+    if getattr(root, "mute", False):
+        return None
+
+    leaves: list[MixLeafSpec] = []
+
+    def _walk(node, factors: tuple[tuple[object | None, float, bool], ...], depth: int, path_seen: frozenset[int]) -> bool:
+        if len(leaves) >= max_leaves:
+            return False
+        if node is None:
+            leaves.append(MixLeafSpec(kind="absorber", node=None, factors=factors))
+            return True
+        node, node_ok = _unwrap_reroute_node(node)
+        if not node_ok:
+            return False
+        if node is None:
+            leaves.append(MixLeafSpec(kind="absorber", node=None, factors=factors))
+            return True
+        if getattr(node, "mute", False):
+            return False
+        nid = rna_key(node)
+        if nid in path_seen:
+            return False
+        bl = getattr(node, "bl_idname", "")
+        if bl == "ShaderNodeMixShader":
+            if depth >= max_mix_depth:
+                return False
+            inputs = list(getattr(node, "inputs", ()))
+            if len(inputs) < 3:
+                return False
+            fac_sock = inputs[0]
+            try:
+                fac_default = float(fac_sock.default_value)
+            except (AttributeError, TypeError, ValueError):
+                fac_default = 0.5
+            next_seen = path_seen | {nid}
+            for branch_idx, sock_idx in ((False, 1), (True, 2)):
+                sh_sock = inputs[sock_idx]
+                sh_links = _live_socket_links(sh_sock)
+                child_node = sh_links[0].from_node if sh_links else None
+                if not _walk(child_node, factors + ((fac_sock, fac_default, branch_idx),), depth + 1, next_seen):
+                    return False
+            return True
+        if bl == "ShaderNodeBsdfPrincipled":
+            if _principled_is_transmission_heavy(node):
+                return False
+            leaves.append(MixLeafSpec(kind="principled", node=node, factors=factors))
+            return True
+        if bl == "ShaderNodeBsdfDiffuse":
+            leaves.append(MixLeafSpec(kind="diffuse", node=node, factors=factors))
+            return True
+        if bl in ("ShaderNodeBsdfGlossy", "ShaderNodeBsdfAnisotropic"):
+            leaves.append(MixLeafSpec(kind="glossy", node=node, factors=factors))
+            return True
+        if bl == "ShaderNodeEmission":
+            leaves.append(MixLeafSpec(kind="emission", node=node, factors=factors))
+            return True
+        if bl == "ShaderNodeBsdfTransparent":
+            tp_factor = _transparent_passthrough_factor(node)
+            if tp_factor is None:
+                return False
+            leaves.append(MixLeafSpec(kind="transparent", node=node, factors=factors + (tp_factor,)))
+            return True
+        return False
+
+    if not _walk(root, (), 0, frozenset()):
+        return None
+    return leaves if leaves else None
+
+
+def find_simple_bsdf_through_surface(output_node) -> tuple[str, object] | None:
+    """If ``output_node.Surface`` (through reroutes, with no Volume linked)
+    terminates at a single standalone ``Diffuse``, ``Glossy``/``Anisotropic``,
+    or ``Emission`` shader node, return ``(kind, node)`` matching
+    :class:`MixLeafSpec` kinds."""
+    if output_node is None:
+        return None
+    vol_socket = output_node.inputs.get("Volume") if hasattr(output_node.inputs, "get") else None
+    if vol_socket is None:
+        for inp in getattr(output_node, "inputs", ()):
+            if inp.name == "Volume":
+                vol_socket = inp
+                break
+    if _live_socket_links(vol_socket):
+        return None
+    surface_socket = output_node.inputs.get("Surface") if hasattr(output_node.inputs, "get") else None
+    if surface_socket is None:
+        for inp in getattr(output_node, "inputs", ()):
+            if inp.name == "Surface":
+                surface_socket = inp
+                break
+    surf_links = _live_socket_links(surface_socket)
+    if not surf_links:
+        return None
+    node, ok = _unwrap_reroute_node(surf_links[0].from_node)
+    if not ok or node is None or getattr(node, "mute", False):
+        return None
+    bl = getattr(node, "bl_idname", "")
+    if bl == "ShaderNodeBsdfDiffuse":
+        return ("diffuse", node)
+    if bl in ("ShaderNodeBsdfGlossy", "ShaderNodeBsdfAnisotropic"):
+        return ("glossy", node)
+    if bl == "ShaderNodeEmission":
+        return ("emission", node)
+    return None
+
+
+def _probe_image_node_supported(node) -> str | None:
+    """Lightweight image-resolver probe used by ``classify_material`` (never
+    unpacks files to disk).  Returns a valid RISE identifier iff ``node`` is a
+    supported ``ShaderNodeTexImage``."""
+    from . import procedural_expr as _procedural_expr
+    if getattr(node, "bl_idname", "") != "ShaderNodeTexImage":
+        return None
+    if getattr(node, "projection", "FLAT") != "FLAT":
+        return None
+    if getattr(node, "extension", "REPEAT") not in _procedural_expr.SUPPORTED_TEX_IMAGE_EXTENSIONS:
+        return None
+    image = getattr(node, "image", None)
+    if image is None:
+        return None
+    if getattr(image, "source", "FILE") not in ("FILE", "GENERATED"):
+        return None
+    return "__probe_tex"
+
+
+def _is_traversable_input_node(node) -> bool:
+    from . import procedural_expr as _procedural_expr
+    if getattr(node, "mute", False):
+        return False
+    bl = getattr(node, "bl_idname", "")
+    if bl not in _SIMPLE_TRAVERSABLE_NODES:
+        return False
+    if bl == "ShaderNodeAttribute":
+        if getattr(node, "attribute_type", "GEOMETRY") != "GEOMETRY":
+            return False
+        if not str(getattr(node, "attribute_name", "") or ""):
+            return False
+    if bl == "ShaderNodeUVMap":
+        if getattr(node, "from_instancer", False):
+            return False
+    if bl == "ShaderNodeTexImage":
+        if getattr(node, "projection", "FLAT") != "FLAT":
+            return False
+        if getattr(node, "extension", "REPEAT") not in _procedural_expr.SUPPORTED_TEX_IMAGE_EXTENSIONS:
+            return False
+        image = getattr(node, "image", None)
+        if image is None or getattr(image, "source", "FILE") not in ("FILE", "GENERATED"):
+            return False
+    if bl == "ShaderNodeNormalMap":
+        if getattr(node, "space", "TANGENT") != "TANGENT":
+            return False
+        if str(getattr(node, "uv_map", "") or ""):
+            return False
+    return True
+
+
+def _walk_simple_inputs(root_sockets: list) -> bool:
+    """Return True iff every node reachable from ``root_sockets`` (within depth
+    <= 16) is in ``_SIMPLE_TRAVERSABLE_NODES`` and satisfies node-specific gates.
+
+    Follows muted passthrough nodes via ``internal_links`` (matching socket
+    identifiers first), inlines ``ShaderNodeGroup`` subgraphs (depth <= 8,
+    cycle-guarded), and enforces classifier-vs-exporter parity (skipping
+    ``AO.Color`` when only ``AO`` is consumed, skipping ``TexBrick`` colors
+    when only ``Fac`` is consumed, rejecting ``Bump``/``NormalMap`` feeding
+    ``AO.Normal``, gating ``NewGeometry`` / ``ParticleInfo`` / ``UVMap`` /
+    ``TexImage`` modes, and requiring ``Normal`` / ``Coat Normal`` roots to hit
+    a direct ``Bump`` / ``NormalMap`` node before branching into Color/Height
+    subgraphs).
+    """
+    from . import procedural_expr as _procedural_expr
+
+    for root_socket in root_sockets:
+        root_links = _live_socket_links(root_socket)
+        if not root_links:
+            continue
+        root_name = getattr(root_socket, "name", "")
+        is_normal_root = root_name in ("Normal", "Coat Normal")
+        is_coat_normal_root = (root_name == "Coat Normal")
+        # Stack items: (group_stack_tuple, node, out_key, depth, in_ao_normal, before_normal_mod)
+        root_from = root_links[0].from_node
+        root_out_key = _procedural_expr.canonical_output_name(root_from, root_links[0].from_socket)
+        stack: list[tuple[tuple, object, str, int, bool, bool]] = [(
+            (),
+            root_from,
+            root_out_key,
+            0,
+            False,
+            is_normal_root,
+        )]
+        visited: set[tuple] = set()
+        saw_image = False
+        saw_checker = False
+
+        while stack:
+            gstack, node, out_key, depth, in_ao_normal, before_normal_mod = stack.pop()
+            if depth > 16:
+                return False
+            bl = getattr(node, "bl_idname", "")
+            g_ids = tuple(rna_key(g) for g in gstack)
+            visit_out = out_key if bl in (
+                "ShaderNodeAmbientOcclusion",
+                "ShaderNodeTexBrick",
+                "ShaderNodeNewGeometry",
+                "ShaderNodeParticleInfo",
+                "ShaderNodeLightPath",
+                "ShaderNodeGroup",
+                "NodeGroupInput",
+            ) or getattr(node, "mute", False) else ""
+            visit_key = (g_ids, rna_key(node), visit_out, in_ao_normal, before_normal_mod)
+            if visit_key in visited:
+                continue
+            visited.add(visit_key)
+
+            # Follow Blender internal passthrough links on muted nodes; fail
+            # closed if the muted node has no internal passthrough for out_key.
+            if getattr(node, "mute", False):
+                pass_inp = _procedural_expr.resolve_muted_input_socket(node, out_key)
+                if pass_inp is None:
+                    return False
+                plinks = _live_socket_links(pass_inp)
+                if plinks:
+                    pnode = plinks[0].from_node
+                    stack.append((
+                        gstack,
+                        pnode,
+                        _procedural_expr.canonical_output_name(pnode, plinks[0].from_socket),
+                        depth + 1,
+                        in_ao_normal,
+                        before_normal_mod,
+                    ))
+                continue
+
+            if not _is_traversable_input_node(node):
+                return False
+
+            if before_normal_mod:
+                if is_coat_normal_root:
+                    if bl not in ("NodeReroute", "ShaderNodeNormalMap"):
+                        return False
+                elif bl == "ShaderNodeMix":
+                    dt = getattr(node, "data_type", "FLOAT")
+                    if dt not in ("RGBA", "VECTOR"):
+                        return False
+                    if dt == "RGBA":
+                        if getattr(node, "blend_type", "MIX") != "MIX" or getattr(node, "clamp_result", False):
+                            return False
+                    elif getattr(node, "factor_mode", "UNIFORM") != "UNIFORM":
+                        return False
+                    if not getattr(node, "clamp_factor", True):
+                        fac_s = next((i for i in getattr(node, "inputs", ()) if getattr(i, "name", "") == "Factor" and getattr(i, "type", "") == "VALUE"), None)
+                        if fac_s is None or _live_socket_links(fac_s):
+                            return False
+                        try:
+                            fv = float(fac_s.default_value)
+                            if not (0.0 <= fv <= 1.0):
+                                return False
+                        except (TypeError, ValueError):
+                            return False
+                elif bl == "ShaderNodeMixRGB":
+                    if getattr(node, "blend_type", "MIX") != "MIX" or getattr(node, "use_clamp", False):
+                        return False
+                elif bl not in ("NodeReroute", "ShaderNodeBump", "ShaderNodeNormalMap"):
+                    return False
+
+            if bl == "ShaderNodeGroup":
+                nt = getattr(node, "node_tree", None)
+                if nt is None or len(gstack) >= 8:
+                    return False
+                if any(rna_key(getattr(g, "node_tree", None)) == rna_key(nt) for g in gstack):
+                    return False
+                gout = _procedural_expr.find_group_output_node(nt)
+                if gout is None:
+                    return False
+                g_inp = _procedural_expr.match_socket_by_key(getattr(gout, "inputs", ()), out_key)
+                if g_inp is None:
+                    return False
+                glinks = _live_socket_links(g_inp)
+                if glinks:
+                    gnode = glinks[0].from_node
+                    stack.append((
+                        gstack + (node,),
+                        gnode,
+                        _procedural_expr.canonical_output_name(gnode, glinks[0].from_socket),
+                        depth + 1,
+                        in_ao_normal,
+                        before_normal_mod,
+                    ))
+                continue
+
+            if bl == "NodeGroupInput":
+                if not gstack:
+                    return False
+                enclosing = gstack[-1]
+                outer_inp = _procedural_expr.match_socket_by_key(getattr(enclosing, "inputs", ()), out_key)
+                if outer_inp is None:
+                    return False
+                olinks = _live_socket_links(outer_inp)
+                if olinks:
+                    onode = olinks[0].from_node
+                    stack.append((
+                        gstack[:-1],
+                        onode,
+                        _procedural_expr.canonical_output_name(onode, olinks[0].from_socket),
+                        depth + 1,
+                        in_ao_normal,
+                        before_normal_mod,
+                    ))
+                continue
+
+            if bl == "ShaderNodeNewGeometry" and out_key not in _procedural_expr.SUPPORTED_GEOMETRY_OUTPUTS:
+                return False
+            if bl == "ShaderNodeParticleInfo" and out_key not in _procedural_expr.SUPPORTED_PARTICLE_INFO_OUTPUTS:
+                return False
+            if bl == "ShaderNodeLightPath" and out_key not in _procedural_expr.SUPPORTED_LIGHT_PATH_OUTPUTS:
+                return False
+
+            if in_ao_normal and bl in ("ShaderNodeBump", "ShaderNodeNormalMap"):
+                return False
+            if bl == "ShaderNodeTexImage":
+                saw_image = True
+            elif bl == "ShaderNodeTexChecker":
+                saw_checker = True
+            if saw_image and saw_checker:
+                return False
+
+            # Phase 3: Normal modifier trees allow Bump.Normal stacking and
+            # Mix(RGBA/VECTOR, MIX) blending; keep before_normal_mod=True on
+            # the normal-bearing inputs (Bump.Normal, Mix A/B) and switch to
+            # expression mode (False) on Color/Height/Factor inputs.
+            for socket in getattr(node, "inputs", ()):
+                if bl == "ShaderNodeAmbientOcclusion" and out_key == "AO" and socket.name == "Color":
+                    continue
+                if bl == "ShaderNodeTexBrick" and out_key == "Fac" and socket.name in ("Color1", "Color2", "Mortar"):
+                    continue
+                # On ShaderNodeMix, skip sockets belonging to inactive data_types.
+                if bl == "ShaderNodeMix":
+                    dt = getattr(node, "data_type", "FLOAT")
+                    sname = getattr(socket, "name", "")
+                    stype = getattr(socket, "type", "")
+                    if sname in ("A", "B"):
+                        want_stype = "RGBA" if dt == "RGBA" else ("VECTOR" if dt == "VECTOR" else "VALUE")
+                        if stype and stype != want_stype:
+                            continue
+                    elif sname == "Factor":
+                        want_ftype = "VECTOR" if (dt == "VECTOR" and getattr(node, "factor_mode", "UNIFORM") == "NON_UNIFORM") else "VALUE"
+                        if stype and stype != want_ftype:
+                            continue
+                links = _live_socket_links(socket)
+                if links:
+                    if bl == "ShaderNodeBump" and socket.name in ("Strength", "Distance"):
+                        return False
+                    if bl == "ShaderNodeNormalMap" and socket.name == "Strength":
+                        return False
+                    if before_normal_mod:
+                        if bl == "ShaderNodeBump":
+                            sock_before_normal = (socket.name == "Normal")
+                        elif bl == "ShaderNodeNormalMap":
+                            sock_before_normal = False
+                        elif bl == "ShaderNodeMix":
+                            sock_before_normal = (socket.name in ("A", "B"))
+                        elif bl == "ShaderNodeMixRGB":
+                            sock_before_normal = (socket.name in ("Color1", "Color2"))
+                        else:
+                            sock_before_normal = True
+                    else:
+                        sock_before_normal = False
+                    fnode = links[0].from_node
+                    next_ao_normal = in_ao_normal or (
+                        bl in ("ShaderNodeAmbientOcclusion", "ShaderNodeLayerWeight", "ShaderNodeFresnel")
+                        and socket.name == "Normal"
+                    )
+                    stack.append((
+                        gstack,
+                        fnode,
+                        _procedural_expr.canonical_output_name(fnode, links[0].from_socket),
+                        depth + 1,
+                        next_ao_normal,
+                        sock_before_normal,
+                    ))
+
+    return True
 
 
 def _find_principled_through_surface(output_node):
@@ -188,19 +765,20 @@ def classify_material(material) -> str:
     """Return ``'simple'`` or ``'complex'``.
 
     Simple iff:
-      - exactly one Principled BSDF reaches Material Output.Surface,
-      - each reachable node from inputs OTHER THAN Tangent is in
-        ``_SIMPLE_TRAVERSABLE_NODES``,
-      - ordinary upstream traversal depth does not exceed16 (root0).
-    The selected Surface has its own bounded single-Principled walk.
+      - either a single Principled BSDF reaches Material Output.Surface, OR a
+        supported non-refracting ``ShaderNodeMixShader`` tree (leaves in
+        Principled/Diffuse/Glossy/Emission/white Transparent/absorber, no
+        Volume, no linked Tangent on Principled leaves, and all factor/passthrough
+        weights compile cleanly via ``procedural_expr``),
+      - each reachable node from inputs (excluding Tangent on single-Principled
+        materials, which has an independent corner producer) is in
+        ``_SIMPLE_TRAVERSABLE_NODES``, unmuted, and satisfies node-specific
+        gates (e.g. ``ShaderNodeAttribute`` must be ``GEOMETRY`` with a
+        non-empty name; ``ShaderNodeTexImage`` must be ``FLAT`` with a valid
+        ``FILE``/``GENERATED`` image and supported extension; ``ShaderNodeTexImage``
+        cannot be combined with ``ShaderNodeTexChecker`` in the same socket),
+      - ordinary upstream traversal depth does not exceed 16 (root 0).
     Otherwise complex.
-
-    Tangent is excluded: its full graph uses the separate export-time
-    corner producer, not this whitelist/depth/manual image workflow.
-    The classifier inspects reachable subgraphs of all OTHER inputs.
-    An Ambient Occlusion node feeding a Color Ramp that feeds Base Color
-    forces complex; an Image Texture chained
-    via Color Ramp + Math feeding Base Color stays simple.
     """
 
     if not uses_nodes(material):
@@ -219,38 +797,61 @@ def classify_material(material) -> str:
         return "simple"
 
     principled = _find_principled_through_surface(output_node)
-    if principled is None:
+    if principled is not None:
+        # Walk ordinary inputs except Tangent. An unsupported reachable
+        # node classifies complex for the manual image-bake workflow.
+        root_sockets = [
+            socket for socket in principled.inputs
+            # DL-213: tangent directions have their own full-graph corner bake.
+            if socket.name != "Tangent"
+        ]
+        return "simple" if _walk_simple_inputs(root_sockets) else "complex"
+
+    # Standalone Diffuse / Glossy (Anisotropic) / Emission surface root.
+    simple_bsdf = find_simple_bsdf_through_surface(output_node)
+    if simple_bsdf is not None:
+        _kind, bsdf_node = simple_bsdf
+        return "simple" if _walk_simple_inputs(list(getattr(bsdf_node, "inputs", ()))) else "complex"
+
+    # ABI v21: ShaderNodeMixShader trees whose leaves are supported
+    # non-refracting shaders (Principled/Diffuse/Glossy/Emission/white
+    # Transparent/absorber) translate natively to RISE `mix_material`.
+    mix_leaves = flatten_mix_shader_surface(output_node)
+    if mix_leaves is None:
         return "complex"
 
-    # Walk ordinary inputs except Tangent. An unsupported reachable
-    # node classifies complex for the manual image-bake workflow.
-    stack = []
-    for socket in principled.inputs:
-        # DL-213: tangent directions have their own full-graph corner bake.
-        if socket.name == "Tangent":
-            continue
-        if socket.is_linked:
-            stack.append((socket.links[0].from_node, 0))
+    from . import procedural_expr as _procedural_expr
 
-    visited: set[int] = set()
-    while stack:
-        node, depth = stack.pop()
-        if depth > 16:
+    # Validate that every factor weight expression AND combined transparent
+    # passthrough expression compiles cleanly so classify_material agrees
+    # 100% with _export_mix_shader_material (R1 B-P1-1 / B-P1-2).
+    transparent_factors: list[list] = []
+    root_sockets = []
+    seen_fac: set[int] = set()
+    for leaf in mix_leaves:
+        if _procedural_expr.compile_mix_weight_expression(
+            list(leaf.factors), image_resolver=_probe_image_node_supported
+        ) is None:
             return "complex"
-        node_id = rna_key(node)
-        if node_id in visited:
-            continue
-        visited.add(node_id)
-
-        bl = node.bl_idname
-        if bl not in _SIMPLE_TRAVERSABLE_NODES:
-            return "complex"
-
-        for socket in node.inputs:
-            if socket.is_linked:
-                stack.append((socket.links[0].from_node, depth + 1))
-
-    return "simple"
+        if leaf.kind == "transparent":
+            transparent_factors.append(list(leaf.factors))
+        for fac_sock, _default, _is_second in leaf.factors:
+            if fac_sock is not None:
+                fid = rna_key(fac_sock)
+                if fid not in seen_fac:
+                    seen_fac.add(fid)
+                    root_sockets.append(fac_sock)
+        if leaf.node is not None:
+            for socket in getattr(leaf.node, "inputs", ()):
+                # tangent_bake only handles single-Principled materials (R1 B-P1-7).
+                if leaf.kind == "principled" and socket.name == "Tangent" and _live_socket_links(socket):
+                    return "complex"
+                root_sockets.append(socket)
+    if transparent_factors and _procedural_expr.compile_mix_passthrough_expression(
+        transparent_factors, image_resolver=_probe_image_node_supported
+    ) is None:
+        return "complex"
+    return "simple" if _walk_simple_inputs(root_sockets) else "complex"
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +1005,157 @@ def needs_bake_attempt(scene, material) -> bool:
     if not attempted_hash:
         return True
     return str(attempted_hash) != _material_graph_hash(material)
+
+
+def collect_used_render_materials(scene, depsgraph=None) -> list:
+    """Return unique original ``bpy.types.Material`` datablocks actually used
+    by renderable geometry in ``scene`` (via ``depsgraph`` when available, or
+    walking renderable scene objects + particle/collection/GeoNodes instance
+    targets otherwise).  Mirrors ``exporter.export_scene``'s ``hide_render``
+    and ``skip_collections_pattern`` rules."""
+    seen: set[int] = set()
+    used: list = []
+
+    skip_patterns: set[str] = set()
+    rise_settings = getattr(scene, "rise", None)
+    if rise_settings is not None:
+        raw = getattr(rise_settings, "skip_collections_pattern", "") or ""
+        for part in raw.split(","):
+            cleaned = part.strip().lower()
+            if cleaned:
+                skip_patterns.add(cleaned)
+
+    def _in_skipped_collection(obj) -> bool:
+        if not skip_patterns or obj is None:
+            return False
+        for col in getattr(obj, "users_collection", ()):
+            if getattr(col, "name", "").lower() in skip_patterns:
+                return True
+        return False
+
+    def _add_mat(mat):
+        if mat is None:
+            return
+        orig = getattr(mat, "original", mat)
+        k = rna_key(orig)
+        if k not in seen:
+            seen.add(k)
+            used.append(orig)
+
+    def _scan_geo_node_tree(nt, visited_trees: set[int], visited_obs: set[int]):
+        if nt is None:
+            return
+        tid = rna_key(nt)
+        if tid in visited_trees:
+            return
+        visited_trees.add(tid)
+        for node in getattr(nt, "nodes", ()):
+            bl = getattr(node, "bl_idname", "")
+            if bl == "GeometryNodeGroup":
+                _scan_geo_node_tree(getattr(node, "node_tree", None), visited_trees, visited_obs)
+            elif bl == "GeometryNodeInputMaterial":
+                _add_mat(getattr(node, "material", None))
+            for inp in getattr(node, "inputs", ()):
+                val = getattr(inp, "default_value", None)
+                if val is None:
+                    continue
+                if isinstance(val, bpy.types.Material):
+                    _add_mat(val)
+                elif isinstance(val, bpy.types.Object):
+                    _scan_object(val, visited_obs, visited_trees)
+                elif isinstance(val, bpy.types.Collection):
+                    for col_ob in getattr(val, "all_objects", ()):
+                        _scan_object(col_ob, visited_obs, visited_trees)
+
+    def _scan_object(ob, visited_obs: set[int], visited_trees: set[int]):
+        if ob is None or _in_skipped_collection(ob):
+            return
+        oid = rna_key(ob)
+        if oid in visited_obs:
+            return
+        visited_obs.add(oid)
+        for slot in getattr(ob, "material_slots", ()):
+            _add_mat(getattr(slot, "material", None))
+        data = getattr(ob, "data", None)
+        if data is not None:
+            for m in getattr(data, "materials", ()):
+                _add_mat(m)
+        if getattr(ob, "instance_type", "") == "COLLECTION":
+            inst_col = getattr(ob, "instance_collection", None)
+            if inst_col is not None:
+                for col_ob in getattr(inst_col, "all_objects", ()):
+                    _scan_object(col_ob, visited_obs, visited_trees)
+        for psys in getattr(ob, "particle_systems", ()):
+            settings = getattr(psys, "settings", None)
+            if settings is None:
+                continue
+            inst_ob = getattr(settings, "instance_object", None)
+            if inst_ob is not None:
+                _scan_object(inst_ob, visited_obs, visited_trees)
+            inst_col = getattr(settings, "instance_collection", None)
+            if inst_col is not None:
+                for col_ob in getattr(inst_col, "all_objects", ()):
+                    _scan_object(col_ob, visited_obs, visited_trees)
+        for mod in getattr(ob, "modifiers", ()):
+            if getattr(mod, "type", "") != "NODES" or not getattr(mod, "show_render", True):
+                continue
+            try:
+                for val in mod.values():
+                    if isinstance(val, bpy.types.Material):
+                        _add_mat(val)
+                    elif isinstance(val, bpy.types.Object):
+                        _scan_object(val, visited_obs, visited_trees)
+                    elif isinstance(val, bpy.types.Collection):
+                        for col_ob in getattr(val, "all_objects", ()):
+                            _scan_object(col_ob, visited_obs, visited_trees)
+            except (AttributeError, TypeError):
+                pass
+            _scan_geo_node_tree(getattr(mod, "node_group", None), visited_trees, visited_obs)
+
+    if depsgraph is not None:
+        for inst in getattr(depsgraph, "object_instances", ()):
+            is_instance = (
+                getattr(inst, "is_instance", False)
+                and getattr(inst, "instance_object", None) is not None
+            )
+            base_ob = inst.instance_object if is_instance else getattr(inst, "object", None)
+            if base_ob is None:
+                continue
+            orig_ob = getattr(base_ob, "original", base_ob)
+            if not is_instance and getattr(orig_ob, "hide_render", False):
+                continue
+            if _in_skipped_collection(orig_ob):
+                continue
+            if getattr(orig_ob, "type", "") not in {"MESH", "CURVE", "SURFACE", "FONT", "META"}:
+                continue
+            eval_ob = getattr(inst, "object", None)
+            if eval_ob is None:
+                continue
+            for slot in getattr(eval_ob, "material_slots", ()):
+                _add_mat(getattr(slot, "material", None))
+            data = getattr(eval_ob, "data", None)
+            if data is not None:
+                for m in getattr(data, "materials", ()):
+                    _add_mat(m)
+        return used
+
+    visited_obs: set[int] = set()
+    visited_trees: set[int] = set()
+    for ob in getattr(scene, "objects", ()):
+        if getattr(ob, "hide_render", False) or _in_skipped_collection(ob):
+            continue
+        _scan_object(ob, visited_obs, visited_trees)
+    return used
+
+
+def materials_needing_bake(scene, depsgraph=None) -> list:
+    """Single source of truth for both ``engine.render()`` and
+    ``ui.RISE_RENDER_PT_materials``: returns render-used materials that
+    currently require a bake attempt (never gating unused datablocks)."""
+    return [
+        mat for mat in collect_used_render_materials(scene, depsgraph=depsgraph)
+        if needs_bake_attempt(scene, mat)
+    ]
 
 
 def baked_cache_is_stale(material) -> bool:
@@ -827,6 +1579,63 @@ def find_bakeable_proxy_object(scene, material):
     return None
 
 
+# Procedural texture nodes recognized as bake-eligible when the user
+# explicitly invokes the "Bake Procedural Materials" operator, even when
+# `classify_material` keeps the material `"simple"` so F12 can render
+# natively (e.g. Voronoi / Noise / White Noise via expression_painter)
+# without blocking on a bake gate.
+_PROCEDURAL_TEXTURE_NODES = frozenset({
+    "ShaderNodeTexNoise",
+    "ShaderNodeTexVoronoi",
+    "ShaderNodeTexWhiteNoise",
+    "ShaderNodeTexChecker",
+    "ShaderNodeTexWave",
+    "ShaderNodeTexMagic",
+    "ShaderNodeTexBrick",
+    "ShaderNodeTexGradient",
+    "ShaderNodeTexGabor",
+})
+
+
+def has_procedural_texture_nodes(material) -> bool:
+    """Return True if any active procedural texture node is reachable from the
+    material's selected Material Output (excluding the Tangent branch)."""
+    if material is None or not uses_nodes(material):
+        return False
+    output_node = find_material_output(material)
+    if output_node is None:
+        return False
+    surface_socket = output_node.inputs.get("Surface")
+    if surface_socket is None or not surface_socket.is_linked:
+        return False
+    surface_links = [l for l in surface_socket.links if not getattr(l, "is_muted", False)]
+    if not surface_links:
+        return False
+
+    stack = [surface_links[0].from_node]
+    visited: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if node is None:
+            continue
+        node_id = rna_key(node)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        is_muted = bool(getattr(node, "mute", False))
+        if not is_muted and node.bl_idname in _PROCEDURAL_TEXTURE_NODES:
+            return True
+        for socket in node.inputs:
+            if node.bl_idname == "ShaderNodeBsdfPrincipled" and socket.name == "Tangent":
+                continue
+            if socket.is_linked:
+                for link in socket.links:
+                    if not getattr(link, "is_muted", False):
+                        stack.append(link.from_node)
+                        break
+    return False
+
+
 def bake_complex_materials_in_scene(
     scene,
     *,
@@ -835,14 +1644,16 @@ def bake_complex_materials_in_scene(
     report=print,
 ) -> int:
     """Walk the scene, find every object whose material classifies as
-    complex, once per material, using the first encountered MESH object.
+    complex OR contains active procedural texture nodes (e.g. Voronoi,
+    Noise, White Noise, Checker), once per material, using the first
+    encountered MESH object.
     Returns the number with any newly saved channel, not necessarily diffuse
     or a complete three-channel cache. A zero count may mean no eligible
     material, all skipped, or all attempts failed.
 
     ``only_unbaked``: when True, skip materials with any existing
     channel returned by ``baked_paths``. This does not check graph
-    freshness; False retries complex materials regardless of cache.
+    freshness; False retries eligible materials regardless of cache.
 
     The scene's render engine MUST be switched to ``CYCLES`` by the
     caller before invoking; the operator handles that.  We don't do
@@ -861,7 +1672,7 @@ def bake_complex_materials_in_scene(
             if mat.name in seen:
                 continue
             seen.add(mat.name)
-            if classify_material(mat) != "complex":
+            if classify_material(mat) != "complex" and not has_procedural_texture_nodes(mat):
                 continue
             if only_unbaked and baked_paths(mat) is not None:
                 continue

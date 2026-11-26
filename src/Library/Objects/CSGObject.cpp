@@ -85,6 +85,11 @@ CSGObject::~CSGObject( )
 	// beside the composites that own it, and became parentable, since
 	// ObjectManager::SetObjectParent identifies an operand as "hidden and has
 	// geometry".  See IObjectPriv::AddConsumer.
+	if( m_propagatedMediumToOperands ) {
+		m_propagatedMediumToOperands = false;
+		if( Object* a = dynamic_cast<Object*>( pObjectA ) ) a->AdjustMediumInheritingCsgConsumers( -1 );
+		if( Object* b = dynamic_cast<Object*>( pObjectB ) ) b->AdjustMediumInheritingCsgConsumers( -1 );
+	}
 	if( pObjectA ) {
 		pObjectA->RemoveConsumer();
 	}
@@ -95,6 +100,51 @@ CSGObject::~CSGObject( )
 
 	safe_release( pObjectA );
 	safe_release( pObjectB );
+}
+
+void CSGObject::SyncOperandMediumInheritance()
+{
+	const bool want = ( pInteriorMedium != 0 || nMediumInheritingCsgConsumers > 0 ) &&
+		( pMaterial == 0 ) && ( pObjectA != 0 || pObjectB != 0 );
+	if( want == m_propagatedMediumToOperands ) {
+		return;
+	}
+	m_propagatedMediumToOperands = want;
+	const int delta = want ? 1 : -1;
+	if( Object* a = dynamic_cast<Object*>( pObjectA ) ) a->AdjustMediumInheritingCsgConsumers( delta );
+	if( Object* b = dynamic_cast<Object*>( pObjectB ) ) b->AdjustMediumInheritingCsgConsumers( delta );
+}
+
+bool CSGObject::AssignMaterial( const IMaterial& pMat )
+{
+	const bool ret = Object::AssignMaterial( pMat );
+	SyncOperandMediumInheritance();
+	return ret;
+}
+
+void CSGObject::ClearMaterial()
+{
+	Object::ClearMaterial();
+	SyncOperandMediumInheritance();
+}
+
+bool CSGObject::AssignInteriorMedium( const IMedium& medium )
+{
+	const bool ret = Object::AssignInteriorMedium( medium );
+	SyncOperandMediumInheritance();
+	return ret;
+}
+
+void CSGObject::ClearInteriorMedium()
+{
+	Object::ClearInteriorMedium();
+	SyncOperandMediumInheritance();
+}
+
+void CSGObject::AdjustMediumInheritingCsgConsumers( int delta )
+{
+	Object::AdjustMediumInheritingCsgConsumers( delta );
+	SyncOperandMediumInheritance();
 }
 
 IObjectPriv* CSGObject::CloneFull()
@@ -120,6 +170,7 @@ IObjectPriv* CSGObject::CloneFull()
 		pClone->AssignRadianceMap( *pRadianceMap );
 	}
 
+	pClone->m_objectInfo = m_objectInfo;
 	return pClone;
 }
 
@@ -129,6 +180,7 @@ IObjectPriv* CSGObject::CloneGeometric()
 	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "clone" );
 
 	pClone->AssignObjects( pObjectA, pObjectB );
+	pClone->m_objectInfo = m_objectInfo;
 	return pClone;
 }
 
@@ -389,6 +441,38 @@ bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 		return false;
 	}
 
+	// Slice 3 R2 P2-1: if this CSGObject already owns (or inherits) an interior
+	// medium and inherits operand materials (`!pMaterial`), refuse attaching
+	// operands that carry a MixMaterial.
+	if( ( pInteriorMedium || nMediumInheritingCsgConsumers > 0 ) && !pMaterial ) {
+		struct MixScan : public IEnumCallback<IMaterial> {
+			bool foundMix = false;
+			bool operator()( const IMaterial& m ) override {
+				if( m.IsUnresolvedMix() ) {
+					foundMix = true;
+					return false;
+				}
+				return true;
+			}
+		} scan;
+		objA->EnumerateEffectiveMaterials( scan );
+		if( !scan.foundMix ) {
+			objB->EnumerateEffectiveMaterials( scan );
+		}
+		if( scan.foundMix ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"CSGObject::AssignObjects:: cannot attach operand carrying a mix_material to a CSGObject with an interior_medium" );
+			return false;
+		}
+	}
+
+	// Release medium-inheritance marks on outgoing operands before detaching.
+	if( m_propagatedMediumToOperands ) {
+		m_propagatedMediumToOperands = false;
+		if( Object* a = dynamic_cast<Object*>( pObjectA ) ) a->AdjustMediumInheritingCsgConsumers( -1 );
+		if( Object* b = dynamic_cast<Object*>( pObjectB ) ) b->AdjustMediumInheritingCsgConsumers( -1 );
+	}
+
 	// Symmetric with the destructor: give up the consumption we held on the OUTGOING
 	// pair (which may leave them consumed by other composites) before claiming the
 	// incoming one.
@@ -420,6 +504,7 @@ bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 	}
 	m_certBits.store( -1, std::memory_order_relaxed );	// DL-617: recomputed on first use
 	m_realizedEpoch.store( 0, std::memory_order_relaxed );
+	SyncOperandMediumInheritance();
 	BumpMaterialBindingEpoch();
 	Geometry::BumpGlobalGeometryShapeEpoch();
 
@@ -4473,6 +4558,8 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// by the world step and warn once) rather than silently trusting a
 		// matrix that is wrong by a transform.
 		ri.geometric.pmxWorldToObject = 0;
+		ri.geometric.pmxObjectToWorld = 0;
+		ri.geometric.pObjectInfo = &m_objectInfo;
 
 		if( pShader ) {
 			ri.pShader = pShader;

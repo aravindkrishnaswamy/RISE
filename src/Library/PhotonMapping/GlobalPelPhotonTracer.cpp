@@ -127,6 +127,9 @@ void GlobalPelPhotonTracer::TracePhoton(
 		}
 		hitStack.SetCurrentObject( ri.pObject );
 
+		if( !ri.pMaterial ) {
+			return;
+		}
 		ISPF* pSPF = ri.pMaterial->GetSPF();
 
 		if( pSPF )

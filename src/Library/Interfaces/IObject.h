@@ -26,6 +26,7 @@ namespace RISE
 	class IMaterial;
 	class IMedium;
 	class Ray;
+	struct ObjectInfoData;
 
 	//! An object combines both geometric and material information into a 
 	//! meaningful scene element
@@ -330,6 +331,15 @@ namespace RISE
 		//! visits `GetMaterial()` if non-null; `CSGObject` overrides to traverse
 		//! its operands in O(|V|) when no container-level material override is set.
 		virtual bool EnumerateEffectiveMaterials( IEnumCallback<IMaterial>& cb ) const;
+
+		//! Per-object / per-instance Cycles Object Info attributes (color,
+		//! alpha, object pass index, random) and pointer accessors to the
+		//! object's finalized world/inverse transforms (respecting DL-465
+		//! thread-local motion-blur poses on concrete `Object`; returning null
+		//! on CSG composites).  Declared last + defaulted: no vtable claim.
+		virtual const ObjectInfoData* GetObjectInfo() const { return 0; }
+		virtual const Matrix4* GetFinalTransformMatrixPtr() const { return 0; }
+		virtual const Matrix4* GetFinalInverseTransformMatrixPtr() const { return 0; }
 	};
 }
 

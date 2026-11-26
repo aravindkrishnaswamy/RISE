@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <map>
 #include <string>
 #include <vector>
 

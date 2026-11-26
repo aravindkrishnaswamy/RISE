@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 18
+#define RISE_BLENDER_API_VERSION 23
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,7 +44,11 @@ enum rise_blender_painter_kind {
 	// convention RISE's UVTransformPainter implements.  Used by the
 	// exporter to honour Blender's Mapping node (vector_type=POINT)
 	// between a Texture Coordinate and an Image Texture node.
-	RISE_BLENDER_PAINTER_UV_TRANSFORM = 7
+	RISE_BLENDER_PAINTER_UV_TRANSFORM = 7,
+	// ABI v19 — Expression painter (`IJob::AddExpressionPainter`).
+	// `expression` holds the compiled RISE expression string (e.g.
+	// procedural Voronoi / Noise / White Noise / Mix / Hue-Sat subgraphs).
+	RISE_BLENDER_PAINTER_EXPRESSION = 8
 };
 
 enum rise_blender_color_space {
@@ -72,7 +76,25 @@ enum rise_blender_alpha_mode {
 
 enum rise_blender_modifier_kind {
 	RISE_BLENDER_MODIFIER_BUMP = 0,
-	RISE_BLENDER_MODIFIER_NORMAL_MAP = 1
+	RISE_BLENDER_MODIFIER_NORMAL_MAP = 1,
+	// ABI v20 — 3D surface-domain ReliefModifier (`IJob::AddReliefModifier`
+	// with domain="surface").  Used for procedural ShaderNodeBump height
+	// graphs (expression_painter) that depend on 3D object/world/generated
+	// coordinates rather than UV image texels.  `source_painter_name` names
+	// an already-registered colour painter (typically PAINTER_EXPRESSION);
+	// the bridge wraps channel R via PainterChannelScalarPainter.  `scale`
+	// uses Blinn's elevation sign convention directly (+strength*distance
+	// for Invert OFF, -strength*distance for Invert ON); `window` is the
+	// surface-domain central-difference half-step (<= 0 = auto footprint).
+	RISE_BLENDER_MODIFIER_RELIEF = 2,
+	// ABI v23 — Ordered composition of previously-registered modifiers
+	// (`IJob::AddModifierStack`).  Uses `stack_member_names[0..num_stack_members-1]`.
+	RISE_BLENDER_MODIFIER_STACK = 3,
+	// ABI v23 — Weighted normal blend of two modifiers (`IJob::AddBlendedModifier`).
+	// Uses `blend_a_name` (nullable = unperturbed normal), `blend_b_name`
+	// (nullable = unperturbed normal), and `blend_weight_painter_name` (scalar
+	// literal, IScalarPainter, or scalar IPainter name).
+	RISE_BLENDER_MODIFIER_BLEND = 4
 };
 
 enum rise_blender_material_model {
@@ -90,7 +112,14 @@ enum rise_blender_material_model {
 	// material).  Reads only the `subsurface_*` fields on
 	// `rise_blender_material` below; `sheen_*`/`coat_*` do not apply --
 	// neither has a PBR base to wrap when this model is selected.
-	RISE_BLENDER_MATERIAL_RANDOMWALK_SSS = 4
+	RISE_BLENDER_MATERIAL_RANDOMWALK_SSS = 4,
+	// ABI v21 — RISE `mix_material`: bounded convex response-coefficient
+	// blend of leaf materials with optional per-leaf modifiers and
+	// optional pass-through weight.  Reads `mix_children`,
+	// `num_mix_children`, and `mix_passthrough_painter_name` below.
+	// Child materials and modifiers must appear earlier in the scene
+	// arrays than the mix material that references them.
+	RISE_BLENDER_MATERIAL_MIX = 5
 };
 
 // Which of `hair_material`'s three mutually-exclusive colour tiers a
@@ -197,6 +226,25 @@ enum rise_blender_rasterizer_kind {
 	RISE_BLENDER_RASTERIZER_AUTO_SPECTRAL  = 10
 };
 
+typedef struct rise_blender_mix_child {
+	// Registered child material name, or NULL / "" / "none" for a black absorber leaf.
+	const char* material_name;
+	// Inline numeric literal, registered IScalarPainter name, or registered
+	// IPainter name (wrapped via channel R in PainterChannelScalarPainter).
+	const char* weight_painter_name;
+	// Optional per-leaf modifier name (NULL / "" / "none" = no modifier).
+	const char* modifier_name;
+} rise_blender_mix_child;
+
+typedef struct rise_blender_mesh_attribute {
+	// Attribute name referenced by `mesh_attr3("...")` / `mesh_attr_alpha("...")`.
+	const char* name;
+	// Linear RGBA floats in triangle-corner order (`tri * 3 + k`), length `num_corners * 4`.
+	const float* rgba;
+	// Must equal `mesh.num_triangles * 3`.
+	uint32_t num_corners;
+} rise_blender_mesh_attribute;
+
 typedef struct rise_blender_camera {
 	int projection_type;
 	float location[3];
@@ -234,6 +282,9 @@ typedef struct rise_blender_camera {
 	float aperture_ratio;	// camera.data.dof.aperture_ratio (1.0 = circular, anamorphic squeeze)
 	float iso;			// RISE-specific photographic ISO; 0 = disabled (default).  When > 0, requires `fstop > 0` and an exposure > 0; computes ISO-12232 EV that stacks into LDR outputs.  Cycles has no native ISO concept — exposed via an add-on property.
 	float scene_unit_meters;	// bpy.context.scene.unit_settings.scale_length — metres per scene unit
+	// ABI v23 — Planar near-clip distance (Blender camera.data.clip_start) in
+	// scene units; 0 = disabled (default).  Appended at tail of rise_blender_camera.
+	float clip_start;
 } rise_blender_camera;
 
 typedef struct rise_blender_painter {
@@ -262,6 +313,16 @@ typedef struct rise_blender_painter {
 	float uv_rotation;
 	float uv_scale_u;
 	float uv_scale_v;
+	// ABI v19 — Expression painter (kind = RISE_BLENDER_PAINTER_EXPRESSION):
+	// NUL-terminated RISE expression source string.  Optional leading
+	// newline-delimited `def <var> <expr>` lines are passed as `defs` to
+	// `Job::AddExpressionPainter`; the single non-empty non-`def` line is
+	// the root expression.  Unused / NULL for all other painter kinds.
+	const char* expression;
+	// ABI v23 — Texture address wrap mode (`RISE::eRasterWrapMode`:
+	// 0 = ClampToEdge [legacy default], 1 = Repeat, 2 = MirroredRepeat).
+	// Applied to both U and V axes on texture painters (PNG/JPEG/TIFF/EXR/HDR).
+	int wrap_mode;
 } rise_blender_painter;
 
 typedef struct rise_blender_modifier {
@@ -283,6 +344,12 @@ typedef struct rise_blender_modifier {
 	// RISE_BLENDER_MODIFIER_NORMAL_MAP.  Appended at the end so every
 	// field above keeps its v10 offset.
 	int normalize;
+	// ABI v23 — RISE_BLENDER_MODIFIER_STACK / RISE_BLENDER_MODIFIER_BLEND fields.
+	const char* const* stack_member_names;
+	uint32_t num_stack_members;
+	const char* blend_a_name;
+	const char* blend_b_name;
+	const char* blend_weight_painter_name;
 } rise_blender_modifier;
 
 typedef struct rise_blender_material {
@@ -499,6 +566,15 @@ typedef struct rise_blender_material {
 	// n(587.6 nm) = n_d and (n_d - 1) / (n(486.1) - n(656.3)) = V_d.
 	// <= 0 = no dispersion.
 	double dispersion_abbe;
+
+	// ABI v21 — RISE_BLENDER_MATERIAL_MIX (`mix_material`).  Appended at the
+	// end so every v1..v20 field keeps its exact offset.
+	// Note: for RISE_BLENDER_MATERIAL_DIELECTRIC, `tau_painter_name` also now
+	// accepts a registered IPainter name (wrapped in PainterRGBScalarPainter)
+	// in addition to inline `"r g b"` literals and IScalarPainter names.
+	const rise_blender_mix_child* mix_children;
+	uint32_t num_mix_children;
+	const char* mix_passthrough_painter_name;
 } rise_blender_material;
 
 typedef struct rise_blender_mesh {
@@ -520,6 +596,11 @@ typedef struct rise_blender_mesh {
 	uint32_t num_tangents;
 	// ABI v16: 0 global UV/Mikk tangent; 1 independent shader direction.
 	uint32_t tangent_is_shader_direction;
+	// ABI v21: named per-corner RGBA attributes for `mesh_attr3` /
+	// `mesh_attr_alpha`.  Appended at the end so every v1..v20 field
+	// keeps its exact offset.
+	const rise_blender_mesh_attribute* named_attributes;
+	uint32_t num_named_attributes;
 } rise_blender_mesh;
 
 typedef struct rise_blender_object {
@@ -544,6 +625,16 @@ typedef struct rise_blender_object {
 	// alpha shader name (computed once per material, since the shader
 	// itself is registered at material-add time, not per-object).
 	const char* shader_name;
+	// ABI v20 — Per-object Cycles Object Info attributes (forwarded to
+	// `IObjectPriv::SetObjectInfo` for `osl_object_color()`,
+	// `osl_object_alpha()`, `osl_object_index()`, `osl_object_random()`).
+	// Appended at the end so every field above keeps its v19 offset.
+	float object_color[4];
+	float object_index;
+	float object_random;
+	// ABI v23 — Per-particle-instance random in [0, 1] (`osl_particle_random()`,
+	// 0.0 for non-particle objects).  Appended at tail of rise_blender_object.
+	float particle_random;
 } rise_blender_object;
 
 typedef struct rise_blender_light {
@@ -779,6 +870,23 @@ typedef struct rise_blender_render_settings {
 	uint32_t mlt_chains;
 	uint32_t mlt_mutations_per_pixel;
 	float mlt_large_step_prob;
+
+	// ABI v19 — Render region (top-down inclusive RISE film coordinates)
+	// and transparent film background (`scene.render.film_transparent`).
+	// When `use_region` is non-zero and the active rasterizer honors regions,
+	// only [region_left..region_right] x [region_top..region_bottom] is
+	// rasterized.  When `film_transparent` is non-zero, primary camera rays
+	// that miss all geometry yield transparent black (RGBA = 0,0,0,0) while
+	// indirect lighting still sees the world radiance map.  Note: MLT does
+	// not implement transparent background alpha, and primary-ray scattering
+	// in an unbounded global medium without a surface hit is dropped because
+	// RISE's straight-RGB film cannot represent non-zero RGB at alpha = 0.
+	int use_region;
+	uint32_t region_left;
+	uint32_t region_top;
+	uint32_t region_right;
+	uint32_t region_bottom;
+	int film_transparent;
 } rise_blender_render_settings;
 
 typedef struct rise_blender_scene {
@@ -855,6 +963,22 @@ typedef struct rise_blender_render_result {
 } rise_blender_render_result;
 
 typedef int (*rise_blender_progress_callback)(void* user_data, float progress, const char* title);
+
+// ABI v22 — structured progress + ETA callback driven by RISE's
+// RenderETAEstimator (the same estimator used by RISE-GUI).
+typedef struct rise_blender_progress_info {
+	float progress;            // [0, 1] monotonic phase fraction, or -1.0f if indeterminate
+	double elapsed_seconds;    // elapsed seconds in current phase
+	double remaining_seconds;  // estimated remaining seconds, or -1.0 while warming up / indeterminate
+	int has_remaining;         // 1 when remaining_seconds is valid, 0 otherwise
+	const char* title;         // normalized current phase title (always non-null)
+} rise_blender_progress_info;
+
+typedef int (*rise_blender_progress_info_callback)(
+	void* user_data,
+	const rise_blender_progress_info* info
+);
+
 typedef int (*rise_blender_image_callback)(
 	void* user_data,
 	const unsigned short* rgba16,
@@ -876,6 +1000,18 @@ RISE_BLENDER_EXPORT int rise_blender_render_scene(
 	const rise_blender_scene* scene,
 	const rise_blender_render_settings* settings,
 	rise_blender_progress_callback progress_callback,
+	rise_blender_image_callback image_callback,
+	void* user_data,
+	rise_blender_render_result* result,
+	char* error_message,
+	size_t error_message_size
+);
+
+RISE_BLENDER_EXPORT int rise_blender_render_scene_ex(
+	const rise_blender_scene* scene,
+	const rise_blender_render_settings* settings,
+	rise_blender_progress_callback progress_callback,
+	rise_blender_progress_info_callback progress_info_callback,
 	rise_blender_image_callback image_callback,
 	void* user_data,
 	rise_blender_render_result* result,

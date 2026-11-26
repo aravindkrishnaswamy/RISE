@@ -88,9 +88,11 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	const ICamera& camera,
 	uint32_t sampleIndex,
 	uint32_t pixelSeed,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
+	if( pPrimaryHit ) *pPrimaryHit = false;
 	Ray cameraRay;
 	if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
 		return RISEPel( 0, 0, 0 );
@@ -124,6 +126,9 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
 		sampler, eyeVerts, eyeSubpathStarts, pAOV );
+	if( pPrimaryHit ) {
+		*pPrimaryHit = ( eyeVerts.size() >= 2 && !eyeVerts[1].IsInfiniteLight() );
+	}
 
 	// GenerateEyeSubpath captures Fast guides at the raw primary hit and
 	// Accurate guides at the first selected non-delta surface while the real
@@ -241,6 +246,8 @@ void BDPTPelRasterizer::IntegratePixel(
 				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
 			} else if( px.alphaSum > 0 ) {
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -358,8 +365,15 @@ void BDPTPelRasterizer::IntegratePixel(
 				: globalSampleIndex;
 
 			PixelAOV aov;
-			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
+			bool primaryHit = false;
+			const bool transparentBg = GetTransparentBackground();
+			RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
+				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0,
+				transparentBg ? &primaryHit : nullptr );
+			const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+			if( sampleAlpha == Scalar( 0.0 ) ) {
+				sampleColor = RISEPel( 0, 0, 0 );
+			}
 			if( pAOVBuffers ) {
 				if( aov.valid ) {
 					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
@@ -382,11 +396,12 @@ void BDPTPelRasterizer::IntegratePixel(
 					ptOnScreen.x,
 					static_cast<Scalar>(height) - ptOnScreen.y,
 					sampleColor,
-					*pPixelFilter );
+					*pPixelFilter,
+					sampleAlpha );
 			}
 
 			colAccrued = colAccrued + sampleColor * weight;
-			alphas += weight;
+			alphas += sampleAlpha * weight;
 
 			// Welford update on luminance of non-splat contribution.
 			// Gated on `adaptive` only: progressive multi-pass mode
@@ -464,5 +479,7 @@ void BDPTPelRasterizer::IntegratePixel(
 	} else if( alphas > 0 ) {
 		colAccrued = colAccrued * (1.0 / alphas);
 		cret = RISEColor( colAccrued, alphas / weights );
+	} else {
+		cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 	}
 }

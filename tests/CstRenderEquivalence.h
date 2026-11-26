@@ -80,9 +80,12 @@
 #include "../src/Library/Painters/BlendPainter.h"
 #include "../src/Library/Painters/RampPainter.h"
 #include "../src/Library/Modifiers/ModifierStack.h"
+#include "../src/Library/Modifiers/BlendedModifier.h"
 #include "../src/Library/Modifiers/NormalMap.h"
 #include "../src/Library/Modifiers/GlintModifier.h"
 #include "../src/Library/Modifiers/ReliefModifier.h"
+#include "../src/Library/Materials/MixMaterial.h"
+#include "../src/Library/Materials/DiffuseTransmissionMaterial.h"
 
 namespace risequiv {
 
@@ -322,6 +325,10 @@ inline void DumpScalarPainterComposition( std::ostream& o, const IScalarPainter*
 		char v[96]; std::snprintf( v, sizeof(v), " painterchannel(channel=%d scale=%.9g bias=%.9g source=",
 			(int)pc->GetChannel(), (double)pc->GetScale(), (double)pc->GetBias() ); o << v;
 		DumpPainterComposition( o, &pc->GetSource(), visited, probe ); o << ")";
+	} else if( const PainterRGBScalarPainter* prgb = dynamic_cast<const PainterRGBScalarPainter*>( p ) ) {
+		char v[96]; std::snprintf( v, sizeof(v), " painterrgb(scale=%.9g bias=%.9g source=",
+			(double)prgb->GetScale(), (double)prgb->GetBias() ); o << v;
+		DumpPainterComposition( o, &prgb->GetSource(), visited, probe ); o << ")";
 	} else if( const TextureScalarPainter* tex = dynamic_cast<const TextureScalarPainter*>( p ) ) {
 		IRasterImageAccessor* ria = tex->GetAccessor();
 		char v[128]; std::snprintf( v, sizeof(v), " texture(channel=%d scale=%.9g bias=%.9g dims=%ux%u)",
@@ -408,6 +415,14 @@ inline void DumpModifierComposition( std::ostream& o, const IRayIntersectionModi
 			DumpModifierComposition( o, st->Member(i), visited, probe );
 		}
 		o << "])";
+	} else if( const BlendedModifier* bm = dynamic_cast<const BlendedModifier*>( m ) ) {
+		o << "blended(a=";
+		DumpModifierComposition( o, bm->ModA(), visited, probe );
+		o << " b=";
+		DumpModifierComposition( o, bm->ModB(), visited, probe );
+		o << " weight=";
+		DumpScalarPainterComposition( o, bm->Weight(), visited, probe );
+		o << ")";
 	} else if( const NormalMap* nm = dynamic_cast<const NormalMap*>( m ) ) {
 		char v[32]; std::snprintf( v, sizeof(v), "normalmap(scale=%.9g painter=", (double)nm->GetScale() ); o << v;
 		DumpPainterComposition( o, &nm->GetPainter(), visited, probe ); o << ")";
@@ -508,15 +523,35 @@ inline std::string DumpJob( Job& job )
 		if( g ) { Point3 c; Scalar r = 0; g->GenerateBoundingSphere( c, r ); char b[64]; std::snprintf( b, sizeof(b), " bsphere=%.9g", (double)r ); o << b; }
 		o << "\n";
 	}
+	// Composition digest probe point, shared by every material/painter/scalar-painter/
+	// modifier dump below (see the file comment above DumpScalarPainterComposition).
+	const RayIntersectionGeometric probeRi = MakePainterProbeRi();
 	o << "materials:\n";
 	for( const auto& n : SortedNames( job.GetMaterials() ) ) {
 		o << "  " << n; IMaterial* mat = job.GetMaterials() ? job.GetMaterials()->GetItem( n.c_str() ) : 0;
 		if( mat && mat->GetEmitter() ) { const RISEPel e = mat->GetEmitter()->averageRadiantExitance(); char eb[96]; std::snprintf( eb, sizeof(eb), " emitter=[%.9g %.9g %.9g]", (double)e.r,(double)e.g,(double)e.b ); o << eb; }
+		if( const RISE::Implementation::DiffuseTransmissionMaterial* dtm = dynamic_cast<const RISE::Implementation::DiffuseTransmissionMaterial*>( mat ) ) {
+			o << " diffuse_transmission(refl=" << ReverseName( job.GetPainters(), &dtm->GetReflectance() )
+			  << " trans=" << ReverseName( job.GetPainters(), &dtm->GetTransmittance() ) << ")";
+		} else if( const RISE::Implementation::MixMaterial* mix = dynamic_cast<const RISE::Implementation::MixMaterial*>( mat ) ) {
+			o << " mix(children=[";
+			for( unsigned int ci = 0; ci < mix->GetChildCount(); ++ci ) {
+				if( ci ) o << " ";
+				const RISE::Implementation::MixMaterialChild& ch = mix->GetChild( ci );
+				o << "(" << ReverseName( job.GetMaterials(), ch.pMaterial ) << " w=";
+				std::set<const void*> visW; DumpScalarPainterComposition( o, ch.pWeight, visW, probeRi );
+				if( ch.pModifier ) { o << " mod="; std::set<const void*> visM; DumpModifierComposition( o, ch.pModifier, visM, probeRi ); }
+				o << ")";
+			}
+			o << "]";
+			if( mix->GetPassthroughWeight() ) {
+				o << " passthrough=";
+				std::set<const void*> visP; DumpScalarPainterComposition( o, mix->GetPassthroughWeight(), visP, probeRi );
+			}
+			o << ")";
+		}
 		o << "\n";
 	}
-	// Composition digest probe point, shared by every painter/scalar-painter/
-	// modifier dump below (see the file comment above DumpScalarPainterComposition).
-	const RayIntersectionGeometric probeRi = MakePainterProbeRi();
 	o << "painters:\n";
 	for( const auto& n : SortedNames( job.GetPainters() ) ) {
 		o << "  " << n << " ";

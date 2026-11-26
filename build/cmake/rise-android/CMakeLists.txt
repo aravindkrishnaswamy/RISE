@@ -127,6 +127,26 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
 set_source_files_properties(
+    "${RISE_LIB}/Utilities/OslVoronoi.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+set_source_files_properties(
+    "${RISE_LIB}/Utilities/OslColor.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+set_source_files_properties(
+    "${RISE_LIB}/Utilities/OslMath.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+set_source_files_properties(
+    "${RISE_LIB}/Utilities/OslVector.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+set_source_files_properties(
+    "${RISE_LIB}/Utilities/OslShaderNodes.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+set_source_files_properties(
     "${RISE_LIB}/Utilities/FireProductionAdvection.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )

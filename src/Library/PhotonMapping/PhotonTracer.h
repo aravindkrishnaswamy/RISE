@@ -157,11 +157,12 @@ namespace RISE
 						// was read at the origin when sampling the photon
 						// direction), normals, `onb`, UV and `Po`.
 						LightSampler::FillEmitterRecord( rig, r.origin, normal, coord,
-							LightSampler::EmitterObjectPoint( object, r.origin, rig.ptObjIntersec ) );
+							LightSampler::EmitterObjectPoint( object, r.origin, rig.ptObjIntersec ),
+							object, pScene ? pScene->GetCamera() : 0 );
 
                         // Preserve the original emitter direction-proposal record.
                         // Only coverage receives physical/local/surface context.
-                        if (object->GetMaterial()->GetAlphaMode() != eAlphaOpaque) {
+                        if (object->GetMaterial()->HasAlphaCoverage()) {
                             RayIntersectionGeometric alphaRI(rig);
                             alphaRI.ptObjIntersec = LightSampler::EmitterObjectPoint(object, r.origin, r.origin);
                             EmitterSurfacePayload alphaSurface;

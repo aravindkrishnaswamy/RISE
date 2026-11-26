@@ -113,6 +113,10 @@ namespace RISE
 			Point3				ptObjIntersec;	///< Object-space intersection point (DL-22)
 			RISEPel				vColor;			///< Vertex color at entry point (DL-22)
 			bool				bHasVertexColor;///< True if vertex color exists (DL-22)
+			const Matrix4*		pmxWorldToObject;///< Group 7 space transforms at entry hit
+			const Matrix4*		pmxObjectToWorld;///< Group 7 space transforms at entry hit
+			const ICamera*		pCamera;		///< Live scene camera at entry hit
+			const ObjectInfoData* pObjectInfo;	///< Per-object metadata at entry hit
 			Ray					scatteredRay;	///< Cosine-weighted ray from entry point
 			RISEPel				weight;			///< Full BSSRDF weight: Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
 			RISEPel				weightSpatial;	///< Spatial-only weight: Rd * Ft(exit) / pdfSurface (no entry Sw)
@@ -152,6 +156,7 @@ namespace RISE
 			bHasTexCoord1( false ),
 			vColor( RISEPel(0,0,0) ),
 			bHasVertexColor( false ),
+			pmxWorldToObject( 0 ), pmxObjectToWorld( 0 ), pCamera( 0 ), pObjectInfo( 0 ),
 			weight( RISEPel(0,0,0) ), weightSpatial( RISEPel(0,0,0) ),
 			weightNM(0), weightSpatialNM(0),
 			cosinePdf(0), pdfSurface(0), jumpDistance(0), exitCos(0),
@@ -328,7 +333,8 @@ namespace RISE
 			const IObject* pObject,					///< [in] Object to cast probe rays against
 			const IMaterial* pMaterial,				///< [in] Material with diffusion profile
 			ISampler& sampler,						///< [in] Sampler for stochastic decisions
-			const Scalar nm							///< [in] Wavelength for NM path (0 = RGB)
+			const Scalar nm,						///< [in] Wavelength for NM path (0 = RGB)
+			const IRayIntersectionModifier* pExitLeafModifier = 0	///< [in] Optional resolved mix leaf modifier (Round 3 P1-4)
 			);
 
 		//////////////////////////////////////////////////////////////
@@ -374,7 +380,8 @@ namespace RISE
 			const IObjectManager& objects,			///< [in] The scene's objects
 			const IObject* pTarget,					///< [in] The only object tested
 			const IObject* pSource,					///< [in] The launching body (the hit's partner)
-			RayIntersection& ri						///< [in/out] Ray in (a ContactRay), hit out
+			RayIntersection& ri,					///< [in/out] Ray in (a ContactRay), hit out
+			ISampler* pSampler = 0					///< [in] Optional sampler for mix/alpha contact tests
 			);
 
 		/// ContactRay + IntersectContactRay from surface point `p` along `dir`.
@@ -385,7 +392,8 @@ namespace RISE
 			const Point3& p,
 			const Vector3& dir,
 			const RasterizerState& rast,
-			RayIntersection& ri
+			RayIntersection& ri,
+			ISampler* pSampler = 0
 			);
 
 		/// At an SSS exit (`r`, left through `pExitObject`) whose
@@ -441,7 +449,11 @@ namespace RISE
 				return false;
 			}
 			const IMaterial* pMat = pPartner->GetMaterial();
-			return pMat && !pMat->ScattersFullSphere() && !pMat->HasDeltaPassThrough();
+			// Round 3 P1-2 / Slice 3 R1 A-P1-6: alpha-covered materials and
+			// MixMaterials (which may have pass-through or full-sphere leaves)
+			// must not short-circuit shadow/connection visibility at zero distance.
+			return pMat && !pMat->ScattersFullSphere() && !pMat->HasDeltaPassThrough()
+				&& !pMat->HasAlphaCoverage() && !pMat->IsUnresolvedMix();
 		}
 
 		/// DL-408 review round 4: the closest-hit TIE at a coincident face.

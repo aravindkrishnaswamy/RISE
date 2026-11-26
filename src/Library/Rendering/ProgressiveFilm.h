@@ -180,6 +180,8 @@ namespace RISE
 						} else if( px.weightSum > 0 && px.alphaSum > 0 ) {
 							const XYZPel avgXYZ = px.colorSum * (1.0 / px.alphaSum);
 							target.SetPEL( x, y, RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum ) );
+						} else if( px.weightSum > 0 ) {
+							target.SetPEL( x, y, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) );
 						}
 					}
 				}

@@ -234,6 +234,14 @@ namespace RISE
 				const RayIntersectionGeometric dummyRI = SnapshotRecord();
 				m_rwParams.ior = v.GetValuesAt( dummyRI ).v[0];
 			}
+
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() |
+					( pIORPainter ? pIORPainter->GetPathDependence() : 0u ) |
+					( pAbsorptionPainter ? pAbsorptionPainter->GetPathDependence() : 0u ) |
+					( pScatteringPainter ? pScatteringPainter->GetPathDependence() : 0u );
+			}
 		};
 	}
 }

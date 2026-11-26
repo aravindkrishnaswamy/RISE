@@ -53,6 +53,7 @@ namespace RISE
 			inline IEmitter* GetEmitter() const {	return 0; };
 
 			inline bool CouldLightPassThrough() const { return true; };
+			inline bool TracksInteriorContainment() const { return true; };
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -88,6 +89,13 @@ namespace RISE
 			inline const IScalarPainter& GetIOR()          const { return pSPF->GetIOR(); }
 			inline void SetRefractivity( const IPainter& ref ) { pSPF->SetRefractivity( ref ); }
 			inline void SetIOR( const IScalarPainter& Nt_ )    { pSPF->SetIOR( Nt_ ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pSPF->GetRefractivity().GetPathDependence() |
+					pSPF->GetIOR().GetPathDependence();
+			}
 		};
 	}
 }

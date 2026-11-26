@@ -4331,6 +4331,7 @@ static const std::vector<std::pair<ChunkCategory,std::string> >& RuntimeDefaultD
 	static const std::vector<std::pair<ChunkCategory,std::string> > d = {
 		{ ChunkCategory::Material, "none" },
 		{ ChunkCategory::Painter,  "none" },
+		{ ChunkCategory::Modifier, "none" },
 		{ ChunkCategory::ShaderOp, "DefaultReflection" },
 		{ ChunkCategory::ShaderOp, "DefaultRefraction" },
 		{ ChunkCategory::ShaderOp, "DefaultEmission" },
@@ -4638,8 +4639,9 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 					// chunk -- see BuildExpressionProgramFromChunkFields's resolver), but this
 					// static pass must still surface it: AnalyzeRejectedRemove and the editor's
 					// dangling-reference warning key off `unresolved`/`diags`, not a render.
-					diags.push_back( c->role + "." + role + " -> '" + std::string( r.isScalar ? "sample_scalar(" : "sample(" ) +
-						r.painterName + ")': unresolved reference" );
+					diags.push_back( c->role + "." + role + " -> '" +
+						( r.fnName.empty() ? std::string( r.isScalar ? "sample_scalar" : "sample" ) : r.fnName ) +
+						"(" + r.painterName + ")': unresolved reference" );
 					if( unresolved )
 						unresolved->push_back( UnresolvedReference{ chunkId, c->role, role, r.painterName } );
 					continue;
@@ -4651,6 +4653,57 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 				if( chunkId != target ) out.deps.push_back( target );
 			}
 			continue;   // handled this expression-body param; do not fall through to the generic scan
+		}
+		// mix_material.child ("<mat> [weight] <scalar> [modifier <mod>]") and
+		// mix_material.passthrough ("[weight] <scalar>") embed typed chunk references
+		// inside String tokens (same pattern as piecewise_linear_function2d.cp below).
+		// Trace every material, scalar-painter, and modifier reference here so
+		// BuildReferenceGraph, DocEditClosure, DanglingReferences, and deletion safety
+		// see every mix dependency accurately.
+		if( c->role == "mix_material" && ( role == "child" || role == "passthrough" ) ) {
+			const std::string rawVal = ParamNodeValue( kid.get() );
+			mix( rawVal );
+			const std::vector<std::string> toks = SplitWs( rawVal );
+			const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
+			auto recordRef = [&]( const int catKey, const int fallbackCatKey, const std::string& refName, const bool allowNumeric ) {
+				if( refName.empty() || refName == "none" ) return;
+				if( allowNumeric && LooksNumeric( refName ) ) return;
+				mix( refName );
+				std::map<std::pair<int,std::string>, NodeId>::const_iterator d =
+					defs.find( std::pair<int,std::string>( catKey, refName ) );
+				if( d == defs.end() && fallbackCatKey >= 0 ) {
+					d = defs.find( std::pair<int,std::string>( fallbackCatKey, refName ) );
+				}
+				const NodeId target = ( d != defs.end() ) ? d->second : 0;
+				if( target == kRuntimeDefaultTarget ) return;
+				if( target == 0 ) {
+					diags.push_back( c->role + "." + role + " -> '" + refName + "': unresolved reference" );
+					if( unresolved ) {
+						unresolved->push_back( UnresolvedReference{ chunkId, c->role, role, refName } );
+					}
+					return;
+				}
+				mix( std::to_string( (long long)srcParam ) );
+				mix( std::to_string( (long long)target ) );
+				out.edges.push_back( ReferenceUse{ srcParam, target } );
+				if( chunkId != target ) out.deps.push_back( target );
+			};
+			if( role == "child" && toks.size() >= 2 ) {
+				recordRef( (int)ChunkCategory::Material, -1, toks[0], false );
+				size_t idx = 1;
+				if( toks[idx] == "weight" ) ++idx;
+				if( idx < toks.size() ) {
+					recordRef( kScalarPainterSubCat, (int)ChunkCategory::Painter, toks[idx], true );
+					++idx;
+				}
+				if( idx + 1 < toks.size() && toks[idx] == "modifier" ) {
+					recordRef( (int)ChunkCategory::Modifier, -1, toks[idx + 1], false );
+				}
+			} else if( role == "passthrough" && !toks.empty() ) {
+				const size_t idx = ( toks.size() >= 2 && toks[0] == "weight" ) ? 1 : 0;
+				recordRef( kScalarPainterSubCat, (int)ChunkCategory::Painter, toks[idx], true );
+			}
+			continue;
 		}
 		// piecewise_linear_function2d.cp embeds a Function1D NAME as the 2nd whitespace token of
 		// each repeatable `cp` row ("<x> <function1d_name>"; consumed by AddPiecewiseLinearFunction2D
@@ -5027,6 +5080,51 @@ static std::string RewriteTupleRef( const std::string& val, const std::vector<Va
 	return out;
 }
 
+//! Rewrite embedded chunk references inside `mix_material.child`
+//! ("<mat> [weight] <scalar> [modifier <mod>]") or `mix_material.passthrough`
+//! ("[weight] <scalar>").  Matches the exact token grammar traced in
+//! ComputeChunkRefs so DocRename rewrites mix_material dependencies cleanly.
+static std::string RewriteMixRef(
+	const std::string& val,
+	const std::string& role,
+	const int targetCat,
+	const std::string& oldName,
+	const std::string& newName )
+{
+	std::vector<std::string> toks = SplitWs( val );
+	if( role == "child" && toks.size() >= 2 ) {
+		if( targetCat == (int)ChunkCategory::Material && toks[0] == oldName ) {
+			toks[0] = newName;
+		}
+		size_t idx = 1;
+		const bool hadWeightKw = ( idx < toks.size() && toks[idx] == "weight" );
+		if( hadWeightKw ) ++idx;
+		if( idx < toks.size() ) {
+			if( targetCat == (int)ChunkCategory::Painter && !LooksNumeric( toks[idx] ) && toks[idx] == oldName ) {
+				toks[idx] = newName;
+				if( !hadWeightKw && newName == "weight" ) {
+					toks.insert( toks.begin() + static_cast<std::ptrdiff_t>( idx ), "weight" );
+					++idx;
+				}
+			}
+			++idx;
+		}
+		if( idx + 1 < toks.size() && toks[idx] == "modifier" ) {
+			if( targetCat == (int)ChunkCategory::Modifier && toks[idx + 1] == oldName ) {
+				toks[idx + 1] = newName;
+			}
+		}
+	} else if( role == "passthrough" && !toks.empty() ) {
+		const size_t idx = ( toks.size() >= 2 && toks[0] == "weight" ) ? 1 : 0;
+		if( targetCat == (int)ChunkCategory::Painter && !LooksNumeric( toks[idx] ) && toks[idx] == oldName ) {
+			toks[idx] = newName;
+		}
+	}
+	std::string out;
+	for( size_t i = 0; i < toks.size(); ++i ) { if( i ) out += ' '; out += toks[i]; }
+	return out;
+}
+
 Document DocRename( const Document& doc, NodeId chunkId, const std::string& newName, std::vector<std::string>* diagnostics )
 {
 	std::vector<std::string> local;
@@ -5152,7 +5250,7 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	// expression_painter/scalar_painter expr/expression/def field) so the rewrite loop below
 	// runs RewriteSampleCallRefs on it instead of the plain-Reference/tuple substitution --
 	// its value is expression TEXT, not a bare chunk name.
-	struct Loc { NodeId chunk; std::string role; int occ; const std::vector<ValueKind>* tk; bool exprBody; };
+	struct Loc { NodeId chunk; std::string role; int occ; const std::vector<ValueKind>* tk; bool exprBody; bool mixRef; };
 	std::map<NodeId, Loc> paramLoc;
 	bool collision = false;
 	for( size_t i = 0; i < items.size(); ++i ) {
@@ -5172,8 +5270,9 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 			const int thisOcc = occ[role]++;
 			const std::vector<ValueKind>* tk = 0;
 			bool exprBody = false;
+			const bool mixRef = ( c->role == "mix_material" && ( role == "child" || role == "passthrough" ) );
 			if( desc ) for( const ParameterDescriptor& p : desc->parameters ) if( p.name == role ) { if( !p.tupleKinds.empty() ) tk = &p.tupleKinds; exprBody = p.carriesExpressionSampleRefs; break; }
-			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tk, exprBody };
+			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tk, exprBody, mixRef };
 		}
 	}
 
@@ -5220,6 +5319,11 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 			const bool isScalarPipe = ( target->role == "scalar_painter" );
 			result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ,
 				RISE::Implementation::ExpressionProgram::Builder::RewriteSampleCallRefs( cur, isScalarPipe, oldName, newName ) );
+		} else if( l->second.mixRef ) {
+			NodeRef pnode = DocResolveNodeId( doc, u.sourceValueNodeId );
+			const std::string cur = pnode ? ParamNodeValue( pnode.get() ) : std::string();
+			result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ,
+				RewriteMixRef( cur, l->second.role, targetCat, oldName, newName ) );
 		} else if( l->second.tk ) {
 			NodeRef pnode = DocResolveNodeId( doc, u.sourceValueNodeId );
 			const std::string cur = pnode ? ParamNodeValue( pnode.get() ) : std::string();
@@ -5274,6 +5378,7 @@ static bool IsGraphAffectingParam( const Document& doc, NodeId chunkId, const st
 	// but it is a ValueKind::String param -- the descriptor scan below would call it graph-neutral
 	// and the maintained graph would reuse a stale graph on a cp edit.  Treat it as affecting.
 	if( c->role == "piecewise_linear_function2d" && paramRole == "cp" ) return true;
+	if( c->role == "mix_material" && ( paramRole == "child" || paramRole == "passthrough" ) ) return true;
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
 	if( it == registry.end() ) return true;

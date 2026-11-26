@@ -81,6 +81,7 @@
 #include "pch.h"
 #include "../Utilities/RenderParallelScope.h"
 #include "MLTRasterizer.h"
+#include "../Managers/ObjectManager.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
 #include <algorithm>
@@ -1374,6 +1375,19 @@ void MLTRasterizer::RasterizeScene(
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
 
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
+			pObjMgr->SceneHasMixMaterial( &offender ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"MLTRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"(first object '%s'). Use pathtracing_pel_rasterizer.",
+				offender.c_str() );
+			return;
+		}
+	}
+
 	// Share the RayCaster's prepared LightSampler with the integrator
 	const LightSampler* pLS = pCaster->GetLightSampler();
 	pIntegrator->SetLightSampler( pLS );
@@ -1406,6 +1420,10 @@ void MLTRasterizer::RasterizeScene(
 			// Pre-denoised (but fully splatted) image goes to file
 			// outputs under the normal filename first.
 			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
+
+			if( pProgressFunc ) {
+				pProgressFunc->SetTitle( "Denoising: " );
+			}
 
 			// MLT cannot attach guides to splat-chain samples, but the
 			// bounded post-render retrace above now honors both Fast and
@@ -1489,6 +1507,18 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	// PixelBasedRasterizerHelper::PrepareSceneForFrame.
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
+			pObjMgr->SceneHasMixMaterial( &offender ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"MLTRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"(first object '%s'). Use pathtracing_pel_rasterizer.",
+				offender.c_str() );
+			return;
+		}
+	}
 	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
 
 	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();

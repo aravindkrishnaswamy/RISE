@@ -28,6 +28,7 @@ namespace FireOutputMetadataTestFixture
 			{ "exposure_compensation_ev", Value::Float(0.0) },
 			{ "exposure_time", Value::Float(0.0) }, { "kind", Value::String("none") },
 			{ "location", Value::ArrayValue({}) }, { "matrix", Value::ArrayValue({}) },
+			{ "near_clip", Value::Float(0.0) },
 			{ "pixel_rate", Value::Float(0.0) }, { "projection", Value::MapValue({}) },
 			{ "scanning_rate", Value::Float(0.0) } });
 		const Value autoProbe = Value::MapValue({

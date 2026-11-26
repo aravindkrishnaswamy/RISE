@@ -454,6 +454,7 @@ void ThinLensCamera::EmitRayThroughLens(
 	r.diffs.rxDir = dAuxX - d;
 	r.diffs.ryDir = dAuxY - d;
 	r.hasDifferentials = true;
+	ApplyNearClip( r );
 }
 
 bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const

@@ -39,6 +39,7 @@
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Materials/NullBoundaryMaterial.h"
+#include "../Cameras/CameraUtilities.h"
 #include "../Shaders/SSS/SSSContainment.h"
 #include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
 #include "../Objects/CSGObject.h"		// DL-05: the pass-through scan walks CSG operands (un-enumerated)
@@ -145,7 +146,11 @@ namespace
 		if( !rc.pAOV || rc.pAOV->primaryDepthCaptured ) return;
 		if( IsExactNullBoundaryMaterial( ri.pMaterial ) ) return;
 		rc.pAOV->primaryDepthCaptured = true;
-		rc.pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		Scalar depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		if( ri.geometric.bHit && ri.geometric.pCamera ) {
+			depth += BDPTCameraUtilities::ComputeNearClipDistance( *ri.geometric.pCamera, ri.geometric.ray.Dir() );
+		}
+		rc.pAOV->depth = depth;
 		if( !ri.geometric.bHit || rc.aovPrefilterMode != OidnPrefilter::Fast ) return;
 
 		// Fast guides describe the same raw surface even if a participating
@@ -153,13 +158,11 @@ namespace
 		// normal/albedo match eventual surface shading without perturbing the
 		// transport intersection before its normal modifier site.
 		RayIntersectionGeometric aovGeom( ri.geometric );
-		if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
-		rc.pAOV->normal = aovGeom.vNormal;
-		rc.pAOV->albedo = rc.pathTracingClayOverride
-			? RISEPel( 0.5, 0.5, 0.5 )
-			: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-				? ri.pMaterial->GetBSDF()->albedo( aovGeom )
-				: RISEPel( 1, 1, 1 ) );
+		if( ri.pModifier && !ri.pUnresolvedMix ) ri.pModifier->Modify( aovGeom );
+		EvaluateMaterialAOVGuides( ri, aovGeom, false, 0, rc.pAOV->albedo, rc.pAOV->normal );
+		if( rc.pathTracingClayOverride ) {
+			rc.pAOV->albedo = RISEPel( 0.5, 0.5, 0.5 );
+		}
 		rc.pAOV->valid = true;
 	}
 
@@ -948,6 +951,8 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri, ISampler& alphaSampler ) 
 			next.geometric.ray.diffs.rxDir = ri.geometric.ray.diffs.rxDir;
 			next.geometric.ray.diffs.ryDir = ri.geometric.ray.diffs.ryDir;
 		}
+		next.geometric.bIsCameraRay = ri.geometric.bIsCameraRay;
+		next.geometric.pCamera = pScene->GetCamera();
 		pScene->GetObjects()->IntersectRaySampled( next, alphaSampler );
 
 		if( !next.geometric.bHit )
@@ -1181,6 +1186,8 @@ bool RayCaster::CastRayImpl_(
 	RayIntersection	ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	ri.geometric.bIsCameraRay = ( rs.type == IRayCaster::RAY_STATE::eRayView && rs.depth == 1 && rs.volumeBounces == 0 );
+	ri.geometric.pCamera = pScene->GetCamera();
 	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
@@ -1196,8 +1203,9 @@ bool RayCaster::CastRayImpl_(
 		RayIntersection riContact( contactRay, rast );
 		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		riContact.geometric.pCamera = pScene->GetCamera();
 		bContactHit = BSSRDFSampling::IntersectContactRay(
-			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact );
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact, &alphaSampler );
 		if( bContactHit ) {
 			ri = riContact;
 		}
@@ -2145,6 +2153,8 @@ bool RayCaster::CastRayNMImpl_(
 	RayIntersection	ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	ri.geometric.bIsCameraRay = ( rs.type == IRayCaster::RAY_STATE::eRayView && rs.depth == 1 && rs.volumeBounces == 0 );
+	ri.geometric.pCamera = pScene->GetCamera();
 	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
@@ -2160,8 +2170,9 @@ bool RayCaster::CastRayNMImpl_(
 		RayIntersection riContact( contactRay, rast );
 		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		riContact.geometric.pCamera = pScene->GetCamera();
 		bContactHit = BSSRDFSampling::IntersectContactRay(
-			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact );
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact, &alphaSampler );
 		if( bContactHit ) {
 			ri = riContact;
 		}
@@ -3164,8 +3175,10 @@ bool RayCaster::WalkShadowSegment(
 	{
 		Ray segRay( origin, dir );
 		RayIntersection ri( segRay, nullRasterizerState );
+		ri.geometric.pCamera = pScene->GetCamera();
 		if (alphaSampler) {
             ri = RayIntersection(ray, nullRasterizerState);
+            ri.geometric.pCamera = pScene->GetCamera();
             pScene->GetObjects()->IntersectRaySampled(ri, *alphaSampler, true, true, false,
                 physicalEnd, true, boundaries, false, dHowFar, occlusionStart, sampledStart);
         }
@@ -3911,6 +3924,8 @@ bool RayCaster::CastRayHWSSImpl_(
 	RayIntersection ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	ri.geometric.bIsCameraRay = ( rs.type == IRayCaster::RAY_STATE::eRayView && rs.depth == 1 && rs.volumeBounces == 0 );
+	ri.geometric.pCamera = pScene->GetCamera();
 	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
 	IndependentSampler alphaFallback(rc.random);
     ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
@@ -3926,8 +3941,9 @@ bool RayCaster::CastRayHWSSImpl_(
 		RayIntersection riContact( contactRay, rast );
 		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		riContact.geometric.pCamera = pScene->GetCamera();
 		bContactHit = BSSRDFSampling::IntersectContactRay(
-			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact );
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact, &alphaSampler );
 		if( bContactHit ) {
 			ri = riContact;
 		}
@@ -4116,7 +4132,7 @@ void RayCaster::SetLuminaireSampling(
 
 bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
 {
-    return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
+    return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart, pScene->GetCamera());
 }
 bool RayCaster::DeltaPassThroughShadowsActive() const
 {

@@ -170,6 +170,7 @@ bool OrthographicCamera::GenerateRay( const RuntimeContext& rc, Ray& ray, const 
 	ray.diffs.rxDir = Vector3( 0, 0, 0 );	// parallel projection: shared direction
 	ray.diffs.ryDir = Vector3( 0, 0, 0 );
 	ray.hasDifferentials = true;
+	ApplyNearClip( ray );
 
 	return true;
 }

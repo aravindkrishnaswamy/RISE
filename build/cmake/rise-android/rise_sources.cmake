@@ -117,6 +117,11 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"
     "${RISE_LIB}/Utilities/ProceduralNoiseCore.cpp"
     "${RISE_LIB}/Utilities/OslNoise.cpp"
+    "${RISE_LIB}/Utilities/OslVoronoi.cpp"
+    "${RISE_LIB}/Utilities/OslColor.cpp"
+    "${RISE_LIB}/Utilities/OslMath.cpp"
+    "${RISE_LIB}/Utilities/OslVector.cpp"
+    "${RISE_LIB}/Utilities/OslShaderNodes.cpp"
     "${RISE_LIB}/Utilities/Reference.cpp"
     "${RISE_LIB}/Utilities/PSSMLTSampler.cpp"
     "${RISE_LIB}/Utilities/Profiling.cpp"
@@ -203,6 +208,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/DataDrivenBSDF.cpp"
     "${RISE_LIB}/Materials/DataDrivenSPF.cpp"
     "${RISE_LIB}/Materials/DielectricSPF.cpp"
+    "${RISE_LIB}/Materials/DiffuseTransmissionMaterial.cpp"
+    "${RISE_LIB}/Materials/MixMaterial.cpp"
     "${RISE_LIB}/Materials/RoughDielectricMaterial.cpp"
     "${RISE_LIB}/Utilities/RoughDielectricEnergy.cpp"
     "${RISE_LIB}/Materials/GGXBRDF.cpp"
@@ -423,6 +430,7 @@ set(RISE_LIB_SOURCES
 
     # SRCLIBMODIFIERS
     "${RISE_LIB}/Modifiers/GlintModifier.cpp"
+    "${RISE_LIB}/Modifiers/BlendedModifier.cpp"
     "${RISE_LIB}/Modifiers/ModifierStack.cpp"
     "${RISE_LIB}/Modifiers/NormalMap.cpp"
     "${RISE_LIB}/Modifiers/ReliefModifier.cpp"

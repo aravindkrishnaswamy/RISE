@@ -380,6 +380,21 @@ namespace RISE
 
 	bool TriangleMeshGeometry::RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 	{
+		// Originating-primitive exclusion for ray-traced AO (Cycles ray.self.prim
+		// parity): only active while testing `pSelf`'s own geometry inside
+		// `SurfaceSignalInfo::AmbientOcclusion`.  Gated by a single relaxed atomic
+		// load so non-AO shadow rays never touch TLS.
+		if( SurfaceSignalSelfExclusionActive() ) {
+			const SelfPrimExclusionState& selfExcl = SurfaceSignalSelfExclusion();
+			if( selfExcl.activeForCurrentGeometry &&
+				selfExcl.pProvider == 0 &&
+				selfExcl.primIdPlusOne > 0 &&
+				static_cast<int>( elem - polygons.data() ) + 1 == selfExcl.primIdPlusOne )
+			{
+				return false;
+			}
+		}
+
 		const Triangle&	thisTri = *elem;
 
 		// Early rejection is based on whether we are to consider front facing triangles or 

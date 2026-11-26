@@ -57,7 +57,7 @@ static bool HasEffectiveAlphaCoverage( const IObject* object )
         bool found = false;
         bool operator()( const IMaterial& material ) override
         {
-            if( material.GetAlphaMode() != eAlphaOpaque ) {
+            if( material.HasAlphaCoverage() ) {
                 found = true;
                 return false;
             }
@@ -1126,7 +1126,9 @@ void LightSampler::FillEmitterRecord(
 	const Point3&				position,
 	const Vector3&				normal,
 	const Point2&				coord,
-	const Point3&				ptObjIntersec
+	const Point3&				ptObjIntersec,
+	const IObject*				pLum,
+	const ICamera*				pCamera
 	)
 {
 	rig.bHit          = true;
@@ -1138,9 +1140,22 @@ void LightSampler::FillEmitterRecord(
 	// modifier runs on an emitter record, so mirroring it keeps the record
 	// self-consistent for the downstream cosines.
 	rig.vGeomNormal   = normal;
+	// Sampled emitter records orient `vNormal`/`vGeomNormal` toward the
+	// emitting side while `rig.ray` points outward along the emitted ray, so
+	// stamp `arrivalGeomFacing = -1` (virtual arrival opposes `vGeomNormal`)
+	// to keep `GeomNormalOpposesArrival()` consistent with direct hits.
+	rig.arrivalGeomFacing = -1;
 	rig.ptCoord       = coord;
 	rig.onb.CreateFromW( normal );
 	rig.ptObjIntersec = ptObjIntersec;
+	if( pLum ) {
+		rig.pObjectInfo = pLum->GetObjectInfo();
+		rig.pmxWorldToObject = pLum->GetFinalInverseTransformMatrixPtr();
+		rig.pmxObjectToWorld = pLum->GetFinalTransformMatrixPtr();
+	}
+	if( pCamera ) {
+		rig.pCamera = pCamera;
+	}
 }
 
 bool LightSampler::AcceptEmitterAlpha(
@@ -1149,12 +1164,17 @@ bool LightSampler::AcceptEmitterAlpha(
     ISampler& sampler, const RasterizerState* raster )
 {
     const IMaterial* material = luminary ? luminary->GetMaterial() : nullptr;
-    if( !material || material->GetAlphaMode() == eAlphaOpaque ) return true;
+    if( !material || !material->HasAlphaCoverage() ) return true;
     RayIntersectionGeometric alphaRI(context);
     alphaRI.ptIntersection = position;
     alphaRI.signals.pScene = objects;
     alphaRI.signals.pSelf = luminary;
     alphaRI.signals.ptWorld = position;
+    if( luminary ) {
+        if( !alphaRI.pObjectInfo ) alphaRI.pObjectInfo = luminary->GetObjectInfo();
+        if( !alphaRI.pmxWorldToObject ) alphaRI.pmxWorldToObject = luminary->GetFinalInverseTransformMatrixPtr();
+        if( !alphaRI.pmxObjectToWorld ) alphaRI.pmxObjectToWorld = luminary->GetFinalTransformMatrixPtr();
+    }
     if( raster ) alphaRI.rast = *raster;
     return material->AcceptAlpha(alphaRI, sampler);
 }
@@ -1200,7 +1220,7 @@ LightSampler::LuminaryExitance LightSampler::AverageLuminaryExitance( const IObj
 		pLum->UniformRandomPoint( &position, &normal, &coord, prand );
 
 		RayIntersectionGeometric rig( Ray(), nullRasterizerState );
-		FillEmitterRecord( rig, position, normal, coord, EmitterObjectPoint( pLum, position, rig.ptObjIntersec ) );
+		FillEmitterRecord( rig, position, normal, coord, EmitterObjectPoint( pLum, position, rig.ptObjIntersec ), pLum );
 
 		const RISEPel v = pEmitter->radiantExitanceAt( rig );
 		if( k == 0 ) {
@@ -1213,6 +1233,14 @@ LightSampler::LuminaryExitance LightSampler::AverageLuminaryExitance( const IObj
 
 	if( !uniform ) {
 		result.average = sum * ( Scalar( 1 ) / Scalar( kGrid * kGrid ) );
+		result.uniform = false;
+	} else if( !( first.r == result.average.r && first.g == result.average.g && first.b == result.average.b ) ) {
+		// Spatially uniform across this luminary (e.g. keyed on per-object
+		// ObjectInfo or Location), yet different from the object-free
+		// `averageRadiantExitance()`: record this object's true exitance and
+		// mark `uniform = false` so callers like PhotonTracer evaluate
+		// `radiantExitanceAt(rig)` rather than the object-free average.
+		result.average = first;
 		result.uniform = false;
 	}
 	return result;
@@ -2299,7 +2327,7 @@ bool LightSampler::SampleLight(
 		// UV and `Po`), the same function every other emitter-evaluation
 		// record uses.  Before it, this record left `ptIntersection` at the
 		// default (0,0,0), so a `P`-keyed emission painter read the origin.
-		FillEmitterRecord( rig, sample.position, sample.normal, coord, sample.ptObjIntersec );
+		FillEmitterRecord( rig, sample.position, sample.normal, coord, sample.ptObjIntersec, lumEntry.pLum, scene.GetCamera() );
 		ApplyEmitterSurface( rig, sample.surface );
 
 		if (!AcceptEmitterAlpha(lumEntry.pLum, scene.GetObjects(), sample.position, rig, sampler)) return false;
@@ -2824,7 +2852,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
     MediumBoundaryHits* sampledBoundaries = bSceneHasObjectMedia && bSceneHasAlphaCoverage ? &boundaryHits : nullptr;
     const auto mediumRecords = [&](const Ray& ray, Scalar distance) -> const MediumBoundaryHits* {
         if (sampledBoundaries && !bReceivesShadows) {
-            pPreparedScene->GetObjects()->CollectMediumBoundaryHitsSampled(ray, distance, sampler, boundaryHits);
+            pPreparedScene->GetObjects()->CollectMediumBoundaryHitsSampled(ray, distance, sampler, boundaryHits, pPreparedScene->GetCamera());
         }
         return sampledBoundaries;
     };
@@ -3274,7 +3302,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// HIT the emitter read a live `Po` and this record read
 					// (0,0,0)).  CSG composites keep the zero fallback.
 					FillEmitterRecord( lumri, ptOnLum, lumNormal, lumCoord,
-						EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ) );
+						EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ),
+						lumEntry.pLum, pPreparedScene ? pPreparedScene->GetCamera() : 0 );
 
 					// THE SHADING PAYLOAD for this sampled point (slice S3
 					// of docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
@@ -4126,7 +4155,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
     MediumBoundaryHits* sampledBoundaries = bSceneHasObjectMedia && bSceneHasAlphaCoverage ? &boundaryHits : nullptr;
     const auto mediumRecords = [&](const Ray& ray, Scalar distance) -> const MediumBoundaryHits* {
         if (sampledBoundaries && !bReceivesShadows) {
-            pPreparedScene->GetObjects()->CollectMediumBoundaryHitsSampled(ray, distance, sampler, boundaryHits);
+            pPreparedScene->GetObjects()->CollectMediumBoundaryHitsSampled(ray, distance, sampler, boundaryHits, pPreparedScene->GetCamera());
         }
         return sampledBoundaries;
     };
@@ -4468,7 +4497,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// DL-298: the same shared fill as the RGB twin above (world
 		// position, normals, `onb`, UV, `Po`).
 		FillEmitterRecord( lumri, ptOnLum, lumNormal, lumCoord,
-			EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ) );
+			EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ),
+			lumEntry.pLum, pPreparedScene ? pPreparedScene->GetCamera() : 0 );
 
 		// THE SHADING PAYLOAD -- the NM twin of the RGB site above, calling
 		// the SAME functions with the same arguments, including the same

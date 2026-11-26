@@ -51,8 +51,9 @@ all of them; the decision map below is the shortcut.
 | A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  It remains valid for **UV-domain displacement** -- `displaced_geometry`'s `displacement` slot, `function2d_painter`, `composite_function2d_painter`, or the `scalar_painter { function2d ... }` bridge that feeds one of those -- and is the right answer when the field genuinely IS a function of texcoords.  It is no longer the ONLY route into displacement: since 2026-09-06 `displaced_geometry` also takes `height <a scalar_painter>`, evaluated as a 3D field (row below).  It does **not** drive the shading normal, even though the removed `bumpmap_modifier` (removed 2026-09-06; migrate an old scene with `tools/migrate_scenes_relief.py`) used to sample it for exactly that; do not point a normal-perturbation ask at it -- `relief_modifier` is the route. |
 | Displace geometry with a **3D** field (and/or share one field between coarse shape and fine relief) | `displaced_geometry { height <scalar_painter> }` | Since 2026-09-06.  `height` takes an `IScalarPainter` evaluated as a FIELD at each vertex, so `expression`, `voronoi3d`, ramps and noise all drive displacement -- a 3D painter bound to `displacement` instead goes through a fake hit and is a **constant**.  Mutually exclusive with `displacement` (spelling both is a parse error).  **The pattern this exists for:** bind ONE `scalar_painter` to `displaced_geometry { height F  disp_scale S }` AND to `relief_modifier { height F }` on the same object -- coarse silhouette + fine normal relief from one field, so the grain follows the lumps.  **Author the field against `Po`, not `P`**: the mesh is baked before the geometry is bound to an object, so `P` and `Po` coincide there and a `P`-authored field will not follow the object's placement (while the relief half, which runs at hit time, would) -- the two would silently disagree once the object moves. |
 | Turn a grey field into real colour (terrain bands, patina, rust-to-metal) | `ramp_painter` | Multi-stop colour ramp driven by any painter's channel.  The universal scalar -> colour remap; see "The composition boundary" below. |
-| Drive a PHYSICAL SCALAR from any colour painter you already have | `scalar_painter { painter <name> channel <R\|G\|B\|A> scale <s> bias <b> }` | The any-painter -> scalar bridge: binds ANY of the painter kinds above (a worley field, an image, an expression) to roughness / IOR / scattering. |
-| Tilt the SHADING NORMAL from any scalar field (grain, cracks, weave, wear) | `relief_modifier { height <scalar_painter> }` | Not a painter -- a **modifier**, bound on the object via `modifier <name>` (or composed with others via `modifier_stack`), not a material slot.  See "Adding relief" below. |
+| Drive a PHYSICAL SCALAR from any colour painter you already have | `scalar_painter { painter <name> channel <R\|G\|B\|A\|RGB> scale <s> bias <b> }` | The any-painter -> scalar bridge: binds ANY of the painter kinds above (a worley field, an image, an expression) to roughness / IOR / scattering (`channel RGB` produces a per-channel `PainterRGBScalarPainter`). |
+| Tilt or blend the SHADING NORMAL from scalar fields / normal maps | `relief_modifier { height <scalar_painter> }`, `modifier_stack`, `blended_modifier { modifier_a <a> modifier_b <b> weight <scalar> }` | Not a painter -- a **modifier**, bound on the object via `modifier <name>` (or per leaf on `mix_material`), not a material slot.  See "Adding relief" below. |
+| Spatially mix multiple materials (e.g. wear mask, decals, transparency) | `mix_material { child <mat\|none> weight <scalar> [modifier <mod>] ... [passthrough weight <scalar>] }` | Bounded N-ary material mixer (weights sum <= 1; shortfall absorbs as `none`).  Also `diffuse_transmission_material { reflectance <p> transmittance <p> }` for thin two-sided diffuse reflection + transmission. |
 | Retile, rotate, or reproject an existing painter without rebuilding it | `mapping_painter { source <name> projection uv\|world\|object\|triplanar scale rotate translate }` | Wraps ANY painter and transforms the DOMAIN it is evaluated at before delegating -- the general-purpose scale/rotate/offset tool.  `triplanar` is also how a UV-only painter (a `png_painter`, `checker_painter`, ...) gets projected onto UV-less geometry (an `sdf_geometry`, a heavily displaced mesh) via three axis-blended samples. |
 | Kill the visible repeat of a small tiling photo/scan (bark, plaster, rust, fabric) | `stochastic_tile_painter { source <name> tile_scale <n> mean <r g b> }` | Hex-tiles `source` with histogram-preserving blending (Heitz & Neyret 2018) -- one small photo covers an unbounded area with no grid repetition.  `mean` is AUTHOR-SUPPLIED (match the source's actual average value); there is no auto-estimation.  UV only -- wrap in `mapping_painter { projection triplanar }` for UV-less geometry. |
 | Scatter discrete elements (rivets, leaves, scratches, stains, decals) that noise cannot produce | `scatter_painter { source <stamp> background <name> cell_scale stamp_scale jitter_position jitter_rotation jitter_scale probability }` | Texture-bombing: stamps `source` on a jittered lattice over `background`, alpha-gated (an RGBA cutout stamp shows background through its transparent pixels).  `stamp_scale * (1 + jitter_scale)` is capped at sqrt(2) -- the parser rejects an oversized stamp. |
@@ -156,16 +157,58 @@ The `osl_` builtins are Cycles' / OSL's own definitions, there so a
 Blender material translates to the same pattern: `osl_snoise(p, w, dims)`;
 `osl_fractal(p, w, dims, type, detail, roughness, lacunarity, offset, gain,
 normalize)`; the Noise Texture node's `osl_noise_texture(...)` (Fac) and
-`osl_noise_texture_color(...)` (Color); and the White Noise node's
-`osl_white_noise(p, w, dims)` and `osl_white_noise_color(p, w, dims)`.
-`dims`, `type` and `normalize` are integer literals (full list:
-`src/Library/Painters/ExpressionOslBuiltins.h`).  The noise ones never fade
-octaves by footprint, so for hand-authored noise prefer `fbm`/`turbulence`/
-`ridged`, which do.  White noise hashes the coordinate's exact float bits,
-so any one-ulp change gives an unrelated value, and a coordinate that is
-not exactly representable in float may round to a different float than
-Cycles computed: feed it integer or cell ids (or use `cellhash`, RISE's
-own hash) when you want a stable per-cell value.
+`osl_noise_texture_color(...)` (Color); the White Noise node's
+`osl_white_noise(p, w, dims)` and `osl_white_noise_color(p, w, dims)`;
+the Voronoi Texture node's five outputs, `osl_voronoi_distance`,
+`osl_voronoi_color`, `osl_voronoi_position`, `osl_voronoi_w` and
+`osl_voronoi_radius`, each `(p, w, dims, feature, metric, scale, detail,
+roughness, lacunarity, smoothness, exponent, randomness, normalize)` with
+the coordinate passed BEFORE the Scale; the RGB/HSV/HSL colour conversions
+`osl_rgb2hsv(c)`, `osl_hsv2rgb(c)`, `osl_rgb2hsl(c)` and `osl_hsl2rgb(c)`;
+and the Mix Color node's 19 blend modes `osl_mix_color(mode, t, a, b,
+clamp_factor, clamp_result)`; Safe Math / Vector Math / Clamp / Map Range
+(`osl_math(op, a, b, c)`, `osl_vmath_scalar(op, a, b)`,
+`osl_vmath(op, a, b, c, scale)`, `osl_clamp(type, v, mn, mx)`,
+`osl_map_range(type, clamp, v, fmin, fmax, tmin, tmax, steps)`,
+`osl_vmap_range(...)`); componentwise vec3 ops and rotations
+(`osl_vmin`, `osl_vmax`, `osl_vabs`, `osl_vfloor`, `osl_vfract`,
+`osl_vpow`, `osl_vclamp`, `osl_rotate(v, axis, angle)`,
+`osl_vector_rotate(type, invert, v, center, axis, angle, euler)`); and
+live space transforms (`osl_to_object_point/vector/normal`,
+`osl_to_world_point/vector/normal`, `osl_to_camera_point/vector/normal`,
+`osl_camera_to_world_point/vector/normal`, reading the hit's object
+matrices and the live scene camera without baking camera matrices as
+constants); Gradient and Brick patterns (`osl_gradient(p, type)`,
+`osl_brick(p, mortar_size, mortar_smooth, bias, brick_width, row_height,
+offset_amount, offset_freq, squash_amount, squash_freq)` returning
+`vec3(tint, mortar_fac, 0)`); scene ambient occlusion
+(`osl_ao(dist, samples, normal, flags)` — physically based, works in all
+integrators); surface normals (`osl_true_normal()`, `osl_shading_normal()`);
+painter sampling (`sample(name)`, `sample_alpha(name)`, `sample_scalar(name)`,
+`sample_uv(name, u, v)`, `sample_uv_alpha(name, u, v)`); and PT-only
+non-physical view/ray shading signals (`osl_layer_weight(blend, normal, flags)`,
+`osl_fresnel(ior, normal, has_normal)`, `osl_is_camera_ray()`, `osl_backfacing()` — contained to
+Path Tracing and refused by BDPT/VCM/MLT, routed to PT by `auto_rasterizer`).
+Programmatic / Blender-bridge-populated per-object and mesh attributes
+(`osl_object_color()`, `osl_object_alpha()`, `osl_object_index()`,
+`osl_object_random()`, `osl_particle_random()`, `mesh_attr3("name")`,
+`mesh_attr_alpha("name")`) are NOT `.RISEscene`-authorable yet (they read
+neutral defaults unless populated via `Object::SetObjectInfo` or
+`TriangleMeshGeometryIndexed::AddNamedCornerAttribute`).  `dims`, `type`, `feature`, `metric`,
+`normalize`, `mode`, `op`, `clamp`, `clamp_factor`, `clamp_result`,
+`invert`, `samples`, `flags`, `has_normal`, `offset_freq`, and `squash_freq` are integer
+literals (full list: `src/Library/Painters/ExpressionOslBuiltins.h`).  For hand-authored cells
+RISE's own `worley_*` (3D, Euclidean, one octave) usually suffice; the
+`osl_voronoi_` ones are there to match Blender, and their cost grows fast
+with dimension and detail (a 3D F1 at detail 0 is about 250 ns, 4D Smooth
+F1 at detail 15 about 150 us; `src/Library/Utilities/OslVoronoi.h`).
+None of the `osl_` noise or Voronoi builtins fade octaves by footprint, so for hand-authored
+noise prefer `fbm`/`turbulence`/`ridged`, which do.  White noise hashes
+the coordinate's exact float bits, so any one-ulp change gives an
+unrelated value, and a coordinate that is not exactly representable in
+float may round to a different float than Cycles computed: feed it integer
+or cell ids (or use `cellhash`, RISE's own hash) when you want a stable
+per-cell value.
 
 The body also sees `curv`/`curvR` (surface curvature at the hit: positive
 convex, negative concave, 0 flat) plus FIVE ARG-TAKING geometry-signal

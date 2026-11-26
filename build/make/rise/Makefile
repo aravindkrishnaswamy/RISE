@@ -274,14 +274,14 @@ $(TESTOBJ_DIR)%.o : ../../../%.mm
 	@$(CXX) $(TEST_CPPFLAGS) $(TEST_CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -x objective-c++ -fobjc-arc -c $< -o $@
 
 # Library files with their own compile flags (see the per-file rules near the
-# end of this file) keep them in the test copy: the fire production
-# operators and the Cycles noise port (OslNoise) compile without fast-math or
-# FP contraction (FireCase's rule only drops LTO, which the test copy does
-# anyway).
+# end of this file) keep them in the test copy: the fire production operators,
+# the simulation solvers, and the Cycles procedural ports (OslNoise, OslVoronoi,
+# OslColor, OslMath, OslVector, OslShaderNodes) compile without fast-math or FP
+# contraction (FireCase's rule only drops LTO, which the test copy does anyway).
 TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvection.o FireProductionProjection.o \
 	FireProductionTransport.o FireProductionSource.o FireProductionForce.o \
-	OslNoise.o)
+	OslNoise.o OslVoronoi.o OslColor.o OslMath.o OslVector.o OslShaderNodes.o)
 # M2 track B: the fire run driver moved out of tests/FireSequenceTest.cpp.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
 	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o FireSolver.o)
@@ -572,10 +572,31 @@ $(PATHLIBRARY)Utilities/FireCase.o : $(PATHLIBRARY)Utilities/FireCase.cpp
 	@echo "Compiling (no LTO): $<"
 	@$(CXX) $(filter-out -flto,$(CPPFLAGS)) $(filter-out -flto,$(CXXFLAGS)) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
-# The Cycles noise port reproduces Cycles' scalar path as strict IEEE
-# single precision; fast-math's contraction would change its pattern
-# (OslNoise.cpp refuses to compile with __FAST_MATH__ defined).
+# The Cycles noise, Voronoi, colour, math and vector ports reproduce Cycles'
+# scalar path as strict IEEE single precision; fast-math's contraction would
+# change their results (OslNoise.cpp, OslVoronoi.cpp, OslColor.cpp, OslMath.cpp
+# and OslVector.cpp refuse to compile with __FAST_MATH__ defined).
 $(PATHLIBRARY)Utilities/OslNoise.o : $(PATHLIBRARY)Utilities/OslNoise.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/OslVoronoi.o : $(PATHLIBRARY)Utilities/OslVoronoi.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/OslColor.o : $(PATHLIBRARY)Utilities/OslColor.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/OslMath.o : $(PATHLIBRARY)Utilities/OslMath.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/OslVector.o : $(PATHLIBRARY)Utilities/OslVector.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Utilities/OslShaderNodes.o : $(PATHLIBRARY)Utilities/OslShaderNodes.cpp
 	@echo "Compiling (safe fp32): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 

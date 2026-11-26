@@ -43,6 +43,7 @@
 #include "../Utilities/SurfaceCurvature.h"
 #include "../Utilities/ExpressionMemo.h"
 #include "ILog.h"
+#include <type_traits>
 #include <atomic>
 
 namespace RISE
@@ -58,6 +59,71 @@ namespace RISE
 	//! SurfaceSignalProximity.h, which sits above both and may include them.
 	class IObjectManager;
 	class IObject;
+	class ISurfaceSignalProvider;
+
+	//! Per-thread originating-primitive self-hit exclusion state for ray-traced
+	//! `SurfaceSignalInfo::AmbientOcclusion` (Cycles `ray.self.object` /
+	//! `ray.self.prim` parity).  Trivially default-constructible (zero-initialized
+	//! TLS with no dynamic init guard) so normal shadow rays in
+	//! `Object::IntersectRay_IntersectionOnly` and mesh triangle tests pay only
+	//! a single predicted-not-taken null-pointer / zero check.
+	struct SelfPrimExclusionState
+	{
+		const IObject*                pSelf;
+		const ISurfaceSignalProvider* pProvider;
+		int                           primIdPlusOne; // 0 == none; primId + 1 otherwise
+		bool                          activeForCurrentGeometry;
+	};
+	static_assert( std::is_trivially_default_constructible<SelfPrimExclusionState>::value,
+		"SelfPrimExclusionState must be trivially zero-initializable for zero-overhead TLS" );
+
+	//! Fast global demand counter for active AO self-primitive exclusion scopes.
+	//! Single relaxed atomic load keeps shadow rays and per-triangle shadow
+	//! tests completely free of TLS accesses on non-AO scenes.
+	extern std::atomic<unsigned int> g_surfaceSignalSelfExclusionActive;
+
+	inline bool SurfaceSignalSelfExclusionActive()
+	{
+		return g_surfaceSignalSelfExclusionActive.load( std::memory_order_relaxed ) != 0u;
+	}
+
+	//! Single-TU thread-local state (defined in ExpressionOslBuiltins.cpp so
+	//! DSO boundaries never duplicate TLS instances).
+	SelfPrimExclusionState& SurfaceSignalSelfExclusion();
+	bool& SurfaceSignalInAmbientOcclusion();
+
+	struct ScopedSelfPrimExclusion
+	{
+		SelfPrimExclusionState prev;
+		bool                   active;
+
+		ScopedSelfPrimExclusion( const IObject* pSelf_, const ISurfaceSignalProvider* pProvider_, const int primId_ )
+			: prev()
+			, active( pSelf_ != nullptr && primId_ >= 0 )
+		{
+			if( active ) {
+				prev = SurfaceSignalSelfExclusion();
+				g_surfaceSignalSelfExclusionActive.fetch_add( 1u, std::memory_order_relaxed );
+				SelfPrimExclusionState& cur = SurfaceSignalSelfExclusion();
+				cur.pSelf = pSelf_;
+				cur.pProvider = pProvider_;
+				cur.primIdPlusOne = primId_ + 1;
+				cur.activeForCurrentGeometry = false;
+			}
+		}
+		~ScopedSelfPrimExclusion()
+		{
+			if( active ) {
+				SurfaceSignalSelfExclusion() = prev;
+				g_surfaceSignalSelfExclusionActive.fetch_sub( 1u, std::memory_order_relaxed );
+			}
+		}
+
+		ScopedSelfPrimExclusion( const ScopedSelfPrimExclusion& ) = delete;
+		ScopedSelfPrimExclusion& operator=( const ScopedSelfPrimExclusion& ) = delete;
+		ScopedSelfPrimExclusion( ScopedSelfPrimExclusion&& ) = delete;
+		ScopedSelfPrimExclusion& operator=( ScopedSelfPrimExclusion&& ) = delete;
+	};
 
 	//! A geometry that can answer per-hit AMBIENT-OCCLUSION, THICKNESS and
 	//! CONVEXITY queries about ITS OWN surface.
@@ -246,6 +312,26 @@ namespace RISE
 			const bool bRadiusIsConstant,	///< [in] did the compiler PROVE this radius a compile-time constant?
 			Scalar& outValue				///< [out] convexity in [0,1], 0 = flat/concave
 			) const = 0;
+
+		//! Evaluates a named geometry attribute at `hit`, writing linear RGBA
+		//! into `outRGBA[0..3]`.  Default implementation returns false
+		//! (attribute absent), preserving source compatibility and vtable
+		//! slots 0..3 for all providers that do not carry named attributes.
+		//!
+		//! When `pQueryObjPos` is non-null (e.g. a `ReliefModifier` finite-
+		//! difference tap shifted from `hit.ptObject` in object space), a
+		//! triangle-mesh provider projects `*pQueryObjPos` onto the hit
+		//! triangle's plane to recover shifted barycentric coordinates so
+		//! attribute-driven bump/relief gradients are exact rather than flat.
+		virtual bool EvaluateNamedAttribute(
+			const SurfaceSignalInfo& /*hit*/,
+			const char* /*name*/,
+			Scalar /*outRGBA*/[4],
+			const Point3* /*pQueryObjPos*/ = 0
+			) const
+		{
+			return false;
+		}
 	};
 
 	//! The per-hit half of the channel: what `RayIntersectionGeometric`
@@ -636,6 +722,27 @@ namespace RISE
 		//! include cycle.
 		Scalar Interior( const Scalar radiusWorld ) const;
 
+		//! Ray-traced ambient occlusion (`osl_ao(distance, samples, normal, flags)`
+		//! — docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md Part III & Round 3 P2-4).
+		//! Returns the unoccluded cosine-weighted hemisphere fraction in [0, 1]
+		//! (1 = fully unoccluded, or neutral fallback when pScene/pSelf is null,
+		//! distance <= 0, or re-entrant).  `flags` bitmask:
+		//!   bit 0 (1): inside (flip hemisphere normal)
+		//!   bit 1 (2): only_local (intersect pSelf only, ignoring casts_shadows)
+		//!   bit 2 (4): has_custom_normal (use `customNormal` instead of default shading normal)
+		//!
+		//! DECLARED HERE, DEFINED IN SurfaceSignalProximity.h to avoid the
+		//! IObjectManager/IObject include cycle.
+		Scalar AmbientOcclusion(
+			const Scalar distanceWorld,
+			const int numSamples,
+			const Vector3& customNormal,
+			const int flags,
+			const Vector3& shadingNormal,
+			const Vector3& geomNormal,
+			const bool geomOpposesArrival
+			) const;
+
 		Scalar SignalQuery( const SignalKind fn, const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
 			const ExpressionMemo::SignalKey key = MakeL1Key( fn, radiusFraction, bRadiusIsConstant );
@@ -688,6 +795,26 @@ namespace RISE
 		Scalar Convexity( const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
 			return SignalQuery( eConvexity, radiusFraction, bRadiusIsConstant );
+		}
+
+		//! Named per-corner/surface geometry attribute at this hit, writing
+		//! linear RGBA into `outRGBA[0..3]`.  Returns false (with `outRGBA`
+		//! zeroed) when there is no provider, `name` is null/empty, or the
+		//! attribute is absent; non-finite components are sanitized to 0.
+		bool NamedAttribute( const char* name, Scalar outRGBA[4], const Point3* pQueryObjPos = 0 ) const
+		{
+			outRGBA[0] = outRGBA[1] = outRGBA[2] = outRGBA[3] = Scalar( 0 );
+			if( !pProvider || !name || !name[0] ) {
+				return false;
+			}
+			Scalar tmp[4] = { Scalar( 0 ), Scalar( 0 ), Scalar( 0 ), Scalar( 0 ) };
+			if( !pProvider->EvaluateNamedAttribute( *this, name, tmp, pQueryObjPos ) ) {
+				return false;
+			}
+			for( int c = 0; c < 4; ++c ) {
+				outRGBA[c] = RISE::IsFiniteDouble( static_cast<double>( tmp[c] ) ) ? tmp[c] : Scalar( 0 );
+			}
+			return true;
 		}
 	};
 

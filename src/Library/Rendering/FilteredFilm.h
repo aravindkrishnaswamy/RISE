@@ -11,7 +11,10 @@
 //  contribution to all pixels within the filter's support.
 //
 //  After the render pass, Resolve() computes the final pixel value
-//  as colorSum / weightSum, which is the proper filtered result.
+//  as colorSum / weightSum for opaque pixels (alphaSum == weightSum),
+//  or straight RGB (colorSum / weightSum / alpha) paired with clamped
+//  coverage alpha (alphaSum / weightSum) when transparent-background
+//  misses contribute fractional alpha (or (0,0,0,0) when alpha <= 1e-6).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 10, 2026
@@ -54,10 +57,12 @@ namespace RISE
 			{
 				XYZPel		colorSum;
 				Scalar		weightSum;
+				Scalar		alphaSum;
 
 				FilteredPixel() :
 				colorSum( XYZPel( 0, 0, 0 ) ),
-				weightSum( 0 )
+				weightSum( 0 ),
+				alphaSum( 0 )
 				{
 				}
 			};
@@ -97,15 +102,20 @@ namespace RISE
 				const Scalar screenX,					///< [in] Sample screen X position
 				const Scalar screenY,					///< [in] Sample screen Y position
 				const XYZPel& color,					///< [in] Sample radiance (CIE XYZ tristimulus)
-				const IPixelFilter& filter				///< [in] Pixel filter for weight evaluation
+				const IPixelFilter& filter,				///< [in] Pixel filter for weight evaluation
+				const Scalar sampleAlpha = 1.0			///< [in] Sample opacity (1.0 opaque, 0.0 transparent miss)
 				);
 
 			//! Resolves accumulated contributions into the image (overwrites
-			//! pixels whose weightSum is nonzero); each value is
-			//! colorSum / weightSum.  Safe to call concurrently with Splat
-			//! writers (each row is read under its row mutex) and with other
-			//! Resolve calls on disjoint target regions.  The caller must not
-			//! hold any of this film's row mutexes.
+			//! pixels whose weightSum is nonzero).  Opaque pixels resolve to
+			//! (colorSum / weightSum, 1.0); partial-coverage pixels (when
+			//! transparent-background misses pass sampleAlpha = 0) resolve to
+			//! straight RGB (colorSum / weightSum / alpha) with clamped alpha
+			//! (alphaSum / weightSum), or (0,0,0,0) when alpha <= 1e-6.
+			//! Safe to call concurrently with Splat writers (each row is read
+			//! under its row mutex) and with other Resolve calls on disjoint
+			//! target regions.  The caller must not hold any of this film's
+			//! row mutexes.
 			void Resolve(
 				IRasterImage& target,					///< [out] Target image to receive resolved result
 				const Rect* region = 0					///< [in] Optional inclusive write region

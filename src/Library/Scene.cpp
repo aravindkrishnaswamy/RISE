@@ -128,7 +128,7 @@ void Scene::Shutdown()
 
 void Scene::SetCameraManager( ICameraManager* pCameraManager_ )
 {
-	if( pCameraManager_ )
+	if( pCameraManager_ && pCameraManager_ != pCameraManager )
 	{
 		// Reset the active-camera state along with the manager swap.
 		// Without this, a Job::InitializeContainers re-init (called
@@ -136,12 +136,16 @@ void Scene::SetCameraManager( ICameraManager* pCameraManager_ )
 		// pointing at a name that the new (empty) manager doesn't
 		// have, and pActiveCamera dangling at a freed object.
 		ICamera* prevActive = pActiveCamera;
+		const bool hadActive = ( prevActive != 0 );
 		pActiveCamera = 0;
 		activeCameraName = String();
 		safe_release( prevActive );
-		safe_release( pCameraManager );
 		pCameraManager_->addref();
+		safe_release( pCameraManager );
 		pCameraManager = pCameraManager_;
+		if( hadActive ) {
+			ExpressionMemo::Invalidate();
+		}
 	}
 }
 
@@ -292,6 +296,7 @@ bool Scene::AddCamera( const char* szName, ICamera* pCamera_ )
 	activeCameraName = String( szName );
 	pActiveCamera = pCamera_;
 	safe_release( prevActive );
+	ExpressionMemo::Invalidate();
 	return true;
 }
 
@@ -357,6 +362,7 @@ bool Scene::RemoveCamera( const char* szName )
 		// gone).  Per the concurrency contract at the top of this
 		// file, no render is in flight here.
 		safe_release( prevActive );
+		ExpressionMemo::Invalidate();
 	}
 	return true;
 }
@@ -383,18 +389,20 @@ bool Scene::SetActiveCamera( const char* szName )
 	activeCameraName = String( szName );
 	pActiveCamera = cam;
 	safe_release( prevActive );
+	ExpressionMemo::Invalidate();
 	return true;
 }
 
 void Scene::SetObjectManager( const IObjectManager* pObjectManager_ )
 {
-	if( pObjectManager_ )
+	if( pObjectManager_ && pObjectManager_ != pObjectManager )
 	{
-		// Free the old one
-		safe_release( pObjectManager );
-
+		// Addref the new manager BEFORE releasing the old one so a self-assign
+		// or aliasing swap never releases the last ref before retaining.
 		pObjectManager_->addref();
+		const IObjectManager* prev = pObjectManager;
 		pObjectManager = pObjectManager_;
+		safe_release( prev );
 	}
 }
 

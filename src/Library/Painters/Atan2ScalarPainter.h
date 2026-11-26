@@ -102,6 +102,7 @@ namespace RISE
 			}
 			bool IsPositionIndependent() const override { return CompositeIsPositionIndependent( pY, pX ); }
 			bool ReadsWorldPosition() const override { return CompositeReadsWorldPosition( pY, pX ); }
+			unsigned int GetPathDependence() const override { return CompositeGetPathDependence( pY, pX ); }
 
 			//! Same rationale as MultiplyScalarPainter.h's sibling
 			//! method: only an operand that itself varies per-channel

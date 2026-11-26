@@ -17,6 +17,7 @@
 #include "../Parsers/ChunkParserRegistry.h"
 #include "ChunkDescriptorRegistry.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Interfaces/ILog.h"
 #include <cmath>
 #include <cstdio>
@@ -156,6 +157,12 @@ namespace
 		{
 			out.kind = ValueKind::Double;
 			out.value = FormatDouble( cam.GetPixelRateStored() );
+			return true;
+		}
+		if( n == "near_clip" )
+		{
+			out.kind = ValueKind::Double;
+			out.value = FormatDouble( cam.GetNearClip() );
 			return true;
 		}
 		// Euler orientation is stored in radians but the parser
@@ -535,6 +542,8 @@ namespace
 			return String( "Per-scanline time offset for rolling-shutter simulation.  0 disables." );
 		if( name == "pixel_rate" )
 			return String( "Per-pixel time offset.  0 disables." );
+		if( name == "near_clip" )
+			return String( "Planar near-clip distance along the camera forward axis in scene units.  0 disables." );
 		if( name == "width" )
 			return String( "Image width in pixels.  Editable only between renders." );
 		if( name == "height" )
@@ -669,6 +678,11 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 		Scalar v;
 		if( !ParseDouble( value, v ) ) return false;
 		cam->SetPixelRateStored( v );
+	}
+	else if( n == "near_clip" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) || !RISE::IsFiniteDouble( v ) || v < Scalar( 0 ) ) return false;
+		cam->SetNearClip( v );
 	}
 	else if( n == "orientation" ) {
 		Scalar x, y, z;
@@ -986,6 +1000,7 @@ bool CameraIntrospection::CaptureCameraSnapshot( const ICamera& camera, CameraSn
 	out.scanningRate = cam->GetScanningRateStored();
 	out.pixelRate    = cam->GetPixelRateStored();
 	out.pixelAR      = cam->GetPixelAR();
+	out.nearClip     = cam->GetNearClip();
 	const Vector3 orient = cam->GetEulerOrientation();
 	out.orientation[0] = orient.x;  out.orientation[1] = orient.y;  out.orientation[2] = orient.z;
 	const Vector2 target = cam->GetTargetOrientation();
@@ -1154,8 +1169,16 @@ bool CameraIntrospection::AddCameraFromSnapshot( IJob& job, const String& newNam
 		if( ICameraManager* cams = priv->GetCameras() ) {
 			if( ICamera* base = cams->GetItem( n ) ) {
 				if( CameraCommon* cc = dynamic_cast<CameraCommon*>( base ) ) {
+					bool changed = false;
 					if( s.pixelAR > 0 && std::fabs( cc->GetPixelAR() - s.pixelAR ) > 1e-12 ) {
 						cc->SetPixelAR( s.pixelAR );
+						changed = true;
+					}
+					if( RISE::IsFiniteDouble( s.nearClip ) && s.nearClip > 0.0 ) {
+						cc->SetNearClip( Scalar( s.nearClip ) );
+						changed = true;
+					}
+					if( changed ) {
 						cc->RegenerateData();
 					}
 				}

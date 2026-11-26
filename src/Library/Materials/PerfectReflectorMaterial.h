@@ -69,6 +69,11 @@ namespace RISE
 			//! Read-back + rebind for the interactive editor.
 			inline const IPainter& GetReflectance() const { return pSPF->GetReflectance(); }
 			inline void SetReflectance( const IPainter& R ) { pSPF->SetReflectance( R ); }
+
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() | pSPF->GetReflectance().GetPathDependence();
+			}
 		};
 	}
 }
