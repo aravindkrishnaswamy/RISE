@@ -354,6 +354,28 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   (`IObject::GetArea()`) rather than an equivalent-sphere estimate off its
   bounding box, specifically so it no longer over-mints a flat object the
   way an earlier revision of this scene's own fuzz shell did.
+  `cloister_lantern_botanical.RISEscene` ("The Cloister Lantern & Kintsugi Still-Life")
+  and `origami_lantern_pavilion.RISEscene` ("The Origami Lantern & Dichroic Velvet
+  Gallery") are the paired native `.RISEscene` showcases for the Blender-parity
+  material, modifier, camera, and Cycles/OSL expression-VM paths (`mix_material` with
+  per-child modifiers and `passthrough`, `diffuse_transmission_material`,
+  `blended_modifier`, `scalar_painter { painter ... channel RGB }`, camera `near_clip`,
+  `osl_brick`, `osl_gradient`, `osl_ao`, `osl_voronoi_distance`/`osl_voronoi_color`,
+  `osl_noise_texture`, `osl_mix_color`, `osl_rgb2hsv`/`osl_hsv2rgb`, `osl_math`,
+  `osl_map_range`, `osl_vector_rotate`, `osl_to_camera_vector`, and PT-only
+  `osl_layer_weight`/`osl_fresnel`/`osl_backfacing`/`osl_is_camera_ray` containment).
+  `cloister_lantern_botanical` composes a warm candle-lit shoji lantern (with pierced
+  kumiko frieze `passthrough` oculi and backlit rice paper), curling `skin_geometry`
+  leaves flipping underside tone via `osl_backfacing()`, a smoked-celadon Kintsugi
+  bowl with mirror-gold Voronoi seams and `channel RGB` conductor IOR/extinction, a
+  patinated bronze amphora with `osl_ao` verdigris, peeling stucco over recessed
+  `osl_brick` masonry, and an overhead lintel sliced cleanly by `pinhole_camera {
+  near_clip }`.  `origami_lantern_pavilion` pairs six pleated `diffuse_transmission`
+  origami sails on a basalt plinth with a dichroic velvet and spiral-gold brocade
+  torus (`osl_to_camera_vector` + `osl_vector_rotate`), a gossamer `osl_is_camera_ray()`
+  gallery veil, a Venetian terrazzo floor with brass `osl_brick` inlays, a
+  `thinlens_camera` with `near_clip`, and `auto_rasterizer` automatically detecting the
+  PT-only signals and routing `Auto -> PT`.
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes

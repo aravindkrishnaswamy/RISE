@@ -1,0 +1,1176 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           cloister_lantern_botanical.RISEscene                                                    #
+#   Description:    "The Cloister Lantern & Kintsugi Still-Life"                                            #
+#                   Creative showcase exercising the native RISE library paths added for Blender parity:    #
+#                                                                                                           #
+#                     1. BACKLIT SHOJI LANTERN (`diffuse_transmission_material` + `mix_material` with       #
+#                        `passthrough` + `osl_brick` kumiko lattice + `osl_gradient` + per-child            #
+#                        modifiers): a warm candle-lit rice-paper lantern whose wooden lattice and top      #
+#                        filigree cutouts are driven procedurally in one `mix_material`, transmitting       #
+#                        warm amber light through thin fibrous paper while casting crisp wood shadows.      #
+#                     2. CURLED BOTANICAL LEAVES (`skin_geometry` + `diffuse_transmission_material` +       #
+#                        `osl_backfacing()` + `osl_layer_weight()` + `mix_material`): five sculpted         #
+#                        arching leaves beside the lantern; upper faces carry waxy grazing sheen while      #
+#                        curled undersides flip to paler matte sage via `osl_backfacing()`, and thin        #
+#                        blades glow chartreuse-amber from behind via reciprocal diffuse transmission.      #
+#                     3. KINTSUGI STONEWARE TEA BOWL (`lathe_geometry` + `mix_material` with distinct       #
+#                        per-child modifiers + `blended_modifier` + `osl_voronoi_distance` Distance-to-Edge #
+#                        + `scalar_painter { painter ... channel RGB }`): smoked celadon stoneware          #
+#                        repaired with mirror-bright 24k gold lacquer seams; real conductor gold IOR/k      #
+#                        fed via `channel RGB` scalar painters; `blended_modifier` transitions from rough   #
+#                        unglazed clay foot to turned glaze rings while gold seams stay smooth (`none`).    #
+#                     4. PATINATED BRONZE AMPHORA (`lathe_geometry` + `osl_ao` + `osl_rgb2hsv`/`hsv2rgb`    #
+#                        + `mix_material`): verdigris patina pools inside concave neck rings via `osl_ao`   #
+#                        while burnished bronze gleams on convex shoulders.                                 #
+#                     5. AGED CLOISTER MASONRY WALL (`osl_brick` + `osl_noise_texture` + `osl_mix_color`    #
+#                        + `osl_ao` + `blended_modifier` + `mix_material`): peeling lime stucco over        #
+#                        recessed terracotta bricks, with distinct brick vs blended trowel-stucco relief.   #
+#                     6. FOREGROUND PORTAL CUTAWAY (`pinhole_camera { near_clip 0.90 }`): an architectural  #
+#                        stone lintel placed inside the near-clip distance casts subtle foreground framing  #
+#                        shadow while camera rays start cleanly beyond it (Option A near_clip contract).    #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-11-25                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer & Camera
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_twilight_env
+	color		0.035 0.050 0.085
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+film
+{
+	width		960
+	height		540
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				128
+	oidn_denoise		TRUE
+	pixel_filter		gaussian
+	radiance_map		pnt_twilight_env
+	radiance_background	TRUE
+}
+
+pinhole_camera
+{
+	location	0.10 1.38 4.25
+	lookat		0.05 0.56 -0.15
+	up			0 1 0
+	fov			34.0
+	near_clip	0.90
+}
+
+##################################################
+# Lighting: warm golden-hour rake + cool twilight
+# courtyard fill + warm candle core inside lantern
+##################################################
+
+# Warm late-afternoon sun raking from upper back-left across brick relief,
+# backlighting the botanical leaves and catching the Kintsugi gold seams.
+rect_light
+{
+	name		light_sun_rake
+	center		-2.95 2.45 -0.35
+	size		1.40 1.20
+	facing		0.72 -0.58 0.38
+	color		1.00 0.80 0.54
+	exitance	26.0
+}
+
+# Cool twilight courtyard sky fill from upper front-right.
+rect_light
+{
+	name		light_sky_fill
+	center		2.60 2.50 2.40
+	size		2.80 2.20
+	facing		-0.55 -0.52 -0.65
+	color		0.48 0.64 0.96
+	exitance	6.5
+}
+
+# Tight rim accent from right-back to catch the bronze amphora shoulder
+# and the celadon bowl rim.
+rect_light
+{
+	name		light_rim_accent
+	center		2.45 1.45 -1.15
+	size		0.55 0.85
+	facing		-0.80 -0.32 0.50
+	color		0.88 0.92 1.00
+	exitance	14.0
+}
+
+# Warm candle point source seated inside the shoji lantern so the thin
+# diffuse_transmission paper shade glows warmly and projects kumiko shadows.
+omni_light
+{
+	name		light_lantern_core
+	position	-0.82 0.62 -0.18
+	color		1.00 0.58 0.22
+	power		24.0
+}
+
+##################################################
+# 1. AGED CLOISTER WALL: osl_brick + osl_ao +
+#    osl_noise_texture + blended_modifier + mix_material
+##################################################
+
+# Shared brick/mortar height field from Cycles osl_brick.
+scalar_painter
+{
+	name		sp_wall_brick_height
+	def			b		osl_brick(vec3(P.x, P.y, P.z) * 1.65, 0.028, 0.010, -0.15, 0.56, 0.24, 0.50, 2, 1.0, 2)
+	def			grain	osl_noise_texture(P * 14.0, 0.0, 3, 1, 4.0, 0.55, 2.0, 0.0, 1.0, 0.15, 1)
+	expression	(1.0 - b.y) * (0.75 + 0.25 * grain)
+}
+
+relief_modifier
+{
+	name		mod_wall_brick
+	height		sp_wall_brick_height
+	scale		0.018
+	domain		surface
+	max_slope	0.75
+}
+
+# Peeling plaster uses a blended_modifier mixing broad trowel undulation
+# with crisp fine sand-stucco texture weighted by surface noise.
+scalar_painter
+{
+	name		sp_plaster_trowel
+	expression	osl_noise_texture(P * 2.2, 0.0, 3, 1, 3.0, 0.50, 2.0, 0.0, 1.0, 0.25, 1)
+}
+
+scalar_painter
+{
+	name		sp_plaster_sand
+	expression	osl_noise_texture(P * 28.0, 0.0, 3, 1, 4.0, 0.60, 2.0, 0.0, 1.0, 0.0, 1)
+}
+
+scalar_painter
+{
+	name		sp_plaster_mod_blend
+	expression	osl_map_range(2, 1, osl_noise_texture(P * 1.4 + vec3(3.1, 1.7, 0.0), 0.0, 3, 1, 2.0, 0.5, 2.0, 0.0, 1.0, 0.0, 1), 0.30, 0.72, 0.15, 0.85, 4.0)
+}
+
+relief_modifier
+{
+	name		mod_plaster_trowel
+	height		sp_plaster_trowel
+	scale		0.012
+	domain		surface
+	max_slope	0.45
+}
+
+relief_modifier
+{
+	name		mod_plaster_sand
+	height		sp_plaster_sand
+	scale		0.004
+	domain		surface
+	max_slope	0.50
+}
+
+blended_modifier
+{
+	name		mod_wall_plaster
+	modifier_a	mod_plaster_trowel
+	modifier_b	mod_plaster_sand
+	weight		sp_plaster_mod_blend
+}
+
+# Brick colour: terracotta variation via osl_brick tint + osl_mix_color + osl_ao crevice grime.
+expression_painter
+{
+	name		pnt_wall_brick_col
+	def			b		osl_brick(vec3(P.x, P.y, P.z) * 1.65, 0.028, 0.010, -0.15, 0.56, 0.24, 0.50, 2, 1.0, 2)
+	def			n		osl_noise_texture(P * 3.8, 0.0, 3, 1, 4.0, 0.55, 2.0, 0.0, 1.0, 0.1, 1)
+	def			ao		osl_ao(0.65, 8, vec3(0,0,0), 0)
+	def			brick	osl_mix_color(0, b.x, vec3(0.32, 0.13, 0.075), vec3(0.56, 0.26, 0.14), 1, 1)
+	def			aged	osl_mix_color(2, 0.45, brick, vec3(0.62 + 0.38 * n, 0.58 + 0.38 * n, 0.52 + 0.38 * n), 1, 1)
+	def			mortar	vec3(0.24, 0.21, 0.18) * (0.75 + 0.25 * n)
+	def			base	mix(aged, mortar, b.y)
+	expr		base * mix(0.42, 1.0, ao)
+}
+
+lambertian_material
+{
+	name		mat_wall_brick
+	reflectance	pnt_wall_brick_col
+}
+
+# Aged lime plaster colour with warm ochre dampness near bench + osl_ao corner grime.
+expression_painter
+{
+	name		pnt_wall_plaster_col
+	def			n		osl_noise_texture(P * 1.8 + vec3(1.2, 0.5, 0.0), 0.0, 3, 1, 5.0, 0.55, 2.0, 0.0, 1.0, 0.2, 1)
+	def			ao		osl_ao(0.75, 8, vec3(0,0,0), 0)
+	def			damp	osl_map_range(2, 1, P.y, 0.0, 0.85, 0.0, 1.0, 4.0)
+	def			lime	mix(vec3(0.46, 0.40, 0.33), vec3(0.68, 0.62, 0.52), n)
+	def			stained	mix(lime * vec3(0.78, 0.72, 0.62), lime, damp)
+	expr		stained * mix(0.38, 1.0, ao)
+}
+
+lambertian_material
+{
+	name		mat_wall_plaster
+	reflectance	pnt_wall_plaster_col
+}
+
+# Spatial plaster mask: plaster survives across upper/middle regions and peels
+# organically around the lantern & lower-right corner to reveal recessed brickwork.
+scalar_painter
+{
+	name		sp_wall_plaster_w
+	def			n1		osl_noise_texture(P * 0.90 + vec3(0.7, 0.2, 0.0), 0.0, 3, 1, 4.0, 0.58, 2.0, 0.0, 1.0, 0.25, 1)
+	def			bias	osl_map_range(0, 1, P.x * 0.16 + P.y * 0.28, -0.35, 0.65, -0.18, 0.26, 4.0)
+	def			rpatch	(1.0 - smoothstep(0.25, 0.85, length(vec3(P.x - 1.55, P.y - 0.55, 0.0)))) * 0.30
+	expression	smoothstep(0.47, 0.51, n1 + bias - rpatch)
+}
+
+scalar_painter
+{
+	name		sp_wall_brick_w
+	expression	1.0 - sample_scalar(sp_wall_plaster_w)
+}
+
+mix_material
+{
+	name		mat_cloister_wall
+	child		mat_wall_brick   weight sp_wall_brick_w   modifier mod_wall_brick
+	child		mat_wall_plaster weight sp_wall_plaster_w modifier mod_wall_plaster
+}
+
+box_geometry
+{
+	name		geo_back_wall
+	width		9.0
+	height		5.0
+	depth		0.25
+}
+
+standard_object
+{
+	name		obj_back_wall
+	geometry	geo_back_wall
+	material	mat_cloister_wall
+	position	0.0 2.0 -1.45
+}
+
+# Flanking limestone pilasters framing the alcove
+expression_painter
+{
+	name		pnt_pilaster_stone
+	def			n		osl_noise_texture(P * 2.6, 0.0, 3, 1, 4.0, 0.55, 2.0, 0.0, 1.0, 0.15, 1)
+	def			ao		osl_ao(0.55, 8, vec3(0,0,0), 0)
+	expr		mix(vec3(0.28, 0.25, 0.22), vec3(0.46, 0.42, 0.36), n) * mix(0.42, 1.0, ao)
+}
+
+scalar_painter
+{
+	name		sp_pilaster_h
+	expression	osl_noise_texture(P * 8.0, 0.0, 3, 1, 4.0, 0.6, 2.0, 0.0, 1.0, 0.1, 1)
+}
+
+relief_modifier
+{
+	name		mod_pilaster
+	height		sp_pilaster_h
+	scale		0.008
+	domain		surface
+	max_slope	0.50
+}
+
+lambertian_material
+{
+	name		mat_pilaster
+	reflectance	pnt_pilaster_stone
+}
+
+box_geometry
+{
+	name		geo_pilaster
+	width		0.55
+	height		4.6
+	depth		0.65
+}
+
+standard_object
+{
+	name		obj_pilaster_left
+	geometry	geo_pilaster
+	material	mat_pilaster
+	modifier	mod_pilaster
+	position	-2.35 1.85 -1.05
+}
+
+standard_object
+{
+	name		obj_pilaster_right
+	geometry	geo_pilaster
+	material	mat_pilaster
+	modifier	mod_pilaster
+	position	2.45 1.85 -1.05
+}
+
+# Foreground architectural lintel placed at z = 3.70 (0.55 units ahead of camera
+# at z = 4.25, INSIDE near_clip = 0.90): casts a real overhead shadow across
+# the foreground without occluding the camera view.
+box_geometry
+{
+	name		geo_nearclip_lintel
+	width		7.0
+	height		0.65
+	depth		0.40
+}
+
+standard_object
+{
+	name		obj_nearclip_lintel
+	geometry	geo_nearclip_lintel
+	material	mat_pilaster
+	position	0.0 1.45 3.70
+}
+
+##################################################
+# 2. CARVED STONE WORKBENCH: osl_voronoi_distance +
+#    osl_ao contact grime + relief_modifier
+##################################################
+
+expression_painter
+{
+	name		pnt_bench_col
+	def			v		osl_voronoi_distance(P, 0.0, 3, 3, 0, 1.35, 0.0, 0.5, 2.0, 0.0, 2.0, 0.25, 1)
+	def			seam	1.0 - smoothstep(0.0, 0.032, v)
+	def			n		osl_noise_texture(P * 3.5, 0.0, 3, 1, 5.0, 0.55, 2.0, 0.0, 1.0, 0.2, 1)
+	def			ao		osl_ao(0.38, 8, vec3(0,0,0), 0)
+	def			stone	mix(vec3(0.16, 0.145, 0.13), vec3(0.32, 0.295, 0.265), n)
+	def			joint	vec3(0.08, 0.075, 0.07)
+	expr		mix(stone, joint, seam) * mix(0.35, 1.0, ao)
+}
+
+scalar_painter
+{
+	name		sp_bench_height
+	def			v		osl_voronoi_distance(P, 0.0, 3, 3, 0, 1.35, 0.0, 0.5, 2.0, 0.0, 2.0, 0.25, 1)
+	def			seam	1.0 - smoothstep(0.0, 0.035, v)
+	def			n		osl_noise_texture(P * 11.0, 0.0, 3, 1, 4.0, 0.58, 2.0, 0.0, 1.0, 0.15, 1)
+	expression	(1.0 - 0.85 * seam) * (0.6 + 0.4 * n)
+}
+
+relief_modifier
+{
+	name		mod_bench_stone
+	height		sp_bench_height
+	scale		0.008
+	domain		surface
+	max_slope	0.32
+}
+
+uniformcolor_painter
+{
+	name		pnt_bench_spec
+	color		0.04 0.04 0.04
+}
+
+scalar_painter
+{
+	name		sp_bench_rough
+	def			n		osl_noise_texture(P * 2.8, 0.0, 3, 1, 3.0, 0.5, 2.0, 0.0, 1.0, 0.0, 1)
+	expression	mix(0.38, 0.72, n)
+}
+
+ggx_material
+{
+	name			mat_bench_stone
+	rd				pnt_bench_col
+	rs				pnt_bench_spec
+	alphax			sp_bench_rough
+	alphay			sp_bench_rough
+	fresnel_mode	schlick_f0
+}
+
+box_geometry
+{
+	name		geo_bench
+	width		7.5
+	height		0.36
+	depth		3.4
+}
+
+standard_object
+{
+	name		obj_bench
+	geometry	geo_bench
+	material	mat_bench_stone
+	modifier	mod_bench_stone
+	position	0.0 -0.18 0.15
+}
+
+##################################################
+# 3. BACKLIT SHOJI LANTERN: diffuse_transmission_material +
+#    mix_material + passthrough + osl_brick kumiko +
+#    osl_gradient + per-child modifiers
+##################################################
+
+# Warm fibrous mulberry paper (reflectance + transmittance <= 1 per channel).
+expression_painter
+{
+	name		pnt_shoji_refl
+	def			grad	osl_gradient(vec3(0.0, clamp((Po.y + 0.46) / 0.92, 0.0, 1.0), 0.0), 0)
+	def			fibers	osl_noise_texture(Po * vec3(18.0, 6.0, 18.0), 0.0, 3, 1, 5.0, 0.65, 2.1, 0.0, 1.0, 0.35, 1)
+	def			base	mix(vec3(0.36, 0.30, 0.21), vec3(0.46, 0.40, 0.31), grad)
+	expr		base * (0.88 + 0.18 * fibers)
+}
+
+expression_painter
+{
+	name		pnt_shoji_trans
+	def			grad	osl_gradient(vec3(0.0, clamp((Po.y + 0.46) / 0.92, 0.0, 1.0), 0.0), 2)
+	def			fibers	osl_noise_texture(Po * vec3(24.0, 9.0, 24.0), 0.0, 3, 1, 4.0, 0.60, 2.0, 0.0, 1.0, 0.25, 1)
+	def			warm	mix(vec3(0.56, 0.36, 0.14), vec3(0.46, 0.34, 0.19), grad)
+	expr		warm * (0.88 + 0.18 * fibers)
+}
+
+diffuse_transmission_material
+{
+	name			mat_shoji_paper
+	reflectance		pnt_shoji_refl
+	transmittance	pnt_shoji_trans
+}
+
+scalar_painter
+{
+	name		sp_paper_fiber_h
+	expression	osl_noise_texture(Po * vec3(32.0, 14.0, 32.0), 0.0, 3, 1, 4.0, 0.65, 2.0, 0.0, 1.0, 0.2, 1)
+}
+
+relief_modifier
+{
+	name		mod_paper_fiber
+	height		sp_paper_fiber_h
+	scale		0.0025
+	domain		surface
+	max_slope	0.35
+}
+
+# Dark smoked-cedar kumiko wood lattice & lantern base/crown.
+expression_painter
+{
+	name		pnt_cedar_col
+	def			g		osl_noise_texture(Po * vec3(4.0, 26.0, 4.0), 0.0, 3, 1, 4.0, 0.55, 2.0, 0.0, 1.0, 0.3, 1)
+	expr		mix(vec3(0.055, 0.032, 0.018), vec3(0.14, 0.082, 0.044), g)
+}
+
+uniformcolor_painter
+{
+	name		pnt_cedar_spec
+	color		0.04 0.04 0.04
+}
+
+scalar_painter
+{
+	name		sp_cedar_h
+	expression	osl_noise_texture(Po * vec3(6.0, 36.0, 6.0), 0.0, 3, 1, 4.0, 0.55, 2.0, 0.0, 1.0, 0.25, 1)
+}
+
+relief_modifier
+{
+	name		mod_cedar_grain
+	height		sp_cedar_h
+	scale		0.004
+	domain		surface
+	max_slope	0.45
+}
+
+ggx_material
+{
+	name			mat_cedar_wood
+	rd				pnt_cedar_col
+	rs				pnt_cedar_spec
+	alphax			0.24
+	alphay			0.24
+	fresnel_mode	schlick_f0
+}
+
+# Procedural cylindrical kumiko wood lattice + pierced upper wooden frieze cutouts.
+# Using (u, Po.y) on the uncapped cylinder (Po.y spans -0.45..+0.45):
+#   - Main body (yn < 0.77): delicate cedar kumiko muntins via osl_brick over warm rice paper
+#   - Upper frieze band (yn in [0.77, 0.93]): dark cedar collar pierced with circular
+#     openwork oculi via `passthrough` so direct candlelight shines cleanly through!
+scalar_painter
+{
+	name		sp_lantern_cutout_w
+	def			yn		clamp((Po.y + 0.45) / 0.90, 0.0, 1.0)
+	def			in_band	step(0.79, yn) * step(yn, 0.92)
+	def			cell_u	osl_math(22, u * 10.0, 0.0, 0.0)
+	def			cell_v	osl_map_range(0, 1, yn, 0.79, 0.92, 0.0, 1.0, 4.0)
+	def			d		length(vec3(cell_u - 0.5, cell_v - 0.5, 0.0))
+	def			hole	1.0 - smoothstep(0.28, 0.33, d)
+	expression	in_band * hole
+}
+
+scalar_painter
+{
+	name		sp_lantern_wood_w
+	def			yn		clamp((Po.y + 0.45) / 0.90, 0.0, 1.0)
+	def			b		osl_brick(vec3(u * 4.0, yn * 3.0, 0.0), 0.042, 0.004, 0.0, 0.50, 0.34, 0.0, 1, 1.0, 1)
+	def			rim		max(step(yn, 0.07), step(0.92, yn))
+	def			in_top	step(0.76, yn) * step(yn, 0.92)
+	def			cut		sample_scalar(sp_lantern_cutout_w)
+	expression	clamp(max(max(b.y * (1.0 - in_top), rim), in_top * (1.0 - cut)), 0.0, 1.0)
+}
+
+scalar_painter
+{
+	name		sp_lantern_paper_w
+	expression	clamp(1.0 - sample_scalar(sp_lantern_wood_w) - sample_scalar(sp_lantern_cutout_w), 0.0, 1.0)
+}
+
+mix_material
+{
+	name		mat_lantern_shade
+	child		mat_shoji_paper weight sp_lantern_paper_w modifier mod_paper_fiber
+	child		mat_cedar_wood  weight sp_lantern_wood_w  modifier mod_cedar_grain
+	passthrough	weight sp_lantern_cutout_w
+}
+
+cylinder_geometry
+{
+	name		geo_lantern_shade
+	axis		y
+	radius		0.33
+	height		0.90
+	capped		FALSE
+}
+
+standard_object
+{
+	name		obj_lantern_shade
+	geometry	geo_lantern_shade
+	material	mat_lantern_shade
+	position	-0.82 0.59 -0.18
+}
+
+# Turned walnut/cedar lantern base & pagoda cap
+lathe_geometry
+{
+	name			geo_lantern_base
+	axis			y
+	n_radial		48
+	profile_point	0.00 0.00
+	profile_point	0.41 0.00
+	profile_point	0.42 0.04
+	profile_point	0.37 0.07
+	profile_point	0.35 0.14
+	profile_point	0.30 0.15
+	profile_point	0.00 0.15
+}
+
+standard_object
+{
+	name		obj_lantern_base
+	geometry	geo_lantern_base
+	material	mat_cedar_wood
+	modifier	mod_cedar_grain
+	position	-0.82 0.00 -0.18
+}
+
+lathe_geometry
+{
+	name			geo_lantern_crown
+	axis			y
+	n_radial		48
+	profile_point	0.00 0.00
+	profile_point	0.35 0.00
+	profile_point	0.44 0.05
+	profile_point	0.42 0.09
+	profile_point	0.22 0.15
+	profile_point	0.10 0.21
+	profile_point	0.05 0.26
+	profile_point	0.07 0.30
+	profile_point	0.03 0.34
+	profile_point	0.00 0.36
+}
+
+standard_object
+{
+	name		obj_lantern_crown
+	geometry	geo_lantern_crown
+	material	mat_cedar_wood
+	modifier	mod_cedar_grain
+	position	-0.82 1.03 -0.18
+}
+
+# Visible incandescent candle core inside the lantern (seen through upper filigree cutouts)
+blackbody_painter
+{
+	name		pnt_candle_bb
+	temperature	2400.0
+}
+
+lambertian_luminaire_material
+{
+	name		mat_candle_flame
+	exitance	pnt_candle_bb
+	scale		55.0
+}
+
+sphere_geometry
+{
+	name		geo_candle_flame
+	radius		0.065
+}
+
+standard_object
+{
+	name		obj_candle_flame
+	geometry	geo_candle_flame
+	material	mat_candle_flame
+	position	-0.82 0.84 -0.18
+}
+
+##################################################
+# 4. KINTSUGI SMOKED-CELADON TEA BOWL:
+#    mix_material + osl_voronoi_distance (Edge) +
+#    blended_modifier + scalar_painter channel RGB
+##################################################
+
+# Gold complex refractive index via per-channel RGB scalar_painter (`channel RGB`)
+uniformcolor_painter
+{
+	name		pnt_gold_n_rgb
+	color		0.18 0.42 1.37
+}
+
+uniformcolor_painter
+{
+	name		pnt_gold_k_rgb
+	color		3.42 2.35 1.77
+}
+
+scalar_painter
+{
+	name		sp_gold_ior_rgb
+	painter		pnt_gold_n_rgb
+	channel		RGB
+	scale		1.0
+	bias		0.0
+}
+
+scalar_painter
+{
+	name		sp_gold_ext_rgb
+	painter		pnt_gold_k_rgb
+	channel		RGB
+	scale		1.0
+	bias		0.0
+}
+
+uniformcolor_painter
+{
+	name		pnt_gold_tint
+	color		0.98 0.88 0.58
+}
+
+ggx_material
+{
+	name			mat_kintsugi_gold
+	rd				none
+	rs				pnt_gold_tint
+	alphax			0.055
+	alphay			0.055
+	ior				sp_gold_ior_rgb
+	extinction		sp_gold_ext_rgb
+	fresnel_mode	conductor
+}
+
+# Smoked celadon glaze with subtle hand-thrown rings + grazing rim sheen via osl_layer_weight
+expression_painter
+{
+	name		pnt_celadon_col
+	def			rings	osl_noise_texture(vec3(Po.x * 2.0, Po.y * 28.0, Po.z * 2.0), 0.0, 3, 1, 3.0, 0.5, 2.0, 0.0, 1.0, 0.15, 1)
+	def			speck	osl_noise_texture(Po * 24.0, 0.0, 3, 1, 4.0, 0.65, 2.0, 0.0, 1.0, 0.1, 1)
+	def			ao		osl_ao(0.28, 8, vec3(0,0,0), 0)
+	def			lw		osl_layer_weight(0.28, vec3(0,0,0), 0)
+	def			foot	smoothstep(0.04, 0.10, Po.y)
+	def			clay	vec3(0.20, 0.15, 0.11) * (0.82 + 0.25 * speck)
+	def			glaze	mix(vec3(0.11, 0.18, 0.17), vec3(0.23, 0.34, 0.31), rings)
+	def			rim		mix(glaze, vec3(0.32, 0.42, 0.38), lw * 0.45)
+	expr		mix(clay, rim, foot) * mix(0.45, 1.0, ao)
+}
+
+uniformcolor_painter
+{
+	name		pnt_celadon_spec
+	color		0.05 0.05 0.05
+}
+
+scalar_painter
+{
+	name		sp_celadon_rough
+	def			foot	smoothstep(0.04, 0.10, Po.y)
+	def			n		osl_noise_texture(Po * 9.0, 0.0, 3, 1, 3.0, 0.5, 2.0, 0.0, 1.0, 0.0, 1)
+	expression	mix(0.68, mix(0.11, 0.20, n), foot)
+}
+
+ggx_material
+{
+	name			mat_celadon_body
+	rd				pnt_celadon_col
+	rs				pnt_celadon_spec
+	alphax			sp_celadon_rough
+	alphay			sp_celadon_rough
+	fresnel_mode	schlick_f0
+}
+
+# Blended modifier on the stoneware body: rough clay foot -> wheel-thrown glaze rings
+scalar_painter
+{
+	name		sp_clay_rough_h
+	expression	osl_noise_texture(Po * 42.0, 0.0, 3, 1, 4.0, 0.65, 2.0, 0.0, 1.0, 0.1, 1)
+}
+
+scalar_painter
+{
+	name		sp_wheel_rings_h
+	expression	sin(Po.y * 145.0) * 0.5 + 0.5 * osl_noise_texture(Po * 8.0, 0.0, 3, 1, 2.0, 0.5, 2.0, 0.0, 1.0, 0.0, 1)
+}
+
+scalar_painter
+{
+	name		sp_bowl_mod_blend
+	expression	smoothstep(0.04, 0.12, Po.y)
+}
+
+relief_modifier
+{
+	name		mod_bowl_clay
+	height		sp_clay_rough_h
+	scale		0.005
+	domain		surface
+	max_slope	0.55
+}
+
+relief_modifier
+{
+	name		mod_bowl_rings
+	height		sp_wheel_rings_h
+	scale		0.0022
+	domain		surface
+	max_slope	0.35
+}
+
+blended_modifier
+{
+	name		mod_bowl_stoneware
+	modifier_a	mod_bowl_clay
+	modifier_b	mod_bowl_rings
+	weight		sp_bowl_mod_blend
+}
+
+# Kintsugi fracture veins via Cycles Voronoi Distance-to-Edge (feature = 3)
+scalar_painter
+{
+	name		sp_kintsugi_gold_w
+	def			warp	osl_noise_texture_color(Po * 3.2, 0.0, 3, 1, 3.0, 0.55, 2.0, 0.0, 1.0, 0.0, 1) - vec3(0.5, 0.5, 0.5)
+	def			edge	osl_voronoi_distance(Po + warp * 0.14, 0.0, 3, 3, 0, 2.8, 0.0, 0.5, 2.0, 0.0, 2.0, 0.85, 1)
+	def			vein	1.0 - smoothstep(0.018, 0.042, edge)
+	def			above	smoothstep(0.05, 0.10, Po.y)
+	expression	vein * above
+}
+
+scalar_painter
+{
+	name		sp_kintsugi_body_w
+	expression	1.0 - sample_scalar(sp_kintsugi_gold_w)
+}
+
+# Per-child modifiers on mix_material: textured stoneware vs smooth mirror gold seams (`none`)
+mix_material
+{
+	name		mat_kintsugi_bowl
+	child		mat_celadon_body  weight sp_kintsugi_body_w modifier mod_bowl_stoneware
+	child		mat_kintsugi_gold weight sp_kintsugi_gold_w modifier none
+}
+
+lathe_geometry
+{
+	name			geo_kintsugi_bowl
+	axis			y
+	n_radial		64
+	profile_point	0.00 0.00
+	profile_point	0.20 0.00
+	profile_point	0.21 0.05
+	profile_point	0.33 0.12
+	profile_point	0.41 0.24
+	profile_point	0.43 0.36
+	profile_point	0.41 0.38
+	profile_point	0.38 0.37
+	profile_point	0.36 0.25
+	profile_point	0.28 0.14
+	profile_point	0.16 0.08
+	profile_point	0.00 0.07
+}
+
+standard_object
+{
+	name		obj_kintsugi_bowl
+	geometry	geo_kintsugi_bowl
+	material	mat_kintsugi_bowl
+	position	0.50 0.00 0.22
+}
+
+##################################################
+# 5. PATINATED BRONZE AMPHORA:
+#    osl_ao crevice patina + osl_rgb2hsv/hsv2rgb + mix_material
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_bronze_col
+	color		0.76 0.56 0.32
+}
+
+ggx_material
+{
+	name			mat_antique_bronze
+	rd				none
+	rs				pnt_bronze_col
+	alphax			0.18
+	alphay			0.18
+	ior				0.62
+	extinction		3.10
+	fresnel_mode	conductor
+}
+
+expression_painter
+{
+	name		pnt_verdigris_col
+	def			n		osl_noise_texture(Po * 7.5, 0.0, 3, 1, 5.0, 0.6, 2.0, 0.0, 1.0, 0.2, 1)
+	def			base	vec3(0.16, 0.44, 0.38)
+	def			hsv		osl_rgb2hsv(base)
+	def			shifted	osl_hsv2rgb(vec3(hsv.x + (n - 0.5) * 0.08, clamp(hsv.y * (0.75 + 0.35 * n), 0.0, 1.0), hsv.z * (0.65 + 0.50 * n)))
+	expr		shifted
+}
+
+scalar_painter
+{
+	name		sp_verdigris_h
+	expression	osl_noise_texture(Po * 26.0, 0.0, 3, 1, 4.0, 0.65, 2.0, 0.0, 1.0, 0.15, 1)
+}
+
+relief_modifier
+{
+	name		mod_verdigris
+	height		sp_verdigris_h
+	scale		0.004
+	domain		surface
+	max_slope	0.50
+}
+
+lambertian_material
+{
+	name		mat_verdigris
+	reflectance	pnt_verdigris_col
+}
+
+scalar_painter
+{
+	name		sp_patina_w
+	def			ao		osl_ao(0.36, 8, vec3(0,0,0), 0)
+	def			n		osl_noise_texture(Po * vec3(5.5, 3.2, 5.5), 0.0, 3, 1, 4.0, 0.58, 2.0, 0.0, 1.0, 0.25, 1)
+	def			crevice	clamp((1.0 - ao) * 1.45, 0.0, 1.0)
+	def			neck	smoothstep(0.60, 0.88, Po.y) * 0.48
+	expression	smoothstep(0.26, 0.62, crevice + neck + (n - 0.5) * 0.48)
+}
+
+scalar_painter
+{
+	name		sp_bronze_w
+	expression	1.0 - sample_scalar(sp_patina_w)
+}
+
+mix_material
+{
+	name		mat_patinated_amphora
+	child		mat_antique_bronze weight sp_bronze_w modifier none
+	child		mat_verdigris      weight sp_patina_w modifier mod_verdigris
+}
+
+lathe_geometry
+{
+	name			geo_amphora
+	axis			y
+	n_radial		64
+	profile_point	0.00 0.00
+	profile_point	0.22 0.00
+	profile_point	0.23 0.04
+	profile_point	0.16 0.08
+	profile_point	0.18 0.15
+	profile_point	0.33 0.34
+	profile_point	0.35 0.49
+	profile_point	0.27 0.64
+	profile_point	0.13 0.74
+	profile_point	0.15 0.77
+	profile_point	0.12 0.80
+	profile_point	0.12 0.90
+	profile_point	0.19 0.95
+	profile_point	0.18 0.98
+	profile_point	0.10 0.95
+	profile_point	0.08 0.78
+	profile_point	0.00 0.76
+}
+
+standard_object
+{
+	name		obj_amphora
+	geometry	geo_amphora
+	material	mat_patinated_amphora
+	position	1.32 0.00 -0.32
+}
+
+##################################################
+# 6. CURLED BOTANICAL LEAVES ARCHING BESIDE LANTERN:
+#    skin_geometry + diffuse_transmission_material +
+#    osl_backfacing() + osl_layer_weight() + mix_material
+##################################################
+
+# Upper face: rich chlorophyll olive-emerald with delicate central vein.
+# Underside (osl_backfacing() == 1): paler matte silvery-sage.
+expression_painter
+{
+	name		pnt_leaf_refl
+	def			bf		osl_backfacing()
+	def			vein	1.0 - smoothstep(0.0, 0.09, abs(v - 0.5))
+	def			tip		osl_gradient(vec3(u, 0.0, 0.0), 0)
+	def			upper	mix(vec3(0.08, 0.22, 0.07), vec3(0.16, 0.32, 0.09), tip)
+	def			upper_v	mix(upper, vec3(0.22, 0.36, 0.12), vein * 0.55)
+	def			under	mix(vec3(0.20, 0.28, 0.17), vec3(0.28, 0.36, 0.23), tip)
+	expr		mix(upper_v, under, bf)
+}
+
+# Luminous backlit transmission: sunlit chartreuse-gold when lit from behind by lantern/sun.
+expression_painter
+{
+	name		pnt_leaf_trans
+	def			vein	1.0 - smoothstep(0.0, 0.08, abs(v - 0.5))
+	def			tip		osl_gradient(vec3(u, 0.0, 0.0), 2)
+	def			glow	mix(vec3(0.26, 0.44, 0.07), vec3(0.46, 0.52, 0.10), tip)
+	expr		glow * (1.0 - 0.45 * vein)
+}
+
+diffuse_transmission_material
+{
+	name			mat_leaf_difftrans
+	reflectance		pnt_leaf_refl
+	transmittance	pnt_leaf_trans
+}
+
+# Waxy leaf cuticle specular sheen (Cycles Glossy constant mode), strongest at grazing
+# angles on the upper leaf face via osl_layer_weight and suppressed on the matte underside.
+uniformcolor_painter
+{
+	name		pnt_leaf_wax_spec
+	color		0.72 0.78 0.68
+}
+
+ggx_material
+{
+	name			mat_leaf_cuticle
+	rd				none
+	rs				pnt_leaf_wax_spec
+	alphax			0.18
+	alphay			0.18
+	fresnel_mode	constant
+}
+
+scalar_painter
+{
+	name		sp_leaf_wax_w
+	def			lw		osl_layer_weight(0.32, vec3(0,0,0), 0)
+	def			bf		osl_backfacing()
+	expression	clamp(lw * 0.45 * (1.0 - 0.80 * bf), 0.0, 0.45)
+}
+
+scalar_painter
+{
+	name		sp_leaf_base_w
+	expression	1.0 - sample_scalar(sp_leaf_wax_w)
+}
+
+scalar_painter
+{
+	name		sp_leaf_vein_h
+	def			mid		1.0 - smoothstep(0.0, 0.09, abs(v - 0.5))
+	def			ribs	sin((u * 16.0 - abs(v - 0.5) * 9.0) * 3.14159) * 0.5 + 0.5
+	expression	mid * 0.8 + ribs * 0.25 * (1.0 - mid)
+}
+
+relief_modifier
+{
+	name		mod_leaf_veins
+	height		sp_leaf_vein_h
+	scale		0.0028
+	domain		surface
+	max_slope	0.35
+}
+
+mix_material
+{
+	name		mat_botanical_leaf
+	child		mat_leaf_difftrans weight sp_leaf_base_w modifier mod_leaf_veins
+	child		mat_leaf_cuticle   weight sp_leaf_wax_w  modifier mod_leaf_veins
+}
+
+# Sculpted arching botanical leaf geometry (skin_geometry with gentle organic billow)
+skin_geometry
+{
+	name		geo_leaf_long
+	n_len		28
+	n_across	10
+	billow		0.14
+	rail_a		0.00  0.00  0.00
+	rail_a		0.08  0.08  0.14
+	rail_a		0.12  0.16  0.34
+	rail_a		0.07  0.17  0.54
+	rail_a		0.00  0.09  0.70
+	rail_b		0.00  0.00  0.00
+	rail_b		-0.08 0.08  0.14
+	rail_b		-0.12 0.16  0.34
+	rail_b		-0.07 0.17  0.54
+	rail_b		0.00  0.09  0.70
+}
+
+# Slender curved stem resting on the stone bench and arching up beside the lantern
+sweep_geometry
+{
+	name			geo_branch_stem
+	profile_circle	0.016 12
+	point			-0.38 0.02  0.56
+	point			-0.24 0.14  0.36
+	point			-0.14 0.36  0.14
+	point			-0.18 0.62 -0.02
+	point			-0.30 0.86 -0.10
+	point_scale		1.0
+	point_scale		0.85
+	point_scale		0.68
+	point_scale		0.50
+	point_scale		0.32
+	n_len			32
+}
+
+standard_object
+{
+	name		obj_branch_stem
+	geometry	geo_branch_stem
+	material	mat_cedar_wood
+	position	0.0 0.0 0.0
+}
+
+# Low dark-bronze kenzan dish holding the botanical stem cleanly on the stone bench
+lathe_geometry
+{
+	name			geo_kenzan_dish
+	axis			y
+	n_radial		40
+	profile_point	0.00 0.00
+	profile_point	0.16 0.00
+	profile_point	0.19 0.05
+	profile_point	0.17 0.07
+	profile_point	0.13 0.04
+	profile_point	0.00 0.03
+}
+
+standard_object
+{
+	name		obj_kenzan_dish
+	geometry	geo_kenzan_dish
+	material	mat_patinated_amphora
+	position	-0.38 0.00 0.56
+}
+
+# Five leaves fanning gracefully across the lantern light (some showing upper face,
+# some curling so their paler underside flips via osl_backfacing!)
+standard_object
+{
+	name		obj_leaf_1
+	geometry	geo_leaf_long
+	material	mat_botanical_leaf
+	position	-0.25 0.15 0.35
+	orientation	14.0 38.0 -18.0
+	scale		1.05 1.05 1.05
+}
+
+standard_object
+{
+	name		obj_leaf_2
+	geometry	geo_leaf_long
+	material	mat_botanical_leaf
+	position	-0.15 0.34 0.16
+	orientation	-12.0 -52.0 24.0
+	scale		0.98 0.98 0.98
+}
+
+standard_object
+{
+	name		obj_leaf_3
+	geometry	geo_leaf_long
+	material	mat_botanical_leaf
+	position	-0.17 0.56 0.00
+	orientation	28.0 54.0 -15.0
+	scale		0.88 0.88 0.88
+}
+
+standard_object
+{
+	name		obj_leaf_4
+	geometry	geo_leaf_long
+	material	mat_botanical_leaf
+	position	-0.22 0.72 -0.06
+	orientation	-32.0 -115.0 35.0
+	scale		0.82 0.82 0.82
+}
+
+# Fallen leaf resting curled upside-down on the stone bench in front of the lantern & bowl
+# to showcase osl_backfacing() flipping to the paler matte sage underside!
+standard_object
+{
+	name		obj_leaf_fallen
+	geometry	geo_leaf_long
+	material	mat_botanical_leaf
+	position	0.02 0.18 0.85
+	orientation	180.0 24.0 0.0
+	scale		0.92 0.92 0.92
+}
+
+##################################################
+# Output
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/cloister_lantern_botanical
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
+}
