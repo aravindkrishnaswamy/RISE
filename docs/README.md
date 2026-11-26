@@ -173,6 +173,9 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 
 ## Active or Deferred Roadmaps
 
+- [HYLIOS_LOCAL_RESPONSE_CORE.md](HYLIOS_LOCAL_RESPONSE_CORE.md): immutable local
+  angular response, nonreciprocal camera transpose and finite-grid sampling
+  contracts; synthetic numeric core only, with bake/asset/renderer gates open
 - [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md): refreshed HyLIoS hyperspectral skin
   implementation design, scientific validation gates, PT integration and spatial
   transport roadmap; [research notes](HYLIOS_RESEARCH_NOTES.md) record sources,

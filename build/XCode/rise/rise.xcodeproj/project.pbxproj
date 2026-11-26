@@ -2365,6 +2365,10 @@
 		697AF5DBBAE076CFFA8B27CC /* RadiometricExactResolve.h in Sources */ = {isa = PBXBuildFile; fileRef = 88D2218BB9DB2D4243E070E8 /* RadiometricExactResolve.h */; };
 		32B798764C958BCCCDADB2B0 /* RadiometricEXRWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = D99AFBB7562F1E34E43E6857 /* RadiometricEXRWriter.h */; };
 		5B90B7BBFD1058E46B67BBCB /* RadiometricEXRWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = D99AFBB7562F1E34E43E6857 /* RadiometricEXRWriter.h */; };
+		315CE684522C6F3DC4ED2738 /* HyLIoSLocalResponse.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */; };
+		E5949482CA8C75B5E1B37E73 /* HyLIoSLocalResponse.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */; };
+		3562E0EBF2ADB623EACED14B /* HyLIoSLocalResponse.h in Headers */ = {isa = PBXBuildFile; fileRef = 8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */; };
+		DF47C212F5911C2563A7280C /* HyLIoSLocalResponse.h in Sources */ = {isa = PBXBuildFile; fileRef = 8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -3680,6 +3684,8 @@
 		30095D04598E8B58C896E1CE /* RadiometricPublication.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RadiometricPublication.h; sourceTree = "<group>"; };
 		88D2218BB9DB2D4243E070E8 /* RadiometricExactResolve.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RadiometricExactResolve.h; sourceTree = "<group>"; };
 		D99AFBB7562F1E34E43E6857 /* RadiometricEXRWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RadiometricEXRWriter.h; sourceTree = "<group>"; };
+		E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSLocalResponse.cpp; sourceTree = "<group>"; };
+		8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSLocalResponse.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -4225,6 +4231,8 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */,
+				8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */,
 				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
 				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
 				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
@@ -5398,6 +5406,7 @@
 			isa = PBXHeadersBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3562E0EBF2ADB623EACED14B /* HyLIoSLocalResponse.h in Headers */,
 				E7181177FFCED65B0FC5D3B5 /* RadiometricFilm.h in Headers */,
 				E6FA99CBB391FA9356BF6513 /* RadiometricCheckpoint.h in Headers */,
 				3BE2A88523DB258FEA765D3F /* RadiometricPublication.h in Headers */,
@@ -6369,6 +6378,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				315CE684522C6F3DC4ED2738 /* HyLIoSLocalResponse.cpp in Sources */,
 				C24074A619394CD3F9637B70 /* RadiometricFilm.cpp in Sources */,
 				0ADC0537D9646D193CB1FC2D /* RadiometricCheckpoint.cpp in Sources */,
 				A0B84D492F89FFF497649EA7 /* RadiometricEXRWriter.cpp in Sources */,
@@ -6846,6 +6856,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5949482CA8C75B5E1B37E73 /* HyLIoSLocalResponse.cpp in Sources */,
+				DF47C212F5911C2563A7280C /* HyLIoSLocalResponse.h in Sources */,
 				BD8EF538D52001CCF0074612 /* RadiometricFilm.cpp in Sources */,
 				63D1305BFE2D852336D6FC19 /* RadiometricCheckpoint.cpp in Sources */,
 				98F8809810850A0FD1DD4A46 /* RadiometricEXRWriter.cpp in Sources */,

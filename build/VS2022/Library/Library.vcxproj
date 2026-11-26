@@ -245,6 +245,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp" />
@@ -901,6 +902,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSParticleOverlap.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSComplexLayout.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.h" />
