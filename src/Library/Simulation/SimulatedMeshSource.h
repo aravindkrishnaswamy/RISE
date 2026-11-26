@@ -1,5 +1,6 @@
-// Simulation M3b: the renderer's reader for a fixed-topology mesh.v1 output of
-// a simulation cache.  It maps a render's time support to the cache frame,
+// Simulation M3b: the renderer's reader for a mesh.v1 / mesh.v2 output of
+// a simulation cache (M7 prerequisites: the topology may change from frame to
+// frame, and a frame may be empty).  It maps a render's time support to the cache frame,
 // reads and verifies the payload, and derives the positions a deforming-mesh
 // geometry installs at the nominal time and at the shutter keys.
 // See docs/SIMULATION_M3B_RESULTS.md.
@@ -57,7 +58,27 @@ struct MeshFrameSample
 	std::vector<double> open, close;//!< at shutter open / close (motion only)
 	std::vector<double> normals;	//!< the payload's normals at the frame, or empty
 	std::string identity;			//!< what was read and how it was keyed (stable id)
+	//! M7 prerequisites: the frame's topology digest.  When it is not the
+	//! bind frame's (`ownTopology`), the frame's connectivity and its UV set
+	//! (MeshSourceOptions::uvSet, or the first; empty when it has none) come
+	//! with it; otherwise the bind frame's (MeshCacheSource::Indices, BindUVs)
+	//! apply.  The vertex count is nominal.size() / 3 either way.
+	std::string topology;
+	bool ownTopology = false;
+	std::vector<std::uint32_t> indices;
+	std::vector<double> uvs;
 };
+
+//! The time map of a cache frame binding (MeshCacheSource::MapTime; shared by
+//! the points source, M7 prerequisites): scene time to the nearest frame and
+//! the simulation-time offset from it.  `endPolicy` must be resolved (not
+//! Cache); `what` names the consumer in errors.
+bool MapCacheFrameTime( const CacheDescription& d, double timeOffset, double timeScale,
+	MeshEndPolicy endPolicy, const char* what, double sceneTime, double deltaScene,
+	std::int64_t& index, double& simOffset, bool& held, std::string& error );
+//! A partial cache's re-read is still the cache a binding opened: same key,
+//! epoch, producer, time map and outputs.
+bool SameCacheBinding( const CacheDescription& a, const CacheDescription& b );
 
 class MeshCacheSource
 {
@@ -67,10 +88,10 @@ public:
 	//! frame.  Thread-safe; returns null once the publication is gone.
 	using SnapshotProvider = std::function<std::shared_ptr<const IReadOnlyCacheSnapshot>()>;
 
-	//! Opens the cache, checks the output is mesh.v1 or mesh.v2 with a nonempty fixed
-	//! topology, applies the predictive admission (complete, predictive label,
-	//! every frame decodes to the same topology) when requested, and decodes
-	//! the bind frame (the first frame present).  Fails closed.
+	//! Opens the cache, checks the output is mesh.v1 or mesh.v2, applies the
+	//! predictive admission (complete, predictive label, every frame decodes
+	//! and is in metres) when requested, and decodes the bind frame (the first
+	//! frame present; it may be empty, M7).  Fails closed.
 	static bool Open( const std::filesystem::path& root, const MeshSourceOptions& options,
 		std::unique_ptr<MeshCacheSource>& out, std::string& error );
 	//! Simulation M3c: binds to an in-memory publication instead of a disk
@@ -118,8 +139,10 @@ public:
 	//! the shutter keys from the frame's velocities (or, without velocities,
 	//! from the adjacent frames).  Never modifies the source.  A frame a partial
 	//! cache does not have yet comes back as State::Missing; every other problem
-	//! (corrupt or unsupported payload, budget, topology or units differ, cache
-	//! replaced) is an error.
+	//! (corrupt or unsupported payload, budget, units differ, cache replaced) is
+	//! an error.  A frame whose topology differs from the bind frame's is not
+	//! (M7): it carries its own connectivity, and without velocities its keys
+	//! come only from neighbours of the same topology.
 	bool Sample( double nominal, double open, double close, bool motion,
 		MeshFrameSample& out, std::string& error ) const;
 
@@ -129,7 +152,7 @@ private:
 		const MeshSourceOptions& options, std::unique_ptr<MeshCacheSource>& out, std::string& error );
 	bool Snapshot( std::shared_ptr<const IReadOnlyCacheSnapshot>& snapshot, std::string& error ) const;
 	FrameStatus ReadFrame( const IReadOnlyCacheSnapshot& snapshot, std::int64_t index,
-		MeshFrame& frame, std::string& digest, std::string& error ) const;
+		MeshFrame& frame, std::string& digest, std::string& error, std::string* topology = nullptr ) const;
 	bool CheckFrame( const MeshFrame& frame, std::string& error ) const;
 
 	MeshSourceOptions options_;

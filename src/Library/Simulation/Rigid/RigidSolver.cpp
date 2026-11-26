@@ -32,6 +32,9 @@ constexpr const char* SolverVersion = "m6.1";
 constexpr const char* StateFormat = "rigid.bodies.state.v1";
 constexpr const char* StatePort = "body_state";
 constexpr const char* LoadPort = "body_load";
+// M7 prerequisites: each body's constant mass properties, for a partner that
+// solves the body's motion inside its own step (an owned implicit exchange).
+constexpr const char* MassPort = "body_mass_properties";
 constexpr const char* Output = "bodies";
 constexpr double Pi = 3.14159265358979323846;
 
@@ -515,6 +518,7 @@ private:
 		return true;
 	}
 	bool Encode(double time, std::shared_ptr<const Bytes>& payload, std::string& error) const;
+	bool OfferMassProperties(IPortExchange* ports, std::string& error) const;   // M7 prerequisites
 	bool AcceptLoads(double time, IPortExchange* ports, std::string& error);
 	void Substep(double h);
 
@@ -627,7 +631,11 @@ bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			{{"angular_velocity", "angular velocity", "rad/s", 3}, {"orientation", "orientation", "1", 4},
 			 {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, domain_},
 		{LoadPort, "body load", "N", "field.v1", false, "",
-			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, domain_}};
+			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, domain_},
+		// M7 prerequisites (additive): offered once, at the start time; constant.
+		{MassPort, "rigid body mass properties", "kg", "field.v1", true, "",
+			{{"center_of_mass", "position", "m", 3}, {"inertia", "moment of inertia", "kg m^2", 9},
+			 {"mass", "mass", "kg", 1}}, domain_}};
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17, single-threaded"}};
 	caps.interactive = caps.deterministic = caps.resumable = caps.externalMacroStep = caps.rollback = true;
@@ -667,6 +675,27 @@ bool RigidSolver::Start(std::string& error)
 	s_.finished = count_ == 0;
 	started_ = true;
 	return true;
+}
+
+// body_mass_properties: field.v1 over the body set; per body the centre of
+// mass in the body frame (the body frame's origin: zero), the inertia tensor in
+// the body frame (the principal axes: diagonal, row-major 3x3) and the mass.
+bool RigidSolver::OfferMassProperties(IPortExchange* ports, std::string& error) const
+{
+	FieldFrame f;
+	f.domain = domain_;
+	f.count = static_cast<std::uint32_t>(s_.bodies.size());
+	FieldChannel com{"center_of_mass", "m", 3, {}}, inertia{"inertia", "kg m^2", 9, {}}, mass{"mass", "kg", 1, {}};
+	const auto bits = [](double x) { const float v = static_cast<float>(x); std::uint32_t b; std::memcpy(&b, &v, 4); return b; };
+	for (const Body& b : s_.bodies) {
+		for (int k = 0; k < 3; ++k) com.values.push_back(bits(0));
+		for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) inertia.values.push_back(bits(r == c ? b.moments[r] : 0.0));
+		mass.values.push_back(bits(b.mass));
+	}
+	f.channels = {com, inertia, mass};
+	auto bytes = std::make_shared<Bytes>();
+	if (!EncodeField(f, CodecBudget, *bytes, error)) return false;
+	return ports->Offer(MassPort, 0, bytes, error);
 }
 
 bool RigidSolver::Encode(double time, std::shared_ptr<const Bytes>& payload, std::string& error) const
@@ -744,6 +773,7 @@ bool RigidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 			if (!Encode(s_.t, payload, error) || !sink.Publish(static_cast<std::int64_t>(s_.next), Output, s_.t, payload, {}, error))
 				return false;
 			if (ports && !ports->Offer(StatePort, s_.t, payload, error)) return false;
+			if (ports && s_.t == 0 && !OfferMassProperties(ports, error)) return false;
 			offered = true;
 			++result.framesPublished;
 			if (++s_.next == count_) s_.finished = true;
@@ -754,6 +784,7 @@ bool RigidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 			if (!offered && ports) {
 				std::shared_ptr<const Bytes> payload;
 				if (!Encode(s_.t, payload, error) || !ports->Offer(StatePort, s_.t, payload, error)) return false;
+				if (s_.t == 0 && !OfferMassProperties(ports, error)) return false;
 			}
 			return Done(result, AdvanceResult::Status::Advanced);
 		}

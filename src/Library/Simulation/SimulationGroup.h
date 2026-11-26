@@ -82,6 +82,12 @@ public:
 	bool Checkpoint(Bytes& state, std::string& error) override;
 	//! After Configure, instead of Start.
 	bool Restore(const Bytes& state, std::string& error) override;
+	// M7 prerequisites: u64 index length, the index (canonical CBOR: format,
+	// identity, time, steps, [member, stream length]..., offers, statics), then
+	// every member's CheckpointTo stream in step order. The lengths come from a
+	// counting pass (each member serialises twice; nothing is held in memory).
+	bool CheckpointTo(ICheckpointSink& sink, std::string& error) override;
+	bool RestoreFrom(ICheckpointSource& source, std::string& error) override;
 	std::shared_ptr<const IReadOnlyCacheSnapshot> Snapshot(const std::string& member) const override;
 
 	// M6 extras.

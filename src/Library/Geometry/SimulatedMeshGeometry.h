@@ -1,8 +1,17 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SimulatedMeshGeometry.h - Simulation M3b: a fixed-topology triangle
-//    mesh whose vertices come from a simulation cache (mesh.v1), one frame
+//  SimulatedMeshGeometry.h - Simulation M3b: a triangle mesh whose
+//    vertices come from a simulation cache (mesh.v1 / mesh.v2), one frame
 //    per render frame, with deformation motion blur.
+//
+//  CHANGING TOPOLOGY (M7 prerequisites).  Each install compares the frame's
+//  topology digest with the installed one: equal -> the M3b lean refit
+//  (unchanged); different (a liquid surface) -> the connectivity, UVs and
+//  vertex arrays are replaced in place and the BVH is rebuilt in full on the
+//  thread pool (ReplaceTopologyLean; the same tree as a serial build).  An
+//  empty frame installs an empty mesh: no hits, no area.  Shutter keys come
+//  from the current frame's own velocities (no vertex correspondence exists
+//  across a topology change).
 //
 //  WHY A SUBCLASS OF THE INDEXED MESH.  Every IGeometry service (BVH,
 //  area sampling, signals, proximity, double-sided handling, the hit record
@@ -50,7 +59,8 @@ namespace RISE
 		class Animator;
 
 		//! True when some object of the scene renders a SimulatedMeshGeometry
-		//! (such a scene renders through the prepared, per-frame-install path).
+		//! or (M7 prerequisites) a SimulatedPointsGeometry (such a scene renders
+		//! through the prepared, per-frame-install path).
 		bool SceneBindsSimulatedMesh( const IScene& scene );
 
 		class SimulatedMeshGeometry :
@@ -115,6 +125,15 @@ namespace RISE
 			const Simulation::MeshCacheSource& Source() const { return *m_source; }
 			//! Normalised shutter time a ray on the calling thread would use now.
 			Scalar ShutterFraction() const;
+			//! M7: topology digest of the installed frame, and how many installs
+			//! replaced the topology (full BVH rebuilds) rather than refitting.
+			const std::string& InstalledTopology() const { return m_installedTopology; }
+			unsigned long long TopologyRebuilds() const { return m_rebuilds; }
+			std::size_t TriangleCount() const { return ptr_polygons.size(); }
+
+			// IGeometry: an empty frame (M7) has no surface to sample.
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override;
 
 			// IGeometry: a hidden frame (missing-frame policy `hide`) has no hits.
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
@@ -143,13 +162,18 @@ namespace RISE
 				double				open = 0, close = 0, nominal = 0;
 				std::int64_t		frame = 0;
 				std::string			identity;
+				// M7: a topology replacement (else a refit of the installed one).
+				bool				rebuild = false;
+				std::vector<std::uint32_t>	indices;
+				TexCoordsListType	coords;
+				std::string			topology;
 			};
 			bool PrepareFrame( const RenderTimeSupport& support, std::string& error,
 				std::function<void()>* rollback );
 			bool BuildTopology( const Simulation::MeshCacheSource& source );
-			State Capture() const;
+			State Capture( bool withTopology = false ) const;
 			bool Install( State& next, std::string& error );
-			void ComputeNormals( const VerticesListType& p, NormalsListType& out ) const;
+			void ComputeNormals( const VerticesListType& p, const std::vector<std::uint32_t>& indices, NormalsListType& out ) const;
 
 			Options										m_options;
 			std::unique_ptr<Simulation::MeshCacheSource>	m_source;
@@ -174,6 +198,10 @@ namespace RISE
 			// M4: whether BuildTopology ran, and the digest of the topology it built.
 			bool				m_built;
 			std::string			m_builtTopology;
+			// M7: the installed connectivity (3 per triangle) and its digest.
+			std::vector<std::uint32_t>	m_installedIndices;
+			std::string			m_installedTopology;
+			unsigned long long	m_rebuilds;
 		};
 	}
 }

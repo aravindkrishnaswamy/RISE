@@ -158,6 +158,15 @@ solvers but cannot be fed from a cache.
   each repeat; the solver then re-reads its ports at the step start and repeats exactly what an uninterrupted run
   with those values would do. Frames published during a repeated step are superseded; the group host holds them
   back until the step is accepted. `GroupPolicy::subIterations > 1` requires `rollback` on every live member.
+- **Owned implicit exchange** (additive, M7 prerequisites). A member that solves a partner's motion inside its own
+  step (a liquid whose pressure solve includes a rigid body's six degrees of freedom) declares the ports of that
+  exchange in `Capabilities::ownedImplicitPorts`; the group lists it in `GroupPolicy::ownedExchanges` (owner and
+  partners). The group then exchanges those connections once per macro step (Gauss-Seidel, the owner first: it
+  reads the partner's state at the step start, the partner integrates the owner's end-of-step offer) and does not
+  sub-iterate them; the label treats them as implicit when every owned port is declared and the owner's own
+  evidence, which must cover the joint solve, is predictive. `rigid.bodies` offers what an owner needs:
+  `body_mass_properties` (mass, body-frame inertia, centre of mass; constant, offered at the start time) beside
+  `body_state`, and integrates `body_load`. Sub-iterating other members beside an owned exchange is refused.
 - **Static payloads through ports.** A port payload may reference static payloads (a `mesh.v2` surface). The
   offering solver calls `OfferStatic` before the first `Offer` that references it; the accepting solver resolves
   through `ResolveStatic` (`IPortExchange::Resolver()`). `PortRelay` keeps offered statics; `CachedPortFeed`
@@ -201,6 +210,13 @@ called inside long steps; returning false stops at the next safe point.
   instance that made it (others refuse it). It captures everything `Checkpoint` does; cloth rebuilds its system
   from it exactly as from a checkpoint, so a rollback equals a re-run (`ClothSolverTest`, `SimulationHostTest`).
   Fire reports `rollback = false` (default implementation).
+- **Streamed checkpoints** (additive, M7 prerequisites; Appendix C). `CheckpointTo(ICheckpointSink&)` writes the
+  checkpoint in chunks (`Write(data, size)`), `RestoreFrom(ICheckpointSource&)` reads it back (`Read` fills exactly
+  the bytes asked; `Remaining()` is what is left) instead of `Restore`, and must consume the whole stream. The
+  stream may have another byte layout than `Checkpoint`, but both must resume identically. The defaults write
+  `Checkpoint`'s buffer in one call and read the stream into one buffer for `Restore`, so a solver that does not
+  override them (fire, cloth, rigid) behaves as before. A solver with a multi-gigabyte state overrides them and
+  never holds a second copy. `MemoryCheckpointSink` / `MemoryCheckpointSource` keep a stream in memory.
 
 ## 12. Determinism
 
@@ -231,8 +247,11 @@ recording keeps its committed frames and refuses conflicting republication). `Se
 side-output solver run in-process; a recording host uses `<cache>/<sideOutput>`.
 
 **Worker** (`rise-sim bake|resume|status`): a cache writer per run, sidecars `rise-sim.job.cbor`,
-`rise-sim.checkpoint` (header + state, written as two parts of one durable file: no extra copy of the state; a
-110 MB state peaks at state + the solver's own checkpoint copy, measured), `rise-sim.status.cbor` (simulated time /
+`rise-sim.checkpoint` (since the M7 prerequisites, version 2: header, the solver's `CheckpointTo` stream, and a
+trailer with the stream's length and SHA-256, written through a staged file, fsync and rename; resume verifies the
+digest before the solver reads a byte and re-hashes what it reads; version-1 files, header + state, are still
+resumed. A streaming solver's 1 GB state peaks at the state's size, writing or resuming; through the default
+`CheckpointTo` it peaks at the state plus the solver's own checkpoint copy, as before), `rise-sim.status.cbor` (simulated time /
 end = last output time); checkpoints at a wall-time cadence and on SIGINT/SIGTERM through one sticky
 `RequestStop`; resume verifies job, key, epoch, version and position.
 
@@ -282,7 +301,7 @@ trusted with the caches. Windows keeps its previous checks (no ancestor policy).
 | `mesh.v2` | frame | implemented | [mesh §v2](SIMULATION_MESH_FORMAT.md#mesh-v2): + UV sets with units, named attributes, static topology reference |
 | `mesh.topology.v1` | static | implemented | [mesh §v2](SIMULATION_MESH_FORMAT.md#mesh-v2): connectivity + static UV sets |
 | `field.v1` | frame / port | implemented | [field](SIMULATION_FIELD_FORMAT.md): channels over a domain digest |
-| `points.v1` | frame | **specified, not implemented** | [Appendix A.2](#a2-pointsv1-specified-not-implemented) |
+| `points.v1` | frame | implemented (M7 prerequisites) | [points](SIMULATION_POINTS_FORMAT.md): positions, optional velocities, uniform or per-point radius, u64 ids, named attributes with units |
 | `transform.v1` | frame / port | implemented (M6) | [transform](SIMULATION_TRANSFORM_FORMAT.md): named rigid bodies, position, unit quaternion, linear and angular velocity, binary64 |
 
 ## Appendix A. A liquid solver against the contract
@@ -297,32 +316,23 @@ optional density/velocity grid, two-way coupled to `cloth.shell`.
 | Registry, parameters | `RegisterSolver("liquid.flip")`; canonical CBOR map; effective parameters fixed point | yes |
 | Backends, modes | `cpu` supported, `metal` experimental; `modes {bake, interactive}` | yes |
 | Inputs | Colliders by `Sample` (`mesh.v1`/`mesh.v2` through `ResolveStatic`) at substep times; emitters and rigid boundaries by `SampleTransform`; all named in `inputs` so their identities key the cache | yes (M4: `rise-sim bake <scene>` feeds scene objects; the scene syntax for a liquid is not written yet) |
-| Outputs | `particles` as `points.v1`; `surface` as `mesh.v2` with inline indices (or a fresh `mesh.topology.v1` per frame) and velocities of the current frame's vertices; `volume` as `grid.v1` | `points.v1` is not implemented (cache readers return Unsupported); `mesh.v2` with changing topology encodes, caches and decodes, but `simulated_mesh_geometry` refuses a changing topology digest and the empty mesh (M7 renderer work) |
+| Outputs | `particles` as `points.v1`; `surface` as `mesh.v2` with inline indices (or a fresh `mesh.topology.v1` per frame) and velocities of the current frame's vertices; `volume` as `grid.v1` | yes (M7 prerequisites: `points.v1` implemented; `simulated_mesh_geometry` renders a changing-topology or empty `mesh.v2`) |
 | Evidence | Dam-break front against published data, hydrostatic rest, volume conservation; conditions (resolution, boundary kinds, surface-tension on/off) and a scope sentence | yes |
 | Ports to cloth | Accept cloth's `surface_state` (`mesh.v2`, channels normal/position/velocity, resolved via `ResolveStatic`), declared with an identical channel list; offer `cloth_load` as `field.v1` over the cloth's topology digest (read from the accepted payload with `PeekMeshTopology`), channels `pressure` [Pa] x1 and `traction` [Pa] x3, `domain` left empty in the declaration (decided per payload; cloth's is stated, so `PortsCompatible` passes) | yes; the offered field is live-only unless the liquid also declares a `field.v1` output for it |
 | Timing | Accept cloth at each macro-step start, offer the load at its end; cloth does the same | yes (solver side); the group host that runs the exchange is M6 |
 | Implicit coupling | `SaveState`/`RestoreState` on both | yes (solver side); sub-iteration is M6 |
 | Macro steps | Adaptive CFL substeps inside each macro step, ending exactly at `macroEnd` | yes |
 | Determinism | Parallel particle-to-grid transfer with atomics is not bit-reproducible: `deterministic = false` (worker keeps committed frames), or a deterministic reduction and `threadCountInvariant` | yes |
-| Checkpoints | Particles + grid, canonical CBOR | yes, but a multi-GB state is returned in memory and the solver's encoding copy doubles it (no streaming checkpoint) |
-| Rendering | Refractive surface from `surface`, spray from `particles` | surface: needs M7; particles: needs `points.v1` and a renderer path |
+| Checkpoints | Particles + grid, streamed (`CheckpointTo` / `RestoreFrom`) | yes (M7 prerequisites: the worker holds a streamed state once) |
+| Rendering | Refractive surface from `surface`, spray from `particles` | yes (`simulated_mesh_geometry` per-frame rebuild; `simulated_points_geometry`) |
+| Rigid bodies in the pressure solve | Accept `body_state` and `body_mass_properties` from `rigid.bodies`, offer `body_load`; the group marks the exchange as owned by the liquid (`GroupPolicy::ownedExchanges`), the liquid declares `Capabilities::ownedImplicitPorts` | yes (M7 prerequisites) |
 
-### A.2 `points.v1` (specified, not implemented)
+### A.2 `points.v1` (implemented)
 
-One particle set at one time, the same rules as the other codecs (little endian, packed, no trailing bytes,
-canonical, budgeted, finite binary32 samples):
-
-| Record | Fields, in byte order |
-|---|---|
-| Header | `RISEPNTS`, u32 version = 1, u32 flags (bit 0 ids) |
-| Units | Text length units |
-| Count | u32 particle count N |
-| Ids | if bit 0: N u32 persistent particle ids, strictly increasing (correspondence across frames, for motion blur and per-particle ports) |
-| Channels | u16 count, then per channel (strictly increasing names): text name, text units, u8 components (1–16), N × components binary32; `position` (3 components, the length units) is required, `velocity` (3) and `radius` (1) are conventional |
-
-The domain digest of per-particle `field.v1` data is the SHA-256 of the id words when ids are present (else of
-the position samples, so it names exactly one frame). Not decided: whether a particle cache may store its ids as a
-static payload when the set is fixed.
+Specified here at the freeze as a channel list; implemented in the M7 prerequisites with typed optional records
+instead (uniform or per-point radius, velocity units, u64 ids, named attributes): [points format](SIMULATION_POINTS_FORMAT.md),
+which records the differences. The per-point `field.v1` domain is `PointsDomain`: SHA-256 of the id words when ids
+are present, else of the position words.
 
 ### A.3 What would not work, and what this freeze fixed for it
 
@@ -331,11 +341,13 @@ sampled; static payloads through ports (`OfferStatic`/`ResolveStatic`); per-vert
 solver's mesh (`field.v1` with a domain); undeclared `domain` decided per payload; `points.v1` specified.
 
 Not working yet (each belongs to a later milestone):
-1. `points.v1` encoder/decoder and its renderer path (M7).
-2. Rendering a changing-topology or empty mesh (`SimulatedMeshSource` refuses both; M3b §8).
+1. ~~`points.v1` encoder/decoder and its renderer path (M7).~~ Done in the M7 prerequisites (`SimulationPoints.h`, `simulated_points_geometry`).
+2. ~~Rendering a changing-topology or empty mesh (`SimulatedMeshSource` refuses both; M3b §8).~~ Done in the M7
+   prerequisites (per-frame rebuild when the topology digest changes; [results](SIMULATION_M7_PREREQ_RESULTS.md)).
 3. ~~The co-stepping group host, port adapters and sub-iteration (interfaces only; M6).~~ Done in M6 (`SimulationGroup.h`, `SimulationPortAdapters.h`; [M6 results](SIMULATION_M6_RESULTS.md)).
 4. ~~Scene inputs in the worker (M4).~~ Done in M4 (`rise-sim bake <scene>`).
-5. Streaming or chunked checkpoints for very large states (all of `Checkpoint` is one in-memory `Bytes`).
+5. ~~Streaming or chunked checkpoints for very large states (all of `Checkpoint` is one in-memory `Bytes`).~~ Done
+   in the M7 prerequisites (`CheckpointTo` / `RestoreFrom`, Appendix C).
 6. ~~No `Capabilities` field says which backend a configuration will actually run on.~~ M4 added
    `Capabilities::backend` (Appendix C).
 7. ~~(M4) A one-way coupling fed from a cached output through a port (`CachedPortFeed`) is not keyed~~ (fixed in M6: the
@@ -376,3 +388,7 @@ Not working yet (each belongs to a later milestone):
 | 2026-11-25 | (M6) A group host may append the key input `rise.coupling` to a coupled member's `SolverDescription::inputs`; its identity covers the policy, every member upstream of it (solver, version, effective parameters, input identities; a cached member's key, plus its manifest digest when foreign, plus a time offset when set) and every connection into them with its adapter's identity. A member nothing feeds keeps its standalone key. | Absent for every uncoupled configuration: their keys, epochs and caches are unchanged. |
 | 2026-11-25 | (M6) Codec `transform.v1` ([spec](SIMULATION_TRANSFORM_FORMAT.md)) is a native payload type; `TransformBodyDomain` names per-body `field.v1` data. | New codec; existing caches unaffected. |
 | 2026-11-25 | (M6, host side) `SimulationGroup` implements `ISimulationGroupHost`; `RegisterPortAdapterFactory` / `CreatePortAdapter` beside `RegisterPortAdapter`; `RegisterCouplingEvidence`; group manifest sidecar `rise-sim.group.cbor` in each recorded member cache and `rise-sim.group.checkpoint` in the group directory; `WriteWorkerStatus`. Solver side (additive, no version change for existing parameters): `cloth.shell` mesh colliders take `motion: {type: port, port: <name>}` and then offer `collider_reaction`; new solver `rigid.bodies`. | Existing parameters, keys and payloads unchanged; the cloth checkpoint gains `port_colliders` only when a port-driven collider exists. |
+| 2026-11-25 | (M7 prerequisites; [results](SIMULATION_M7_PREREQ_RESULTS.md)) Codec `points.v1` implemented ([spec](SIMULATION_POINTS_FORMAT.md); refines the Appendix A.2 sketch: typed records, uniform or per-point radius, u64 ids) and a native payload type of the disk cache and the in-memory publisher. | New codec; existing caches unaffected. |
+| 2026-11-25 | (M7 prerequisites) Streamed checkpoints: `ICheckpointSink` / `ICheckpointSource`, `MemoryCheckpointSink` / `MemoryCheckpointSource`, `ISimulationSolver::CheckpointTo` / `RestoreFrom`, `ISimulationGroupHost::CheckpointTo` / `RestoreFrom` (the group's: an index of member stream lengths, then the members' streams). Host side: `InProcessHost::SaveCheckpointTo` / `RestoreCheckpointFrom`, `DurableSidecarWriter`, `SidecarReader`, `WriteStreamedCheckpoint` / `ReadStreamedCheckpoint`; the worker and the scene group worker write version-2 checkpoint files and still resume version 1. | Defaulted virtuals reproduce `Checkpoint` / `Restore`; no solver version, key or payload changes; an older worker cannot resume a version-2 file. |
+| 2026-11-25 | (M7 prerequisites) `Capabilities::ownedImplicitPorts` (ports a solver couples implicitly inside its own step) and `GroupPolicy::ownedExchanges` (connections between an owner and its partners exchanged once per macro step, Gauss-Seidel with the owner first; implicit for the label when the owner declares the ports and its own evidence is predictive). `rigid.bodies` offers `body_mass_properties` (`field.v1` over the body set: centre of mass, body-frame inertia, mass; offered once at the start time). | Empty by default: group identities, keys and labels of every existing group are unchanged (the policy member enters the identity only when used). The new rigid port is live-only; the rigid key and payloads are unchanged. |
+| 2026-11-25 | (M7 prerequisites, host side, not part of the contract) `simulated_mesh_geometry` renders a changing-topology or empty mesh (full rebuild when the frame's topology digest differs from the installed one; refit otherwise, unchanged); `simulated_points_geometry` (IJob tail `AddSimulatedPointsGeometry`); the BVH builder's opt-in parallel build (same tree as serial); recycled mesh mailbox ids. | Fixed-topology streams install exactly as before; scenes without the new chunk are unchanged. |

@@ -837,6 +837,32 @@ std::string RISECBOR64::SHA256Hex(
 	return result;
 }
 
+struct RISECBOR64::SHA256Accumulator::Impl
+{
+	SHA256 sha;
+};
+
+RISECBOR64::SHA256Accumulator::SHA256Accumulator() : m_impl( new Impl() ) {}
+RISECBOR64::SHA256Accumulator::~SHA256Accumulator() { delete m_impl; }
+
+void RISECBOR64::SHA256Accumulator::Update( const unsigned char* bytes, const std::size_t byteCount )
+{
+	m_impl->sha.Update( bytes, byteCount );
+}
+
+std::string RISECBOR64::SHA256Accumulator::FinalHex()
+{
+	unsigned char digest[32];
+	m_impl->sha.Final( digest );
+	static const char hex[] = "0123456789abcdef";
+	std::string result( 64u, '0' );
+	for( unsigned int i = 0; i < 32u; ++i ) {
+		result[2u*i] = hex[digest[i]>>4];
+		result[2u*i+1u] = hex[digest[i]&0x0fu];
+	}
+	return result;
+}
+
 bool RISECBOR64::SHA256FileHex( const std::string& filename, std::string& digest )
 {
 	digest.clear();

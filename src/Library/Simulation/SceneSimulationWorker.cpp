@@ -88,12 +88,22 @@ int BakeCoupled(const SceneSimulationSpec& spec, const std::vector<SceneSimulati
 	if (!CheckCacheLocation(dir, true, error)) { err << "rise-sim: " << spec.name << ": " << error << "\n"; return WorkerFailed; }
 	Bytes state;
 	std::string ignored;
-	const bool resume = allPartial && !options.force && ReadSidecarFile(dir, groupCheckpointName, options.budget, state, ignored);
+	// M7 prerequisites: a streamed group checkpoint (members' streams behind
+	// an index), or the in-memory one written before.
+	const bool streamed = allPartial && !options.force && IsStreamedCheckpoint(dir, groupCheckpointName);
+	const bool resume = streamed ||
+		( allPartial && !options.force && ReadSidecarFile(dir, groupCheckpointName, options.budget, state, ignored) );
 	if (command == "resume" && !resume) { err << "rise-sim: " << spec.name << ": no group checkpoint to resume from\n"; return WorkerFailed; }
 	for (const auto& m : members)
 		if (!group.Record(m, planOf(m)->spec->cacheDir, options.budget, resume, error)) {
 			err << "rise-sim: " << spec.name << ": member " << m << ": " << error << "\n"; return WorkerFailed; }
-	if (resume ? !group.Restore(state, error) : !group.Start(error)) {
+	Bytes header;
+	const auto restore = [&](std::string& e) {
+		if (!streamed) return group.Restore(state, e);
+		return ReadStreamedCheckpoint(dir, groupCheckpointName, options.budget, header,
+			[&](ICheckpointSource& source, std::string& e2) { return group.RestoreFrom(source, e2); }, e);
+	};
+	if (resume ? !restore(error) : !group.Start(error)) {
 		err << "rise-sim: " << spec.name << ": " << error << "\n"; return WorkerFailed; }
 	out << "rise-sim: " << spec.name << ": " << (resume ? "resuming" : "baking") << " the coupled run of";
 	for (const auto& m : members) out << " " << m << " (" << group.MemberFidelity(m) << ")";
@@ -119,9 +129,10 @@ int BakeCoupled(const SceneSimulationSpec& spec, const std::vector<SceneSimulati
 		}
 	};
 	auto checkpoint = [&]() {
-		Bytes s;
 		std::string e;
-		return group.Checkpoint(s, e) && ReplaceFileDurably(dir, groupCheckpointName, s, e);
+		const Bytes groupHeader = {0xa0};	// an empty canonical CBOR map: the group stream carries its own index
+		return WriteStreamedCheckpoint(dir, groupCheckpointName, groupHeader,
+			[&](ICheckpointSink& sink, std::string& e2) { return group.CheckpointTo(sink, e2); }, e);
 	};
 	auto stopRequested = [&]() {
 		std::error_code ec;

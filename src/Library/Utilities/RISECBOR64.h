@@ -134,6 +134,22 @@ namespace RISE
 			std::string& digest
 			);
 
+		//! Incremental SHA-256 (M7 prerequisites: streamed checkpoints).  The
+		//! same implementation as SHA256Hex; FinalHex may be called once.
+		class SHA256Accumulator
+		{
+		public:
+			SHA256Accumulator();
+			~SHA256Accumulator();
+			SHA256Accumulator( const SHA256Accumulator& ) = delete;
+			SHA256Accumulator& operator=( const SHA256Accumulator& ) = delete;
+			void Update( const unsigned char* bytes, std::size_t byteCount );
+			std::string FinalHex();
+		private:
+			struct Impl;
+			Impl* m_impl;
+		};
+
 		inline std::string SHA256Hex( const Bytes& bytes )
 		{
 			return SHA256Hex(

@@ -10,6 +10,7 @@
 namespace RISE { namespace Simulation {
 
 class MeshCacheSource;
+class PointsCacheSource;
 
 //! One time-varying asset's frames on the scene timeline.  Times are scene
 //! seconds; `start` / `end` are the first and last frame of the cache's time
@@ -17,7 +18,7 @@ class MeshCacheSource;
 //! the first one (end of the drawable baked range).
 struct TimelineRange
 {
-	enum Kind { SimulatedMesh = 0, FireMedium = 1 };
+	enum Kind { SimulatedMesh = 0, FireMedium = 1, SimulatedPoints = 2 /* M7 prerequisites */ };
 	enum State { Complete = 0, Partial = 1, Baking = 2, Live = 3 };
 	std::string name;
 	Kind kind = SimulatedMesh;
@@ -37,6 +38,10 @@ double MeshFrameSceneTime( const MeshCacheSource& source, std::int64_t index );
 //! generation (a partial disk cache re-reads its manifest, and asks the
 //! writer lock whether a bake is running); without it only the time map.
 bool DescribeMeshSource( const MeshCacheSource& source, bool availability,
+	TimelineRange& range, std::string& error );
+
+//! M7 prerequisites: the same for a simulated points binding (disk caches only).
+bool DescribePointsSource( const PointsCacheSource& source, bool availability,
 	TimelineRange& range, std::string& error );
 
 //! The last frame index of the run of present frames starting at the

@@ -3,7 +3,12 @@
 //  BVH.h - Templated 2-wide BVH with SAH binned top-down construction.
 //
 //  Phase 1 partial scope (per docs/BVH_ACCELERATION_PLAN.md §5):
-//    - SAH binned builder, single-threaded, recursive.
+//    - SAH binned builder, recursive; single-threaded by default.  An
+//      opt-in parallel build (BuildOptions::parallel, M7 prerequisites:
+//      a changing-topology simulated mesh rebuilds every frame) splits
+//      the top levels serially, builds the subtrees on the global thread
+//      pool and splices them in the serial build's node order, so the
+//      tree is bit-identical to the serial one.
 //    - Single-ray stack traversal, fixed depth 64.
 //    - Float-stored AABBs in nodes (conservative pad from double).
 //    - Double-precision ray-triangle intersection at leaves
@@ -34,6 +39,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/RTime.h"
 #include "../Utilities/Profiling.h"
+#include "../Utilities/ThreadPool.h"
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -160,6 +166,43 @@ namespace RISE
 		virtual ~BVH() {}
 
 	public:
+		//! Optional build behaviour (M7 prerequisites).  The defaults are
+		//! the original builder: serial, with the Info log lines.
+		struct BuildOptions
+		{
+			bool parallel = false;	//!< build subtrees on GlobalThreadPool(); same tree as serial
+			bool quiet = false;		//!< no Info log lines (a per-frame rebuild)
+		};
+
+		BVH( const TreeElementProcessor<Element>& ep_,
+		     const std::vector<Element>&          inputPrims,
+		     const BoundingBox&                   overallBoxHint,
+		     const AccelerationConfig&            cfg_,
+		     const BuildOptions&                  options )
+			: hasFastFilter( false ),
+			  useBVH4( false ),
+			  overallBox( overallBoxHint ),
+			  ep( ep_ ),
+			  cfg( cfg_ )
+		{
+			Rebuild( inputPrims, options );
+		}
+
+		//! Full rebuild over a new primitive list, reusing this tree's
+		//! storage (the per-frame rebuild of a changing-topology mesh).
+		//! The result equals a freshly constructed BVH over the same list.
+		void Rebuild( const std::vector<Element>& inputPrims, const BuildOptions& options )
+		{
+			hasFastFilter = false;
+			useBVH4 = false;
+			// No stale bounds from a previous build: an empty tree bounds a point.
+			if( inputPrims.empty() ) overallBox = BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
+			Build( inputPrims, options );
+			BuildFastFilter( !options.quiet );
+			BuildBVH4();
+			originalSAH = ComputeSAH();
+		}
+
 		BVH( const TreeElementProcessor<Element>& ep_,
 		     const std::vector<Element>&          inputPrims,
 		     const BoundingBox&                   overallBoxHint,
@@ -775,11 +818,11 @@ namespace RISE
 		//////////////////////////////////////////////////////////////////
 		//  Build: recursive top-down SAH with binning.
 		//////////////////////////////////////////////////////////////////
-		void Build( const std::vector<Element>& inputPrims )
+		void Build( const std::vector<Element>& inputPrims, const BuildOptions& options = BuildOptions() )
 		{
 			const auto tStart = std::chrono::steady_clock::now();
 
-			GlobalLog()->PrintEx( eLog_Info,
+			if( !options.quiet ) GlobalLog()->PrintEx( eLog_Info,
 				"BVH:: Building over %u primitives (binCount=%u, maxLeafSize=%u)",
 				(unsigned)inputPrims.size(), cfg.binCount, cfg.maxLeafSize );
 
@@ -800,17 +843,35 @@ namespace RISE
 			BoundingBox  rootCentroidBox(
 			                       Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
 			                       Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY ) );
-			for( size_t i = 0; i < prims.size(); ++i ) {
-				BoundingBox b = ep.GetElementBoundingBox( prims[i] );
-				primBox[i]      = b;
-				// Centroid = midpoint of bbox.  Done component-wise — no
-				// existing op for "midpoint between two Point3" in this codebase.
-				primCentroid[i] = Point3( ( b.ll.x + b.ur.x ) * 0.5,
-				                          ( b.ll.y + b.ur.y ) * 0.5,
-				                          ( b.ll.z + b.ur.z ) * 0.5 );
-				rootBox.Include( b.ll );
-				rootBox.Include( b.ur );
-				rootCentroidBox.Include( primCentroid[i] );
+			const auto boxRange = [&]( size_t begin, size_t end, BoundingBox& rb, BoundingBox& rcb ) {
+				for( size_t i = begin; i < end; ++i ) {
+					BoundingBox b = ep.GetElementBoundingBox( prims[i] );
+					primBox[i]      = b;
+					// Centroid = midpoint of bbox.  Done component-wise — no
+					// existing op for "midpoint between two Point3" in this codebase.
+					primCentroid[i] = Point3( ( b.ll.x + b.ur.x ) * 0.5,
+					                          ( b.ll.y + b.ur.y ) * 0.5,
+					                          ( b.ll.z + b.ur.z ) * 0.5 );
+					rb.Include( b.ll );
+					rb.Include( b.ur );
+					rcb.Include( primCentroid[i] );
+				}
+			};
+			const bool parallel = options.parallel && prims.size() >= kParallelBuildMinimum &&
+				Implementation::GlobalThreadPool().NumWorkers() > 1;
+			if( !parallel ) {
+				boxRange( 0, prims.size(), rootBox, rootCentroidBox );
+			} else {
+				// Min / max reductions: the union is exact whatever the order.
+				const unsigned int chunks = 64;
+				std::vector<BoundingBox> rb( chunks, rootBox ), rcb( chunks, rootCentroidBox );
+				Implementation::GlobalThreadPool().ParallelFor( chunks, [&]( unsigned int c ) {
+					boxRange( prims.size() * c / chunks, prims.size() * ( c + 1 ) / chunks, rb[c], rcb[c] );
+				} );
+				for( unsigned int c = 0; c < chunks; ++c ) {
+					if( rb[c].ll.x <= rb[c].ur.x ) { rootBox.Include( rb[c].ll ); rootBox.Include( rb[c].ur ); }
+					if( rcb[c].ll.x <= rcb[c].ur.x ) { rootCentroidBox.Include( rcb[c].ll ); rootCentroidBox.Include( rcb[c].ur ); }
+				}
 			}
 
 			// If caller passed a non-degenerate hint, prefer the actual
@@ -826,8 +887,12 @@ namespace RISE
 			std::vector<uint32_t> idx( prims.size() );
 			for( uint32_t i = 0; i < prims.size(); ++i ) idx[i] = i;
 
-			BuildRecursive( 0, idx, 0, (uint32_t)prims.size(),
-			                primBox, primCentroid, rootBox, rootCentroidBox );
+			if( !parallel ) {
+				BuildRecursive( nodes, 0, idx, 0, (uint32_t)prims.size(),
+				                primBox, primCentroid, rootBox, rootCentroidBox );
+			} else {
+				BuildParallel( idx, primBox, primCentroid, rootBox, rootCentroidBox );
+			}
 
 			// Reorder prims by the now-finalized index array.  After
 			// this, leaves' [firstPrimOrLeft, firstPrimOrLeft+primCount)
@@ -839,7 +904,7 @@ namespace RISE
 			prims.swap( reordered );
 
 			const auto tEnd = std::chrono::steady_clock::now();
-			GlobalLog()->PrintEx( eLog_Info,
+			if( !options.quiet ) GlobalLog()->PrintEx( eLog_Info,
 				"BVH:: Built %u nodes (%u leaves) in %u ms",
 				(unsigned)nodes.size(),
 				(unsigned)CountLeaves(),
@@ -864,6 +929,7 @@ namespace RISE
 		// centroids (used to drive bin placement).  primBox bounds
 		// the primitives themselves (used for leaf AABB).
 		void BuildRecursive(
+			std::vector<Node>&             out,
 			uint32_t                       nodeIdx,
 			std::vector<uint32_t>&         idx,
 			uint32_t                       first,
@@ -872,6 +938,38 @@ namespace RISE
 			const std::vector<Point3>&      primCentroid,
 			const BoundingBox&              parentBox,
 			const BoundingBox&              centroidBox )
+		{
+			uint32_t mid = 0;
+			BoundingBox leftCBox, rightCBox;
+			if( !SplitNode( out[nodeIdx], idx, first, last, primBox, primCentroid, centroidBox, mid, leftCBox, rightCBox ) ) {
+				return;
+			}
+			// Allocate two children, contiguous (Node[leftIdx], Node[leftIdx+1]).
+			const uint32_t leftIdx = (uint32_t)out.size();
+			out.push_back( Node{} );
+			out.push_back( Node{} );
+			out[nodeIdx].firstPrimOrLeft = leftIdx;
+			out[nodeIdx].primCount       = 0;
+			// (splitAxis was set by SplitNode)
+
+			BuildRecursive( out, leftIdx,     idx, first, mid,  primBox, primCentroid, parentBox, leftCBox );
+			BuildRecursive( out, leftIdx + 1, idx, mid,   last, primBox, primCentroid, parentBox, rightCBox );
+		}
+
+		// One node of the build: its tight box, and either a leaf (false) or
+		// the SAH split of idx[first..last) in place, with the child ranges'
+		// centroid boxes (true; `node.splitAxis` holds the axis).
+		bool SplitNode(
+			Node&                           node,
+			std::vector<uint32_t>&          idx,
+			uint32_t                        first,
+			uint32_t                        last,
+			const std::vector<BoundingBox>& primBox,
+			const std::vector<Point3>&      primCentroid,
+			const BoundingBox&              centroidBox,
+			uint32_t&                       midOut,
+			BoundingBox&                    leftCBoxOut,
+			BoundingBox&                    rightCBoxOut )
 		{
 			const uint32_t count = last - first;
 
@@ -884,13 +982,12 @@ namespace RISE
 				tightBox.Include( b.ll );
 				tightBox.Include( b.ur );
 			}
-			(void)parentBox;
-			SetNodeBox( nodes[nodeIdx], tightBox );
+			SetNodeBox( node, tightBox );
 
 			// Leaf-termination conditions.
 			if( count <= cfg.maxLeafSize ) {
-				MakeLeaf( nodeIdx, first, count );
-				return;
+				MakeLeaf( node, first, count );
+				return false;
 			}
 
 			// Pick split axis = longest centroid-box extent.
@@ -904,8 +1001,8 @@ namespace RISE
 			// Degenerate centroid box: all centroids coincide on this
 			// axis — no useful split.  Fall back to a leaf.
 			if( cMax - cMin < 1e-12 ) {
-				MakeLeaf( nodeIdx, first, count );
-				return;
+				MakeLeaf( node, first, count );
+				return false;
 			}
 
 			// SAH binning.
@@ -988,8 +1085,8 @@ namespace RISE
 
 			// SAH says splitting is worse than a leaf — accept the leaf.
 			if( bestSplit < 0 ) {
-				MakeLeaf( nodeIdx, first, count );
-				return;
+				MakeLeaf( node, first, count );
+				return false;
 			}
 
 			// Partition idx[first..last) by bin.
@@ -1027,23 +1124,140 @@ namespace RISE
 			for( uint32_t i = first; i < mid; ++i ) leftCBox.Include(  primCentroid[ idx[i] ] );
 			for( uint32_t i = mid;   i < last; ++i ) rightCBox.Include( primCentroid[ idx[i] ] );
 
-			// Allocate two children, contiguous (Node[leftIdx], Node[leftIdx+1]).
-			const uint32_t leftIdx = (uint32_t)nodes.size();
-			nodes.push_back( Node{} );
-			nodes.push_back( Node{} );
-			nodes[nodeIdx].firstPrimOrLeft = leftIdx;
-			nodes[nodeIdx].primCount       = 0;
-			nodes[nodeIdx].splitAxis       = axis;
-
-			BuildRecursive( leftIdx,     idx, first, mid,  primBox, primCentroid, tightBox, leftCBox );
-			BuildRecursive( leftIdx + 1, idx, mid,   last, primBox, primCentroid, tightBox, rightCBox );
+			node.splitAxis = axis;
+			midOut = mid;
+			leftCBoxOut = leftCBox;
+			rightCBoxOut = rightCBox;
+			return true;
 		}
 
-		void MakeLeaf( uint32_t nodeIdx, uint32_t first, uint32_t count )
+		//////////////////////////////////////////////////////////////////
+		//  Parallel build (BuildOptions::parallel).  The serial build
+		//  allocates a node's two children together and then every node
+		//  of the left subtree before any of the right one, so the
+		//  descendants of any node occupy one contiguous run whose
+		//  internal layout depends only on that subtree.  The top levels
+		//  are split serially (SplitNode, exactly as BuildRecursive does)
+		//  until a range is small or deep enough; those ranges (disjoint
+		//  in `idx`) are built as independent local trees on the thread
+		//  pool; the local trees are then spliced in the serial order with
+		//  their child indices offset.  Same nodes, same prim order.
+		//////////////////////////////////////////////////////////////////
+		static const size_t kParallelBuildMinimum = 65536;	// smaller lists build serially
+		static const uint32_t kParallelTaskMinimum = 16384;	// smallest subtree given its own task
+
+		struct TopNode
 		{
-			nodes[nodeIdx].firstPrimOrLeft = first;
-			nodes[nodeIdx].primCount       = (uint16_t)count;
-			nodes[nodeIdx].splitAxis       = 0;
+			Node node{};
+			bool split = false;
+			int children[2] = { -1, -1 };	// TopNode indices when split
+			int task = -1;					// local tree index when a pool task builds it
+			uint32_t first = 0, last = 0;
+			BoundingBox centroidBox;
+		};
+
+		void BuildParallel(
+			std::vector<uint32_t>&          idx,
+			const std::vector<BoundingBox>& primBox,
+			const std::vector<Point3>&      primCentroid,
+			const BoundingBox&              rootBox,
+			const BoundingBox&              rootCentroidBox )
+		{
+			const unsigned int workers = Implementation::GlobalThreadPool().NumWorkers();
+			unsigned int maxDepth = 0;
+			while( ( 1u << maxDepth ) < 4u * workers && maxDepth < 12 ) ++maxDepth;
+
+			std::vector<TopNode> top;
+			std::vector<int> tasks;	// TopNode index per local tree
+			top.push_back( TopNode{} );
+			top[0].first = 0; top[0].last = (uint32_t)prims.size(); top[0].centroidBox = rootCentroidBox;
+			(void)rootBox;
+			// Breadth-agnostic serial split of the top levels (each split touches
+			// only its own range of idx, so the order of splits is immaterial).
+			std::vector<std::pair<int, unsigned int>> work( 1, std::make_pair( 0, 0u ) );
+			while( !work.empty() ) {
+				const int t = work.back().first;
+				const unsigned int depth = work.back().second;
+				work.pop_back();
+				if( depth >= maxDepth || top[t].last - top[t].first < 2 * kParallelTaskMinimum ) {
+					top[t].task = (int)tasks.size();
+					tasks.push_back( t );
+					continue;
+				}
+				uint32_t mid = 0;
+				BoundingBox lc, rc;
+				const uint32_t first = top[t].first, last = top[t].last;
+				const BoundingBox cbox = top[t].centroidBox;
+				Node node{};
+				if( !SplitNode( node, idx, first, last, primBox, primCentroid, cbox, mid, lc, rc ) ) {
+					top[t].node = node;	// a leaf
+					continue;
+				}
+				top[t].node = node;
+				top[t].split = true;
+				const int l = (int)top.size();
+				top.push_back( TopNode{} );
+				top.push_back( TopNode{} );
+				top[t].children[0] = l; top[t].children[1] = l + 1;
+				top[l].first = first; top[l].last = mid; top[l].centroidBox = lc;
+				top[l + 1].first = mid; top[l + 1].last = last; top[l + 1].centroidBox = rc;
+				work.push_back( std::make_pair( l + 1, depth + 1 ) );
+				work.push_back( std::make_pair( l, depth + 1 ) );
+			}
+
+			std::vector<std::vector<Node>> local( tasks.size() );
+			Implementation::GlobalThreadPool().ParallelFor( (unsigned int)tasks.size(), [&]( unsigned int k ) {
+				const TopNode& t = top[ tasks[k] ];
+				std::vector<Node>& out = local[k];
+				out.reserve( 2 * ( t.last - t.first ) );
+				out.push_back( Node{} );
+				BuildRecursive( out, 0, idx, t.first, t.last, primBox, primCentroid, t.centroidBox, t.centroidBox );
+			} );
+
+			size_t total = 1;
+			for( const TopNode& t : top ) if( t.split ) total += 2;
+			for( const std::vector<Node>& l : local ) total += l.size() - 1;
+			nodes.resize( total );
+			uint32_t cursor = 1;
+			Place( top, local, 0, 0, cursor );
+		}
+
+		// Writes TopNode t at nodes[slot] and its descendants from `cursor`,
+		// in the serial build's order: the child pair, then the left
+		// subtree's descendants, then the right's.
+		void Place( const std::vector<TopNode>& top, const std::vector<std::vector<Node>>& local,
+			int t, uint32_t slot, uint32_t& cursor )
+		{
+			const TopNode& tn = top[t];
+			if( tn.task >= 0 ) {
+				const std::vector<Node>& l = local[ tn.task ];
+				const uint32_t base = cursor;	// local index i >= 1 goes to base + i - 1
+				Node root = l[0];
+				if( root.primCount == 0 ) root.firstPrimOrLeft = root.firstPrimOrLeft - 1 + base;
+				nodes[slot] = root;
+				for( size_t i = 1; i < l.size(); ++i ) {
+					Node n = l[i];
+					if( n.primCount == 0 ) n.firstPrimOrLeft = n.firstPrimOrLeft - 1 + base;
+					nodes[ base + i - 1 ] = n;
+				}
+				cursor += (uint32_t)( l.size() - 1 );
+				return;
+			}
+			nodes[slot] = tn.node;
+			if( !tn.split ) return;
+			const uint32_t left = cursor;
+			cursor += 2;
+			nodes[slot].firstPrimOrLeft = left;
+			nodes[slot].primCount = 0;
+			Place( top, local, tn.children[0], left, cursor );
+			Place( top, local, tn.children[1], left + 1, cursor );
+		}
+
+		static void MakeLeaf( Node& node, uint32_t first, uint32_t count )
+		{
+			node.firstPrimOrLeft = first;
+			node.primCount       = (uint16_t)count;
+			node.splitAxis       = 0;
 		}
 		uint32_t CountLeaves() const
 		{

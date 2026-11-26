@@ -213,6 +213,12 @@ public:
 	// conflicting bytes on republication.
 	bool SaveCheckpoint(Checkpoint& checkpoint, std::string& error);
 	bool RestoreCheckpoint(const Checkpoint& checkpoint, std::string& error);
+	// M7 prerequisites: the same through a stream (the solver's CheckpointTo /
+	// RestoreFrom; a MemoryCheckpointSink keeps it in memory). `key` and
+	// `position` play the roles of Checkpoint::key / position.
+	bool SaveCheckpointTo(ICheckpointSink& sink, std::string& key, SolverPosition& position, std::string& error);
+	bool RestoreCheckpointFrom(ICheckpointSource& source, const std::string& key, const SolverPosition& position,
+		std::string& error);
 
 private:
 	class Sink;
@@ -259,6 +265,20 @@ struct GroupPolicy {
 	enum class NonConvergence { Fail, Halve };
 	NonConvergence onNonConvergence = NonConvergence::Fail; // after subIterations without convergence
 	double minimumMacroStep = 0;          // Halve: the floor (0 = macroStep / 64)
+	// M7 prerequisites, additive: exchanges owned by one member. Every
+	// connection between `owner` and a member of `partners` is an owned
+	// implicit exchange: the owner solves the partners' motion inside its
+	// own step (Capabilities::ownedImplicitPorts) and the group exchanges those
+	// values once per macro step (Gauss-Seidel, the owner before its partners;
+	// no sub-iteration of those connections). The coupling counts as implicit
+	// for the label when the owner declares every owned port on its side and
+	// its own evidence is predictive. Empty: no owned exchange (every group
+	// before; the group identity and keys are unchanged).
+	struct OwnedExchange {
+		std::string owner;
+		std::vector<std::string> partners;
+	};
+	std::vector<OwnedExchange> ownedExchanges;
 };
 
 // Converts an offered port's payload into what an accepted port declares
@@ -328,6 +348,18 @@ public:
 	virtual bool Checkpoint(Bytes& state, std::string& error) = 0;  // all members at one macro boundary
 	virtual bool Restore(const Bytes& state, std::string& error) = 0;
 	virtual std::shared_ptr<const IReadOnlyCacheSnapshot> Snapshot(const std::string& member) const = 0;
+	// M7 prerequisites (additive): the group state streamed (members' streams
+	// concatenated behind a small index). Defaults: the in-memory methods.
+	virtual bool CheckpointTo(ICheckpointSink& sink, std::string& error)
+	{
+		Bytes state;
+		return Checkpoint(state, error) && sink.Write(state.data(), state.size(), error);
+	}
+	virtual bool RestoreFrom(ICheckpointSource& source, std::string& error)
+	{
+		Bytes state(static_cast<std::size_t>(source.Remaining()));
+		return source.Read(state.data(), state.size(), error) && Restore(state, error);
+	}
 };
 
 } }

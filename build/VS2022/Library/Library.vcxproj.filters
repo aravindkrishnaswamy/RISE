@@ -348,10 +348,16 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationPoints.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationField.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedPointsSource.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationTimeline.cpp">
@@ -859,6 +865,9 @@
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\SimulatedMeshGeometry.cpp">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\SimulatedPointsGeometry.cpp">
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Intersection\RayBezierPatchIntersection.cpp">
@@ -1797,10 +1806,16 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationMesh.h">
       <Filter>Simulation</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationPoints.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationField.h">
       <Filter>Simulation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedPointsSource.h">
       <Filter>Simulation</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTimeline.h">
@@ -2566,6 +2581,9 @@
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SimulatedMeshGeometry.h">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\SimulatedPointsGeometry.h">
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexedSpecializations.h">

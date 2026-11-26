@@ -376,3 +376,4 @@ virtual bool AddBlendedModifier(const char*,const char*,const char*,const char*)
 virtual bool SetCameraNearClip(const char*,const double){ return false;}
 virtual bool AddDiffuseTransmissionMaterial(const char*,const char*,const char*){ return false;}
 virtual bool SetObjectTransformSource(const char*,const char*){ return false;}
+virtual bool AddSimulatedPointsGeometry(const char*,const char*,const char*,const char*,const double,const double,const char*,const char*,const char*,const bool,const double,const double,const char*){ return false;}

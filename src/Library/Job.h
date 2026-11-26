@@ -2356,6 +2356,14 @@ namespace RISE
 		//! (IJob::SetObjectTransformSource).
 		bool SetObjectTransformSource( const char* object, const char* source );
 
+		//! M7 prerequisites: simulated_points_geometry (IJob::AddSimulatedPointsGeometry).
+		bool AddSimulatedPointsGeometry(
+			const char* name, const char* cache, const char* source, const char* output,
+			const double time_offset, const double time_scale,
+			const char* end_policy, const char* missing_frame, const char* fidelity,
+			const bool motion_blur, const double radius, const double radius_scale,
+			const char* color_attribute );
+
 		//! Adds a unit-transmission medium boundary distinct from "none".
 		//! Appended beside IJob's corresponding ABI-tail extension.
 		/// \return TRUE if successful, FALSE otherwise

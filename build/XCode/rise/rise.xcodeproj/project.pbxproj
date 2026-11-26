@@ -909,9 +909,12 @@
 		4C768A85B1F54191BFF6FAB0 /* ClothSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		7BE0274C865C13B99425C58D /* ClothParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */; };
 		6348573A914F130527A8F234 /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
+		C7BB0B301D5642F9EFABD645 /* SimulationPoints.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3F646B3EAB1E65209F4E0C22 /* SimulationPoints.cpp */; };
 		0BE279A6842CCAC21A214D8B /* SimulationField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */; };
 		8401AA321BFFDAF10F7E3003 /* SimulatedMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */; };
+		C0C5CB878A83EFBBB242DC4A /* SimulatedPointsGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1B541E265299117F60EC90EC /* SimulatedPointsGeometry.cpp */; };
 		3F5258A8BC864055713DB63C /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
+		E071FDEE9FA1D5FDDE50E52E /* SimulatedPointsSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1EDA62068906FDD22A3BB06 /* SimulatedPointsSource.cpp */; };
 		6EB5300FF4EA9117E51CD4D8 /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
 		00B03088EC3CB38266F055D5 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
 		9B426F65DC40CB63183747FE /* SimulationBakeManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */; };
@@ -1672,9 +1675,12 @@
 		CE7402B538C539139AFED5F5 /* RigidSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63B4C7BECB4856B9C12745DF /* RigidSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		40202A656009F7B397512D30 /* RigidSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = D1F4012609D3C6BFC1CECE38 /* RigidSolver.h */; };
 		012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
+		821B2F2CC37A0E660F16C106 /* SimulationPoints.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3F646B3EAB1E65209F4E0C22 /* SimulationPoints.cpp */; };
 		C3B5E68EDB9D3F1D831285E3 /* SimulationField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */; };
 		4C7BE87A2418C74E4802CDA5 /* SimulatedMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */; };
+		ACDD540F695AE6302D1F9598 /* SimulatedPointsGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1B541E265299117F60EC90EC /* SimulatedPointsGeometry.cpp */; };
 		3AF3CEDF4C0FAC54C8D8EF07 /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
+		3B6D3C3AEFEAE9CFFDDF3788 /* SimulatedPointsSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1EDA62068906FDD22A3BB06 /* SimulatedPointsSource.cpp */; };
 		7CD1C32B3C4CB5ABF9F9E251 /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
 		50267BEF73FB6E9949EB5550 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
 		F8F77693CFD7FDC610643A2F /* SimulationBakeManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */; };
@@ -1716,9 +1722,12 @@
 		F3C3BE7258AE8A359334FCE5 /* FireProductionStaggeredColumnBudget.h in Headers */ = {isa = PBXBuildFile; fileRef = 6814A248C4A8877CAA0CB5B5 /* FireProductionStaggeredColumnBudget.h */; };
 		CB40B5640F28B16F17200DF4 /* fire_resident_resume_v2.h in Headers */ = {isa = PBXBuildFile; fileRef = 8CB4D9245196DAAB4DA46939 /* fire_resident_resume_v2.h */; };
 		6D6E5E7F3A7A564610606A62 /* SimulationMesh.h in Headers */ = {isa = PBXBuildFile; fileRef = C860FFB39CD67A3E0085CF03 /* SimulationMesh.h */; };
+		9DC0CE119C163C63B9CAF96A /* SimulationPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = 4BCEAFB941342E360A2C5727 /* SimulationPoints.h */; };
 		36CB26C66A3E94E2F8DAA635 /* SimulationField.h in Headers */ = {isa = PBXBuildFile; fileRef = 50837CE4C623375A160E2773 /* SimulationField.h */; };
 		88E8C3B14EB7BCDA1A18BD3D /* SimulatedMeshGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = BE80260B4721CD568D0AC97E /* SimulatedMeshGeometry.h */; };
+		52EAE828469DEEFCECB2DDC9 /* SimulatedPointsGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = AE41CDB7F73A7E8B47B5FBC0 /* SimulatedPointsGeometry.h */; };
 		6E84FDA2E93DDBF446CC4793 /* SimulatedMeshSource.h in Headers */ = {isa = PBXBuildFile; fileRef = F821D440C19007500CF128AD /* SimulatedMeshSource.h */; };
+		0F14C400B4F40B64D3D5714E /* SimulatedPointsSource.h in Headers */ = {isa = PBXBuildFile; fileRef = 87F29CA899929B3DBF5206F4 /* SimulatedPointsSource.h */; };
 		13E99112CC31280D6899AF94 /* BuiltinSolvers.h in Headers */ = {isa = PBXBuildFile; fileRef = 8B97ACC97187C257354D2C36 /* BuiltinSolvers.h */; };
 		687420977F475B3D47096C70 /* SceneSimulationWorker.h in Headers */ = {isa = PBXBuildFile; fileRef = 64BC895F923FF647F39E1BD1 /* SceneSimulationWorker.h */; };
 		E4A5A63448390BAEB6C4C765 /* SimulationBakeManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F8A849107808C8467BC680A7 /* SimulationBakeManager.h */; };
@@ -2715,9 +2724,12 @@
 		C77ADDC01ED4C53A14F8EE08 /* RigidBody.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 27E9C64D3D916A7C852CD745 /* RigidBody.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		48D7B398B418453D648D01E9 /* RigidSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63B4C7BECB4856B9C12745DF /* RigidSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		E59A98624FF38C625E0DCAF6 /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
+		4CB05EE8A03CCC945392AAAD /* SimulationPoints.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3F646B3EAB1E65209F4E0C22 /* SimulationPoints.cpp */; };
 		483E9D348D1EF0D54B6CB2E1 /* SimulationField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */; };
 		B4E7D3166F36CA36FB153969 /* SimulatedMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */; };
+		3B3C301201F90352FC3BA53E /* SimulatedPointsGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1B541E265299117F60EC90EC /* SimulatedPointsGeometry.cpp */; };
 		B95CAE83E2D8B5C5FC81925D /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
+		11ED61E9814D172FDF061848 /* SimulatedPointsSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1EDA62068906FDD22A3BB06 /* SimulatedPointsSource.cpp */; };
 		6EE65548CCC18F0DD719DB4D /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
 		133921C0CE2E7BC083B3BE06 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
 		680835874F291AF1DCB29169 /* SimulationBakeManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */; };
@@ -3156,7 +3168,9 @@
 		F27F0840069C428F0069C9E5 /* TriangleMeshGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshGeometry.h; sourceTree = "<group>"; };
 		F27F0841069C428F0069C9E5 /* TriangleMeshGeometryIndexed.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TriangleMeshGeometryIndexed.cpp; sourceTree = "<group>"; };
 		529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulatedMeshGeometry.cpp; sourceTree = "<group>"; };
+		1B541E265299117F60EC90EC /* SimulatedPointsGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulatedPointsGeometry.cpp; sourceTree = "<group>"; };
 		BE80260B4721CD568D0AC97E /* SimulatedMeshGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulatedMeshGeometry.h; sourceTree = "<group>"; };
+		AE41CDB7F73A7E8B47B5FBC0 /* SimulatedPointsGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulatedPointsGeometry.h; sourceTree = "<group>"; };
 		F27F0842069C428F0069C9E5 /* TriangleMeshGeometryIndexed.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshGeometryIndexed.h; sourceTree = "<group>"; };
 		F27F0843069C428F0069C9E5 /* TriangleMeshGeometryIndexedSpecializations.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshGeometryIndexedSpecializations.h; sourceTree = "<group>"; };
 		F27F0844069C428F0069C9E5 /* TriangleMeshGeometrySpecializations.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshGeometrySpecializations.h; sourceTree = "<group>"; };
@@ -3635,9 +3649,12 @@
 		EB49B68CA6F35537A93E1473 /* SimulationGrid.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationGrid.cpp; sourceTree = "<group>"; };
 		718533EB6DF55EBA8A053630 /* SimulationCache.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationCache.cpp; sourceTree = "<group>"; };
 		2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationMesh.cpp; sourceTree = "<group>"; };
+		3F646B3EAB1E65209F4E0C22 /* SimulationPoints.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationPoints.cpp; sourceTree = "<group>"; };
 		6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationField.cpp; sourceTree = "<group>"; };
 		C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulatedMeshSource.cpp; sourceTree = "<group>"; };
+		E1EDA62068906FDD22A3BB06 /* SimulatedPointsSource.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulatedPointsSource.cpp; sourceTree = "<group>"; };
 		F821D440C19007500CF128AD /* SimulatedMeshSource.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulatedMeshSource.h; sourceTree = "<group>"; };
+		87F29CA899929B3DBF5206F4 /* SimulatedPointsSource.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulatedPointsSource.h; sourceTree = "<group>"; };
 		1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BuiltinSolvers.cpp; sourceTree = "<group>"; };
 		81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneSimulationWorker.cpp; sourceTree = "<group>"; };
 		0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationBakeManager.cpp; sourceTree = "<group>"; };
@@ -3715,6 +3732,7 @@
 		6814A248C4A8877CAA0CB5B5 /* FireProductionStaggeredColumnBudget.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionStaggeredColumnBudget.h; sourceTree = "<group>"; };
 		8CB4D9245196DAAB4DA46939 /* fire_resident_resume_v2.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = fire_resident_resume_v2.h; sourceTree = "<group>"; };
 		C860FFB39CD67A3E0085CF03 /* SimulationMesh.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationMesh.h; sourceTree = "<group>"; };
+		4BCEAFB941342E360A2C5727 /* SimulationPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationPoints.h; sourceTree = "<group>"; };
 		50837CE4C623375A160E2773 /* SimulationField.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationField.h; sourceTree = "<group>"; };
 		EEA52BECFB2661CEA1E2F2FC /* SimulationSolver.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationSolver.h; sourceTree = "<group>"; };
 		0CD2934AA044EAA272761055 /* SimulationHost.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationHost.h; sourceTree = "<group>"; };
@@ -4488,7 +4506,9 @@
 				F27F0841069C428F0069C9E5 /* TriangleMeshGeometryIndexed.cpp */,
 				F27F0842069C428F0069C9E5 /* TriangleMeshGeometryIndexed.h */,
 				529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */,
+				1B541E265299117F60EC90EC /* SimulatedPointsGeometry.cpp */,
 				BE80260B4721CD568D0AC97E /* SimulatedMeshGeometry.h */,
+				AE41CDB7F73A7E8B47B5FBC0 /* SimulatedPointsGeometry.h */,
 				F27F0843069C428F0069C9E5 /* TriangleMeshGeometryIndexedSpecializations.h */,
 				F27F0844069C428F0069C9E5 /* TriangleMeshGeometrySpecializations.h */,
 				F27F0845069C428F0069C9E5 /* TriangleMeshLoader3DS.cpp */,
@@ -5318,9 +5338,12 @@
 				EB49B68CA6F35537A93E1473 /* SimulationGrid.cpp */,
 				718533EB6DF55EBA8A053630 /* SimulationCache.cpp */,
 				2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */,
+				3F646B3EAB1E65209F4E0C22 /* SimulationPoints.cpp */,
 				6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */,
 				C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */,
+				E1EDA62068906FDD22A3BB06 /* SimulatedPointsSource.cpp */,
 				F821D440C19007500CF128AD /* SimulatedMeshSource.h */,
+				87F29CA899929B3DBF5206F4 /* SimulatedPointsSource.h */,
 				1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */,
 				81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */,
 				0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */,
@@ -5345,6 +5368,7 @@
 				26FB686FA911577E9CF521DF /* SimulationVDBBounds.h */,
 				556FC8545D865F4CB529986A /* SimulationCache.h */,
 				C860FFB39CD67A3E0085CF03 /* SimulationMesh.h */,
+				4BCEAFB941342E360A2C5727 /* SimulationPoints.h */,
 				50837CE4C623375A160E2773 /* SimulationField.h */,
 				EEA52BECFB2661CEA1E2F2FC /* SimulationSolver.h */,
 				0CD2934AA044EAA272761055 /* SimulationHost.h */,
@@ -6512,9 +6536,12 @@
 				F3C3BE7258AE8A359334FCE5 /* FireProductionStaggeredColumnBudget.h in Headers */,
 				CB40B5640F28B16F17200DF4 /* fire_resident_resume_v2.h in Headers */,
 				6D6E5E7F3A7A564610606A62 /* SimulationMesh.h in Headers */,
+				9DC0CE119C163C63B9CAF96A /* SimulationPoints.h in Headers */,
 				36CB26C66A3E94E2F8DAA635 /* SimulationField.h in Headers */,
 				88E8C3B14EB7BCDA1A18BD3D /* SimulatedMeshGeometry.h in Headers */,
+				52EAE828469DEEFCECB2DDC9 /* SimulatedPointsGeometry.h in Headers */,
 				6E84FDA2E93DDBF446CC4793 /* SimulatedMeshSource.h in Headers */,
+				0F14C400B4F40B64D3D5714E /* SimulatedPointsSource.h in Headers */,
 				13E99112CC31280D6899AF94 /* BuiltinSolvers.h in Headers */,
 				687420977F475B3D47096C70 /* SceneSimulationWorker.h in Headers */,
 				E4A5A63448390BAEB6C4C765 /* SimulationBakeManager.h in Headers */,
@@ -7235,9 +7262,12 @@
 				B02D2CD533A8ABFD20CE070C /* RigidBody.cpp in Sources */,
 				E96EEE461D5941E067C2344C /* RigidSolver.cpp in Sources */,
 				012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */,
+				821B2F2CC37A0E660F16C106 /* SimulationPoints.cpp in Sources */,
 				C3B5E68EDB9D3F1D831285E3 /* SimulationField.cpp in Sources */,
 				4C7BE87A2418C74E4802CDA5 /* SimulatedMeshGeometry.cpp in Sources */,
+				ACDD540F695AE6302D1F9598 /* SimulatedPointsGeometry.cpp in Sources */,
 				3AF3CEDF4C0FAC54C8D8EF07 /* SimulatedMeshSource.cpp in Sources */,
+				3B6D3C3AEFEAE9CFFDDF3788 /* SimulatedPointsSource.cpp in Sources */,
 				7CD1C32B3C4CB5ABF9F9E251 /* BuiltinSolvers.cpp in Sources */,
 				50267BEF73FB6E9949EB5550 /* SceneSimulationWorker.cpp in Sources */,
 				F8F77693CFD7FDC610643A2F /* SimulationBakeManager.cpp in Sources */,
@@ -8279,9 +8309,12 @@
 				B281DF348CA5C1664A9F1FD1 /* RigidBody.cpp in Sources */,
 				CE7402B538C539139AFED5F5 /* RigidSolver.cpp in Sources */,
 				6348573A914F130527A8F234 /* SimulationMesh.cpp in Sources */,
+				C7BB0B301D5642F9EFABD645 /* SimulationPoints.cpp in Sources */,
 				0BE279A6842CCAC21A214D8B /* SimulationField.cpp in Sources */,
 				8401AA321BFFDAF10F7E3003 /* SimulatedMeshGeometry.cpp in Sources */,
+				C0C5CB878A83EFBBB242DC4A /* SimulatedPointsGeometry.cpp in Sources */,
 				3F5258A8BC864055713DB63C /* SimulatedMeshSource.cpp in Sources */,
+				E071FDEE9FA1D5FDDE50E52E /* SimulatedPointsSource.cpp in Sources */,
 				6EB5300FF4EA9117E51CD4D8 /* BuiltinSolvers.cpp in Sources */,
 				00B03088EC3CB38266F055D5 /* SceneSimulationWorker.cpp in Sources */,
 				9B426F65DC40CB63183747FE /* SimulationBakeManager.cpp in Sources */,
@@ -8756,9 +8789,12 @@
 				C77ADDC01ED4C53A14F8EE08 /* RigidBody.cpp in Sources */,
 				48D7B398B418453D648D01E9 /* RigidSolver.cpp in Sources */,
 				E59A98624FF38C625E0DCAF6 /* SimulationMesh.cpp in Sources */,
+				4CB05EE8A03CCC945392AAAD /* SimulationPoints.cpp in Sources */,
 				483E9D348D1EF0D54B6CB2E1 /* SimulationField.cpp in Sources */,
 				B4E7D3166F36CA36FB153969 /* SimulatedMeshGeometry.cpp in Sources */,
+				3B3C301201F90352FC3BA53E /* SimulatedPointsGeometry.cpp in Sources */,
 				B95CAE83E2D8B5C5FC81925D /* SimulatedMeshSource.cpp in Sources */,
+				11ED61E9814D172FDF061848 /* SimulatedPointsSource.cpp in Sources */,
 				6EE65548CCC18F0DD719DB4D /* BuiltinSolvers.cpp in Sources */,
 				133921C0CE2E7BC083B3BE06 /* SceneSimulationWorker.cpp in Sources */,
 				680835874F291AF1DCB29169 /* SimulationBakeManager.cpp in Sources */,

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <cstring>
+#include <limits>
 
 namespace RISE { namespace Simulation {
 namespace {
@@ -288,6 +290,37 @@ PortStatus CachedPortFeed::Accept(const std::string& port,double time,std::share
 	if (status!=FrameStatus::Ready) return PortStatus::Failed;
 	encoded=std::move(bytes);
 	return PortStatus::Ready;
+}
+
+// ---------------------------------------------------------------- streamed checkpoints (M7 prerequisites)
+
+bool MemoryCheckpointSink::Write(const std::uint8_t* data, std::size_t size, std::string& error)
+{
+	(void)error;
+	if (size) bytes.insert(bytes.end(), data, data + size);
+	return true;
+}
+
+bool MemoryCheckpointSource::Read(std::uint8_t* data, std::size_t size, std::string& error)
+{
+	if (size > bytes_.size() - position_) { error = "checkpoint stream is truncated"; return false; }
+	if (size) std::memcpy(data, bytes_.data() + position_, size);
+	position_ += size;
+	return true;
+}
+
+bool ISimulationSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
+{
+	Bytes state;
+	return Checkpoint(state, error) && sink.Write(state.data(), state.size(), error);
+}
+
+bool ISimulationSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
+{
+	const std::uint64_t size = source.Remaining();
+	if (size > (std::numeric_limits<std::size_t>::max)()) { error = "checkpoint stream too large"; return false; }
+	Bytes state(static_cast<std::size_t>(size));
+	return source.Read(state.data(), state.size(), error) && Restore(state, error);
 }
 
 } }

@@ -309,7 +309,8 @@ fire_medium { name flame   fidelity_mode preview   source campfire.volume   chan
 - **Scene inputs** (`collider_object`, `follow_object`) are `Reference` parameters to `{Object}`, so the
   editor draws the connection; their content enters the cache key (geometry, keyframed transform; not
   material or name).  `source` is a `Reference` to `{Simulation}`; the `.output` suffix names an output.
-  Only a mesh output binds `simulated_mesh_geometry`, only a fire grid output binds `fire_medium`.
+  Only a mesh output binds `simulated_mesh_geometry`, only a fire grid output binds `fire_medium`, only a
+  `points.v1` output binds `simulated_points_geometry` (M7 prerequisites: particles as spheres).
 - **Declaration order.** A producer is declared before its consumers (the editor's insert tier puts it
   with geometry); scene inputs resolve after the derive, so a producer may name objects declared later.
 - **States** (`IJobPriv::DescribeSimulations`, C API `GetSimulation`): missing, baking, partial,

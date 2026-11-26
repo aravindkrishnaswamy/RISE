@@ -254,6 +254,93 @@ public:
 		return true;
 	}
 
+	// M7 prerequisites: the streamed checkpoint, a different byte layout from
+	// Checkpoint that must resume identically: "RISEREFS", u32 1, u64 header
+	// length, the header (canonical CBOR: format, position, segment, held
+	// port state, field sizes), then every field's binary64 samples, little
+	// endian, written in chunks.
+	bool CheckpointTo(ICheckpointSink& sink, std::string& error) override {
+		if (!started_) return Fail(error, "nothing to checkpoint");
+		std::vector<std::vector<double>> fields;
+		CopyFields(fields);
+		V::Values sizes;
+		for (const auto& f : fields) sizes.push_back(V::Unsigned(f.size()));
+		Bytes header;
+		if (!RISECBOR64::Encode(V::MapValue({{"format", V::String(StateFormat())}, {"t", V::Float(t_)}, {"next", V::Signed(next_)},
+			{"finished", V::Bool(finished_)}, {"segStart", V::Float(segStart_)}, {"segTarget", V::Float(segTarget_)},
+			{"segN", V::Unsigned(segN_)}, {"segJ", V::Unsigned(segJ_)}, {"held", V::Bool(held_)},
+			{"heldFor", V::Float(heldFor_)}, {"sizes", V::ArrayValue(sizes)}}), header, &error)) return false;
+		Bytes prefix{'R', 'I', 'S', 'E', 'R', 'E', 'F', 'S', 1, 0, 0, 0};
+		for (unsigned k = 0; k < 8; ++k) prefix.push_back(static_cast<std::uint8_t>(std::uint64_t(header.size()) >> (8*k)));
+		if (!sink.Write(prefix.data(), prefix.size(), error) || !sink.Write(header.data(), header.size(), error)) return false;
+		std::uint8_t chunk[8*512];
+		for (const auto& f : fields)
+			for (std::size_t i = 0; i < f.size(); ) {
+				const std::size_t n = std::min<std::size_t>(512, f.size() - i);
+				for (std::size_t k = 0; k < n; ++k) {
+					std::uint64_t w; std::memcpy(&w, &f[i + k], 8);
+					for (unsigned b = 0; b < 8; ++b) chunk[8*k + b] = static_cast<std::uint8_t>(w >> (8*b));
+				}
+				if (!sink.Write(chunk, 8*n, error)) return false;
+				i += n;
+			}
+		return true;
+	}
+
+	bool RestoreFrom(ICheckpointSource& source, std::string& error) override {
+		if (!configured_) return Fail(error, "configure before restore");
+		std::uint8_t prefix[20];
+		if (!source.Read(prefix, sizeof(prefix), error) || std::memcmp(prefix, "RISEREFS\x01\0\0\0", 12) != 0)
+			return Fail(error, "invalid solver stream");
+		std::uint64_t length = 0;
+		for (unsigned k = 0; k < 8; ++k) length |= std::uint64_t(prefix[12 + k]) << (8*k);
+		if (length > source.Remaining() || length > CodecBudget) return Fail(error, "invalid solver stream header");
+		Bytes header(static_cast<std::size_t>(length));
+		if (!source.Read(header.data(), header.size(), error)) return false;
+		V v;
+		if (!CanDecodeCanonicalRecord(header, CodecBudget) || !RISECBOR64::DecodeCanonical(header, v, &error) || v.GetType() != V::Map)
+			return Fail(error, "invalid solver stream header");
+		const V *format = v.Find("format"), *t = v.Find("t"), *next = v.Find("next"), *fin = v.Find("finished"),
+			*s0 = v.Find("segStart"), *s1 = v.Find("segTarget"), *n = v.Find("segN"), *j = v.Find("segJ"),
+			*held = v.Find("held"), *heldFor = v.Find("heldFor"), *sizes = v.Find("sizes");
+		if (!format || format->GetType() != V::Text || format->GetText() != StateFormat() || !t || t->GetType() != V::Float64 ||
+			!next || next->GetType() != V::UnsignedInteger || !fin || fin->GetType() != V::Boolean ||
+			!s0 || s0->GetType() != V::Float64 || !s1 || s1->GetType() != V::Float64 ||
+			!n || n->GetType() != V::UnsignedInteger || !j || j->GetType() != V::UnsignedInteger ||
+			next->GetIntegerArgument() > count_ || j->GetIntegerArgument() > n->GetIntegerArgument() ||
+			!held || held->GetType() != V::Boolean || !heldFor || heldFor->GetType() != V::Float64 ||
+			!sizes || sizes->GetType() != V::Array)
+			return Fail(error, "invalid solver stream fields");
+		std::vector<std::vector<double>> fields;
+		for (const V& size : sizes->GetArray()) {
+			if (size.GetType() != V::UnsignedInteger || size.GetIntegerArgument() > source.Remaining()/8)
+				return Fail(error, "invalid solver stream field size");
+			fields.emplace_back(static_cast<std::size_t>(size.GetIntegerArgument()));
+			std::vector<double>& f = fields.back();
+			std::uint8_t chunk[8*512];
+			for (std::size_t i = 0; i < f.size(); ) {
+				const std::size_t m = std::min<std::size_t>(512, f.size() - i);
+				if (!source.Read(chunk, 8*m, error)) return false;
+				for (std::size_t k = 0; k < m; ++k) {
+					std::uint64_t w = 0;
+					for (unsigned b = 0; b < 8; ++b) w |= std::uint64_t(chunk[8*k + b]) << (8*b);
+					std::memcpy(&f[i + k], &w, 8);
+				}
+				i += m;
+			}
+		}
+		std::vector<std::vector<double>> expected;
+		CopyFields(expected);
+		if (expected.size() != fields.size()) return Fail(error, "solver stream has the wrong number of fields");
+		SetFields(fields);
+		t_ = t->GetFloat(); next_ = static_cast<std::int64_t>(next->GetIntegerArgument()); finished_ = fin->GetBoolean();
+		segStart_ = s0->GetFloat(); segTarget_ = s1->GetFloat(); segN_ = n->GetIntegerArgument(); segJ_ = j->GetIntegerArgument();
+		held_ = held->GetBoolean(); heldFor_ = heldFor->GetFloat();
+		staticsSent_ = false;
+		started_ = true;
+		return true;
+	}
+
 	// Rollback: an in-memory copy of everything Checkpoint stores.
 	struct State final : SolverStateToken {
 		const void* owner = nullptr;

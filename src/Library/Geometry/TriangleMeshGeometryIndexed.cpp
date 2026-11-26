@@ -29,6 +29,7 @@
 #include "../BSPTreeSAH.h"
 #include "../Utilities/RenderParallelScope.h"
 #include <algorithm>
+#include <functional>
 #include <array>
 #include <cmath>
 #include <cassert>
@@ -52,15 +53,45 @@ using namespace RISE::Implementation;
 
 #ifdef RISE_ENABLE_MAILBOXING
 namespace {
-	static std::atomic<unsigned int> s_nextGeometryId(1);
+	// Mailbox ids are RECYCLED (M7 prerequisites): a geometry takes the
+	// smallest free id and returns it on destruction, so each thread's table
+	// holds at most one entry per id ever live at once -- a long playback
+	// that rebuilds or replaces meshes no longer grows it.  Every geometry
+	// also has a never-reused epoch; an entry left by an earlier holder of
+	// the id is reset on first use (its stamps could otherwise equal the new
+	// geometry's ray ids).
+	std::mutex s_geometryIdMutex;
+	std::vector<unsigned int> s_freeGeometryIds;	// a min-heap
+	unsigned int s_nextGeometryId = 1;
+	std::atomic<unsigned long long> s_nextGeometryEpoch(1);
+
+	unsigned int AcquireGeometryId()
+	{
+		std::lock_guard<std::mutex> hold( s_geometryIdMutex );
+		if( s_freeGeometryIds.empty() ) return s_nextGeometryId++;
+		std::pop_heap( s_freeGeometryIds.begin(), s_freeGeometryIds.end(), std::greater<unsigned int>() );
+		const unsigned int id = s_freeGeometryIds.back();
+		s_freeGeometryIds.pop_back();
+		return id;
+	}
+
+	void ReleaseGeometryId( const unsigned int id )
+	{
+		std::lock_guard<std::mutex> hold( s_geometryIdMutex );
+		s_freeGeometryIds.push_back( id );
+		std::push_heap( s_freeGeometryIds.begin(), s_freeGeometryIds.end(), std::greater<unsigned int>() );
+	}
 
 	struct MailboxState {
 		unsigned int rayId;
+		unsigned long long epoch = 0;
 		std::vector<unsigned int> stamps;
 	};
 
 	static thread_local std::unordered_map<unsigned int, MailboxState> tl_mailboxes;
 
+	// The per-element lookup (unchanged): the per-ray entry point below has
+	// already reset an earlier holder's entry on this thread.
 	static inline MailboxState& GetMailbox(unsigned int geomId, size_t numTris)
 	{
 		MailboxState& mb = tl_mailboxes[geomId];
@@ -70,8 +101,52 @@ namespace {
 		}
 		return mb;
 	}
+
+	// Once per ray (IntersectRay / IntersectRay_IntersectionOnly, before any
+	// element test): an entry left by an earlier holder of the id is reset
+	// (out of line: it happens once per geometry and thread), then the ray id
+	// advances.
+#if defined(__GNUC__) || defined(__clang__)
+	__attribute__((noinline))
+#endif
+	void ResetMailbox(MailboxState& mb, unsigned long long epoch, size_t numTris)
+	{
+		if( mb.epoch != epoch ) {
+			if( mb.stamps.capacity() > 2 * numTris + 1024 ) std::vector<unsigned int>().swap( mb.stamps );
+			mb.epoch = epoch;
+		}
+		mb.stamps.assign(numTris, 0);
+		mb.rayId = 0;
+	}
+
+	static inline void BeginMailboxRay(unsigned int geomId, unsigned long long epoch, size_t numTris)
+	{
+		MailboxState& mb = tl_mailboxes[geomId];
+		if( mb.epoch != epoch || mb.stamps.size() < numTris ) ResetMailbox( mb, epoch, numTris );
+		++mb.rayId;
+	}
 }
 #endif
+
+std::size_t TriangleMeshGeometryIndexed::MailboxTableEntries()
+{
+#ifdef RISE_ENABLE_MAILBOXING
+	return tl_mailboxes.size();
+#else
+	return 0;
+#endif
+}
+
+std::size_t TriangleMeshGeometryIndexed::MailboxTableBytes()
+{
+#ifdef RISE_ENABLE_MAILBOXING
+	std::size_t bytes = 0;
+	for( const auto& e : tl_mailboxes ) bytes += sizeof( e ) + e.second.stamps.capacity() * sizeof( unsigned int );
+	return bytes;
+#else
+	return 0;
+#endif
+}
 
 #include "../Utilities/SurfaceCurvature.h"	// scaleHint stamping in the specializations below
 #include "TriangleMeshGeometryIndexedSpecializations.h"
@@ -86,7 +161,8 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
   m_weldPolicy( kWeldCreaseCone ),
   pPtrBVH( 0 )
 #ifdef RISE_ENABLE_MAILBOXING
-  , geometryId( s_nextGeometryId.fetch_add(1) )
+  , geometryId( AcquireGeometryId() )
+  , geometryEpoch( s_nextGeometryEpoch.fetch_add(1) )
 #endif
 {
 }
@@ -94,6 +170,9 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
 TriangleMeshGeometryIndexed::~TriangleMeshGeometryIndexed()
 {
 	safe_release( pPtrBVH );
+#ifdef RISE_ENABLE_MAILBOXING
+	ReleaseGeometryId( geometryId );
+#endif
 }
 
 bool TriangleMeshGeometryIndexed::TessellateToMesh(
@@ -595,10 +674,7 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 
 	// Bump the mailbox ray ID so duplicate triangles in multiple BSP leaves are skipped
 #ifdef RISE_ENABLE_MAILBOXING
-	{
-		MailboxState& mb = GetMailbox(geometryId, ptr_polygons.size());
-		++mb.rayId;
-	}
+	BeginMailboxRay(geometryId, geometryEpoch, ptr_polygons.size());
 #endif
 
 	// Cleanup §3+§4: BVH-only.  pPtrBSPtree / pPtrOctree members
@@ -661,10 +737,7 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 bool TriangleMeshGeometryIndexed::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
 #ifdef RISE_ENABLE_MAILBOXING
-	{
-		MailboxState& mb = GetMailbox(geometryId, ptr_polygons.size());
-		++mb.rayId;
-	}
+	BeginMailboxRay(geometryId, geometryEpoch, ptr_polygons.size());
 #endif
 
 	// Cleanup §3+§4: BVH-only.
@@ -1160,6 +1233,81 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVerticesLean(
 		RebuildBVHFromPolygons();
 	}
 	return refitMs ? refitMs : 1;
+}
+
+bool TriangleMeshGeometryIndexed::ReplaceTopologyLean(
+	const VerticesListType& positions,
+	const NormalsListType&  normals,
+	const TexCoordsListType& coords,
+	const std::vector<std::uint32_t>& indices,
+	const bool parallelBuild )
+{
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"TriangleMeshGeometryIndexed::ReplaceTopologyLean() during the parallel render -- topology replacement "
+		"is a between-frames operation (docs/ARCHITECTURE.md, Animation / Temporal Sampling)" );
+	const bool haveNormals = !bUseFaceNormals && !normals.empty();
+	if( indices.size() % 3 != 0 || ( haveNormals && normals.size() != positions.size() ) ||
+		( !coords.empty() && coords.size() != positions.size() ) ) {
+		return false;
+	}
+	for( const std::uint32_t i : indices ) {
+		if( i >= positions.size() ) return false;
+	}
+	// Storage is reused (assign keeps capacity); the pointer triangles below
+	// are re-derived from the new arrays.
+	pPoints.assign( positions.begin(), positions.end() );
+	if( haveNormals ) {
+		pNormals.assign( normals.begin(), normals.end() );
+	} else {
+		pNormals.clear();
+	}
+	pCoords.assign( coords.begin(), coords.end() );
+	pColors.clear();
+	pTangents.clear();
+	pShaderDirections.clear();
+	pTexCoords1.clear();
+	pNamedCornerAttributes.clear();	// per-triangle corner data of the old connectivity
+	m_uvPeriodic.clear();
+	m_grid.reset();
+	m_weldDomains.clear();
+	indexedtris.clear();
+	InvalidateTopologyProofCaches();
+
+	ptr_polygons.clear();
+	ptr_polygons.reserve( indices.size() / 3 );
+	for( std::size_t t = 0; t < indices.size(); t += 3 ) {
+		const unsigned int idx[3] = { indices[t], indices[t+1], indices[t+2] };
+		PointerTriangle tri;
+		MakePointerTriangle( idx, idx, idx, tri );	// indices checked above
+		ptr_polygons.push_back( tri );
+	}
+	std::vector<const PointerTriangle*> temp;
+	temp.reserve( ptr_polygons.size() );
+	for( const PointerTriangle& tri : ptr_polygons ) temp.push_back( &tri );
+
+	BVH<const PointerTriangle*>::BuildOptions options;
+	options.parallel = parallelBuild;
+	options.quiet = true;
+	if( pPtrBVH ) {
+		pPtrBVH->Rebuild( temp, options );
+	} else {
+		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+		                  Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY ) );
+		for( const Point3& p : pPoints ) bbox.Include( p );
+		AccelerationConfig cfg;
+		cfg.maxLeafSize         = 4;
+		cfg.binCount            = 32;
+		cfg.sahTraversalCost    = 1.0;
+		cfg.sahIntersectionCost = 1.0;
+		cfg.doubleSided         = bDoubleSided;
+		pPtrBVH = new BVH<const PointerTriangle*>( *this, temp, bbox, cfg, options );
+		GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH (changing topology)" );
+	}
+	ComputeAreasUncertified();
+	GeometricUtilities::BumpPatchCertificateEpoch();
+	BumpShapeRevision();
+	InvalidateSignalBakes();
+	return true;
 }
 
 void TriangleMeshGeometryIndexed::RebuildBVHFromPolygons()

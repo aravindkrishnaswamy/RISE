@@ -181,12 +181,25 @@ V PolicyValue(const GroupPolicy& p, double macro, const std::vector<std::string>
 {
 	V::Values names;
 	for (const auto& n : order) names.push_back(V::String(n));
-	return V::MapValue({{"absolute_tolerance", V::Float(p.absoluteTolerance)}, {"aitken", V::Bool(p.aitken)},
+	V::Members m{{"absolute_tolerance", V::Float(p.absoluteTolerance)}, {"aitken", V::Bool(p.aitken)},
 		{"macro_step", V::Float(macro)}, {"member_order", V::ArrayValue(names)},
 		{"minimum_macro_step", V::Float(p.minimumMacroStep)},
 		{"non_convergence", V::String(p.onNonConvergence == GroupPolicy::NonConvergence::Halve ? "halve" : "fail")},
 		{"order", V::String(OrderName(p.order))}, {"relaxation", V::Float(p.relaxation)},
-		{"sub_iterations", V::Unsigned(p.subIterations)}, {"tolerance", V::Float(p.convergenceTolerance)}});
+		{"sub_iterations", V::Unsigned(p.subIterations)}, {"tolerance", V::Float(p.convergenceTolerance)}};
+	// M7 prerequisites: present only when used, so every earlier group keeps its identity.
+	if (!p.ownedExchanges.empty()) {
+		V::Values owned;
+		for (const auto& e : p.ownedExchanges) {
+			std::vector<std::string> partners = e.partners;
+			std::sort(partners.begin(), partners.end());
+			V::Values ps;
+			for (const auto& q : partners) ps.push_back(V::String(q));
+			owned.push_back(V::ArrayValue({V::String(e.owner), V::ArrayValue(ps)}));
+		}
+		m.push_back({"owned_exchanges", V::ArrayValue(owned)});
+	}
+	return V::MapValue(m);
 }
 } // namespace
 
@@ -266,6 +279,8 @@ struct SimulationGroup::Link {
 	std::vector<std::pair<std::size_t, std::string>> aux;
 	bool fresh = false;                      // the source has always advanced first (or is a cache)
 	std::shared_ptr<const Bytes> served, relaxed, accepted;
+	bool owned = false;                      // M7 prerequisites: an owned implicit exchange
+	std::size_t owner = 0;                   // its owner (a member index), when owned
 	// Conversion memo: the last raw input pointers and their result.
 	std::shared_ptr<const Bytes> memoRaw, memoOut;
 	std::vector<std::shared_ptr<const Bytes>> memoAux;
@@ -525,6 +540,36 @@ bool SimulationGroup::Configure(const GroupPolicy& policy, const ISceneInputs& i
 		l->identity = Hash(V::ArrayValue({V::String(c.fromMember), V::String(c.fromPort), V::String(c.toMember),
 			V::String(c.toPort), V::String(adapterId), V::ArrayValue(aux)}));
 	}
+	// M7 prerequisites: owned implicit exchanges.
+	if (!policy.ownedExchanges.empty()) {
+		if (policy.order != ExchangeOrder::GaussSeidel) return Fail(error, "an owned exchange needs Gauss-Seidel order");
+		std::set<std::size_t> covered;
+		for (const auto& e : policy.ownedExchanges) {
+			const std::size_t o = index(e.owner);
+			if (o == members_.size() || members_[o]->cached) return Fail(error, "owned exchange: no live member " + e.owner);
+			if (e.partners.empty()) return Fail(error, "owned exchange of " + e.owner + " names no partner");
+			covered.insert(o);
+			for (const auto& name : e.partners) {
+				const std::size_t q = index(name);
+				if (q == members_.size() || members_[q]->cached || q == o)
+					return Fail(error, "owned exchange of " + e.owner + ": invalid partner " + name);
+				if (position(o) > position(q))
+					return Fail(error, "owned exchange: the owner " + e.owner + " must step before its partner " + name);
+				covered.insert(q);
+				for (auto& l : links_) {
+					if (!((l->from == o && l->to == q) || (l->from == q && l->to == o))) continue;
+					if (l->owned && l->owner != o) return Fail(error, "a connection is owned by two members");
+					l->owned = true;
+					l->owner = o;
+				}
+			}
+		}
+		if (implicit)
+			for (std::size_t i : order_)
+				if (!covered.count(i))
+					return Fail(error, "member " + members_[i]->name + " would sub-iterate beside an owned exchange "
+						"(not supported: every live member must belong to an owned exchange when subIterations > 1)");
+	}
 	// Base identities.
 	for (auto& m : members_) {
 		if (m->cached) {
@@ -595,10 +640,29 @@ bool SimulationGroup::Configure(const GroupPolicy& policy, const ISceneInputs& i
 			membersPredictive = membersPredictive && (c.cached ? c.snapshot->Description().fidelity == "predictive" :
 				EffectiveFidelity(c.description.evidence) == "predictive");
 		}
+		// M7 prerequisites: owned implicit exchanges.  The owner's joint solve is
+		// the implicit coupling when it declares every owned port on its side;
+		// its own evidence (in the closure, so it must be predictive) stands in
+		// for the coupling's.
+		bool anyPlain = false;
+		std::string undeclared;
+		for (const Link* l : into) {
+			if (!l->owned) { anyPlain = true; continue; }
+			const Member& owner = *members_[l->owner];
+			const std::string& port = l->to == l->owner ? l->c.toPort : l->c.fromPort;
+			const auto& declared = owner.description.capabilities.ownedImplicitPorts;
+			if (std::find(declared.begin(), declared.end(), port) == declared.end() && undeclared.empty())
+				undeclared = owner.name + "." + port;
+		}
+		const bool ownedOnly = !anyPlain;
+		if (ownedOnly) kind = "owned-implicit";
 		Evidence coupled;
 		std::string why;
-		const bool haveEvidence = CouplingEvidence(kind, coupled, why) && EffectiveFidelity(coupled) == "predictive";
-		if (!implicit) m.couplingLimit = "explicit staggered coupling is first order in the macro step and lags one partner by a step";
+		const bool haveEvidence = ownedOnly ? true : CouplingEvidence(kind, coupled, why) && EffectiveFidelity(coupled) == "predictive";
+		if (!undeclared.empty())
+			m.couplingLimit = "the owned exchange on " + undeclared + " is not declared by its owner as an implicit joint solve";
+		else if (ownedOnly) { /* implicit through the owner's solve */ }
+		else if (!implicit) m.couplingLimit = "explicit staggered coupling is first order in the macro step and lags one partner by a step";
 		else if (!(policy.convergenceTolerance > 0 && policy.convergenceTolerance <= kPredictiveCouplingTolerance))
 			m.couplingLimit = "implicit coupling needs a convergence tolerance in (0, 1e-6] to be predictive";
 		else if (!exact) m.couplingLimit = "a connection goes through a model adapter (preview)";
@@ -606,17 +670,22 @@ bool SimulationGroup::Configure(const GroupPolicy& policy, const ISceneInputs& i
 		else if (!haveEvidence) m.couplingLimit = "the coupling " + kind + " has no passing evidence" + (why.empty() ? "" : ": " + why);
 		auto& ev = m.description.evidence;
 		EvidenceConditions conditions = ev.conditions;
-		conditions.push_back({"coupling", {implicit ? std::string("implicit-") + OrderName(policy.order) :
+		conditions.push_back({"coupling", {ownedOnly ? std::string("owned-implicit") : implicit ? std::string("implicit-") + OrderName(policy.order) :
 			std::string("staggered-") + OrderName(policy.order)}});
-		if (haveEvidence) {
+		if (haveEvidence && !ownedOnly) {
 			for (const auto& c : coupled.conditions) conditions.push_back({"coupling_" + c.first, c.second});
 			for (const auto& c : coupled.cases) ev.cases.push_back(c);
 		}
 		std::sort(conditions.begin(), conditions.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
 		ev.conditions = conditions;
-		ev.scope += std::string(ev.scope.empty() ? "" : " ") + "Coupled in a co-stepping group (" + kind + ", " +
-			(implicit ? "implicit" : "staggered") + " " + OrderName(policy.order) + ")" +
-			(haveEvidence ? ": " + coupled.scope : std::string(": the coupling itself has no evidence")) + ".";
+		if (ownedOnly)
+			ev.scope += std::string(ev.scope.empty() ? "" : " ") + "Coupled in a co-stepping group through exchanges owned by "
+				"a member that solves the partner's motion inside its own step (one exchange per macro step); the coupling is "
+				"covered by that member's own evidence.";
+		else
+			ev.scope += std::string(ev.scope.empty() ? "" : " ") + "Coupled in a co-stepping group (" + kind + ", " +
+				(implicit ? "implicit" : "staggered") + " " + OrderName(policy.order) + ")" +
+				(haveEvidence ? ": " + coupled.scope : std::string(": the coupling itself has no evidence")) + ".";
 		if (!m.couplingLimit.empty()) {
 			ev.fidelity = "preview";
 			m.description.capabilities.fidelityLimit = m.couplingLimit;
@@ -817,7 +886,9 @@ bool SimulationGroup::StepInterval(double a, double b, int depth, std::string& e
 	stepStart_ = a;
 	stepEnd_ = b;
 	for (auto& l : links_) { l->served.reset(); l->relaxed.reset(); }
-	if (policy_.subIterations <= 1) {
+	// M7 prerequisites: with owned exchanges (every member belongs to one when
+	// sub-iterating, Configure) the step is one exchange.
+	if (policy_.subIterations <= 1 || !policy_.ownedExchanges.empty()) {
 		iteration_ = 0;
 		if (!AdvanceAll(b, false, error)) return false;
 		for (auto& l : links_) l->accepted = l->served;
@@ -1054,6 +1125,139 @@ bool SimulationGroup::Restore(const Bytes& state, std::string& error)
 		auto bytes = std::make_shared<const Bytes>(a[1].GetBytes());
 		m->statics[RISECBOR64::SHA256Hex(*bytes)] = bytes;
 	}
+	time_ = time->GetFloat();
+	steps_ = steps->GetIntegerArgument();
+	if (!WriteGroupManifests(error)) return false;
+	started_ = true;
+	return true;
+}
+
+namespace {
+constexpr const char* StreamFormat = "rise.simulation.group.stream.v1";
+
+class CountingSink final : public ICheckpointSink {
+public:
+	bool Write(const std::uint8_t*, std::size_t size, std::string&) override { length += size; return true; }
+	std::uint64_t length = 0;
+};
+
+class CountedSink final : public ICheckpointSink {
+public:
+	CountedSink(ICheckpointSink& inner) : inner_(inner) {}
+	bool Write(const std::uint8_t* data, std::size_t size, std::string& error) override
+	{
+		length += size;
+		return inner_.Write(data, size, error);
+	}
+	std::uint64_t length = 0;
+private:
+	ICheckpointSink& inner_;
+};
+
+class LimitedSource final : public ICheckpointSource {
+public:
+	LimitedSource(ICheckpointSource& inner, std::uint64_t length) : inner_(inner), left_(length) {}
+	bool Read(std::uint8_t* data, std::size_t size, std::string& error) override
+	{
+		if (size > left_) { error = "member read past its checkpoint stream"; return false; }
+		if (!inner_.Read(data, size, error)) return false;
+		left_ -= size;
+		return true;
+	}
+	std::uint64_t Remaining() const override { return left_; }
+private:
+	ICheckpointSource& inner_;
+	std::uint64_t left_;
+};
+}
+
+bool SimulationGroup::CheckpointTo(ICheckpointSink& sink, std::string& error)
+{
+	if (!started_) return Fail(error, "nothing to checkpoint");
+	V::Values ms, offers, statics;
+	std::vector<std::uint64_t> lengths;
+	for (std::size_t i : order_) {
+		Member& m = *members_[i];
+		CountingSink count;
+		if (!m.solver->CheckpointTo(count, error)) return Fail(error, "member " + m.name + ": " + error);
+		lengths.push_back(count.length);
+		ms.push_back(V::ArrayValue({V::String(m.name), V::Unsigned(count.length)}));
+	}
+	for (const auto& m : members_) {
+		for (const auto& p : m->offers)
+			for (const auto& e : p.second)
+				offers.push_back(V::ArrayValue({V::String(m->name), V::String(p.first), V::Float(e.first), V::BytesValue(*e.second)}));
+		for (const auto& s : m->statics) statics.push_back(V::ArrayValue({V::String(m->name), V::BytesValue(*s.second)}));
+	}
+	Bytes index;
+	if (!RISECBOR64::Encode(V::MapValue({{"format", V::String(StreamFormat)}, {"identity", V::String(identity_)},
+		{"time", V::Float(time_)}, {"steps", V::Unsigned(steps_)}, {"members", V::ArrayValue(ms)},
+		{"offers", V::ArrayValue(offers)}, {"statics", V::ArrayValue(statics)}}), index, &error)) return false;
+	std::uint8_t size[8];
+	for (unsigned k = 0; k < 8; ++k) size[k] = static_cast<std::uint8_t>(std::uint64_t(index.size()) >> (8*k));
+	if (!sink.Write(size, 8, error) || !sink.Write(index.data(), index.size(), error)) return false;
+	std::size_t at = 0;
+	for (std::size_t i : order_) {
+		Member& m = *members_[i];
+		CountedSink counted(sink);
+		if (!m.solver->CheckpointTo(counted, error)) return Fail(error, "member " + m.name + ": " + error);
+		if (counted.length != lengths[at++]) return Fail(error, "member " + m.name + ": its checkpoint stream changed length between passes");
+	}
+	return true;
+}
+
+bool SimulationGroup::RestoreFrom(ICheckpointSource& source, std::string& error)
+{
+	if (!configured_ || started_) return Fail(error, "restore once, after Configure, instead of Start");
+	std::uint8_t size[8];
+	if (!source.Read(size, 8, error)) return Fail(error, "invalid group stream");
+	std::uint64_t n = 0;
+	for (unsigned k = 0; k < 8; ++k) n |= std::uint64_t(size[k]) << (8*k);
+	if (n > source.Remaining() || n > (std::uint64_t(1) << 32)) return Fail(error, "invalid group stream index");
+	Bytes index(static_cast<std::size_t>(n));
+	if (!source.Read(index.data(), index.size(), error)) return false;
+	V v;
+	if (!CanDecodeCanonicalRecord(index, std::size_t(4) << 30) || !RISECBOR64::DecodeCanonical(index, v, &error) || v.GetType() != V::Map)
+		return Fail(error, "invalid group stream index");
+	const V *format = v.Find("format"), *identity = v.Find("identity"), *time = v.Find("time"), *steps = v.Find("steps"),
+		*ms = v.Find("members"), *offers = v.Find("offers"), *statics = v.Find("statics");
+	if (!format || format->GetType() != V::Text || format->GetText() != StreamFormat || !identity || identity->GetType() != V::Text ||
+		!time || time->GetType() != V::Float64 || !steps || steps->GetType() != V::UnsignedInteger || !ms || ms->GetType() != V::Array ||
+		!offers || offers->GetType() != V::Array || !statics || statics->GetType() != V::Array)
+		return Fail(error, "invalid group stream fields");
+	if (identity->GetText() != identity_) return Fail(error, "the group state belongs to another group configuration");
+	auto member = [&](const std::string& name) -> Member* {
+		for (auto& m : members_) if (m->name == name) return m.get();
+		return nullptr;
+	};
+	for (const V& e : ms->GetArray()) {
+		if (e.GetType() != V::Array || e.GetArray().size() != 2 || e.GetArray()[0].GetType() != V::Text ||
+			e.GetArray()[1].GetType() != V::UnsignedInteger) return Fail(error, "invalid group member entry");
+		Member* m = member(e.GetArray()[0].GetText());
+		if (!m || m->cached) return Fail(error, "group state names an unknown member");
+		LimitedSource limited(source, e.GetArray()[1].GetIntegerArgument());
+		if (limited.Remaining() > source.Remaining()) return Fail(error, "group stream is truncated");
+		if (!m->solver->RestoreFrom(limited, error)) return Fail(error, "member " + m->name + ": " + error);
+		if (limited.Remaining() != 0) return Fail(error, "member " + m->name + ": did not consume its checkpoint stream");
+	}
+	for (const V& e : offers->GetArray()) {
+		const auto& a = e.GetArray();
+		if (e.GetType() != V::Array || a.size() != 4 || a[0].GetType() != V::Text || a[1].GetType() != V::Text ||
+			a[2].GetType() != V::Float64 || a[3].GetType() != V::ByteString) return Fail(error, "invalid group offer");
+		Member* m = member(a[0].GetText());
+		if (!m) return Fail(error, "group state names an unknown member");
+		m->offers[a[1].GetText()].emplace_back(a[2].GetFloat(), std::make_shared<const Bytes>(a[3].GetBytes()));
+	}
+	for (const V& e : statics->GetArray()) {
+		const auto& a = e.GetArray();
+		if (e.GetType() != V::Array || a.size() != 2 || a[0].GetType() != V::Text || a[1].GetType() != V::ByteString)
+			return Fail(error, "invalid group static");
+		Member* m = member(a[0].GetText());
+		if (!m) return Fail(error, "group state names an unknown member");
+		auto bytes = std::make_shared<const Bytes>(a[1].GetBytes());
+		m->statics[RISECBOR64::SHA256Hex(*bytes)] = bytes;
+	}
+	if (source.Remaining() != 0) return Fail(error, "trailing bytes after the group stream");
 	time_ = time->GetFloat();
 	steps_ = steps->GetIntegerArgument();
 	if (!WriteGroupManifests(error)) return false;

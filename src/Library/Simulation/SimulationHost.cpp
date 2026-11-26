@@ -607,6 +607,37 @@ bool InProcessHost::RestoreCheckpoint(const Checkpoint& checkpoint,std::string& 
 	return true;
 }
 
+bool InProcessHost::SaveCheckpointTo(ICheckpointSink& sink,std::string& key,SolverPosition& position,std::string& error)
+{
+	if (Busy()) return Fail(error,"checkpoint while idle");
+	std::lock_guard<std::mutex> step(stepMutex_);
+	if (!started_) return Fail(error,"host not started");
+	if (!solver_->CheckpointTo(sink,error)) return false;
+	key=description_.cache.key;
+	position=solver_->Position();
+	return true;
+}
+
+bool InProcessHost::RestoreCheckpointFrom(ICheckpointSource& source,const std::string& key,const SolverPosition& expected,
+	std::string& error)
+{
+	if (Busy()) return Fail(error,"restore while idle");
+	std::lock_guard<std::mutex> step(stepMutex_);
+	if (!configured_) return Fail(error,"restore after Configure");
+	if (key!=description_.cache.key) return Fail(error,"checkpoint belongs to a different configuration");
+	if (!started_ && !PrepareSideOutput(error)) return false;
+	if (!solver_->RestoreFrom(source,error)) return false;
+	if (source.Remaining()!=0) return Fail(error,"the solver did not consume the whole checkpoint stream");
+	const auto position=solver_->Position();
+	if (position.nextIndex!=expected.nextIndex || position.time!=expected.time ||
+		position.finished!=expected.finished) return Fail(error,"restored solver position disagrees with checkpoint");
+	publisher_.DiscardFrom(position.nextIndex);
+	std::lock_guard<std::mutex> hold(mutex_);
+	position_=position;
+	started_=true;
+	return true;
+}
+
 // ---------------------------------------------------------------- port adapters
 
 bool RegisterPortAdapter(const std::string& id,std::shared_ptr<const IPortAdapter> adapter,std::string& error)

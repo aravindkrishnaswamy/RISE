@@ -83,7 +83,7 @@ below the resolved scale.
 About 1–3 s per step at 256³ on this machine, and roughly 1,200 steps per simulated second at 4 mm cells, so a 10 s
 bake is on the order of 7 hours; 128³ is about 16 times cheaper. A first prototype replaces this estimate.
 
-## 6. Prerequisites that do not depend on the method (in progress)
+## 6. Prerequisites that do not depend on the method (done: [results](SIMULATION_M7_PREREQ_RESULTS.md))
 
 | Item | Why |
 |---|---|

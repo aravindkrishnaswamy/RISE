@@ -5063,6 +5063,27 @@ namespace RISE
 			return false;
 		}
 
+		//! M7 prerequisites: `simulated_points_geometry` -- a particle set
+		//! (points.v1) read from a simulation cache, each point a sphere.
+		//! Exactly one of `cache` (a cache directory, read as
+		//! AddSimulatedMeshGeometry reads it) and `source`
+		//! (`<simulation>.<output>` of a producer) is nonempty.  The time map,
+		//! end, missing-frame and fidelity options are simulated_mesh_geometry's;
+		//! `radius` (metres) is used for a frame without radii, `radius_scale`
+		//! multiplies every radius, `color_attribute` (may be empty) names a
+		//! 1- or 3-component attribute exposed as the vertex colour.  The
+		//! default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddSimulatedPointsGeometry(
+			const char* /*name*/, const char* /*cache*/, const char* /*source*/, const char* /*output*/,
+			const double /*time_offset*/, const double /*time_scale*/,
+			const char* /*end_policy*/, const char* /*missing_frame*/, const char* /*fidelity*/,
+			const bool /*motion_blur*/, const double /*radius*/, const double /*radius_scale*/,
+			const char* /*color_attribute*/ )
+		{
+			return false;
+		}
+
 	};
 
 

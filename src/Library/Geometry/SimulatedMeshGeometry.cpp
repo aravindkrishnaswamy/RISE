@@ -8,6 +8,7 @@
 
 #include "pch.h"
 #include "SimulatedMeshGeometry.h"
+#include "SimulatedPointsGeometry.h"
 #include "../Animation/Animator.h"
 #include "../Animation/TimeIndexedView.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -46,6 +47,12 @@ namespace
 		out.resize( xyz.size() / 3 );
 		for( std::size_t i = 0; i < out.size(); ++i ) out[i] = Vector3( xyz[3*i], xyz[3*i+1], xyz[3*i+2] );
 	}
+
+	void ToCoords( const std::vector<double>& uv, TexCoordsListType& out )
+	{
+		out.resize( uv.size() / 2 );
+		for( std::size_t i = 0; i < out.size(); ++i ) out[i] = Point2( uv[2*i], uv[2*i+1] );
+	}
 }
 
 SimulatedMeshGeometry* SimulatedMeshGeometry::Create( const std::string& cacheRoot,
@@ -70,12 +77,32 @@ bool SimulatedMeshGeometry::BuildTopology( const Simulation::MeshCacheSource& s 
 {
 	VerticesListType positions;
 	ToPoints( s.BindPositions(), positions );
+	m_installedIndices = s.Indices();
+	m_installedTopology = s.TopologyDigest();
+	if( s.Indices().empty() ) {
+		// M7: an empty (or triangle-less) bind frame.  The full build's
+		// certificates would be cleared below anyway; install it lean.
+		NormalsListType normals;
+		if( !m_options.faceNormals ) {
+			if( s.PayloadHasNormals() ) ToVectors( s.BindNormals(), normals );
+			else ComputeNormals( positions, s.Indices(), normals );
+		}
+		TexCoordsListType coords;
+		ToCoords( s.BindUVs(), coords );
+		ReplaceTopologyLean( positions, normals, coords, s.Indices(), false );
+		m_installedFrame = s.BindIndex();
+		m_identity = "bind|" + std::to_string( s.BindIndex() );
+		m_hidden = false;
+		m_built = true;
+		m_builtTopology = s.TopologyDigest();
+		return true;
+	}
 	BeginIndexedTriangles();
 	AddVertices( positions );
 	if( !m_options.faceNormals ) {
 		NormalsListType normals;
 		if( s.PayloadHasNormals() ) ToVectors( s.BindNormals(), normals );
-		else ComputeNormals( positions, normals );
+		else ComputeNormals( positions, s.Indices(), normals );
 		AddNormals( normals );
 	}
 	// mesh.v2 UV set (fixed with the topology) as per-vertex texture coordinates.
@@ -121,7 +148,8 @@ SimulatedMeshGeometry::SimulatedMeshGeometry( const Options& options,
   m_lastWarnedMissing( std::numeric_limits<std::int64_t>::min() ),
   m_leases( 0 ),
   m_generation( 0 ), m_frozenGeneration( 0 ),
-  m_built( false )
+  m_built( false ),
+  m_rebuilds( 0 )
 {
 }
 
@@ -147,7 +175,9 @@ bool RISE::Implementation::SceneBindsSimulatedMesh( const IScene& scene )
 		bool found = false;
 		bool operator()( const IObject& object ) override
 		{
-			found = dynamic_cast<const SimulatedMeshGeometry*>( object.GetGeometry() ) != nullptr;
+			// M7 prerequisites: simulated points render prepared too.
+			found = dynamic_cast<const SimulatedMeshGeometry*>( object.GetGeometry() ) != nullptr ||
+				dynamic_cast<const SimulatedPointsGeometry*>( object.GetGeometry() ) != nullptr;
 			return !found;
 		}
 	} finder;
@@ -155,11 +185,11 @@ bool RISE::Implementation::SceneBindsSimulatedMesh( const IScene& scene )
 	return finder.found;
 }
 
-void SimulatedMeshGeometry::ComputeNormals( const VerticesListType& p, NormalsListType& out ) const
+void SimulatedMeshGeometry::ComputeNormals( const VerticesListType& p, const std::vector<std::uint32_t>& indices,
+	NormalsListType& out ) const
 {
-	// Area-weighted vertex normals over the bound topology.
+	// Area-weighted vertex normals over the frame's topology.
 	out.assign( p.size(), Vector3( 0, 0, 0 ) );
-	const std::vector<std::uint32_t>& indices = m_source->Indices();
 	for( std::size_t t = 0; t + 2 < indices.size(); t += 3 ) {
 		const std::uint32_t a = indices[t], b = indices[t+1], c = indices[t+2];
 		const Vector3 n = Vector3Ops::Cross( Vector3Ops::mkVector3( p[b], p[a] ), Vector3Ops::mkVector3( p[c], p[a] ) );
@@ -171,9 +201,17 @@ void SimulatedMeshGeometry::ComputeNormals( const VerticesListType& p, NormalsLi
 	}
 }
 
-SimulatedMeshGeometry::State SimulatedMeshGeometry::Capture() const
+SimulatedMeshGeometry::State SimulatedMeshGeometry::Capture( const bool withTopology ) const
 {
 	State s;
+	if( withTopology ) {
+		// Restoring this state replaces the topology back (a rollback across a
+		// topology change).
+		s.rebuild = true;
+		s.indices = m_installedIndices;
+		s.coords = pCoords;
+		s.topology = m_installedTopology;
+	}
 	s.positions = pPoints;
 	s.normals = pNormals;
 	s.keyOpen = m_keyOpen; s.keyClose = m_keyClose;
@@ -197,6 +235,18 @@ bool SimulatedMeshGeometry::Install( State& next, std::string& error )
 	m_invSpan = next.close > next.open ? 1.0 / ( next.close - next.open ) : 0.0;
 	m_installedFrame = next.frame;
 	m_identity = next.identity;
+	if( next.rebuild ) {
+		// M7: a changing-topology frame.  Every array and the BVH are
+		// replaced; the blur keys above already match its vertices.
+		if( !ReplaceTopologyLean( next.positions, next.normals, next.coords, next.indices, true ) ) {
+			error = "simulated mesh install failed (a frame index is out of range)";
+			return false;
+		}
+		m_installedIndices.swap( next.indices );
+		m_installedTopology = next.topology;
+		++m_rebuilds;
+		return true;
+	}
 	if( !UpdateVerticesLean( next.positions, next.normals, true ) ) {
 		error = "simulated mesh install failed (vertex/normal count mismatch)";
 		return false;
@@ -243,14 +293,9 @@ bool SimulatedMeshGeometry::RebindSource( std::unique_ptr<Simulation::MeshCacheS
 		if( m_leases ) { error = "mutation_frozen"; return false; }
 	}
 	if( !source ) { error = "simulated mesh rebind needs a source"; return false; }
-	const bool differs = m_source ?
-		( source->VertexCount() != m_source->VertexCount() || source->Indices() != m_source->Indices() ) :
-		( m_built && source->TopologyDigest() != m_builtTopology );
-	if( differs ) {
-		error = "simulated mesh rebind refused: the new source's topology differs from the bound mesh "
-			"(changing topology needs a reload; M7)";
-		return false;
-	}
+	// M7: a source whose bind topology differs is accepted; the next prepare
+	// compares the frame's topology digest with the installed one and
+	// replaces the topology when they differ.
 	if( !m_built ) {
 		// M4: an unbound mesh takes its topology from its first source.
 		m_source.swap( source );
@@ -347,10 +392,19 @@ bool SimulatedMeshGeometry::PrepareFrame( const RenderTimeSupport& support,
 		m_open == support.open && m_close == support.close && m_nominal == support.nominal ) return true;
 
 	State next;
+	// M7: the frame's connectivity (its own, or the bind frame's), and whether
+	// installing it replaces the installed topology or refits it.
+	const std::vector<std::uint32_t>& indices = sample.ownTopology ? sample.indices : m_source->Indices();
+	next.rebuild = sample.topology != m_installedTopology;
 	ToPoints( sample.nominal, next.positions );
 	if( !m_options.faceNormals ) {
 		if( !sample.normals.empty() ) ToVectors( sample.normals, next.normals );
-		else ComputeNormals( next.positions, next.normals );
+		else ComputeNormals( next.positions, indices, next.normals );
+	}
+	if( next.rebuild ) {
+		next.indices = indices;
+		next.topology = sample.topology;
+		ToCoords( sample.ownTopology ? sample.uvs : m_source->BindUVs(), next.coords );
 	}
 	if( !sample.open.empty() ) {
 		ToPoints( sample.open, next.keyOpen );
@@ -369,9 +423,9 @@ bool SimulatedMeshGeometry::PrepareFrame( const RenderTimeSupport& support,
 			// surface between the frame and the key (exactly the recomputed
 			// normal when the payload has none).
 			NormalsListType atFrame, atOpen, atClose;
-			ComputeNormals( next.positions, atFrame );
-			ComputeNormals( next.keyOpen, atOpen );
-			ComputeNormals( next.keyClose, atClose );
+			ComputeNormals( next.positions, indices, atFrame );
+			ComputeNormals( next.keyOpen, indices, atOpen );
+			ComputeNormals( next.keyClose, indices, atClose );
 			next.normalOpen.resize( atOpen.size() );
 			next.normalClose.resize( atClose.size() );
 			for( std::size_t i = 0; i < atOpen.size(); ++i ) {
@@ -389,7 +443,7 @@ bool SimulatedMeshGeometry::PrepareFrame( const RenderTimeSupport& support,
 	next.frame = sample.index;
 	next.identity = sample.identity;
 
-	State previous = Capture();
+	State previous = Capture( next.rebuild );
 	if( !Install( next, error ) ) {
 		std::string ignored;
 		Install( previous, ignored );
@@ -422,6 +476,29 @@ bool SimulatedMeshGeometry::ReleaseAssetFreeze( std::string& error )
 	--m_leases;
 	if( m_generation != m_frozenGeneration ) { error = "simulated mesh changed during render"; return false; }
 	return true;
+}
+
+void SimulatedMeshGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
+{
+	if( ptr_polygons.empty() ) {
+		// An empty frame has no area (GetArea is 0) and is never chosen by
+		// area-weighted light selection; answer something finite regardless.
+		if( point ) *point = Point3( 0, 0, 0 );
+		if( normal ) *normal = Vector3( 0, 0, 1 );
+		if( coord ) *coord = Point2( 0, 0 );
+		return;
+	}
+	TriangleMeshGeometryIndexed::UniformRandomPoint( point, normal, coord, prand );
+}
+
+void SimulatedMeshGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
+{
+	if( pPoints.empty() ) {
+		ptCenter = Point3( 0, 0, 0 );
+		radius = 0;
+		return;
+	}
+	TriangleMeshGeometryIndexed::GenerateBoundingSphere( ptCenter, radius );
 }
 
 Scalar SimulatedMeshGeometry::ShutterFraction() const

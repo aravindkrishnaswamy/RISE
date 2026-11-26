@@ -648,7 +648,8 @@ bool CanDecodeCanonicalRecord(const Bytes& encoded,std::size_t budget)
 bool IsNativePayloadType(const std::string& type)
 {
 	return type=="grid.v1" || type=="mesh.v1" || type=="mesh.v2" || type=="field.v1" ||
-		type=="transform.v1"; // M6: rigid bodies (SimulationTransform.h)
+		type=="transform.v1" || // M6: rigid bodies (SimulationTransform.h)
+		type=="points.v1"; // M7 prerequisites: particle sets (SimulationPoints.h)
 }
 
 bool IsNativeStaticType(const std::string& type)
@@ -767,6 +768,147 @@ bool ReadSidecarFile(const fs::path& directory,const std::string& name,std::size
 	Bytes candidate;
 	if (ReadFile(directory,name,budget,nullptr,candidate,error)!=FrameStatus::Ready) return false;
 	bytes.swap(candidate);
+	return true;
+}
+
+// ---------------------------------------------------------------- streamed sidecars (M7 prerequisites)
+
+DurableSidecarWriter::~DurableSidecarWriter() { Abandon(); }
+
+void DurableSidecarWriter::Abandon()
+{
+#if defined(_WIN32)
+	if (stream_) { std::fclose(stream_); stream_=nullptr; std::error_code ec; fs::remove(directory_/pending_,ec); }
+#else
+	if (file_>=0) { ::close(file_); file_=-1; if (dir_>=0) ::unlinkat(dir_,pending_.c_str(),0); }
+	if (dir_>=0) { ::close(dir_); dir_=-1; }
+#endif
+}
+
+bool DurableSidecarWriter::Begin(const fs::path& directory,const std::string& name,std::string& error)
+{
+	Abandon();
+	if (!SidecarName(name)) return Fail(error,"invalid sidecar file name");
+	directory_=directory; name_=name; pending_="."+name+".pending"; written_=0;
+#if defined(_WIN32)
+	std::error_code ec;
+	fs::remove(directory/pending_,ec);
+	stream_=_wfopen((directory/pending_).c_str(),L"wb");
+	if (!stream_) return Fail(error,"cannot create staged sidecar file");
+	return true;
+#else
+	dir_=::open(directory.c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+	if (dir_<0) return Fail(error,"cannot open sidecar directory");
+	if (::unlinkat(dir_,pending_.c_str(),0)!=0 && errno!=ENOENT) { Abandon(); return Fail(error,"cannot clean interrupted sidecar write"); }
+	file_=::openat(dir_,pending_.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+	if (file_<0) { Abandon(); return Fail(error,"cannot create staged sidecar file"); }
+	return true;
+#endif
+}
+
+bool DurableSidecarWriter::Write(const void* data,std::size_t size,std::string& error)
+{
+	const auto* p=static_cast<const std::uint8_t*>(data);
+#if defined(_WIN32)
+	if (!stream_) return Fail(error,"sidecar writer is not open");
+	if (size && std::fwrite(p,1,size,stream_)!=size) return Fail(error,"sidecar write failed");
+#else
+	if (file_<0) return Fail(error,"sidecar writer is not open");
+	std::size_t pos=0;
+	while (pos<size) {
+		const auto n=::write(file_,p+pos,std::min<std::size_t>(size-pos,std::size_t(1)<<20));
+		if (n<0 && errno==EINTR) continue;
+		if (n<=0) return Fail(error,"sidecar write failed");
+		pos+=static_cast<std::size_t>(n);
+	}
+#endif
+	written_+=size;
+	return true;
+}
+
+bool DurableSidecarWriter::Commit(std::string& error)
+{
+#if defined(_WIN32)
+	if (!stream_) return Fail(error,"sidecar writer is not open");
+	const bool flushed=std::fflush(stream_)==0;
+	std::fclose(stream_); stream_=nullptr;
+	if (!flushed) return Fail(error,"cannot flush staged sidecar file");
+	std::error_code ec;
+	fs::rename(directory_/pending_,directory_/name_,ec);
+	if (ec) return Fail(error,"sidecar replace failed");
+	return SyncDirectory(directory_,error);
+#else
+	if (file_<0) return Fail(error,"sidecar writer is not open");
+	if (::fsync(file_)!=0) { Abandon(); return Fail(error,"cannot sync staged sidecar file"); }
+	::close(file_); file_=-1;
+	if (::renameat(dir_,pending_.c_str(),dir_,name_.c_str())!=0) { ::unlinkat(dir_,pending_.c_str(),0); Abandon(); return Fail(error,"sidecar replace failed"); }
+	const bool synced=::fsync(dir_)==0;
+	Abandon();
+	return synced || Fail(error,"cannot sync sidecar directory");
+#endif
+}
+
+SidecarReader::~SidecarReader()
+{
+#if defined(_WIN32)
+	if (stream_) std::fclose(stream_);
+#else
+	if (file_>=0) ::close(file_);
+#endif
+}
+
+bool SidecarReader::Open(const fs::path& directory,const std::string& name,std::string& error)
+{
+	if (!SidecarName(name)) return Fail(error,"invalid sidecar file name");
+	position_=0;
+#if defined(_WIN32)
+	std::error_code ec;
+	const auto status=fs::symlink_status(directory/name,ec);
+	if (ec || !fs::is_regular_file(status)) return Fail(error,"sidecar is missing or not a regular file");
+	size_=fs::file_size(directory/name,ec);
+	if (ec) return Fail(error,"cannot size sidecar");
+	stream_=_wfopen((directory/name).c_str(),L"rb");
+	return stream_ || Fail(error,"cannot open sidecar");
+#else
+	Descriptor dir(::open(directory.c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));
+	if (dir.fd<0) return Fail(error,"cannot open sidecar directory");
+	file_=::openat(dir.fd,name.c_str(),O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+	if (file_<0) return Fail(error,"cannot open sidecar");
+	struct stat st{};
+	if (::fstat(file_,&st)!=0 || !S_ISREG(st.st_mode)) return Fail(error,"sidecar is not a regular file");
+	size_=static_cast<std::uint64_t>(st.st_size);
+	return true;
+#endif
+}
+
+bool SidecarReader::Read(void* data,std::size_t size,std::string& error)
+{
+	if (size>size_-position_) return Fail(error,"sidecar is truncated");
+	auto* p=static_cast<std::uint8_t*>(data);
+#if defined(_WIN32)
+	if (!stream_ || (size && std::fread(p,1,size,stream_)!=size)) return Fail(error,"sidecar read failed");
+#else
+	std::size_t pos=0;
+	while (pos<size) {
+		const auto n=::read(file_,p+pos,std::min<std::size_t>(size-pos,std::size_t(1)<<20));
+		if (n<0 && errno==EINTR) continue;
+		if (n<=0) return Fail(error,"sidecar read failed");
+		pos+=static_cast<std::size_t>(n);
+	}
+#endif
+	position_+=size;
+	return true;
+}
+
+bool SidecarReader::Seek(std::uint64_t offset,std::string& error)
+{
+	if (offset>size_) return Fail(error,"sidecar seek past the end");
+#if defined(_WIN32)
+	if (!stream_ || _fseeki64(stream_,static_cast<long long>(offset),SEEK_SET)!=0) return Fail(error,"sidecar seek failed");
+#else
+	if (::lseek(file_,static_cast<off_t>(offset),SEEK_SET)<0) return Fail(error,"sidecar seek failed");
+#endif
+	position_=offset;
 	return true;
 }
 

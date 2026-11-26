@@ -62,6 +62,16 @@ struct Capabilities {
 	// will run on, so a scheduler can apply "one GPU solver at a time" from the
 	// description alone. Empty = not stated (the pre-M4 behaviour).
 	std::string backend;
+	// M7 prerequisites, additive: ports (accepted and offered) whose coupling
+	// this solver resolves implicitly inside its own step -- it takes the
+	// partner's inertia (e.g. rigid.bodies' body_mass_properties) and solves
+	// the partner's motion jointly with its own state, then offers the
+	// interaction the partner integrates.  A group that marks the exchange as
+	// owned by this member (GroupPolicy::ownedExchanges) does it once per macro
+	// step and treats it as implicit for the label when the member's own
+	// evidence (which must cover that joint solve) is predictive. Empty = not
+	// claimed (every solver before).
+	std::vector<std::string> ownedImplicitPorts;
 };
 
 // One validation case. The solver computes error from an actual check; the
@@ -269,6 +279,42 @@ public:
 	virtual ~SolverStateToken() = default;
 };
 
+// Streamed checkpoints (additive, M7 prerequisites; contract Appendix C): a
+// solver whose state is too large to hold twice in memory writes it in
+// chunks to a sink and reads it back from a source.  Hosts give the stream
+// durability (worker: staged file, fsync, rename) and integrity (a running
+// SHA-256 verified before RestoreFrom).  Write and Read are called from the
+// solver's calling thread; Read fills exactly `size` bytes or fails.
+class ICheckpointSink {
+public:
+	virtual ~ICheckpointSink() = default;
+	virtual bool Write(const std::uint8_t* data, std::size_t size, std::string& error) = 0;
+};
+
+class ICheckpointSource {
+public:
+	virtual ~ICheckpointSource() = default;
+	virtual bool Read(std::uint8_t* data, std::size_t size, std::string& error) = 0;
+	virtual std::uint64_t Remaining() const = 0;   // bytes of the stream not read yet
+};
+
+// In-memory sink and source (the in-process host; tests).
+class MemoryCheckpointSink final : public ICheckpointSink {
+public:
+	bool Write(const std::uint8_t* data, std::size_t size, std::string& error) override;
+	Bytes bytes;
+};
+
+class MemoryCheckpointSource final : public ICheckpointSource {
+public:
+	explicit MemoryCheckpointSource(const Bytes& bytes) : bytes_(bytes) {}
+	bool Read(std::uint8_t* data, std::size_t size, std::string& error) override;
+	std::uint64_t Remaining() const override { return bytes_.size() - position_; }
+private:
+	const Bytes& bytes_;
+	std::size_t position_ = 0;
+};
+
 class ISimulationSolver {
 public:
 	virtual ~ISimulationSolver() = default;
@@ -307,6 +353,15 @@ public:
 	{
 		(void)token; error = "this solver does not support rollback"; return false;
 	}
+	// Streamed checkpoints (additive, M7 prerequisites). The stream is the
+	// solver's checkpoint, chunked: CheckpointTo writes it to `sink`,
+	// RestoreFrom reads it back (instead of Start) and must consume the whole
+	// stream. A solver may give a different byte layout than Checkpoint, but
+	// both paths must resume identically. Defaults: the in-memory methods
+	// (Checkpoint into one buffer written in one call; the stream read into one
+	// buffer for Restore), so every existing solver streams unchanged.
+	virtual bool CheckpointTo(ICheckpointSink& sink, std::string& error);
+	virtual bool RestoreFrom(ICheckpointSource& source, std::string& error);
 };
 
 // ---------------------------------------------------------------- registry

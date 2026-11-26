@@ -204,6 +204,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SimulatedMeshGeometry.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\SimulatedPointsGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp" />
     <ClCompile Include="..\..\..\src\Library\Importers\GLTFSceneImporter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Importers\HairFileLoader.cpp" />
@@ -576,8 +577,10 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationMesh.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationPoints.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationField.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulatedPointsSource.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationTimeline.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\BuiltinSolvers.cpp" />
     <ClCompile Include="..\..\..\src\Library\Simulation\SceneSimulationWorker.cpp" />
@@ -758,6 +761,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SimulatedMeshGeometry.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\SimulatedPointsGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexedSpecializations.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometrySpecializations.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h" />
@@ -1276,8 +1280,10 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationVDBBounds.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationCache.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationMesh.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationPoints.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationField.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedMeshSource.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulatedPointsSource.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTimeline.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\BuiltinSolvers.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\SceneSimulationWorker.h" />

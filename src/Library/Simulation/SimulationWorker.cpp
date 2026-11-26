@@ -172,25 +172,9 @@ bool ReadJob(const fs::path& root,std::size_t budget,Job& job,std::string& error
 	return true;
 }
 
-// Header (canonical CBOR) then raw state bytes: "RISESIMC", u32 version 1,
-// u64 header length, header, state.
-// The prefix and the state are written as two parts of one durable file, so
-// the state is never copied (no concatenated buffer).
-bool WriteCheckpoint(const fs::path& root,const Job& job,const SolverPosition& p,const Bytes& state,
-	std::string& error)
-{
-	Bytes header;
-	if (!RISECBOR64::Encode(V::MapValue({{"key",V::String(job.key)},{"solver",V::String(job.solver)},
-		{"version",V::String(job.version)},{"time",V::Float(p.time)},{"next",V::Signed(p.nextIndex)},
-		{"finished",V::Bool(p.finished)},{"size",V::Unsigned(state.size())},
-		{"digest",V::String(RISECBOR64::SHA256Hex(state))}}),header,&error)) return false;
-	Bytes prefix(checkpointMagic,checkpointMagic+8);
-	auto word=[&](std::uint64_t x,unsigned width){for (unsigned i=0;i<width;++i) prefix.push_back(static_cast<unsigned char>(x>>(8*i)));};
-	word(1,4); word(header.size(),8);
-	prefix.insert(prefix.end(),header.begin(),header.end());
-	return ReplaceFileDurably(root,checkpointName,{{prefix.data(),prefix.size()},{state.data(),state.size()}},error);
-}
-
+// Version 1 checkpoint (written by workers before the M7 prerequisites; still
+// read): "RISESIMC", u32 version 1, u64 header length, header (canonical CBOR
+// with the state's size and digest), state.
 bool ReadCheckpoint(const fs::path& root,const Job& job,std::size_t budget,SolverPosition& p,Bytes& state,
 	std::string& error)
 {
@@ -224,6 +208,54 @@ bool ReadCheckpoint(const fs::path& root,const Job& job,std::size_t budget,Solve
 	p.finished=finished->GetBoolean();
 	state.swap(candidate);
 	return true;
+}
+
+// M7 prerequisites: the worker checkpoint, streamed (version 2).  The header
+// carries the job and the position; the state's length and digest are in the
+// trailer (WriteStreamedCheckpoint).
+bool WriteCheckpointStream(const fs::path& root,const Job& job,ISimulationSolver& solver,std::string& error)
+{
+	const SolverPosition p=solver.Position();
+	Bytes header;
+	if (!RISECBOR64::Encode(V::MapValue({{"key",V::String(job.key)},{"solver",V::String(job.solver)},
+		{"version",V::String(job.version)},{"time",V::Float(p.time)},{"next",V::Signed(p.nextIndex)},
+		{"finished",V::Bool(p.finished)}}),header,&error)) return false;
+	return WriteStreamedCheckpoint(root,checkpointName,header,
+		[&](ICheckpointSink& sink,std::string& e) { return solver.CheckpointTo(sink,e); },error);
+}
+
+// Restores the solver from the worker checkpoint (version 1 or 2) and returns
+// the position the header recorded.
+bool RestoreCheckpoint(const fs::path& root,const Job& job,std::size_t budget,ISimulationSolver& solver,
+	SolverPosition& p,std::string& error)
+{
+	if (!IsStreamedCheckpoint(root,checkpointName)) {
+		Bytes state;
+		return ReadCheckpoint(root,job,budget,p,state,error) && solver.Restore(state,error);
+	}
+	Bytes header;
+	V h;
+	bool decoded=false;
+	const auto read=[&](ICheckpointSource& source,std::string& e) {
+		if (!CanDecodeCanonicalRecord(header,budget) || !RISECBOR64::DecodeCanonical(header,h,&e))
+			return Fail(e,"invalid checkpoint header");
+		std::string key,solverId,version;
+		const V *time=h.Find("time"), *next=h.Find("next"), *finished=h.Find("finished");
+		if (h.GetType()!=V::Map || !Text(h,"key",key) || !Text(h,"solver",solverId) || !Text(h,"version",version) ||
+			!time || time->GetType()!=V::Float64 || !next ||
+			(next->GetType()!=V::UnsignedInteger && next->GetType()!=V::NegativeInteger) ||
+			next->GetIntegerArgument()>static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)()) ||
+			!finished || finished->GetType()!=V::Boolean)
+			return Fail(e,"invalid checkpoint header fields");
+		if (key!=job.key || solverId!=job.solver || version!=job.version) return Fail(e,"checkpoint belongs to another job");
+		const auto n=static_cast<std::int64_t>(next->GetIntegerArgument());
+		p.time=time->GetFloat();
+		p.nextIndex=next->GetType()==V::UnsignedInteger ? n : -1-n;
+		p.finished=finished->GetBoolean();
+		decoded=true;
+		return solver.RestoreFrom(source,e);
+	};
+	return ReadStreamedCheckpoint(root,checkpointName,budget,header,read,error) && (decoded || Fail(error,"empty checkpoint"));
 }
 
 double PriorWall(const fs::path& root);
@@ -376,10 +408,9 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 		std::string why;
 		if (!WriteStatus(root,status,why)) err<<"rise-sim: cannot write status: "<<why<<"\n";
 	};
-	auto checkpoint=[&](std::string& error) {
-		Bytes state;
-		return solver.Checkpoint(state,error) && WriteCheckpoint(root,job,solver.Position(),state,error);
-	};
+	// M7 prerequisites: streamed (CheckpointTo; a solver without its own
+	// stream writes its in-memory Checkpoint through the default).
+	auto checkpoint=[&](std::string& error) { return WriteCheckpointStream(root,job,solver,error); };
 	auto fail=[&](const std::string& error) {
 		update("failed",error);
 		err<<"rise-sim: "<<error<<"\n";
@@ -595,8 +626,7 @@ int Resume(const fs::path& root,const Options& options,const ISceneInputs& input
 	if (!PrepareSideOutput(*solver,d,root,false,error)) { err<<"rise-sim: "<<error<<"\n"; return WorkerFailed; }
 	if (Exists(root/checkpointName)) {
 		SolverPosition position;
-		Bytes state;
-		if (!ReadCheckpoint(root,job,options.budget,position,state,error) || !solver->Restore(state,error)) {
+		if (!RestoreCheckpoint(root,job,options.budget,*solver,position,error)) {
 			err<<"rise-sim: checkpoint: "<<error<<"\n"; return WorkerFailed;
 		}
 		const auto p=solver->Position();
@@ -791,6 +821,134 @@ int WorkerMain(int argc,char** argv)
 	std::vector<std::string> args;
 	for (int i=1;i<argc;++i) args.emplace_back(argv[i]);
 	return WorkerMain(args,std::cout,std::cerr);
+}
+
+// ---------------------------------------------------------------- streamed checkpoints (M7 prerequisites)
+
+namespace {
+constexpr char streamTrailerMagic[] = "RISESIME";
+constexpr std::size_t streamTrailerBytes = 8 + 64 + 8;
+
+class HashingFileSink final : public ICheckpointSink {
+public:
+	explicit HashingFileSink(DurableSidecarWriter& writer) : writer_(writer) {}
+	bool Write(const std::uint8_t* data, std::size_t size, std::string& error) override
+	{
+		if (!writer_.Write(data, size, error)) return false;
+		sha_.Update(data, size);
+		length_ += size;
+		return true;
+	}
+	std::uint64_t Length() const { return length_; }
+	std::string Digest() { return sha_.FinalHex(); }
+private:
+	DurableSidecarWriter& writer_;
+	RISECBOR64::SHA256Accumulator sha_;
+	std::uint64_t length_ = 0;
+};
+
+class HashingFileSource final : public ICheckpointSource {
+public:
+	HashingFileSource(SidecarReader& reader, std::uint64_t length) : reader_(reader), left_(length) {}
+	bool Read(std::uint8_t* data, std::size_t size, std::string& error) override
+	{
+		if (size > left_) return Fail(error, "checkpoint stream is shorter than the solver reads");
+		if (!reader_.Read(data, size, error)) return false;
+		sha_.Update(data, size);
+		left_ -= size;
+		return true;
+	}
+	std::uint64_t Remaining() const override { return left_; }
+	std::string Digest() { return sha_.FinalHex(); }
+private:
+	SidecarReader& reader_;
+	std::uint64_t left_;
+	RISECBOR64::SHA256Accumulator sha_;
+};
+
+void PutWord(Bytes& b, std::uint64_t x, unsigned width)
+{
+	for (unsigned i = 0; i < width; ++i) b.push_back(static_cast<std::uint8_t>(x >> (8*i)));
+}
+
+std::uint64_t GetWord(const std::uint8_t* p, unsigned width)
+{
+	std::uint64_t x = 0;
+	for (unsigned i = 0; i < width; ++i) x |= std::uint64_t(p[i]) << (8*i);
+	return x;
+}
+}
+
+bool WriteStreamedCheckpoint(const fs::path& directory, const std::string& name, const Bytes& header,
+	const std::function<bool(ICheckpointSink&, std::string&)>& write, std::string& error)
+{
+	DurableSidecarWriter writer;
+	if (!writer.Begin(directory, name, error)) return false;
+	Bytes prefix(checkpointMagic, checkpointMagic + 8);
+	PutWord(prefix, 2, 4);
+	PutWord(prefix, header.size(), 8);
+	prefix.insert(prefix.end(), header.begin(), header.end());
+	if (!writer.Write(prefix.data(), prefix.size(), error)) return false;
+	HashingFileSink sink(writer);
+	if (!write(sink, error)) return false;
+	Bytes trailer;
+	PutWord(trailer, sink.Length(), 8);
+	const std::string digest = sink.Digest();
+	trailer.insert(trailer.end(), digest.begin(), digest.end());
+	trailer.insert(trailer.end(), streamTrailerMagic, streamTrailerMagic + 8);
+	return writer.Write(trailer.data(), trailer.size(), error) && writer.Commit(error);
+}
+
+bool IsStreamedCheckpoint(const fs::path& directory, const std::string& name)
+{
+	SidecarReader reader;
+	std::string ignored;
+	std::uint8_t prefix[12];
+	return reader.Open(directory, name, ignored) && reader.Read(prefix, sizeof(prefix), ignored) &&
+		std::memcmp(prefix, checkpointMagic, 8) == 0 && GetWord(prefix + 8, 4) == 2;
+}
+
+bool ReadStreamedCheckpoint(const fs::path& directory, const std::string& name, std::size_t budget,
+	Bytes& header, const std::function<bool(ICheckpointSource&, std::string&)>& read, std::string& error)
+{
+	SidecarReader reader;
+	if (!reader.Open(directory, name, error)) return false;
+	std::uint8_t prefix[20];
+	if (!reader.Read(prefix, sizeof(prefix), error)) return Fail(error, "truncated checkpoint");
+	if (std::memcmp(prefix, checkpointMagic, 8) != 0 || GetWord(prefix + 8, 4) != 2) return Fail(error, "not a streamed checkpoint");
+	const std::uint64_t headerLength = GetWord(prefix + 12, 8);
+	if (headerLength > budget || headerLength > reader.Size() - 20 || reader.Size() - 20 - headerLength < streamTrailerBytes)
+		return Fail(error, "invalid or truncated checkpoint");
+	const std::uint64_t streamOffset = 20 + headerLength;
+	const std::uint64_t length = reader.Size() - streamOffset - streamTrailerBytes;
+	// The trailer: length, digest, end magic.
+	std::uint8_t trailer[streamTrailerBytes];
+	if (!reader.Seek(streamOffset + length, error) || !reader.Read(trailer, sizeof(trailer), error)) return false;
+	if (GetWord(trailer, 8) != length || std::memcmp(trailer + 72, streamTrailerMagic, 8) != 0)
+		return Fail(error, "checkpoint trailer is invalid (an interrupted or foreign file)");
+	const std::string digest(reinterpret_cast<const char*>(trailer + 8), 64);
+	// Pass 1: verify the digest before the solver sees a byte.
+	{
+		if (!reader.Seek(streamOffset, error)) return false;
+		RISECBOR64::SHA256Accumulator sha;
+		std::vector<std::uint8_t> buffer(std::size_t(1) << 20);
+		for (std::uint64_t left = length; left; ) {
+			const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(left, buffer.size()));
+			if (!reader.Read(buffer.data(), n, error)) return false;
+			sha.Update(buffer.data(), n);
+			left -= n;
+		}
+		if (sha.FinalHex() != digest) return Fail(error, "checkpoint state digest mismatch");
+	}
+	Bytes candidate(static_cast<std::size_t>(headerLength));
+	if (!reader.Seek(20, error) || !reader.Read(candidate.data(), candidate.size(), error)) return false;
+	header.swap(candidate);
+	// Pass 2: the solver reads; the bytes it saw are hashed again.
+	HashingFileSource source(reader, length);
+	if (!read(source, error)) return false;
+	if (source.Remaining() != 0) return Fail(error, "the solver did not consume the whole checkpoint stream");
+	if (source.Digest() != digest) return Fail(error, "checkpoint changed while it was read");
+	return true;
 }
 
 } }

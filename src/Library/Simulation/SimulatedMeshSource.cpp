@@ -50,10 +50,14 @@ bool MeshType( const std::string& type )
 	return type == "mesh.v1" || type == "mesh.v2";
 }
 
+bool SameBinding( const CacheDescription& a, const CacheDescription& b ) { return SameCacheBinding( a, b ); }
+
+} // namespace
+
 //! The parts of a description a reader binds to: a partial cache may grow,
 //! but a different key, epoch, producer, time map or output set is a
 //! different cache.
-bool SameBinding( const CacheDescription& a, const CacheDescription& b )
+bool SameCacheBinding( const CacheDescription& a, const CacheDescription& b )
 {
 	if( a.key != b.key || a.epoch != b.epoch || a.producer != b.producer ||
 		a.producerVersion != b.producerVersion || a.firstIndex != b.firstIndex || a.count != b.count ||
@@ -64,8 +68,6 @@ bool SameBinding( const CacheDescription& a, const CacheDescription& b )
 		if( a.outputs[i].name != b.outputs[i].name || a.outputs[i].type != b.outputs[i].type ) return false;
 	return true;
 }
-
-} // namespace
 
 bool MeshCacheSource::Open( const std::filesystem::path& root, const MeshSourceOptions& options,
 	std::unique_ptr<MeshCacheSource>& out, std::string& error )
@@ -111,7 +113,7 @@ bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const Snapsho
 	if( options.predictive ) {
 		// Predictive admission (fail closed): a complete cache labelled
 		// predictive whose every frame of this output is present, verifies
-		// against its manifest digest and decodes to one topology.
+		// against its manifest digest and decodes (M7: the topology may change).
 		if( source->bound_->Span( options.output ).count != d.count )
 			return Fail( error, "predictive simulated mesh requires every frame of the output" );
 		MeshCacheSource* self = source.get();
@@ -124,20 +126,10 @@ bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const Snapsho
 			if( entry.output != options.output ) return true;
 			MeshFrame frame;
 			if( !DecodeMesh( bytes, options.frameBudget, self->bound_->Resolver(), frame, e ) ) return false;
-			MeshTopology topology;
-			if( !PeekMeshTopology( bytes, topology, e ) ) return false;
-			if( self->topology_.empty() ) {
-				self->topology_ = topology.digest;
-				self->vertices_ = topology.vertices;
-			}
-			if( topology.digest != self->topology_ || topology.vertices != self->vertices_ )
-				return Fail( e, "predictive simulated mesh frames do not share one topology" );
 			return self->CheckFrame( frame, e );
 		};
 		if( !source->bound_->PreflightPredictive( d.key, q, options.frameBudget, error ) )
 			return Fail( error, "predictive simulated mesh refused: " + error );
-		source->topology_.clear();
-		source->vertices_ = 0;
 	}
 
 	// The bind frame: the first frame of the output present in the cache.
@@ -147,8 +139,7 @@ bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const Snapsho
 	std::string digest;
 	const FrameStatus status = source->ReadFrame( *source->bound_, firstSpan.first, frame, digest, error );
 	if( status != FrameStatus::Ready ) return Fail( error, "simulated mesh bind frame refused: " + error );
-	if( frame.indices.empty() || frame.positions.empty() )
-		return Fail( error, "simulated mesh needs a nonempty fixed-topology surface" );
+	// M7: an empty bind frame is valid (a liquid before it is poured).
 	source->vertices_ = static_cast<std::uint32_t>( frame.positions.size() / 3 );
 	source->indices_ = frame.indices;
 	source->topology_ = MeshTopologyDigest( source->vertices_, frame.indices );
@@ -170,18 +161,27 @@ bool MeshCacheSource::OpenImpl( const std::filesystem::path& root, const Snapsho
 	return true;
 }
 
+namespace {
+//! The UV set a binding uses from a frame: the named one, or the first.
+const MeshUVSet* ChooseUVSet( const MeshFrame& frame, const std::string& name )
+{
+	for( const MeshUVSet& uv : frame.uvSets ) if( name.empty() || uv.name == name ) return &uv;
+	return nullptr;
+}
+}
+
 bool MeshCacheSource::CheckFrame( const MeshFrame& frame, std::string& error ) const
 {
 	if( frame.positionUnits != "m" ) return Fail( error, "simulated mesh positions are not in metres (`" + frame.positionUnits + "`)" );
 	if( !frame.velocities.empty() && frame.velocityUnits != "m/s" )
 		return Fail( error, "simulated mesh velocities are not in m/s (`" + frame.velocityUnits + "`)" );
-	if( vertices_ && frame.positions.size() != std::size_t( vertices_ ) * 3 )
-		return Fail( error, "simulated mesh frame vertex count differs from the bound topology" );
+	// The vertex count belongs to the frame's own topology digest (M7: it may
+	// differ from the bind frame's).
 	return true;
 }
 
 FrameStatus MeshCacheSource::ReadFrame( const IReadOnlyCacheSnapshot& snapshot, const std::int64_t index,
-	MeshFrame& frame, std::string& digest, std::string& error ) const
+	MeshFrame& frame, std::string& digest, std::string& error, std::string* topologyDigest ) const
 {
 	std::shared_ptr<const Bytes> bytes;
 	// Read verifies the payload against the manifest's SHA-256 (per-frame
@@ -190,10 +190,8 @@ FrameStatus MeshCacheSource::ReadFrame( const IReadOnlyCacheSnapshot& snapshot, 
 	if( status != FrameStatus::Ready ) return status;
 	MeshTopology topology;
 	if( !PeekMeshTopology( *bytes, topology, error ) ) return FrameStatus::Corrupt;
-	if( !topology_.empty() && ( topology.digest != topology_ || topology.vertices != vertices_ ) ) {
-		error = "simulated mesh frame topology differs from the bound topology (changing topology is M7)";
-		return FrameStatus::Unsupported;
-	}
+	// M7: a topology other than the bind frame's is a changing-topology
+	// stream's next frame, not an error (DecodeMesh verifies the digest).
 	MeshFrame decoded;
 	// mesh.v2 static topology resolves through the same snapshot (verified,
 	// budgeted) once, then from the memo: a static payload never changes.
@@ -215,6 +213,7 @@ FrameStatus MeshCacheSource::ReadFrame( const IReadOnlyCacheSnapshot& snapshot, 
 	if( !DecodeMesh( *bytes, options_.frameBudget, resolve, decoded, error ) ) return FrameStatus::Corrupt;
 	CacheEntry entry;
 	digest = snapshot.FindEntry( index, options_.output, entry ) ? entry.digest : std::string();
+	if( topologyDigest ) *topologyDigest = topology.digest;
 	frame = std::move( decoded );
 	return FrameStatus::Ready;
 }
@@ -258,28 +257,36 @@ std::shared_ptr<const IReadOnlyCacheSnapshot> MeshCacheSource::CheapSnapshot() c
 bool MeshCacheSource::MapTime( const double sceneTime, const double deltaScene, std::int64_t& index,
 	double& simOffset, bool& held, std::string& error ) const
 {
-	const CacheDescription& d = bound_->Description();
+	return MapCacheFrameTime( bound_->Description(), options_.timeOffset, options_.timeScale, end_, "simulated mesh",
+		sceneTime, deltaScene, index, simOffset, held, error );
+}
+
+bool MapCacheFrameTime( const CacheDescription& d, const double timeOffset, const double timeScale,
+	const MeshEndPolicy endPolicy, const char* what, const double sceneTime, const double deltaScene,
+	std::int64_t& index, double& simOffset, bool& held, std::string& error )
+{
+	const std::string who = what ? what : "simulated mesh";
 	if( !std::isfinite( sceneTime ) || !std::isfinite( deltaScene ) )
-		return Fail( error, "simulated mesh cannot map an invalid scene time" );
-	const double rate = d.timeScale * options_.timeScale;	// d(sim time)/d(scene time)
-	const double u = ( sceneTime - options_.timeOffset ) * options_.timeScale;
+		return Fail( error, who + " cannot map an invalid scene time" );
+	const double rate = d.timeScale * timeScale;	// d(sim time)/d(scene time)
+	const double u = ( sceneTime - timeOffset ) * timeScale;
 	const double s = d.startTime + d.timeScale * ( u - d.sceneOrigin );
 	const double dt = d.interval;
 	const double n = double( d.count );
 	const double s0 = d.startTime, sLast = s0 + ( n - 1.0 ) * dt, end = s0 + n * dt;
 	const double sKeyRaw = s + rate * deltaScene;
 	if( !std::isfinite( s ) || !std::isfinite( sKeyRaw ) )
-		return Fail( error, "simulated mesh mapped time overflowed" );
+		return Fail( error, who + " mapped time overflowed" );
 	double sp = s, sKey = sKeyRaw;
 	held = false;
-	switch( end_ ) {
+	switch( endPolicy ) {
 	case MeshEndPolicy::Error:
 	case MeshEndPolicy::Cache:
 		// The nominal time must lie in the support; a shutter reaching past
 		// either end is clamped there (no motion beyond the data), so the
 		// first frame of a cache can still be rendered with a centred shutter.
 		if( s < s0 || s >= end )
-			return Fail( error, "simulated mesh time is outside the cache support" );
+			return Fail( error, who + " time is outside the cache support" );
 		sKey = std::min( std::max( sKeyRaw, s0 ), end );
 		break;
 	case MeshEndPolicy::Hold:
@@ -322,8 +329,8 @@ bool MeshCacheSource::Sample( const double nominal, const double open, const dou
 	sample.index = index;
 	sample.held = held;
 	MeshFrame frame;
-	std::string digest;
-	const FrameStatus status = ReadFrame( *snapshot, index, frame, digest, error );
+	std::string digest, topology;
+	const FrameStatus status = ReadFrame( *snapshot, index, frame, digest, error, &topology );
 	if( status == FrameStatus::Unavailable ) {
 		if( snapshot->Complete() ) return Fail( error, "simulated mesh frame is missing from a complete cache" );
 		error.clear();
@@ -336,6 +343,13 @@ bool MeshCacheSource::Sample( const double nominal, const double open, const dou
 	if( !CheckFrame( frame, error ) ) return false;
 	ToDoubles( frame.positions, sample.nominal );
 	ToDoubles( frame.normals, sample.normals );
+	sample.topology = topology;
+	if( topology != topology_ ) {
+		// M7: a changing-topology frame carries its connectivity and UVs.
+		sample.ownTopology = true;
+		sample.indices = std::move( frame.indices );
+		if( const MeshUVSet* uv = ChooseUVSet( frame, options_.uvSet ) ) ToDoubles( uv->values, sample.uvs );
+	}
 	std::string identity = digest + "|" + std::to_string( index );
 
 	const bool extrapolate = motion && ( dNominal != 0.0 || dOpen != 0.0 || dClose != 0.0 );
@@ -348,15 +362,18 @@ bool MeshCacheSource::Sample( const double nominal, const double open, const dou
 			// No velocities in the payload: central difference of the adjacent
 			// frames (one-sided at the ends, zero when neither neighbour exists).
 			const CacheDescription& d = snapshot->Description();
+			// A neighbour counts only with this frame's topology (M7: there is
+			// no vertex correspondence across a topology change).
 			std::vector<double> prev, next;
-			std::string prevDigest, nextDigest, ignored;
+			std::string prevDigest, nextDigest, ignored, neighbourTopology;
 			MeshFrame neighbour;
-			if( index > d.firstIndex &&
-				ReadFrame( *snapshot, index - 1, neighbour, prevDigest, ignored ) == FrameStatus::Ready &&
-				CheckFrame( neighbour, ignored ) ) ToDoubles( neighbour.positions, prev );
-			if( index + 1 < d.firstIndex + static_cast<std::int64_t>( d.count ) &&
-				ReadFrame( *snapshot, index + 1, neighbour, nextDigest, ignored ) == FrameStatus::Ready &&
-				CheckFrame( neighbour, ignored ) ) ToDoubles( neighbour.positions, next );
+			const auto adjacent = [&]( const std::int64_t at, std::vector<double>& p, std::string& digestOut ) {
+				if( ReadFrame( *snapshot, at, neighbour, digestOut, ignored, &neighbourTopology ) != FrameStatus::Ready ) return;
+				if( neighbourTopology != topology ) { digestOut.clear(); return; }
+				if( CheckFrame( neighbour, ignored ) ) ToDoubles( neighbour.positions, p );
+			};
+			if( index > d.firstIndex ) adjacent( index - 1, prev, prevDigest );
+			if( index + 1 < d.firstIndex + static_cast<std::int64_t>( d.count ) ) adjacent( index + 1, next, nextDigest );
 			velocity.assign( sample.nominal.size(), 0.0 );
 			const std::vector<double>& a = prev.empty() ? sample.nominal : prev;
 			const std::vector<double>& b = next.empty() ? sample.nominal : next;

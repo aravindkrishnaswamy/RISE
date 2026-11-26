@@ -1,0 +1,124 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           simulated_points_spray.RISEscene                                                        #
+#   Description:    M7 prerequisites: a particle set (points.v1) rendered as spheres through               #
+#                   `simulated_points_geometry`, with motion blur from the frame velocities under the       #
+#                   camera's 1/60 s shutter.  The particles come from a cache declared by                   #
+#                   `simulation_cache spray` (no solver runs); each animation frame installs the cache      #
+#                   frame for its time and rebuilds the points' BVH.  The per-point `tint` attribute is     #
+#                   the hit's vertex colour (vertex_color_painter).                                         #
+#                                                                                                           #
+#   Needs a cache.  `simulation_cache spray` reads caches/spray beside this file (gitignored).            #
+#                   bin/tests/SimulatedPointsGeometryTest --write-sample-cache <that directory> writes a    #
+#                   synthetic 2,000-particle fountain (25 frames at 1/24 s).  The cache writer refuses a    #
+#                   directory other users could modify (a shared volume): set RISE_SIMULATION_TRUSTED_ROOTS, #
+#                   or write it to a private path (e.g. ~/.cache/rise/spray) and give `cache` that path.    #
+#                   Without a cache the points are empty (a warning) and only the floor renders.            #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			32
+	oidn_denoise	FALSE
+}
+
+animation_options
+{
+	time_start		0
+	time_end		1
+	num_frames		25
+}
+
+film
+{
+	width			480
+	height			320
+}
+
+pinhole_camera
+{
+	location		0 0.6 2.4
+	lookat			0 0.45 0
+	up				0 1 0
+	fov				40.0
+	exposure		0.0166666666666667
+}
+
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.5 0.5 0.5
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		pnt_floor
+}
+
+vertex_color_painter
+{
+	name			pnt_drop
+	fallback		0.3 0.5 0.9
+}
+
+lambertian_material
+{
+	name			mat_drop
+	reflectance		pnt_drop
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-3.0 0.0 -3.0
+	ptb				 3.0 0.0 -3.0
+	ptc				 3.0 0.0  3.0
+	ptd				-3.0 0.0  3.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+simulation_cache
+{
+	name			spray
+}
+
+simulated_points_geometry
+{
+	name			geo_spray
+	source			spray.particles
+	radius			0.01
+	color_attribute	tint
+	motion_blur		TRUE
+}
+
+standard_object
+{
+	name			drops
+	geometry		geo_spray
+	material		mat_drop
+}
+
+rect_light
+{
+	name			key
+	center			0.8 2.5 1.2
+	size			1.2 1.2
+	facing			-0.3 -1 -0.4
+	color			1.0 0.97 0.92
+	exitance		30
+}

@@ -178,6 +178,27 @@ int main()
 		for (const auto& e : Digests(*second.Snapshot("a"))) ma[e.first] = e.second;
 		for (const auto& e : Digests(*second.Snapshot("b"))) mb[e.first] = e.second;
 		Check(ma == ra && mb == rb, "stop / resume of the whole group is byte-identical");
+		// M7 prerequisites: the group streamed (index + member streams) resumes identically.
+		MemoryCheckpointSink sink;
+		Check(first.group->CheckpointTo(sink, error), "streamed group checkpoint", error);
+		SimulationGroup third;
+		MemoryCheckpointSource source(sink.bytes);
+		Check(third.AddMember("a", Make(OscillatorSolver::Id), Oscillator(MA, KA, KC, UA, 0, 0.05, 21, 10), error) &&
+			third.AddMember("b", Make(OscillatorSolver::Id), Oscillator(MB, KB, KC, 0, VB, 0.05, 21, 10), error) &&
+			third.Connect({"a", "state", "b", "partner"}, error) && third.Connect({"b", "state", "a", "partner"}, error) &&
+			third.Configure(p, EmptySceneInputs(), error) && third.RestoreFrom(source, error) && third.Run(error),
+			"restore the streamed group and finish", error);
+		auto sa = Digests(*first.group->Snapshot("a")), sb = Digests(*first.group->Snapshot("b"));
+		for (const auto& e : Digests(*third.Snapshot("a"))) sa[e.first] = e.second;
+		for (const auto& e : Digests(*third.Snapshot("b"))) sb[e.first] = e.second;
+		Check(sa == ra && sb == rb, "stop / resume of the group through its stream is byte-identical");
+		Bytes cut(sink.bytes.begin(), sink.bytes.end() - 3);
+		MemoryCheckpointSource shortSource(cut);
+		SimulationGroup fourth;
+		Check(fourth.AddMember("a", Make(OscillatorSolver::Id), Oscillator(MA, KA, KC, UA, 0, 0.05, 21, 10), error) &&
+			fourth.AddMember("b", Make(OscillatorSolver::Id), Oscillator(MB, KB, KC, 0, VB, 0.05, 21, 10), error) &&
+			fourth.Connect({"a", "state", "b", "partner"}, error) && fourth.Connect({"b", "state", "a", "partner"}, error) &&
+			fourth.Configure(p, EmptySceneInputs(), error) && !fourth.RestoreFrom(shortSource, error), "a truncated group stream is refused");
 		// A state of another configuration is refused.
 		SimulationGroup other;
 		GroupPolicy q = p; q.convergenceTolerance = 1e-5;

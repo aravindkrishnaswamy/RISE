@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "SimulationTimeline.h"
 #include "SimulatedMeshSource.h"
+#include "SimulatedPointsSource.h"
 
 #include <algorithm>
 #include <cmath>
@@ -63,6 +64,41 @@ bool DescribeMeshSource( const MeshCacheSource& source, const bool availability,
 	if( !LatestContiguousMeshFrame( source, contiguous, error ) ) return false;
 	range.availableEnd = contiguous < d.firstIndex ? range.start : MeshFrameSceneTime( source, contiguous );
 	if( !source.Live() && !snapshot->Complete() ) {
+		std::string ignored;
+		range.state = InspectCache( source.Root(), std::size_t( 64 ) * 1024 * 1024, ignored ) == CacheState::Baking ?
+			TimelineRange::Baking : TimelineRange::Partial;
+	}
+	range.availabilityKnown = true;
+	return true;
+}
+
+bool DescribePointsSource( const PointsCacheSource& source, const bool availability,
+	TimelineRange& range, std::string& error )
+{
+	const CacheDescription& d = source.Description();
+	range.kind = TimelineRange::SimulatedPoints;
+	range.fidelity = d.fidelity;
+	range.framesTotal = d.count;
+	const std::int64_t last = d.firstIndex + static_cast<std::int64_t>( d.count ) - 1;
+	const double a = PointsFrameSceneTime( source, d.firstIndex );
+	const double b = PointsFrameSceneTime( source, last );
+	range.start = std::min( a, b );
+	range.end = std::max( a, b );
+	range.interval = std::fabs( d.interval / ( d.timeScale * source.Options().timeScale ) );
+	range.state = TimelineRange::Complete;
+	range.availableEnd = range.end;
+	range.framesAvailable = d.count;
+	range.availabilityKnown = false;
+	if( !availability ) return true;
+	std::shared_ptr<const IReadOnlyCacheSnapshot> snapshot;
+	if( !source.CurrentSnapshot( snapshot, error ) ) return false;
+	const OutputSpan span = snapshot->Span( source.Options().output );
+	range.framesAvailable = span.count;
+	std::int64_t next = d.firstIndex;
+	CacheEntry entry;
+	while( next <= last && snapshot->FindEntry( next, source.Options().output, entry ) ) ++next;
+	range.availableEnd = next == d.firstIndex ? range.start : PointsFrameSceneTime( source, next - 1 );
+	if( !snapshot->Complete() ) {
 		std::string ignored;
 		range.state = InspectCache( source.Root(), std::size_t( 64 ) * 1024 * 1024, ignored ) == CacheState::Baking ?
 			TimelineRange::Baking : TimelineRange::Partial;

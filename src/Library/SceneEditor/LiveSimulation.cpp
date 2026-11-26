@@ -9,6 +9,7 @@
 #include "pch.h"
 #include "LiveSimulation.h"
 #include "../Geometry/SimulatedMeshGeometry.h"
+#include "../Geometry/SimulatedPointsGeometry.h"
 #include "../Interfaces/IJobPriv.h"
 #include "../Interfaces/ILog.h"
 #include "../Simulation/SimulationHost.h"
@@ -50,7 +51,8 @@ bool RISE::Implementation::InstallSimulatedMeshesAtTime( IJobPriv& job, const do
 		std::set<const IGeometry*> bound;
 		bool operator()( const IObject& object ) override
 		{
-			if( dynamic_cast<const SimulatedMeshGeometry*>( object.GetGeometry() ) ) bound.insert( object.GetGeometry() );
+			if( dynamic_cast<const SimulatedMeshGeometry*>( object.GetGeometry() ) ||
+				dynamic_cast<const SimulatedPointsGeometry*>( object.GetGeometry() ) ) bound.insert( object.GetGeometry() );
 			return true;
 		}
 	} objects;
@@ -65,8 +67,12 @@ bool RISE::Implementation::InstallSimulatedMeshesAtTime( IJobPriv& job, const do
 	bool ok = true;
 	const RenderTimeSupport support{ t, t, t };
 	for( const std::string& name : names.names ) {
-		SimulatedMeshGeometry* mesh = dynamic_cast<SimulatedMeshGeometry*>( geometries->GetItem( name.c_str() ) );
-		if( !mesh || !objects.bound.count( mesh ) ) continue;
+		IGeometry* geometry = geometries->GetItem( name.c_str() );
+		if( !geometry || !objects.bound.count( geometry ) ) continue;
+		// M7 prerequisites: simulated points install the same way.
+		ITimeVaryingAssetProvider* mesh = dynamic_cast<SimulatedMeshGeometry*>( geometry );
+		if( !mesh ) mesh = dynamic_cast<SimulatedPointsGeometry*>( geometry );
+		if( !mesh ) continue;
 		std::string meshError;
 		if( !mesh->PrepareAssetForRender( support, meshError, nullptr ) ) {
 			if( ok ) error = "`" + name + "`: " + meshError;

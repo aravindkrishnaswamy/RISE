@@ -62,6 +62,7 @@
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
 #include "Geometry/SimulatedMeshGeometry.h"
+#include "Geometry/SimulatedPointsGeometry.h"
 #include "Animation/Animator.h"
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -10943,6 +10944,7 @@ std::vector<ITimeVaryingAssetProvider*> Job::ActiveTimeVaryingAssets()
 		const IGeometryManager& manager;
 		const std::set<const IGeometry*>& bound;
 		std::vector<Implementation::SimulatedMeshGeometry*> found;
+		std::vector<Implementation::SimulatedPointsGeometry*> points;	// M7 prerequisites
 		Geometries( const IGeometryManager& m, const std::set<const IGeometry*>& b ) : manager(m), bound(b) {}
 		bool operator()( const char* const& name ) override
 		{
@@ -10950,6 +10952,9 @@ std::vector<ITimeVaryingAssetProvider*> Job::ActiveTimeVaryingAssets()
 			Implementation::SimulatedMeshGeometry* mesh =
 				dynamic_cast<Implementation::SimulatedMeshGeometry*>(geometry);
 			if( mesh && bound.count(geometry) ) found.push_back(mesh);
+			Implementation::SimulatedPointsGeometry* set =
+				dynamic_cast<Implementation::SimulatedPointsGeometry*>(geometry);
+			if( set && set->HasSource() && bound.count(geometry) ) points.push_back(set);
 			return true;
 		}
 	} geometries(*pGeomManager,bound);
@@ -10959,6 +10964,10 @@ std::vector<ITimeVaryingAssetProvider*> Job::ActiveTimeVaryingAssets()
 	for( Implementation::SimulatedMeshGeometry* mesh : geometries.found ) {
 		mesh->SetSampleClock(clock);
 		result.push_back(mesh);
+	}
+	for( Implementation::SimulatedPointsGeometry* set : geometries.points ) {
+		set->SetSampleClock(clock);
+		result.push_back(set);
 	}
 	return result;
 }
@@ -11001,6 +11010,21 @@ bool Job::DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ran
 		Simulation::TimelineRange range;
 		std::string error;
 		if( !Simulation::DescribeMeshSource(mesh->Source(),availability,range,error) ) {
+			GlobalLog()->PrintEx(eLog_Warning,"Job::DescribeTimeVaryingAssets:: `%s`: %s",name.c_str(),error.c_str());
+			ok = false;
+			continue;
+		}
+		range.name = name;
+		ranges.push_back(std::move(range));
+	}
+	// M7 prerequisites: simulated points some object renders.
+	for( const std::string& name : names.names ) {
+		const Implementation::SimulatedPointsGeometry* set =
+			dynamic_cast<const Implementation::SimulatedPointsGeometry*>(pGeomManager->GetItem(name.c_str()));
+		if( !set || !bound.count(set) || !set->HasSource() ) continue;
+		Simulation::TimelineRange range;
+		std::string error;
+		if( !Simulation::DescribePointsSource(set->Source(),availability,range,error) ) {
 			GlobalLog()->PrintEx(eLog_Warning,"Job::DescribeTimeVaryingAssets:: `%s`: %s",name.c_str(),error.c_str());
 			ok = false;
 			continue;
@@ -11582,6 +11606,101 @@ bool Job::AddSimulatedMeshGeometryFromSimulation(
 		record.binding.options = options.source;
 		simulatedGeometries[name] = record;
 	}
+	safe_release( geometry );
+	return added;
+}
+
+// M7 prerequisites: simulated_points_geometry.
+bool Job::AddSimulatedPointsGeometry(
+	const char* name, const char* cache, const char* source, const char* output,
+	const double time_offset, const double time_scale,
+	const char* end_policy, const char* missing_frame, const char* fidelity,
+	const bool motion_blur, const double radius, const double radius_scale,
+	const char* color_attribute )
+{
+	const auto fail = [name]( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddSimulatedPointsGeometry:: `%s`: %s", name ? name : "", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = std::string( "simulated_points_geometry `" ) + ( name ? name : "" ) + "`: " + message;
+		return false;
+	};
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !name || !name[0] ) return false;
+	const bool hasCache = cache && cache[0], hasSource = source && source[0];
+	if( hasCache == hasSource ) return fail( "give exactly one of `cache <directory>` and `source <simulation>.<output>`" );
+	Implementation::SimulatedPointsGeometry::Options options;
+	// The shared binding options (the mesh parser's; its mesh-only flags unused).
+	Implementation::SimulatedMeshGeometry::Options common;
+	std::string out = output && output[0] ? output : "";
+	std::string root;
+	std::string sim;
+	if( hasSource ) {
+		sim = source;
+		const std::size_t dot = sim.find( '.' );
+		if( dot != std::string::npos ) {
+			const std::string named = sim.substr( dot + 1 );
+			sim.resize( dot );
+			if( !out.empty() && out != named )
+				return fail( "`source " + std::string( source ) + "` names output `" + named + "` but `output` says `" + out + "`" );
+			out = named;
+		}
+		const auto it = simulationsMap.find( sim );
+		if( it == simulationsMap.end() )
+			return fail( "`source` names `" + sim + "`, which is not a simulation declared before this geometry" );
+		if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( &it->second ) );
+		const Simulation::SceneSimulationSpec& spec = it->second;
+		if( out.empty() ) {
+			for( const auto& x : spec.outputs ) if( x.second == Simulation::PointsCodec ) { out = x.first; break; }
+			if( out.empty() ) out = "particles";
+		}
+		if( !spec.outputs.empty() ) {
+			const auto o = std::find_if( spec.outputs.begin(), spec.outputs.end(),
+				[&]( const std::pair<std::string,std::string>& x ) { return x.first == out; } );
+			if( o == spec.outputs.end() ) return fail( "simulation `" + sim + "` has no output `" + out + "`" );
+			if( o->second != Simulation::PointsCodec )
+				return fail( "output `" + sim + "." + out + "` is " + o->second + "; simulated_points_geometry binds a points.v1 output only" );
+		}
+		root = spec.cacheDir.string();
+	} else {
+		root = cache;
+		if( root.size() >= 2 && root[0] == '~' && (root[1] == '/' || root[1] == '\\') ) {
+			if( !ExpandHome( root ) ) return fail( "`~/` cache path without a home directory" );
+		} else if( !std::filesystem::path(root).is_absolute() ) {
+			const std::string manifest = GlobalMediaPathLocator().Find((root + "/manifest.cbor").c_str()).c_str();
+			root = std::filesystem::path(manifest).parent_path().string();
+		}
+		if( out.empty() ) out = "particles";
+	}
+	if( !ParseSimulatedMeshOptions( "Job::AddSimulatedPointsGeometry", out.c_str(), time_offset, time_scale,
+		end_policy, missing_frame, fidelity, motion_blur, false, false, common ) ) return false;
+	options.source.output = common.source.output;
+	options.source.timeOffset = common.source.timeOffset;
+	options.source.timeScale = common.source.timeScale;
+	options.source.end = common.source.end;
+	options.source.missing = common.source.missing;
+	options.source.predictive = common.source.predictive;
+	options.source.radius = radius;
+	options.source.radiusScale = radius_scale;
+	options.source.colorAttribute = color_attribute ? color_attribute : "";
+	options.motionBlur = motion_blur;
+	std::string error;
+	Implementation::SimulatedPointsGeometry* geometry = nullptr;
+	if( hasSource && Simulation::InspectCache( root, std::size_t(256) << 20, error ) == Simulation::CacheState::Missing ) {
+		if( options.source.predictive )
+			return fail( "simulation `" + sim + "` has no cache at " + root + "; a predictive binding fails closed" );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::AddSimulatedPointsGeometry:: `%s`: simulation `%s` has no cache yet (%s); "
+			"the points are empty until it is baked and the scene reloaded", name, sim.c_str(), root.c_str() );
+		geometry = Implementation::SimulatedPointsGeometry::CreateUnbound( options );
+	} else {
+		geometry = Implementation::SimulatedPointsGeometry::Create( root, options, error );
+		if( !geometry ) return fail( root + ": " + error );
+	}
+	GlobalLog()->PrintNew( geometry, __FILE__, __LINE__, "simulated points geometry" );
+	if( geometry->HasSource() )
+		GlobalLog()->PrintEx( eLog_Info, "Job::AddSimulatedPointsGeometry:: `%s` bound to %s output `%s` (%zu points in the bind frame, %llu frames)",
+			name, root.c_str(), out.c_str(), geometry->PointCount(),
+			static_cast<unsigned long long>( geometry->Source().Description().count ) );
+	const bool added = pGeomManager->AddItem( geometry, name );
 	safe_release( geometry );
 	return added;
 }

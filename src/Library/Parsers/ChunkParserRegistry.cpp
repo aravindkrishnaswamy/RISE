@@ -6587,8 +6587,9 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "simulated_mesh_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Fixed-topology deforming triangle mesh read from a simulation cache "
-							"(a mesh.v1 or mesh.v2 output, e.g. cloth baked by `rise-sim bake`): either a "
+						cd.description = "Deforming triangle mesh read from a simulation cache "
+							"(a mesh.v1 or mesh.v2 output, e.g. cloth baked by `rise-sim bake`, or a liquid surface whose "
+							"topology changes every frame, which is rebuilt per frame; an empty frame renders nothing): either a "
 							"producer's output (`source <simulation>.<output>`, e.g. a `cloth_simulation`) or a "
 							"cache directory (`cache`).  Every animation frame installs the cache frame for its "
 							"time (nearest frame, positions extrapolated by the frame velocities), and with "
@@ -6619,6 +6620,71 @@ namespace RISE
 						{ auto& p = P(); p.name = "motion_blur"; p.kind = ValueKind::Bool; p.description = "Deformation motion blur from the frame velocities under camera exposure; FALSE renders the nearest frame as a static mesh"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool; p.description = "Flat per-face shading; otherwise the cache's normals (or area-weighted vertex normals when it has none)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool; p.description = "Treat triangles as double sided (cloth usually is)"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// M7 prerequisites: a particle set (points.v1) read from a simulation
+			// cache, each point a sphere (docs/SIMULATION_M7_PREREQ_RESULTS.md).
+			struct SimulatedPointsGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return pJob.AddSimulatedPointsGeometry(
+						bag.GetString( "name", "noname" ).c_str(),
+						bag.Has( "cache" ) ? bag.GetString( "cache" ).c_str() : "",
+						bag.Has( "source" ) ? bag.GetString( "source" ).c_str() : "",
+						bag.Has( "output" ) ? bag.GetString( "output" ).c_str() : "",
+						bag.GetDouble( "time_offset", 0.0 ),
+						bag.GetDouble( "time_scale", 1.0 ),
+						bag.GetString( "end_policy", "cache" ).c_str(),
+						bag.GetString( "missing_frame", "hold" ).c_str(),
+						bag.GetString( "fidelity", "preview" ).c_str(),
+						bag.GetBool( "motion_blur", true ),
+						bag.GetDouble( "radius", 0.01 ),
+						bag.GetDouble( "radius_scale", 1.0 ),
+						bag.Has( "color_attribute" ) ? bag.GetString( "color_attribute" ).c_str() : "" );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "simulated_points_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Particle set read from a simulation cache (a points.v1 output: liquid spray and "
+							"marker particles, imported particle data), each point rendered as a sphere of its radius: "
+							"either a producer's output (`source <simulation>.<output>`) or a cache directory (`cache`).  "
+							"Every animation frame installs the cache frame for its time (nearest frame, centres "
+							"extrapolated by the frame velocities), and with `motion_blur` the shutter-open and "
+							"shutter-close centres, interpolated per ray at the sample's time (without velocities, from "
+							"the adjacent frames matched by point id).  Positions and radii are object space, in metres.  "
+							"Hits report the sphere's UV; `color_attribute` exposes a per-point attribute as the vertex "
+							"colour (vertex_color_painter).  Points are not area lights.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source"; p.kind = ValueKind::Reference; p.referenceCategories = { ChunkCategory::Simulation };
+						  p.semantics.pipe = ParameterPipe::Other;
+						  p.semantics.note = "Resolves against the Job's simulation table (a producer chunk), not a manager";
+						  p.description = "The producer and its output, `<simulation>.<output>` (e.g. `pour.particles`), or "
+							"`<simulation>` with `output`.  The output must be points.v1.  Exactly one of `source` and `cache`"; }
+						{ auto& p = P(); p.name = "cache"; p.kind = ValueKind::String;
+						  p.description = "Simulation cache directory (the one holding manifest.cbor).  `~/` is the home "
+							"directory; any other relative path is resolved through the media path.  Exactly one of "
+							"`cache` and `source`"; }
+						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::String; p.description = "Cache output to read; must be points.v1"; p.defaultValueHint = "particles"; }
+						{ auto& p = P(); p.name = "time_offset"; p.kind = ValueKind::Double; p.description = "Scene seconds subtracted from the render time before scaling"; p.defaultValueHint = "0"; p.unitLabel = "s"; }
+						{ auto& p = P(); p.name = "time_scale"; p.kind = ValueKind::Double; p.description = "Playback rate: cache time advances by this many scene seconds per scene second (nonzero)"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "end_policy"; p.kind = ValueKind::Enum; p.enumValues = { "cache", "hold", "loop", "error" };
+						  p.description = "Outside the cache frames: `cache` follows the cache's time map (hold or error), `hold` keeps the first/last frame, `loop` repeats, `error` fails the frame"; p.defaultValueHint = "cache"; }
+						{ auto& p = P(); p.name = "missing_frame"; p.kind = ValueKind::Enum; p.enumValues = { "hold", "hide" };
+						  p.description = "Preview only: a frame a partial cache has not baked yet keeps the previous frame (`hold`) or hides the points (`hide`), with a warning.  A predictive binding fails instead"; p.defaultValueHint = "hold"; }
+						{ auto& p = P(); p.name = "fidelity"; p.kind = ValueKind::Enum; p.enumValues = { "preview", "predictive" };
+						  p.description = "`predictive` refuses (fail closed) a cache that is not complete and labelled predictive, verifies every frame at load, and fails any frame that cannot be installed"; p.defaultValueHint = "preview"; }
+						{ auto& p = P(); p.name = "motion_blur"; p.kind = ValueKind::Bool; p.description = "Motion blur of the centres under camera exposure; FALSE renders the nearest frame"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Sphere radius for a frame that carries none (per-point or uniform radii in the frame win)"; p.defaultValueHint = "0.01"; p.unitLabel = "m"; }
+						{ auto& p = P(); p.name = "radius_scale"; p.kind = ValueKind::Double; p.description = "Multiplies every radius (the frame's or `radius`)"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "color_attribute"; p.kind = ValueKind::String; p.description = "A per-point attribute of 1 or 3 components exposed as the hit's vertex colour; every frame must carry it"; }
 						return cd;
 					}();
 					return d;
@@ -15105,6 +15171,7 @@ namespace RISE
 		add( "risemesh_geometry",                     std::make_unique<RISEMeshGeometryAsciiChunkParser>() );
 		add( "plymesh_geometry",                      std::make_unique<PLYMeshGeometryAsciiChunkParser>() );
 		add( "simulated_mesh_geometry",               std::make_unique<SimulatedMeshGeometryAsciiChunkParser>() );
+		add( "simulated_points_geometry",             std::make_unique<SimulatedPointsGeometryAsciiChunkParser>() );
 		add( "gltfmesh_geometry",                     std::make_unique<GLTFMeshGeometryAsciiChunkParser>() );
 		add( "gltf_import",                           std::make_unique<GLTFImportAsciiChunkParser>() );
 		add( "circulardisk_geometry",                 std::make_unique<CircularDiskGeometryAsciiChunkParser>() );

@@ -7,6 +7,7 @@
 
 #include "../Utilities/RISECBOR64.h"
 #include "SimulationMesh.h"
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -19,7 +20,7 @@ struct CacheChannel {
 	std::string name, units, representation;
 };
 struct CacheOutput {
-	std::string name, type; // native codecs: "grid.v1", "mesh.v1", "mesh.v2", "field.v1", "transform.v1" (IsNativePayloadType)
+	std::string name, type; // native codecs: "grid.v1", "mesh.v1", "mesh.v2", "field.v1", "transform.v1", "points.v1" (IsNativePayloadType)
 	std::vector<CacheChannel> channels;
 };
 // What a fidelity label's evidence covers, machine-readable: condition names
@@ -85,6 +86,52 @@ bool ReplaceFileDurably(const std::filesystem::path& directory, const std::strin
 // Bounded read of such a sidecar; refuses symlinks and nonregular files.
 bool ReadSidecarFile(const std::filesystem::path& directory, const std::string& name,
 	std::size_t budget, Bytes& bytes, std::string& error);
+
+// M7 prerequisites (streamed checkpoints): the same durable replacement,
+// written in pieces of any size -- a multi-gigabyte sidecar never exists in
+// memory. Begin stages `.<name>.pending` (removing an interrupted one),
+// Write appends, Commit syncs, renames over `name` and syncs the directory.
+// A writer destroyed without Commit removes its staged file.
+class DurableSidecarWriter {
+public:
+	DurableSidecarWriter() = default;
+	~DurableSidecarWriter();
+	DurableSidecarWriter(const DurableSidecarWriter&) = delete;
+	DurableSidecarWriter& operator=(const DurableSidecarWriter&) = delete;
+	bool Begin(const std::filesystem::path& directory, const std::string& name, std::string& error);
+	bool Write(const void* data, std::size_t size, std::string& error);
+	bool Commit(std::string& error);
+	std::uint64_t Written() const { return written_; }
+private:
+	void Abandon();
+	std::filesystem::path directory_;
+	std::string name_, pending_;
+	int dir_ = -1, file_ = -1;
+	std::uint64_t written_ = 0;
+#if defined(_WIN32)
+	std::FILE* stream_ = nullptr;
+#endif
+};
+
+// Sequential read of such a sidecar (refuses symlinks and nonregular files).
+class SidecarReader {
+public:
+	SidecarReader() = default;
+	~SidecarReader();
+	SidecarReader(const SidecarReader&) = delete;
+	SidecarReader& operator=(const SidecarReader&) = delete;
+	bool Open(const std::filesystem::path& directory, const std::string& name, std::string& error);
+	bool Read(void* data, std::size_t size, std::string& error);   // exactly `size` bytes
+	bool Seek(std::uint64_t offset, std::string& error);
+	std::uint64_t Size() const { return size_; }
+	std::uint64_t Position() const { return position_; }
+private:
+	int file_ = -1;
+	std::uint64_t size_ = 0, position_ = 0;
+#if defined(_WIN32)
+	std::FILE* stream_ = nullptr;
+#endif
+};
 
 // ---- cache location policy (POSIX; see docs/SIMULATION_SOLVER_CONTRACT.md "Cache location policy")
 //

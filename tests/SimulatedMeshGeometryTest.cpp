@@ -14,8 +14,8 @@
 //      D  time map: offset / scale, hold, loop, error
 //      E  missing frame of a partial cache: preview hold / hide (with a
 //         warning), predictive fails closed; predictive admission
-//      F  corrupt payload, decode budget, changed topology: the frame fails and
-//         the previously installed frame stays
+//      F  corrupt payload, decode budget: the frame fails and the previously
+//         installed frame stays (a changed topology installs by a rebuild, M7)
 //      G  render freeze and rollback
 //      H  the chunk through a Job: load, predictive refusal, and a prepared
 //         animation render installing the frame for its time
@@ -520,10 +520,16 @@ namespace
 		Check( g->PrepareAssetForRender( RenderTimeSupport{ t1, t1, t1 }, error, nullptr ), "F frame 1", error );
 		const MeshFrame f1 = fx.Frame( 1 );
 		TriangleMeshGeometryIndexed* s1 = Static( Doubles( f1.positions ), Doubles( f1.normals ), f1.indices, true, false );
+		// M7 prerequisites: a frame with a different topology now installs by
+		// replacing the topology (full rebuild), and the next frame of the bind
+		// topology replaces it back (tests/SimulatedMeshTopologyTest.cpp has
+		// the changing-topology rows).
 		error.clear();
-		Check( !g->PrepareAssetForRender( RenderTimeSupport{ t4, t4, t4 }, error, nullptr ) && g->InstalledFrame() == 1,
-			"F a frame with a different topology fails (changing topology is M7)", error );
-		std::printf( "  (refusal: %s)\n", error.c_str() );
+		const unsigned long long rebuilds = g->TopologyRebuilds();
+		Check( g->PrepareAssetForRender( RenderTimeSupport{ t4, t4, t4 }, error, nullptr ) && g->InstalledFrame() == 4 &&
+			g->TopologyRebuilds() == rebuilds + 1, "F a frame with a different topology installs by a rebuild (M7)", error );
+		Check( g->PrepareAssetForRender( RenderTimeSupport{ t1, t1, t1 }, error, nullptr ) && g->InstalledFrame() == 1 &&
+			g->TopologyRebuilds() == rebuilds + 2, "F the bind topology's frame replaces it back", error );
 		CacheSnapshot snap;
 		Check( CacheSnapshot::Open( root, kBudget, snap, error ), "F reopen" );
 		for( const CacheEntry& e : snap.Entries() ) if( e.index == 2 ) {

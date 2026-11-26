@@ -36,6 +36,7 @@
 #define RISE_SIMULATION_WORKER_H
 
 #include "SimulationSolver.h"
+#include <functional>
 #include <iosfwd>
 
 namespace RISE { namespace Simulation {
@@ -79,6 +80,22 @@ bool ReadWorkerJobRecord(const std::filesystem::path& cache, std::string& solver
 // in-process host's callers (the live viewport, M3c).
 bool ParseSolverParameters(const Bytes& bytes, std::size_t budget, RISECBOR64::Value& parameters,
 	std::string& error);
+
+// M7 prerequisites: a streamed checkpoint sidecar.  "RISESIMC", u32
+// version 2, u64 header length, header (canonical CBOR), the stream, then a
+// trailer: u64 stream length, 64 hex digits of its SHA-256, "RISESIME".
+// Written in pieces through DurableSidecarWriter (stage, fsync, rename);
+// read back in two passes (the digest is verified before `read` sees a
+// byte, then the stream is re-hashed as it is consumed).  Version 1 files
+// (header + state, one buffer) are what the worker wrote before; ReadWorker
+// Checkpoint below accepts both.
+bool WriteStreamedCheckpoint(const std::filesystem::path& directory, const std::string& name,
+	const Bytes& header, const std::function<bool(ICheckpointSink&, std::string&)>& write, std::string& error);
+// `read` must consume the whole stream.  `header` is decoded under `budget`.
+bool ReadStreamedCheckpoint(const std::filesystem::path& directory, const std::string& name, std::size_t budget,
+	Bytes& header, const std::function<bool(ICheckpointSource&, std::string&)>& read, std::string& error);
+// True when the sidecar starts with a streamed (version 2) checkpoint prefix.
+bool IsStreamedCheckpoint(const std::filesystem::path& directory, const std::string& name);
 
 struct WorkerOptions {
 	double checkpointSeconds = 300;

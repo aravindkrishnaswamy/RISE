@@ -174,9 +174,12 @@ namespace RISE
 
 			// Mailboxing: unique ID for this geometry, used with thread_local
 			// storage to avoid redundant intersection tests when the same
-			// triangle appears in multiple BSP leaves.
+			// triangle appears in multiple BSP leaves.  Ids are recycled when a
+			// geometry is destroyed (bounded per-thread table); the epoch is
+			// never reused and resets a recycled id's stale entry.
 #ifdef RISE_ENABLE_MAILBOXING
 			const unsigned int					geometryId;
+			const unsigned long long			geometryEpoch;
 			size_t numTriangles() const { return ptr_polygons.size(); }
 #endif
 
@@ -327,6 +330,10 @@ namespace RISE
 				PointerTriangle& out );
 
 		public:
+			//! Diagnostics (M7 prerequisites): the calling thread's mailbox
+			//! table -- entries, and bytes held by them (0 without mailboxing).
+			static std::size_t MailboxTableEntries();
+			static std::size_t MailboxTableBytes();
             bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
             bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}
             bool IsZeroVolumeSheet() const {return m_bZeroVolumeSheet && !smsUncertainNormalOrientation;}
@@ -697,6 +704,24 @@ namespace RISE
 			unsigned int UpdateVerticesLean( const VerticesListType& newVertices,
 			                                 const NormalsListType&  newNormals,
 			                                 const bool recomputeAreas );
+
+			//! M7 prerequisites: the per-frame install for a CHANGING-TOPOLOGY
+			//! mesh (a liquid surface), under the same between-frames contract.
+			//! Replaces the vertex arrays and the connectivity in place (the
+			//! vectors keep their storage), rebuilds the pointer triangles and
+			//! the BVH in full (reusing its storage; `parallelBuild` builds it on
+			//! the thread pool -- the same tree as the serial build), and leaves
+			//! the mesh UNCERTIFIED with areas recomputed, exactly as
+			//! UpdateVerticesLean does.  `indices` holds 3 entries per triangle,
+			//! one index each into positions, normals (when present and not
+			//! face normals) and coords (when nonempty).  Any count is valid,
+			//! including no triangles (the mesh then has no hits and no area).
+			//! False (nothing changed) when an index is out of range.  Quiet.
+			bool ReplaceTopologyLean( const VerticesListType& positions,
+			                          const NormalsListType&  normals,
+			                          const TexCoordsListType& coords,
+			                          const std::vector<std::uint32_t>& indices,
+			                          const bool parallelBuild );
 
 			void ComputeVertexNormals() override;
 

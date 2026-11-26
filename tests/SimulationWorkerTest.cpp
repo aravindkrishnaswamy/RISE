@@ -155,6 +155,107 @@ void StopResume(const fs::path& root, const fs::path& reference)
 		Digests(after) == Digests(before), "forced rebake starts a new epoch", log);
 }
 
+// M7 prerequisites: streamed checkpoints.  The worker writes version 2 (the
+// solver's CheckpointTo behind a header, digest in the trailer), refuses a
+// corrupted or truncated one, and still resumes a version-1 file; through the
+// in-process host the reference solvers' streams resume exactly as their
+// in-memory checkpoints do.
+void StreamedCheckpoints(const fs::path& root, const fs::path& reference)
+{
+	const auto params = root/"test.membrane.json";
+	std::string log, error;
+	// Version 2 on disk; integrity.
+	const auto dir = root/"streamed";
+	Check(Worker({"bake", "test.membrane", params.string(), dir.string(), "--stop-after-frames", "5"}, &log) == WorkerStopped,
+		"streamed: partial bake", log);
+	Bytes file;
+	{
+		std::ifstream f(dir/"rise-sim.checkpoint", std::ios::binary);
+		file.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+	}
+	Check(file.size() > 100 && std::memcmp(file.data(), "RISESIMC", 8) == 0 && file[8] == 2 &&
+		std::memcmp(file.data() + file.size() - 8, "RISESIME", 8) == 0, "the worker writes a streamed (version 2) checkpoint");
+	const auto rewrite = [&](const Bytes& b) {
+		std::ofstream f(dir/"rise-sim.checkpoint", std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+	};
+	Bytes corrupt = file;
+	corrupt[file.size()/2] ^= 0x40;
+	rewrite(corrupt);
+	Check(Worker({"resume", dir.string()}, &log) == WorkerFailed && log.find("digest mismatch") != std::string::npos,
+		"a corrupted stream is refused before the solver reads it", log);
+	Bytes truncated(file.begin(), file.end() - 40);
+	rewrite(truncated);
+	Check(Worker({"resume", dir.string()}, &log) == WorkerFailed, "a truncated stream is refused", log);
+	rewrite(file);
+	Check(Worker({"resume", dir.string()}, &log) == WorkerFinished && Identical(dir, reference),
+		"the streamed checkpoint resumes to the uninterrupted bake byte for byte", log);
+
+	// A version-1 checkpoint (what workers wrote before) still resumes.
+	const auto old = root/"version1";
+	Check(Worker({"bake", "test.membrane", params.string(), old.string(), "--stop-after-frames", "5"}, &log) == WorkerStopped,
+		"version 1: partial bake", log);
+	{
+		InProcessHost host(CreateSolver("test.membrane", error));
+		Bytes json;
+		V parameters;
+		{
+			std::ifstream f(params, std::ios::binary);
+			json.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+		}
+		InProcessHost::Checkpoint c;
+		Check(ParseSolverParameters(json, budget, parameters, error) && host.Configure(parameters, EmptySceneInputs(), error) &&
+			host.Start(error) && host.StepToIndex(4, error) && host.SaveCheckpoint(c, error), "in-memory checkpoint at frame 5", error);
+		const SolverDescription& d = host.Description();
+		Bytes header;
+		Check(RISE::RISECBOR64::Encode(V::MapValue({{"key", V::String(d.cache.key)}, {"solver", V::String(d.solverId)},
+			{"version", V::String(d.version)}, {"time", V::Float(c.position.time)}, {"next", V::Signed(c.position.nextIndex)},
+			{"finished", V::Bool(c.position.finished)}, {"size", V::Unsigned(c.state.size())},
+			{"digest", V::String(RISE::RISECBOR64::SHA256Hex(c.state))}}), header, &error), "version 1 header", error);
+		Bytes v1{'R', 'I', 'S', 'E', 'S', 'I', 'M', 'C', 1, 0, 0, 0};
+		for (unsigned k = 0; k < 8; ++k) v1.push_back(static_cast<std::uint8_t>(std::uint64_t(header.size()) >> (8*k)));
+		v1.insert(v1.end(), header.begin(), header.end());
+		v1.insert(v1.end(), c.state.begin(), c.state.end());
+		std::ofstream f(old/"rise-sim.checkpoint", std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(v1.data()), static_cast<std::streamsize>(v1.size()));
+	}
+	Check(Worker({"resume", old.string()}, &log) == WorkerFinished && Identical(old, reference),
+		"a version 1 checkpoint resumes to the uninterrupted bake byte for byte", log);
+
+	// In process: both reference solvers, in-memory and streamed checkpoints
+	// after six frames resume identically; the stream is a different
+	// byte layout (the solvers' own CheckpointTo, not the default).
+	for (const char* id : {"test.advection_diffusion", "test.membrane"}) {
+		const V p = V::MapValue({});
+		auto run = [&](InProcessHost& h) { return h.Configure(p, EmptySceneInputs(), error); };
+		InProcessHost full(CreateSolver(id, error));
+		Check(run(full) && full.Start(error) && full.StepToIndex(1000, error), "uninterrupted in-process run", error);
+		InProcessHost first(CreateSolver(id, error));
+		InProcessHost::Checkpoint memory;
+		MemoryCheckpointSink sink;
+		std::string key;
+		SolverPosition position;
+		Check(run(first) && first.Start(error) && first.StepToIndex(6, error) && first.SaveCheckpoint(memory, error) &&
+			first.SaveCheckpointTo(sink, key, position, error), "both checkpoints", error);
+		Check(sink.bytes != memory.state && sink.bytes.size() > 20 && std::memcmp(sink.bytes.data(), "RISEREFS", 8) == 0,
+			"the stream is the solver's own layout");
+		InProcessHost a(CreateSolver(id, error)), b(CreateSolver(id, error));
+		MemoryCheckpointSource source(sink.bytes);
+		Check(run(a) && a.RestoreCheckpoint(memory, error) && a.StepToIndex(1000, error), "in-memory resume", error);
+		Check(run(b) && b.RestoreCheckpointFrom(source, key, position, error) && b.StepToIndex(1000, error), "streamed resume", error);
+		// The resumed hosts hold the frames from the checkpoint on.
+		auto ref = Digests(*full.Snapshot());
+		for (auto it = ref.begin(); it != ref.end(); ) it = it->first.first < position.nextIndex ? ref.erase(it) : std::next(it);
+		Check(!ref.empty() && Digests(*a.Snapshot()) == ref && Digests(*b.Snapshot()) == ref,
+			std::string("in-memory and streamed resumes equal the uninterrupted run: ") + id);
+		// A stream cut short is refused.
+		Bytes cut(sink.bytes.begin(), sink.bytes.end() - 8);
+		MemoryCheckpointSource shortSource(cut);
+		InProcessHost c(CreateSolver(id, error));
+		Check(run(c) && !c.RestoreCheckpointFrom(shortSource, key, position, error), "a truncated stream is refused", error);
+	}
+}
+
 // Crash after a payload was published but before the manifest pointed at it.
 void PayloadManifestCut(const fs::path& root, const fs::path& reference)
 {
@@ -300,6 +401,8 @@ public:
 		const V* mb = parameters.Find("megabytes");
 		if (!mb || mb->GetType() != V::UnsignedInteger) return Fail(error, "megabytes");
 		size_ = static_cast<std::size_t>(mb->GetIntegerArgument()) << 20;
+		const V* stream = parameters.Find("stream");
+		stream_ = stream && stream->GetType() == V::Boolean && stream->GetBoolean();
 		d = SolverDescription{};
 		d.solverId = "test.ballast"; d.version = "1";
 		d.effectiveParameters = parameters;
@@ -323,9 +426,26 @@ public:
 		return true;
 	}
 	bool Checkpoint(Bytes& state, std::string&) override { state = state_; return true; }
+	// M7 prerequisites: with `stream`, the state goes to and comes from the
+	// checkpoint stream in 8 MiB chunks, never copied whole.
+	bool CheckpointTo(ICheckpointSink& sink, std::string& error) override {
+		if (!stream_) return ISimulationSolver::CheckpointTo(sink, error);
+		for (std::size_t i = 0; i < state_.size(); i += std::size_t(8) << 20)
+			if (!sink.Write(state_.data() + i, std::min(state_.size() - i, std::size_t(8) << 20), error)) return false;
+		return true;
+	}
+	bool RestoreFrom(ICheckpointSource& source, std::string& error) override {
+		if (!stream_) return ISimulationSolver::RestoreFrom(source, error);
+		state_.resize(static_cast<std::size_t>(source.Remaining()));
+		for (std::size_t i = 0; i < state_.size(); i += std::size_t(8) << 20)
+			if (!source.Read(state_.data() + i, std::min(state_.size() - i, std::size_t(8) << 20), error)) return false;
+		next_ = 1;
+		return true;
+	}
 	SolverPosition Position() const override { return {static_cast<double>(next_), next_, next_ == 2}; }
 	void RequestStop() override {}
 private:
+	bool stream_ = false;
 	std::size_t size_ = 0;
 	Bytes state_;
 	std::int64_t next_ = 0;
@@ -368,6 +488,24 @@ void CheckpointMemory(const fs::path& root, unsigned megabytes)
 		"checkpoint copy is " << megabytes << " MB); checkpoint file " << static_cast<double>(file)/(1 << 20) << " MB\n";
 	Check(plain > 0 && checkpointed > 0 && checkpointed - plain < 1.25*megabytes,
 		"the worker's checkpoint write path holds no extra full copy of the state");
+	const double resumed = ChildPeakMB({"resume", (root/"ballast-checkpoint").string(), "--budget-mb", "4096"});
+	// M7 prerequisites: the same solver streaming its state (CheckpointTo /
+	// RestoreFrom): the write and the resume hold the state once.
+	const auto streamParams = root/"ballast-stream.json";
+	WriteText(streamParams, "{\"megabytes\": " + std::to_string(megabytes) + ", \"stream\": true}");
+	const double streamPlain = ChildPeakMB({"bake", "test.ballast", streamParams.string(), (root/"ballast-stream-plain").string(),
+		"--checkpoint-seconds", "1000000", "--budget-mb", "4096"});
+	const double streamed = ChildPeakMB({"bake", "test.ballast", streamParams.string(), (root/"ballast-stream").string(),
+		"--stop-after-frames", "1", "--budget-mb", "4096"});
+	const double streamResumed = ChildPeakMB({"resume", (root/"ballast-stream").string(), "--budget-mb", "4096"});
+	std::cout << "streamed checkpoint memory: state " << megabytes << " MB; peak RSS without a checkpoint " << streamPlain
+		<< " MB, writing one " << streamed << " MB, resuming from it " << streamResumed << " MB (in-memory path: write "
+		<< checkpointed << " MB, resume " << resumed << " MB)\n";
+	Check(streamPlain > 0 && streamed > 0 && streamed - streamPlain < 0.1*megabytes + 64,
+		"a streamed checkpoint write holds the state once (peak about the state size)");
+	Check(streamResumed > 0 && streamResumed < 1.1*megabytes + 64, "a streamed resume holds the state once");
+	std::error_code exists;
+	Check(fs::exists(root/"ballast-stream"/"manifest.cbor", exists), "the streamed resume finished the bake");
 }
 #endif
 // Same probe as SimulationCacheTest: some Windows volumes cannot flush a
@@ -411,6 +549,7 @@ int main(int argc, char** argv)
 		Conformance(root, "test.advection_diffusion", "{\"frames\": 12, \"cells\": 24}", root/"grid-reference");
 		Conformance(root, "test.membrane", "{}", root/"mesh-reference");
 		StopResume(root, root/"mesh-reference");
+		StreamedCheckpoints(root, root/"mesh-reference");
 		PayloadManifestCut(root, root/"mesh-reference");
 		Refusals(root);
 #ifndef _WIN32

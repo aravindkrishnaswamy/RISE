@@ -18,13 +18,20 @@
 //         indexed mesh carried by a keyframed object (transform blur), PT
 //      e  an EMISSIVE simulated mesh (no blur) lighting a floor vs an indexed
 //         mesh at the same pose: the light tables follow the installed frame
+//      t  (M7 prerequisites) row d over a CHANGING-TOPOLOGY cache: the frame
+//         at t = 0.5 is a 9 x 9 sheet, its neighbours 5 x 5 sheets, so the
+//         install replaces the topology and the keys come from that frame's
+//         own velocities, PT
+//      x  (M7 prerequisites) row e over a changing-topology cache: the bind
+//         frame is a 5 x 5 sheet a quarter of the area; the light tables
+//         follow the rebuilt mesh
 //
 //    Gate (as DL-457): |blurred - reference| <= t_crit x combined standard
 //    error (Welch), family alpha 0.01 Bonferroni.  Also asserts the blurred
 //    renders took the multi-threaded time-indexed path (DL-465):
 //    TimeIndexedFrame::TryCreate must not fall back because of the mesh.
 //
-//    Usage: SimulatedMeshBlurTest [seed] [all|d|r|e] [spp] [repeats]
+//    Usage: SimulatedMeshBlurTest [seed] [all|d|r|e|t|x] [spp] [repeats]
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -207,10 +214,10 @@ namespace
 
 	std::uint32_t Bits( const double v ) { const float f = float( v ); std::uint32_t b; std::memcpy( &b, &f, 4 ); return b; }
 
-	void Rest( const int i, const int j, double& x, double& y )
+	void Rest( const int i, const int j, double& x, double& y, const int n = kN )
 	{
-		x = -0.8 + 1.6 * i / ( kN - 1 );
-		y = -0.6 + 1.2 * j / ( kN - 1 );
+		x = -0.8 + 1.6 * i / ( n - 1 );
+		y = -0.6 + 1.2 * j / ( n - 1 );
 	}
 
 	//! kDeforming: a translation plus an anisotropic stretch, so the sheet's
@@ -231,24 +238,26 @@ namespace
 	}
 
 	//! Counter-clockwise from +z (the front faces the camera); `down` flips it.
-	std::vector<std::uint32_t> Indices( const bool down = false )
+	std::vector<std::uint32_t> Indices( const bool down = false, const int n = kN )
 	{
 		std::vector<std::uint32_t> idx;
-		for( int j = 0; j + 1 < kN; ++j ) for( int i = 0; i + 1 < kN; ++i ) {
-			const std::uint32_t a = j * kN + i, b = a + 1, c = a + kN, d = c + 1;
+		for( int j = 0; j + 1 < n; ++j ) for( int i = 0; i + 1 < n; ++i ) {
+			const std::uint32_t a = j * n + i, b = a + 1, c = a + n, d = c + 1;
 			if( down ) idx.insert( idx.end(), { a, c, b, b, c, d } );
 			else idx.insert( idx.end(), { a, b, c, b, d, c } );
 		}
 		return idx;
 	}
 
-	bool WriteCache( const fs::path& root, const Motion motion, const bool down = false )
+	//! `changing`: the frames at -1.5 and 2.5 are 5 x 5 sheets, the frame at
+	//! 0.5 a 9 x 9 one (three topologies in a row of two kinds).
+	bool WriteCache( const fs::path& root, const Motion motion, const bool down = false, const bool changing = false )
 	{
 		std::error_code ec;
 		fs::remove_all( root, ec );
 		fs::create_directories( root.parent_path(), ec );
 		Simulation::CacheDescription d;
-		d.key = std::string( 64, "def"[motion] ); d.epoch = std::string( 64, "123"[motion] );
+		d.key = std::string( 64, "def"[motion] ); d.epoch = std::string( 64, ( changing ? "456" : "123" )[motion] );
 		d.producer = "m3b-blur-fixture"; d.producerVersion = "1";
 		// Scene time t maps to simulation time startTime + (t - sceneOrigin):
 		// with sceneOrigin = startTime the two clocks agree.
@@ -261,14 +270,15 @@ namespace
 			const double s = kStart + k * kInterval;
 			Simulation::MeshFrame f;
 			f.velocityUnits = "m/s";
-			for( int j = 0; j < kN; ++j ) for( int i = 0; i < kN; ++i ) {
-				double x, y, v[3]; Rest( i, j, x, y ); Velocity( motion, x, y, v );
+			const int n = changing && k != 1 ? 5 : kN;
+			for( int j = 0; j < n; ++j ) for( int i = 0; i < n; ++i ) {
+				double x, y, v[3]; Rest( i, j, x, y, n ); Velocity( motion, x, y, v );
 				f.positions.push_back( Bits( x + v[0] * ( s - kRef ) ) );
 				f.positions.push_back( Bits( y + v[1] * ( s - kRef ) ) );
 				f.positions.push_back( Bits( 0.5 ) );
 				for( int c = 0; c < 3; ++c ) f.velocities.push_back( Bits( v[c] ) );
 			}
-			f.indices = Indices( down );
+			f.indices = Indices( down, n );
 			Simulation::Bytes bytes;
 			if( !Simulation::EncodeMesh( f, 64u << 20, bytes, error ) || !writer.Append( k, "surface", s, bytes, error ) ) {
 				std::printf( "  cache: %s\n", error.c_str() );
@@ -339,12 +349,15 @@ namespace
 	}
 
 	//! Row d: blurred deforming sheet vs the time-average of statics.
-	void RowDeforming( const fs::path& cache )
+	void RowDeforming( const fs::path& cache, const bool topologyRow = false )
 	{
 		const double kFrame = 0.5, kExposure = 1.0;
 		const int times = 8;
 		struct Integrator { const char* name; std::string ras; };
-		for( const Integrator& ig : { Integrator{ "PT", RasPT() }, Integrator{ "BDPT", RasBDPT() } } ) {
+		std::vector<Integrator> integrators = { Integrator{ "PT", RasPT() } };
+		if( !topologyRow ) integrators.push_back( Integrator{ "BDPT", RasBDPT() } );
+		const std::string row = topologyRow ? " t" : " d";
+		for( const Integrator& ig : integrators ) {
 			const unsigned long long frames0 = TimeIndexedFrame::CreatedCount();
 			const Stat blur = RenderN( Scene( SimulatedSheet( cache ), ig.ras, kExposure ), kFrame, g_blurRepeats );
 			const unsigned long long timeIndexed = TimeIndexedFrame::CreatedCount() - frames0;
@@ -360,14 +373,15 @@ namespace
 				refDofDen += v * v / ( g_repeats - 1 );
 			}
 			const Welch w = Compare( blur, refMean, refVar, refDofDen );
-			std::printf( "  %-4s d: deforming sheet  blurred %.6f +/- %.6f  time-average %.6f +/- %.6f  ratio %.4f  t %+.2f (crit %.2f)  time-indexed frames %llu\n",
-				ig.name, blur.mean, blur.se, refMean, std::sqrt( refVar ), refMean > 0 ? blur.mean / refMean : 0.0, w.z, w.crit, timeIndexed );
-			Check( ok && blur.mean > 0, std::string( "renders complete: " ) + ig.name + " d" );
-			Check( ok && w.crit * w.se <= 0.22 * refMean, std::string( "precision cap (crit*se <= 22% of the mean): " ) + ig.name + " d" );
+			std::printf( "  %-4s%s: %s  blurred %.6f +/- %.6f  time-average %.6f +/- %.6f  ratio %.4f  t %+.2f (crit %.2f)  time-indexed frames %llu\n",
+				ig.name, row.c_str(), topologyRow ? "changing-topology sheet" : "deforming sheet", blur.mean, blur.se, refMean,
+				std::sqrt( refVar ), refMean > 0 ? blur.mean / refMean : 0.0, w.z, w.crit, timeIndexed );
+			Check( ok && blur.mean > 0, std::string( "renders complete: " ) + ig.name + row );
+			Check( ok && w.crit * w.se <= 0.22 * refMean, std::string( "precision cap (crit*se <= 22% of the mean): " ) + ig.name + row );
 			Check( ok && std::fabs( blur.mean - refMean ) <= w.crit * w.se,
-				std::string( "deformation blur = time average of static renders: " ) + ig.name + " d" );
+				std::string( "deformation blur = time average of static renders: " ) + ig.name + row );
 			Check( timeIndexed == unsigned( g_blurRepeats ),
-				std::string( "every blurred frame took the multi-threaded time-indexed path: " ) + ig.name + " d" );
+				std::string( "every blurred frame took the multi-threaded time-indexed path: " ) + ig.name + row );
 			// The statics differ from each other: the reference really moves.
 			double m0 = 0, m1 = 0;
 			RenderOnce( Scene( SimulatedSheet( cache ), ig.ras, 0.0 ), 0.0, m0 );
@@ -412,7 +426,7 @@ namespace
 	//! has a quarter of the installed frame's area (a light power, area pdf or
 	//! sampling CDF left at the bind frame is off by 4x); the reference is an
 	//! indexed mesh at the installed pose.
-	void RowEmissive( const fs::path& cache )
+	void RowEmissive( const fs::path& cache, const bool topologyRow = false )
 	{
 		const std::string lit =
 			"uniformcolor_painter\n{\n\tname grey\n\tcolor 0.5 0.5 0.5\n}\n\n"
@@ -430,10 +444,11 @@ namespace
 		const double dof = dofDen > 0 ? ( va + vb ) * ( va + vb ) / dofDen : 1e6;
 		const double z = se > 0 ? ( sim.mean - ref.mean ) / se : 0;
 		const double crit = CriticalT( kFamilyAlpha / g_comparisons, dof );
-		std::printf( "  PT   e: emissive sheet  simulated %.6f +/- %.6f  indexed %.6f +/- %.6f  ratio %.4f  t %+.2f (crit %.2f)\n",
-			sim.mean, sim.se, ref.mean, ref.se, ref.mean > 0 ? sim.mean / ref.mean : 0.0, z, crit );
-		Check( sim.ok && ref.ok && sim.mean > 0, "renders complete: e" );
-		Check( sim.ok && ref.ok && std::fabs( sim.mean - ref.mean ) <= crit * se,
+		std::printf( "  PT   %s  simulated %.6f +/- %.6f  indexed %.6f +/- %.6f  ratio %.4f  t %+.2f (crit %.2f)\n",
+			topologyRow ? "x: emissive changing-topology sheet" : "e: emissive sheet", sim.mean, sim.se, ref.mean, ref.se, ref.mean > 0 ? sim.mean / ref.mean : 0.0, z, crit );
+		Check( sim.ok && ref.ok && sim.mean > 0, topologyRow ? "renders complete: x" : "renders complete: e" );
+		Check( sim.ok && ref.ok && std::fabs( sim.mean - ref.mean ) <= crit * se, topologyRow ?
+			"emissive changing-topology mesh lights the scene from the rebuilt frame: PT x" :
 			"emissive simulated mesh lights the scene from the installed frame: PT e" );
 	}
 }
@@ -452,13 +467,20 @@ int main( int argc, char** argv )
 	const bool rowD = only == "all" || only.find( 'd' ) != std::string::npos;
 	const bool rowR = only == "all" || only.find( 'r' ) != std::string::npos;
 	const bool rowE = only == "all" || only.find( 'e' ) != std::string::npos;
-	g_comparisons = ( rowD ? 2 : 0 ) + ( rowR ? 1 : 0 ) + ( rowE ? 1 : 0 );
+	const bool rowT = only == "all" || only.find( 't' ) != std::string::npos;
+	const bool rowX = only == "all" || only.find( 'x' ) != std::string::npos;
+	g_comparisons = ( rowD ? 2 : 0 ) + ( rowR ? 1 : 0 ) + ( rowE ? 1 : 0 ) + ( rowT ? 1 : 0 ) + ( rowX ? 1 : 0 );
 	if( g_comparisons == 0 ) g_comparisons = 1;
 	const fs::path deforming = g_scratch / "deforming", rigid = g_scratch / "rigid", emitter = g_scratch / "emitter";
-	Check( WriteCache( deforming, kDeforming ) && WriteCache( rigid, kRigid ) && WriteCache( emitter, kExpanding, true ), "write the fixture caches" );
+	const fs::path changing = g_scratch / "changing", changingEmitter = g_scratch / "changing_emitter";
+	Check( WriteCache( deforming, kDeforming ) && WriteCache( rigid, kRigid ) && WriteCache( emitter, kExpanding, true ) &&
+		WriteCache( changing, kDeforming, false, true ) && WriteCache( changingEmitter, kExpanding, true, true ),
+		"write the fixture caches" );
 	if( rowD ) RowDeforming( deforming );
 	if( rowR ) RowRigid( rigid );
 	if( rowE ) RowEmissive( emitter );
+	if( rowT ) RowDeforming( changing, true );
+	if( rowX ) RowEmissive( changingEmitter, true );
 	fs::remove_all( RISE::TestSupport::ScratchTestRoot( "rise_simulated_mesh_blur_" ), ec );
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed\n";
 	return failCount == 0 ? 0 : 1;
