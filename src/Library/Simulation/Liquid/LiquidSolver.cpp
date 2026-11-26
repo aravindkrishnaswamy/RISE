@@ -33,7 +33,9 @@ using namespace Liquid;
 
 constexpr std::size_t CodecBudget = std::size_t(16) << 30;
 constexpr std::size_t InputBudget = std::size_t(256) << 20;
-constexpr const char* SolverVersion = "m7b.1";
+constexpr const char* SolverVersion = "m7c.1";
+// M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
+constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
 constexpr const char* StateFormat = "liquid.mac.state.v1";
 constexpr const char* SurfaceOutput = "surface";
@@ -562,6 +564,84 @@ std::vector<EvidenceCase> ComputeBodyEvidence(const SolverOptions& options, unsi
 	return cases;
 }
 
+// M7c: the viscosity and surface-tension cases (computed only when the option is on).
+// Tolerances: 1.25 x the error observed with the default numerics, rounded up
+// (docs/SIMULATION_M7C_RESULTS.md section 5); the rigid rotation at the solver's level.
+V PhysicsNumericsValue(const SolverOptions& o)
+{
+	return V::MapValue({{"base", NumericsValue(o)}, {"capillary_cfl", V::Float(o.capillaryCfl)},
+		{"curvature", V::String(o.interpolateCurvature ? "interpolated" : "cell")}, {"viscosity_tolerance", V::Float(o.viscosityTolerance)},
+		{"viscous_cfl", V::Float(o.viscousCfl)}, {"viscous_samples", V::Unsigned(std::uint64_t(o.viscousSamples))},
+		{"viscous_theta_min", V::Float(o.viscousThetaMin)}});
+}
+
+const CaseSpec ViscousCases[] = {
+	{"viscous-taylor-green-n32", "Taylor-Green vortex, nu = 0.05 m^2/s, free-slip walls, 32 x 32, T = 2: |amplitude / exp(-2 nu T) - 1|", 6.6e-4},
+	{"viscous-wave-n32", "standing wave kd = pi, ka = 0.01, nu = 1e-3 m^2/s, free slip, 32 cells per wavelength, 4 periods: |decay rate / Lamb's deep-water root - 1| (the numerical damping included)", 3.9e-2},
+	{"couette-torque-n32", "circular Couette, a spinning cut-cell cylinder (r 0.15, 0.1 rad/s) in a static one (r 0.4), nu = 0.01, no slip, 32 cells, steady: |torque / exact - 1|", 9.2e-3},
+	{"couette-profile-n32", "same: max |u - u_exact| / (omega R1) between the walls", 2.3e-2},
+	{"cylinder-drag-n32", "Stokes drag on a cylinder (r 0.15) translating in a concentric container (r 0.4), nu = 1, no slip, 32 cells: |F / exact - 1|", 3.2e-2},
+	{"rigid-rotation-n32", "a free liquid disk in rigid rotation, one viscous step: max |du| / (omega R) (zero strain: no change)", 1e-9}};
+
+const CaseSpec CapillaryCases[] = {
+	{"laplace-pressure-n32", "static drop R = 0.25 (2-D), sigma = rho = 1, Laplace number 12000, 32 cells, 2 capillary times: |mean inside pressure / (sigma / R) - 1|", 2.6e-3},
+	{"parasitic-n32", "same: largest parasitic speed over the run as a capillary number mu U / sigma", 3.0e-5},
+	{"capillary-wave-n32", "capillary-gravity standing wave, Bond number 1, kd = pi, ka = 0.01, 32 cells per wavelength, 3 periods: |omega error| / omega", 3.3e-2},
+	{"oscillating-drop-n32", "2-D drop R = 0.25, mode 2, amplitude 0.05 R, zero gravity, 32 cells, 2 periods: |omega / Lamb's - 1|", 2.2e-2}};
+
+std::vector<EvidenceCase> ComputePhysicsEvidence(const SolverOptions& options, unsigned threads, bool viscosity, bool capillary)
+{
+	static std::mutex mutex;
+	static std::map<std::string, std::vector<EvidenceCase>> memo;
+	Bytes key;
+	std::string ignored;
+	RISECBOR64::Encode(V::MapValue({{"numerics", PhysicsNumericsValue(options)}, {"viscosity", V::Bool(viscosity)},
+		{"capillary", V::Bool(capillary)}}), key, &ignored);
+	const std::string digest = RISECBOR64::SHA256Hex(key);
+	{
+		std::lock_guard<std::mutex> hold(mutex);
+		const auto it = memo.find(digest);
+		if (it != memo.end()) return it->second;
+	}
+	Pool pool(threads);
+	std::map<std::string, double> error;
+	std::vector<const CaseSpec*> specs;
+	if (viscosity) {
+		error["viscous-taylor-green-n32"] = std::fabs(RunViscousTaylorGreen(32, 0.05, 2.0, options, &pool).amplitudeError);
+		error["viscous-wave-n32"] = std::fabs(RunViscousWave(32, 3.14159265358979323846, 0.01, 4, 1e-3, false, false, options, &pool).error);
+		const CouetteResult c = RunCouette(32, 0.15, 0.4, 0.1, 0.01, 6.0, 0.37, 0, options, &pool);
+		error["couette-torque-n32"] = std::fabs(c.torqueError);
+		error["couette-profile-n32"] = c.profileError;
+		error["cylinder-drag-n32"] = std::fabs(RunCylinderDrag(32, 0.15, 0.4, 0.01, 1.0, 0.3, 0.37, options, &pool).error);
+		error["rigid-rotation-n32"] = RunRotatingDisk(32, 0.01, 0, options, &pool).stepChange;
+		for (const CaseSpec& c2 : ViscousCases) specs.push_back(&c2);
+	}
+	if (capillary) {
+		const DropResult d = RunStaticDrop(32, false, 2, std::sqrt(0.5/12000), options, &pool);
+		error["laplace-pressure-n32"] = std::fabs(d.pressureError);
+		error["parasitic-n32"] = d.capillaryNumber;
+		error["capillary-wave-n32"] = std::fabs(RunCapillaryWave(32, 3.14159265358979323846, 0.01, 9.81/(4*3.14159265358979323846*3.14159265358979323846), 3, options, &pool).frequencyError);
+		error["oscillating-drop-n32"] = std::fabs(RunOscillatingDrop(32, false, 0.05, 2, 0, options, &pool).error);
+		for (const CaseSpec& c2 : CapillaryCases) specs.push_back(&c2);
+	}
+	std::vector<EvidenceCase> cases;
+	for (const CaseSpec* spec : specs) {
+		EvidenceCase c;
+		c.id = spec->id;
+		c.description = spec->description;
+		c.tolerance = spec->tolerance;
+		c.error = error[spec->id];
+		c.passed = std::isfinite(c.error) && c.error <= c.tolerance;
+		const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
+			{"numerics", PhysicsNumericsValue(options)}, {"physics", V::String("viscosity and surface tension (m7c)")}});
+		c.digest = EvidenceDigest(c.id, configuration, c.error, c.tolerance, c.passed);
+		cases.push_back(c);
+	}
+	std::lock_guard<std::mutex> hold(mutex);
+	memo[digest] = cases;
+	return cases;
+}
+
 // ------------------------------------------------------------------ checkpoint streams
 
 class StreamWriter {
@@ -663,7 +743,7 @@ struct LiquidToken final : SolverStateToken {
 	std::vector<MarkerParticles::Particle> particles;
 	// M7b: bodies and the open port exchange.
 	std::vector<LiquidBody> bodies;
-	std::vector<Vec6> accumulated;
+	std::vector<Vec6> accumulated, last, lastViscous;   // the last step's impulse and its viscous part (m7c: the bodies' prediction)
 	bool macroOpen = false;
 	double macroStart = 0;
 	std::vector<std::string> portNames;
@@ -792,6 +872,10 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	setup.density = p.Real("density", 1000.0);
 	setup.openTop = p.Text("top", "wall", {"wall", "open"}) == "open";
 	setup.initialVelocity = p.Vector("initial_velocity", {{0, 0, 0}});
+	// m7c: viscosity and surface tension (0: off).
+	setup.viscosity = p.Real("viscosity", 0.0);
+	setup.noSlip = p.Text("viscous_walls", "no_slip", {"no_slip", "free_slip"}) == "no_slip";
+	setup.surfaceTension = p.Real("surface_tension", 0.0);
 	{
 		const V* list = p.Raw("liquid");
 		V::Values out;
@@ -863,6 +947,10 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		o.minFaceFraction = p.Real("min_face_fraction", 0.0);
 		o.minTransportFraction = p.Real("min_transport_fraction", 0.25);
 		o.speedLimit = p.Real("speed_limit", 3.0);
+		o.viscosityTolerance = p.Real("viscosity_tolerance", 1e-8);
+		o.viscousCfl = p.Real("viscous_cfl", 4.0);
+		o.capillaryCfl = p.Real("capillary_cfl", 0.5);
+		o.interpolateCurvature = p.Text("curvature", "interpolated", {"interpolated", "cell"}) == "interpolated";
 		o.extrapolationLayers = int(p.Count("extrapolation_layers", 6, 1, 64));
 		o.interfaceExtrapolationLayers = int(p.Count("interface_extrapolation_layers", 4, 1, 64));
 		o.linearExtrapolationLayers = int(p.Count("linear_extrapolation_layers", 1, 0, 8));
@@ -874,6 +962,9 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		if (!(o.minFaceFraction >= 0 && o.minFaceFraction < 1)) return p.Bad("min_face_fraction must be in [0, 1)");
 		if (!(o.minTransportFraction >= 0 && o.minTransportFraction <= 1)) return p.Bad("min_transport_fraction must be in [0, 1]");
 		if (!(o.speedLimit >= 0)) return p.Bad("speed_limit must not be negative");
+		if (!(o.viscosityTolerance > 0 && o.viscosityTolerance < 1)) return p.Bad("viscosity_tolerance must be in (0, 1)");
+		if (!(o.viscousCfl >= 0)) return p.Bad("viscous_cfl must not be negative");
+		if (!(o.capillaryCfl > 0 && o.capillaryCfl <= 2)) return p.Bad("capillary_cfl must be in (0, 2]");
 	}
 	const bool fields = p.Bool("publish_fields", false);
 	const bool particlesOut = p.Bool("publish_particles", false);
@@ -885,6 +976,8 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	if (!p.Finish()) return false;
 	if (!(rate > 0)) return Fail(error, "frame_rate must be positive");
 	if (!(setup.density > 0)) return Fail(error, "density must be positive");
+	if (!(setup.viscosity >= 0) || !std::isfinite(setup.viscosity)) return Fail(error, "viscosity must not be negative");
+	if (!(setup.surfaceTension >= 0) || !std::isfinite(setup.surfaceTension)) return Fail(error, "surface_tension must not be negative");
 	if (setup.grid.Cells() > (std::size_t(1) << 31)) return Fail(error, "the grid is too large");
 	for (std::size_t i = 0; i < setup.bodies.size(); ++i)
 		for (std::size_t j = 0; j < i; ++j)
@@ -919,9 +1012,19 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	candidate.inputs = sceneNames;
 	{
 		Bytes records;
-		if (!RISECBOR64::Encode(V::MapValue({{"format", V::String("liquid.mac.v1")}, {"density", V::Float(setup.density)},
+		V::Members rec{{"format", V::String("liquid.mac.v1")}, {"density", V::Float(setup.density)},
 			{"model", V::String("single-phase inviscid incompressible liquid, free surface p = 0, no surface tension")},
-			{"units", V::MapValue({{"density", V::String("kg/m^3")}, {"length", V::String("m")}})}}), records, &error)) return false;
+			{"units", V::MapValue({{"density", V::String("kg/m^3")}, {"length", V::String("m")}})}};
+		if (setup.viscosity > 0 || setup.surfaceTension > 0) {
+			// m7c (the m7b record is unchanged when both are off).
+			rec[2].second = V::String(std::string("single-phase incompressible liquid") + (setup.viscosity > 0 ? ", constant viscosity" : ", inviscid") +
+				", free surface" + (setup.surfaceTension > 0 ? " with surface tension" : " p = 0, no surface tension"));
+			rec.emplace_back("surface_tension", V::Float(setup.surfaceTension));
+			rec.emplace_back("viscosity", V::Float(setup.viscosity));
+			rec[3].second = V::MapValue({{"density", V::String("kg/m^3")}, {"length", V::String("m")}, {"surface_tension", V::String("N/m")},
+				{"viscosity", V::String("Pa s")}});
+		}
+		if (!RISECBOR64::Encode(V::MapValue(rec), records, &error)) return false;
 		candidate.cache.physicalRecords = records;
 	}
 	// One-way coupling: the fields output as a cached-output port.
@@ -953,7 +1056,9 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	// 128^3 (a dam break; 565 at 64^3 with the fixed part), particles about 140 bytes
 	// per cell at 16 per band cell, the fields output 48; declared with a 25% margin.
 	caps.memoryEstimate = (std::uint64_t(64) << 20) + std::uint64_t(cells)*450 +
-		(o.particles ? std::uint64_t(cells)*std::uint64_t(o.particle.perCell)*9 : 0) + (fields ? std::uint64_t(cells)*60 : 0);
+		(o.particles ? std::uint64_t(cells)*std::uint64_t(o.particle.perCell)*9 : 0) + (fields ? std::uint64_t(cells)*60 : 0) +
+		// m7c: the viscous solve's arrays (about 30 doubles per cell) and the curvature.
+		(setup.viscosity > 0 ? std::uint64_t(cells)*300 : 0) + (setup.surfaceTension > 0 ? std::uint64_t(cells)*8 : 0);
 	// Wall s per simulated s: the measured 1.2e-7 s per cell and step (128^3, 16
 	// threads, particles +5%) times the steps a second needs at the wave limit or
 	// at the dam-break speed sqrt(2 g D), whichever is more.
@@ -967,13 +1072,23 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		// M7b: measured at 128^3, 16 threads (docs/SIMULATION_M7B_RESULTS.md section 10): one coupled
 		// body +35%, four +55%, eight +77% per step (more at 64^3).
 		if (!setup.bodies.empty()) caps.costEstimate *= 1.3 + 0.06*double(setup.bodies.size());
+		// M7c (docs/SIMULATION_M7C_RESULTS.md section 8): the viscous solve and the capillary limit.
+		if (setup.viscosity > 0) caps.costEstimate *= ViscousCostFactor;
+		if (setup.surfaceTension > 0) {
+			const double capDt = o.capillaryCfl*std::sqrt(setup.density*setup.grid.h*setup.grid.h*setup.grid.h/(2*3.14159265358979323846*setup.surfaceTension));
+			const double capSteps = 1/capDt;
+			if (capSteps > steps) caps.costEstimate *= capSteps/std::max(1.0, steps);
+		}
 	}
 	const bool solids = !setup.solids.empty();
 	candidate.evidence.fidelity = "predictive";
 	caps.earnableFidelity = {"preview", "predictive"};
 	candidate.evidence.conditions = {{"interface", {o.particles ? "particle-level-set" : "level-set"}},
 		{"momentum", {MomentumName(o.momentum)}}, {"solids", {solids ? "static" : "none"}}, {"top", {setup.openTop ? "open" : "wall"}},
-		{"volume_correction", {o.volumeCorrection ? "on" : "off"}}};
+		{"volume_correction", {o.volumeCorrection ? "on" : "off"}}, {"viscosity", {setup.viscosity > 0 ? "on" : "off"}},
+		{"surface_tension", {setup.surfaceTension > 0 ? "on" : "off"}}};
+	std::sort(candidate.evidence.conditions.begin(), candidate.evidence.conditions.end(),
+		[](const auto& a, const auto& b) { return a.first < b.first; });
 	candidate.evidence.scope = "Single-phase inviscid incompressible liquid with a free surface (p = 0, no surface tension) "
 		"in a box with free-slip walls and static solids, on a uniform staggered grid: certified on canonical problems "
 		"(interface transport, hydrostatic rest with a tilted surface and an immersed solid, linear standing waves at finite and "
@@ -985,7 +1100,8 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		"of large-deformation flows (the interface is advanced with the step-start velocity, first order in time for "
 		"nonlinear transport).";
 	candidate.evidence.cases = ComputeEvidence(o, threads);
-	if (!solids && setup.bodies.empty()) candidate.notes.push_back("no solids: the domain walls (free slip) only");
+	if (!solids && setup.bodies.empty())
+		candidate.notes.push_back(setup.viscosity > 0 && setup.noSlip ? "no solids: the domain walls (no slip for the viscosity) only" : "no solids: the domain walls (free slip) only");
 	if (!setup.bodies.empty()) {
 		// M7b: rigid bodies in the pressure solve.
 		std::vector<std::string> motions;
@@ -1054,6 +1170,40 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		}
 		candidate.notes.push_back("rigid bodies: contact with walls or other bodies inside the liquid is not covered (preview); "
 			"bodies the liquid integrates stop inelastically at the domain walls");
+	}
+	if (setup.viscosity > 0 || setup.surfaceTension > 0) {
+		// M7c: viscosity and surface tension, each certified by its own cases.
+		const auto physics = ComputePhysicsEvidence(o, threads, setup.viscosity > 0, setup.surfaceTension > 0);
+		candidate.evidence.cases.insert(candidate.evidence.cases.end(), physics.begin(), physics.end());
+		std::string add = " M7c adds";
+		if (setup.viscosity > 0)
+			add += " constant viscosity (implicit, the variational strain-rate form, zero viscous traction at the free surface, " +
+				std::string(setup.noSlip ? "no slip" : "free slip") + " at walls, solids and bodies; certified on a viscous Taylor-Green "
+				"vortex, the viscous damping of a standing wave against Lamb's root, circular Couette flow between a spinning cut-cell "
+				"cylinder and a static one, Stokes drag on a cylinder in a concentric container and a rigidly rotating free disk; first "
+				"order in time; bodies the liquid integrates are unknowns of the viscous solve; not covering variable viscosity or viscous flow in gaps "
+				"below about two cells)";
+		if (setup.surfaceTension > 0)
+			add += std::string(setup.viscosity > 0 ? " and" : "") + " surface tension (the ghost-fluid Laplace jump with the level set's "
+				"curvature at the sub-cell interface, 90 degree contact angle at the domain walls in the curvature only; certified on a "
+				"viscous static drop's Laplace pressure and parasitic currents, a capillary-gravity standing wave and an oscillating drop, "
+				"first order (the interface velocity is extrapolated by a constant with surface tension); "
+				"not covering contact-line dynamics at solids, or inviscid surface tension over long times, whose parasitic currents grow)";
+		candidate.evidence.scope += add + ".";
+		std::string limit;
+		if (setup.surfaceTension > 0 && !(setup.viscosity > 0))
+			limit = "surface tension without viscosity: a static drop's parasitic currents are not bounded over long times (they grow to "
+				"the capillary speed in about 5-10 capillary times at 32 cells)";
+		else if (setup.surfaceTension > 0 && (!setup.solids.empty() || !setup.bodies.empty()))
+			limit = "surface tension with solids or bodies: the contact angle and contact-line motion at solids are not validated";
+		if (!limit.empty() && caps.fidelityLimit.empty()) {
+			candidate.evidence.fidelity = "preview";
+			caps.fidelityLimit = limit;
+		}
+		if (!limit.empty()) candidate.notes.push_back(limit + " (outside the certified scope)");
+		if (setup.viscosity > 0 && !setup.bodies.empty())
+			candidate.notes.push_back("viscosity with bodies: case 10 (a settling sphere) is in the validation test, not in this evidence "
+				"(too slow for Configure; docs/SIMULATION_M7C_RESULTS.md)");
 	}
 	d = std::move(candidate);
 	return true;
@@ -1375,6 +1525,17 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 		m.emplace_back("macroStart", V::Float(macroStart_));
 		m.emplace_back("portNames", V::ArrayValue(names));
 		m.emplace_back("contacts", V::Unsigned(contacts_));
+		if (setup_.viscosity > 0) {
+			// m7c: the last step's impulse on each body (the viscous solve predicts the body's
+			// wall velocity with it; only with viscosity, so m7b streams are unchanged).
+			std::vector<double> last;
+			for (const Vec6& I : model_.bodyImpulse) last.insert(last.end(), I.begin(), I.end());
+			for (std::size_t i = 0; i < model_.bodies.size(); ++i) {
+				const Vec6 I = i < model_.bodyViscousImpulse.size() ? model_.bodyViscousImpulse[i] : Vec6{{0, 0, 0, 0, 0, 0}};
+				last.insert(last.end(), I.begin(), I.end());
+			}
+			m.emplace_back("bodyImpulse", V::BytesValue(DoublesBytes(last)));
+		}
 	}
 	Bytes header;
 	if (!RISECBOR64::Encode(V::MapValue(m), header, &error)) return false;
@@ -1428,6 +1589,9 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 	double macroStart = 0;
 	std::vector<std::string> portNames;
 	std::uint64_t contacts = 0;
+	std::vector<double> lastImpulse;
+	if (!setup_.bodies.empty() && setup_.viscosity > 0 && !BytesDoubles(v.Find("bodyImpulse"), 12*setup_.bodies.size(), lastImpulse))
+		return Fail(error, "the liquid checkpoint does not hold the bodies' last impulses (viscosity)");
 	if (!setup_.bodies.empty()) {
 		const V* names = v.Find("portNames");
 		if (!BytesDoubles(v.Find("bodies"), BodyDoubles*setup_.bodies.size(), packed) || !flag("macroOpen", macroOpen) ||
@@ -1471,6 +1635,14 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 	model_.particles.SetState(std::move(ps), nextId, options_.particle);
 	if (!setup_.bodies.empty()) {
 		for (std::size_t i = 0; i < model_.bodies.size(); ++i) UnpackBody(&packed[BodyDoubles*i], model_.bodies[i], model_.bodyAccumulated[i]);
+		if (!lastImpulse.empty()) {
+			const std::size_t nb = model_.bodies.size();
+			model_.bodyViscousImpulse.assign(nb, Vec6{{0, 0, 0, 0, 0, 0}});
+			for (std::size_t i = 0; i < nb; ++i) for (int k = 0; k < 6; ++k) {
+				model_.bodyImpulse[i][std::size_t(k)] = lastImpulse[6*i + std::size_t(k)];
+				model_.bodyViscousImpulse[i][std::size_t(k)] = lastImpulse[6*(nb + i) + std::size_t(k)];
+			}
+		}
 		model_.UpdateBodyGeometry(false);
 		model_.SetTime(seg.t);
 	}
@@ -1514,6 +1686,8 @@ bool LiquidSolver::SaveState(std::shared_ptr<const SolverStateToken>& token, std
 	t->particles = model_.particles.Particles();
 	t->bodies = model_.bodies;
 	t->accumulated = model_.bodyAccumulated;
+	t->last = model_.bodyImpulse;
+	t->lastViscous = model_.bodyViscousImpulse;
 	t->macroOpen = macroOpen_;
 	t->macroStart = macroStart_;
 	t->portNames = portNames_;
@@ -1538,6 +1712,8 @@ bool LiquidSolver::RestoreState(const SolverStateToken& token, std::string& erro
 	if (!t->bodies.empty()) {
 		model_.bodies = t->bodies;
 		model_.bodyAccumulated = t->accumulated;
+		model_.bodyImpulse = t->last;
+		model_.bodyViscousImpulse = t->lastViscous;
 		model_.UpdateBodyGeometry(false);
 		model_.SetTime(t->seg.t);
 	}

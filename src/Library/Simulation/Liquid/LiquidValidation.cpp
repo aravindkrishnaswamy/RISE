@@ -12,6 +12,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <complex>
+#include <map>
+#include <mutex>
 
 namespace RISE { namespace Simulation { namespace Liquid {
 
@@ -414,13 +417,20 @@ HydrostaticResult RunHydrostatic(int n, bool threeD, double tilt, bool sphere, d
 	return r;
 }
 
-WaveResult RunStandingWave(int cells, double kd, double ka, double periods, const SolverOptions& options, Pool* pool)
+namespace {
+// The standing wave of RunStandingWave with the m7c physics (nu, walls, sigma / rho);
+// `viscousIterations` receives the largest viscous CG count of a step.
+WaveResult StandingWave(int cells, double kd, double ka, double periods, double nu, bool noSlip, double sigmaOverRho,
+	const SolverOptions& options, Pool* pool, int* viscousIterations)
 {
 	const double start = Now();
 	WaveResult r;
 	const double L = 1, k = 2*Pi/L, d = kd/k, a = ka/k, gm = 9.81, h = L/cells;
 	const int ny = static_cast<int>(std::ceil((d + std::max(0.125, 6*h))/h));
 	LiquidSetup s = Tank2D(cells, ny, h);
+	s.viscosity = nu*s.density;
+	s.noSlip = noSlip;
+	s.surfaceTension = sigmaOverRho*s.density;
 	LiquidModel m;
 	std::string error;
 	if (!m.Initialize(s, options, pool ? pool->Threads() : 1, error)) { r.frequencyError = 1e300; return r; }
@@ -431,7 +441,7 @@ WaveResult RunStandingWave(int cells, double kd, double ka, double periods, cons
 		phi[g.C(i, j, 0)] = x[1] - (d + a*std::cos(k*x[0]));
 	}
 	if (!m.SetLevelSet(phi, error)) { r.frequencyError = 1e300; return r; }
-	r.omegaExact = std::sqrt(gm*k*std::tanh(k*d));
+	r.omegaExact = std::sqrt((gm*k + sigmaOverRho*k*k*k)*std::tanh(k*d));
 	auto amplitude = [&]() {
 		double s2 = 0;
 		for (int i = 0; i < g.n[0]; ++i) s2 += ColumnHeight(g, m.phi, i, 0)*std::cos(k*(i + 0.5)*h);
@@ -445,12 +455,19 @@ WaveResult RunStandingWave(int cells, double kd, double ka, double periods, cons
 		as.push_back(amplitude());
 		r.volumeShift += std::fabs(st.volumeShift)/a;
 		r.amplitudeError = std::max(r.amplitudeError, std::fabs(as.back() - a*std::cos(r.omegaExact*t))/a);
+		if (viscousIterations) *viscousIterations = std::max(*viscousIterations, st.viscous.iterations);
 	}, error)) { r.frequencyError = 1e300; return r; }
 	r.omega = CrossingFrequency(ts, as, r.crossings);
 	r.frequencyError = (r.omega - r.omegaExact)/r.omegaExact;
 	r.decay = DecayRate(ts, as)/r.omegaExact;
 	r.seconds = Now() - start;
 	return r;
+}
+} // namespace
+
+WaveResult RunStandingWave(int cells, double kd, double ka, double periods, const SolverOptions& options, Pool* pool)
+{
+	return StandingWave(cells, kd, ka, periods, 0, true, 0, options, pool, nullptr);
 }
 
 SloshResult RunSloshing(int cells, double periods, const SolverOptions& options, Pool* pool)
@@ -1296,6 +1313,557 @@ NeutralResult RunNeutralBody(int cells, bool threeD, double duration, const Solv
 		else r.exactMassAcceleration = m.bodies[0].state.v[1]/T/9.81;
 	}
 	r.seconds = Now() - begin;
+	return r;
+}
+
+// ------------------------------------------------------------------ viscosity and surface tension (m7c)
+
+void ViscousWaveRoot(double g, double k, double nu, double sigmaOverRho, double& decay, double& omega)
+{
+	const double w0 = std::sqrt(g*k + sigmaOverRho*k*k*k);
+	if (!(nu > 0)) { decay = 0; omega = w0; return; }
+	using C = std::complex<double>;
+	const double nk2 = nu*k*k;
+	C s(-2*nk2, w0);
+	for (int it = 0; it < 100; ++it) {
+		const C m = std::sqrt(C(k*k, 0) + s/nu);
+		const C F = (s + 2*nk2)*(s + 2*nk2) + g*k + sigmaOverRho*k*k*k - 4*nu*nu*k*k*k*m;
+		const C dF = 2.0*(s + 2*nk2) - 2*nu*k*k*k/m;
+		const C step = F/dF;
+		s -= step;
+		if (std::abs(step) < 1e-15*std::abs(s)) break;
+	}
+	decay = -s.real();
+	omega = s.imag();
+}
+
+ViscousWaveResult RunViscousWave(int cells, double kd, double ka, double periods, double nu, bool noSlip, bool inviscidToo,
+	const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	ViscousWaveResult r;
+	const double k = 2*Pi, gm = 9.81;
+	int iterations = 0;
+	const WaveResult w = StandingWave(cells, kd, ka, periods, nu, noSlip, 0, options, pool, &iterations);
+	r.iterations = iterations;
+	r.omega = w.omega;
+	r.decay = w.decay*w.omegaExact;
+	ViscousWaveRoot(gm, k, nu, 0, r.decayExact, r.omegaExact);
+	r.decayLeading = 2*nu*k*k;
+	r.error = w.frequencyError > 1e299 ? 1e300 : r.decay/r.decayExact - 1;
+	if (inviscidToo) {
+		const WaveResult w0 = StandingWave(cells, kd, ka, periods, 0, true, 0, options, pool, nullptr);
+		r.inviscidDecay = w0.decay*w0.omegaExact;
+		r.errorNet = (r.decay - r.inviscidDecay)/r.decayExact - 1;
+	}
+	r.seconds = Now() - start;
+	return r;
+}
+
+WaveResult RunCapillaryWave(int cells, double kd, double ka, double sigmaOverRho, double periods, const SolverOptions& options, Pool* pool)
+{
+	return StandingWave(cells, kd, ka, periods, 0, true, sigmaOverRho, options, pool, nullptr);
+}
+
+ViscousTaylorGreenResult RunViscousTaylorGreen(int n, double nu, double duration, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	ViscousTaylorGreenResult r;
+	LiquidSetup s = Tank2D(n, n, Pi/n);
+	s.gravity = {{0, 0, 0}};
+	s.viscosity = nu*s.density;
+	s.noSlip = false;
+	Shape all;
+	all.type = Shape::Type::Box;
+	all.lo = {{-1, -1, -1}};
+	all.hi = {{Pi + 1, Pi + 1, 1}};
+	s.liquid.push_back(all);
+	SolverOptions o = options;
+	o.reinit = ReinitScheme::None;
+	o.volumeCorrection = false;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.amplitudeError = 1e300; return r; }
+	const Grid& g = m.GridSpec();
+	auto exact = [&](int a, int i, int j) {
+		const V3 x = g.FaceCentre(a, i, j, 0);
+		return a == 0 ? std::sin(x[0])*std::cos(x[1]) : -std::cos(x[0])*std::sin(x[1]);
+	};
+	for (int a = 0; a < 2; ++a) {
+		const auto d = g.FaceDims(a);
+		for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) m.u.u[a][g.F(a, i, j, 0)] = exact(a, i, j);
+	}
+	if (!m.ProjectState(error)) { r.amplitudeError = 1e300; return r; }
+	if (!m.Run(duration, duration/20, [&](double, const StepStats& st) { ++r.steps; r.iterations = std::max(r.iterations, st.viscous.iterations); }, error)) {
+		r.amplitudeError = 1e300;
+		return r;
+	}
+	const double decay = std::exp(-2*nu*duration);
+	double num = 0, den = 0;
+	for (int a = 0; a < 2; ++a) {
+		const auto d = g.FaceDims(a);
+		for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+			const double e = exact(a, i, j), v = m.u.u[a][g.F(a, i, j, 0)];
+			num += v*e;
+			den += e*e;
+			r.maxError = std::max(r.maxError, std::fabs(v - decay*e)/decay);
+		}
+	}
+	r.amplitudeError = num/den/decay - 1;
+	r.seconds = Now() - start;
+	return r;
+}
+
+double CouetteStartup(double R1, double R2, double omega, double nu, double t, double r)
+{
+	// u_t = nu (u_rr + u_r / r - u / r^2) on [R1, R2], u(R1) = omega R1, u(R2) = 0,
+	// u(r, 0) = 0: N cells, four backward Euler steps of dt/4 (damping the impulsive
+	// start) then Crank-Nicolson; memoised by the arguments but r.
+	static std::mutex mutex;
+	static std::map<std::array<double,5>, std::vector<double>> memo;
+	const std::array<double,5> key{{R1, R2, omega, nu, t}};
+	const int N = 4000;
+	const double dr = (R2 - R1)/N;
+	std::vector<double> u;
+	{
+		std::lock_guard<std::mutex> hold(mutex);
+		const auto it = memo.find(key);
+		if (it != memo.end()) u = it->second;
+	}
+	if (u.empty()) {
+		u.assign(std::size_t(N + 1), 0.0);
+		u[0] = omega*R1;
+		const int steps = 4000;
+		const double dt = t/steps;
+		std::vector<double> a(std::size_t(N + 1)), b(std::size_t(N + 1)), c(std::size_t(N + 1)), rhs(std::size_t(N + 1));
+		auto solve = [&](double tau, double implicitWeight) {
+			// (1 - w tau L) u_new = (1 + (1 - w) tau L) u_old, L the operator.
+			for (int i = 1; i < N; ++i) {
+				const double r0 = R1 + i*dr;
+				const double lm = nu*(1/(dr*dr) - 1/(2*r0*dr)), lp = nu*(1/(dr*dr) + 1/(2*r0*dr)), l0 = -nu*(2/(dr*dr) + 1/(r0*r0));
+				const double Lu = lm*u[std::size_t(i - 1)] + l0*u[std::size_t(i)] + lp*u[std::size_t(i + 1)];
+				rhs[std::size_t(i)] = u[std::size_t(i)] + (1 - implicitWeight)*tau*Lu;
+				a[std::size_t(i)] = -implicitWeight*tau*lm;
+				b[std::size_t(i)] = 1 - implicitWeight*tau*l0;
+				c[std::size_t(i)] = -implicitWeight*tau*lp;
+			}
+			rhs[1] -= a[1]*u[0];
+			rhs[std::size_t(N - 1)] -= c[std::size_t(N - 1)]*u[std::size_t(N)];
+			for (int i = 2; i < N; ++i) {
+				const double w = a[std::size_t(i)]/b[std::size_t(i - 1)];
+				b[std::size_t(i)] -= w*c[std::size_t(i - 1)];
+				rhs[std::size_t(i)] -= w*rhs[std::size_t(i - 1)];
+			}
+			u[std::size_t(N - 1)] = rhs[std::size_t(N - 1)]/b[std::size_t(N - 1)];
+			for (int i = N - 2; i >= 1; --i) u[std::size_t(i)] = (rhs[std::size_t(i)] - c[std::size_t(i)]*u[std::size_t(i + 1)])/b[std::size_t(i)];
+		};
+		for (int q = 0; q < 4; ++q) solve(dt/4, 1.0);
+		for (int q = 1; q < steps; ++q) solve(dt, 0.5);
+		std::lock_guard<std::mutex> hold(mutex);
+		memo[key] = u;
+	}
+	const double s = std::min(std::max((r - R1)/dr, 0.0), double(N));
+	const int i = std::min(N - 1, int(s));
+	const double f = s - i;
+	return (1 - f)*u[std::size_t(i)] + f*u[std::size_t(i + 1)];
+}
+
+CouetteResult RunCouette(int cells, double R1, double R2, double omega, double nu, double duration, double shift, double startupTime,
+	const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	CouetteResult r;
+	LiquidSetup s = UnitBox(cells, false);
+	const double h = s.grid.h, mu = nu*s.density;
+	s.gravity = {{0, 0, 0}};
+	s.viscosity = mu;
+	s.noSlip = true;
+	const V3 c{{0.5 + shift*h, 0.5 + shift*h, 0.0}};
+	Shape container;
+	container.type = Shape::Type::Cylinder;
+	container.point = c;
+	container.axis = {{0, 0, 1}};
+	container.radius = R2;
+	container.height = 10;
+	container.invert = true;
+	s.solids.push_back(container);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, 2, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	LiquidBody body = MakeBody(RoundBody(false, R1, h), BodyMotion::Prescribed, 1, c, s.gravity);
+	body.spin = {{0, 0, omega}};
+	s.bodies.push_back(body);
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.profileError = 1e300; return r; }
+	const Grid& g = m.GridSpec();
+	const double A = -omega*R1*R1/(R2*R2 - R1*R1), B = omega*R1*R1*R2*R2/(R2*R2 - R1*R1);
+	auto profileError = [&](const std::function<double(double)>& ut) {
+		double e = 0;
+		for (int a = 0; a < 2; ++a) {
+			const auto d = g.FaceDims(a);
+			for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+				const std::size_t f = g.F(a, i, j, 0);
+				if (!m.valid[a][f]) continue;
+				const V3 x = g.FaceCentre(a, i, j, 0);
+				const double dx = x[0] - c[0], dy = x[1] - c[1], rr = std::sqrt(dx*dx + dy*dy);
+				if (rr < R1 + h || rr > R2 - h) continue;
+				const double v = ut(rr);
+				const double ex = a == 0 ? -v*dy/rr : v*dx/rr;
+				e = std::max(e, std::fabs(m.u.u[a][f] - ex));
+			}
+		}
+		return e/(omega*R1);
+	};
+	auto run = [&](double T) {
+		return m.Run(T, T/10, [&](double, const StepStats& st) { ++r.steps; r.maxIterations = std::max(r.maxIterations, st.viscous.iterations); }, error);
+	};
+	if (startupTime > 0) {
+		if (!run(startupTime)) { r.profileError = 1e300; return r; }
+		r.startupError = profileError([&](double rr) { return CouetteStartup(R1, R2, omega, nu, startupTime, rr); });
+	}
+	if (!run(duration - m.Time())) { r.profileError = 1e300; return r; }
+	r.profileError = profileError([&](double rr) { return A*rr + B/rr; });
+	r.torque = m.bodyViscousImpulse.empty() ? 0.0 : m.bodyViscousImpulse[0][5]/(m.lastDt_*h);
+	r.pressureTorque = (m.bodyImpulse[0][5] - (m.bodyViscousImpulse.empty() ? 0.0 : m.bodyViscousImpulse[0][5]))/(m.lastDt_*h);
+	r.torqueExact = -4*Pi*mu*omega*R1*R1*R2*R2/(R2*R2 - R1*R1);
+	r.torqueError = r.torque/r.torqueExact - 1;
+	r.seconds = Now() - start;
+	return r;
+}
+
+DragResult RunCylinderDrag(int cells, double a, double b, double U, double nu, double duration, double shift, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	DragResult r;
+	LiquidSetup s = UnitBox(cells, false);
+	const double h = s.grid.h, mu = nu*s.density;
+	s.gravity = {{0, 0, 0}};
+	s.viscosity = mu;
+	s.noSlip = true;
+	const V3 c{{0.5 + shift*h, 0.5 + shift*h, 0.0}};
+	Shape container;
+	container.type = Shape::Type::Cylinder;
+	container.point = c;
+	container.axis = {{0, 0, 1}};
+	container.radius = b;
+	container.height = 10;
+	container.invert = true;
+	s.solids.push_back(container);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, 2, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	LiquidBody body = MakeBody(RoundBody(false, a, h), BodyMotion::Prescribed, 1, c, s.gravity);
+	body.v0 = {{U, 0, 0}};
+	s.bodies.push_back(body);
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.error = 1e300; return r; }
+	if (!m.Run(duration, duration/10, [&](double, const StepStats& st) { ++r.steps; r.maxIterations = std::max(r.maxIterations, st.viscous.iterations); }, error)) {
+		r.error = 1e300;
+		return r;
+	}
+	r.force = -m.bodyImpulse[0][0]/(m.lastDt_*h);
+	const double viscous = m.bodyViscousImpulse.empty() ? 0.0 : -m.bodyViscousImpulse[0][0]/(m.lastDt_*h);
+	r.exact = 4*Pi*mu*U/(std::log(b/a) - (b*b - a*a)/(b*b + a*a));
+	r.error = r.force/r.exact - 1;
+	r.viscousShare = viscous/r.force;
+	r.seconds = Now() - start;
+	return r;
+}
+
+RotationResult RunRotatingDisk(int cells, double nu, double duration, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	RotationResult r;
+	const double R = 0.3, omega = 1;
+	const V3 c{{0.5 + 0.13/cells, 0.5 + 0.07/cells, 0.0}};
+	auto setup = [&](double viscosity) {
+		LiquidSetup s = UnitBox(cells, false);
+		s.gravity = {{0, 0, 0}};
+		s.viscosity = viscosity;
+		Shape disk;
+		disk.type = Shape::Type::Sphere;
+		disk.point = c;
+		disk.radius = R;
+		s.liquid.push_back(disk);
+		return s;
+	};
+	auto rigid = [&](LiquidModel& m) {
+		const Grid& g = m.GridSpec();
+		for (int a = 0; a < 2; ++a) {
+			const auto d = g.FaceDims(a);
+			for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+				const V3 x = g.FaceCentre(a, i, j, 0);
+				m.u.u[a][g.F(a, i, j, 0)] = a == 0 ? -omega*(x[1] - c[1]) : omega*(x[0] - c[0]);
+			}
+		}
+	};
+	auto moment = [&](const LiquidModel& m) {
+		const Grid& g = m.GridSpec();
+		double L = 0;
+		for (int a = 0; a < 2; ++a) {
+			const auto d = g.FaceDims(a);
+			for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+				const int idx[3] = {i, j, 0};
+				if (idx[a] == 0 || idx[a] == g.n[a]) continue;
+				int lo[3] = {i, j, 0};
+				--lo[a];
+				const double pl = m.phi[g.C(lo[0], lo[1], 0)], pr = m.phi[g.C(i, j, 0)];
+				double w = 0;
+				if (pl < 0 && pr < 0) w = 1;
+				else if (pl < 0) w = pl/(pl - pr);
+				else if (pr < 0) w = pr/(pr - pl);
+				const V3 x = g.FaceCentre(a, i, j, 0);
+				L += w*m.u.u[a][g.F(a, i, j, 0)]*(a == 0 ? -(x[1] - c[1]) : (x[0] - c[0]));
+			}
+		}
+		return L;
+	};
+	SolverOptions o = options;
+	o.particles = false;
+	std::string error;
+	// One viscous step of the operator alone.
+	{
+		LiquidModel m;
+		if (!m.Initialize(setup(nu), o, pool ? pool->Threads() : 1, error)) { r.stepChange = 1e300; return r; }
+		rigid(m);
+		MacField u = m.u;
+		ViscosityOptions vo;
+		vo.kinematic = nu;
+		std::vector<Impulse6> bi;
+		V3 wi;
+		ViscosityStats vs;
+		if (!ViscousStep(m.GridSpec(), m.phi, m.fraction, ViscosityInput(), vo, 0.01, 1000, u, bi, wi, vs, pool, error)) { r.stepChange = 1e300; return r; }
+		for (int a = 0; a < 2; ++a) for (std::size_t f = 0; f < u.u[a].size(); ++f) r.stepChange = std::max(r.stepChange, std::fabs(u.u[a][f] - m.u.u[a][f]));
+		r.stepChange /= omega*R;
+	}
+	for (int pass = 0; pass < 2; ++pass) {
+		LiquidModel m;
+		if (!m.Initialize(setup(pass == 0 ? nu*1000 : 0.0), o, pool ? pool->Threads() : 1, error)) { r.momentLoss = 1e300; return r; }
+		rigid(m);
+		if (!m.ProjectState(error)) { r.momentLoss = 1e300; return r; }
+		const double L0 = moment(m);
+		if (!m.Run(duration, duration/10, [&](double, const StepStats&) { if (pass == 0) ++r.steps; }, error)) { r.momentLoss = 1e300; return r; }
+		const double change = (moment(m) - L0)/L0;
+		if (pass == 0) r.momentLoss = change; else r.inviscidLoss = change;
+	}
+	r.momentLoss -= r.inviscidLoss;
+	r.seconds = Now() - start;
+	return r;
+}
+
+double HabermanSayre(double l)
+{
+	// Haberman and Sayre (1958), U / U_Stokes for a sphere on the axis of a long cylinder.
+	const double l3 = l*l*l, l5 = l3*l*l, l6 = l5*l;
+	return (1 - 2.105*l + 2.0865*l3 - 1.7068*l5 + 0.72603*l6)/(1 - 0.75857*l5);
+}
+
+double BohlinFactor(double l)
+{
+	// Bohlin (1960) series of the same factor.
+	const double l3 = l*l*l, l5 = l3*l*l, l6 = l5*l, l8 = l6*l*l, l10 = l8*l*l;
+	return 1 - 2.10443*l + 2.08877*l3 - 0.94813*l5 - 1.372*l6 + 3.87*l8 - 4.19*l10;
+}
+
+SettlingResult RunSettlingSphere(int cells, double a, double R, double H, double ratio, double nu, double duration,
+	const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	SettlingResult r;
+	const double h = 2*R/cells;
+	LiquidSetup s;
+	const int nh = static_cast<int>(std::lround(H/h)), nw = cells + 2;
+	s.grid.n = {{nw, nh, nw}};
+	s.grid.h = h;
+	s.grid.origin = {{-0.5*nw*h, 0, -0.5*nw*h}};
+	s.viscosity = nu*s.density;
+	s.noSlip = true;
+	Shape container;
+	container.type = Shape::Type::Cylinder;
+	container.point = {{0.11*h, 0.5*nh*h, 0.07*h}};
+	container.axis = {{0, 1, 0}};
+	container.radius = R;
+	container.height = 10*H;
+	container.invert = true;
+	s.solids.push_back(container);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, 2*H, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	BodyShape sphere;
+	sphere.type = BodyShape::Type::Sphere;
+	sphere.radius = a;
+	const double mass = ratio*s.density*4.0/3.0*Pi*a*a*a;
+	LiquidBody body = MakeBody(sphere, BodyMotion::Dynamic, mass, {{container.point[0], 0.7*nh*h, container.point[2]}}, s.gravity);
+	body.free = {{false, true, false, false}};
+	s.bodies.push_back(body);
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.finite = false; r.error = 1e300; return r; }
+	if (!m.Run(duration, duration/40, [&](double t, const StepStats& st) {
+		++r.steps;
+		r.maxIterations = std::max(r.maxIterations, st.viscous.iterations);
+		r.t.push_back(t);
+		r.v.push_back(m.bodies[0].state.v[1]);
+	}, error)) { r.finite = false; r.error = 1e300; return r; }
+	double sum = 0;
+	int count = 0;
+	for (std::size_t q = 0; q < r.t.size(); ++q) if (r.t[q] >= 0.8*duration) { sum += r.v[q]; ++count; }
+	r.velocity = count ? -sum/count : 0;
+	r.stokes = 2*(ratio - 1)*9.81*a*a/(9*nu);
+	r.corrected = r.stokes*HabermanSayre(a/R);
+	r.bohlin = r.stokes*BohlinFactor(a/R);
+	r.error = r.velocity/r.corrected - 1;
+	r.reynolds = 2*a*r.velocity/nu;
+	r.drift = std::fabs(m.bodies[0].state.x[0] - body.state.x[0]) + std::fabs(m.bodies[0].state.x[2] - body.state.x[2]);
+	r.seconds = Now() - start;
+	return r;
+}
+
+namespace {
+// The drop cases' box: unit box, rho = sigma = 1, no gravity; the centre off the grid.
+LiquidSetup DropSetup(int cells, bool threeD, double mu, V3& c)
+{
+	LiquidSetup s = UnitBox(cells, threeD);
+	s.gravity = {{0, 0, 0}};
+	s.density = 1;
+	s.surfaceTension = 1;
+	s.viscosity = mu;
+	const double h = s.grid.h;
+	c = {{0.5 + 0.137*h, 0.5 + 0.071*h, threeD ? 0.5 + 0.053*h : 0.0}};
+	return s;
+}
+} // namespace
+
+DropResult RunStaticDrop(int cells, bool threeD, double duration, double mu, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	DropResult r;
+	const double R = 0.25;
+	V3 c;
+	LiquidSetup s = DropSetup(cells, threeD, mu, c);
+	Shape drop;
+	drop.type = Shape::Type::Sphere;
+	drop.point = c;
+	drop.radius = R;
+	s.liquid.push_back(drop);
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, options, pool ? pool->Threads() : 1, error)) { r.pressureError = 1e300; return r; }
+	const Grid& g = m.GridSpec();
+	const double h = g.h, jump = (threeD ? 2 : 1)/R;
+	{
+		std::vector<double> kappa;
+		Curvature(g, m.phi, kappa, pool);
+		for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < g.n[1]; ++j) for (int i = 0; i < g.n[0]; ++i) {
+			const std::size_t cc = g.C(i, j, k);
+			if (!(m.phi[cc] < 0)) continue;
+			for (int a = 0; a < 3; ++a) for (int side = -1; side <= 1; side += 2) {
+				int q[3] = {i, j, k};
+				q[a] += side;
+				if (q[a] < 0 || q[a] >= g.n[a] || g.n[a] == 1) continue;
+				const std::size_t nb = g.C(q[0], q[1], q[2]);
+				if (!(m.phi[nb] >= 0)) continue;
+				const double theta = m.phi[cc]/(m.phi[cc] - m.phi[nb]);
+				const double ki = options.interpolateCurvature ? kappa[cc] + theta*(kappa[nb] - kappa[cc]) : kappa[cc];
+				r.curvatureError = std::max(r.curvatureError, std::fabs(ki/jump - 1));
+			}
+		}
+	}
+	const double ts = std::sqrt(R*R*R), us = std::sqrt(1/R);
+	if (!m.Run(duration*ts, ts, [&](double, const StepStats&) { ++r.steps; r.maxSpeed = std::max(r.maxSpeed, m.MaxSpeed()); }, error)) {
+		r.pressureError = 1e300;
+		return r;
+	}
+	double sum = 0;
+	int count = 0;
+	for (std::size_t q = 0; q < g.Cells(); ++q) if (m.phi[q] < -2*h) { sum += m.Pressure(q); ++count; }
+	r.pressureError = count ? sum/count/jump - 1 : 1e300;
+	r.finalSpeed = m.MaxSpeed()/us;
+	r.capillary = r.maxSpeed/us;
+	r.capillaryNumber = mu*r.maxSpeed;   // sigma = 1
+	r.seconds = Now() - start;
+	return r;
+}
+
+OscillationResult RunOscillatingDrop(int cells, bool threeD, double epsilon, double periods, double mu, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	OscillationResult r;
+	const double R = 0.25;
+	V3 c;
+	LiquidSetup s = DropSetup(cells, threeD, mu, c);
+	LiquidModel m;
+	std::string error;
+	Shape drop;
+	drop.type = Shape::Type::Sphere;
+	drop.point = c;
+	drop.radius = R;
+	s.liquid.push_back(drop);
+	if (!m.Initialize(s, options, pool ? pool->Threads() : 1, error)) { r.error = 1e300; return r; }
+	const Grid& g = m.GridSpec();
+	std::vector<double> phi(g.Cells());
+	for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < g.n[1]; ++j) for (int i = 0; i < g.n[0]; ++i) {
+		const V3 x = g.CellCentre(i, j, k);
+		const double dx = x[0] - c[0], dy = x[1] - c[1], dz = threeD ? x[2] - c[2] : 0.0;
+		const double rr = std::sqrt(dx*dx + dy*dy + dz*dz);
+		double shape;
+		if (threeD) {
+			const double ct = rr > 0 ? dy/rr : 0.0;
+			shape = 0.5*(3*ct*ct - 1);   // P2 about the y axis
+		} else {
+			shape = rr > 0 ? (dx*dx - dy*dy)/(rr*rr) : 0.0;   // cos 2 theta
+		}
+		phi[g.C(i, j, k)] = rr - R*(1 + epsilon*shape);
+	}
+	if (!m.SetLevelSet(phi, error)) { r.error = 1e300; return r; }
+	const int n = 2;
+	r.omegaExact = threeD ? std::sqrt(double(n*(n - 1)*(n + 2))/(R*R*R)) : std::sqrt(double(n*(n*n - 1))/(R*R*R));
+	r.decayExact = (threeD ? double((n - 1)*(2*n + 1)) : double(2*n*(n - 1)))*mu/(R*R);
+	r.omegaExact = std::sqrt(std::max(0.0, r.omegaExact*r.omegaExact - r.decayExact*r.decayExact));
+	auto moment = [&]() {
+		const double eps = 1.5*g.h;
+		double sum = 0;
+		for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < g.n[1]; ++j) for (int i = 0; i < g.n[0]; ++i) {
+			const std::size_t cc = g.C(i, j, k);
+			const double f = m.phi[cc];
+			const double H = f < -eps ? 1.0 : f > eps ? 0.0 : 0.5*(1 - f/eps - std::sin(Pi*f/eps)/Pi);
+			if (H == 0) continue;
+			const V3 x = g.CellCentre(i, j, k);
+			const double dx = x[0] - c[0], dy = x[1] - c[1], dz = threeD ? x[2] - c[2] : 0.0;
+			sum += H*(threeD ? dy*dy - 0.5*(dx*dx + dz*dz) : dx*dx - dy*dy);
+		}
+		return sum;
+	};
+	std::vector<double> ts{0}, ms{moment()};
+	const double T = periods*2*Pi/r.omegaExact;
+	if (!m.Run(T, T/(20*periods), [&](double t, const StepStats&) { ++r.steps; ts.push_back(t); ms.push_back(moment()); }, error)) {
+		r.error = 1e300;
+		return r;
+	}
+	// The moment of the round drop is zero (no offset: an offset estimated from a
+	// decaying signal shifts its crossings).
+	const std::vector<double>& centred = ms;
+	r.omega = CrossingFrequency(ts, centred, r.crossings);
+	r.error = r.omega/r.omegaExact - 1;
+	r.decay = DecayRate(ts, centred);
+	if (mu > 0) r.decayError = r.decay/r.decayExact - 1;
+	else r.decay /= r.omegaExact;
+	r.seconds = Now() - start;
 	return r;
 }
 

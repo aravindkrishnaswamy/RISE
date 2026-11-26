@@ -453,6 +453,9 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidBodies.cpp">
       <Filter>Simulation\Liquid</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidViscosity.cpp">
+      <Filter>Simulation\Liquid</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.cpp">
       <Filter>Simulation\Liquid</Filter>
     </ClCompile>
@@ -1933,6 +1936,9 @@
       <Filter>Simulation\Liquid</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidBodies.h">
+      <Filter>Simulation\Liquid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidViscosity.h">
       <Filter>Simulation\Liquid</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.h">

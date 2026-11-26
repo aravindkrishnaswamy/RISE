@@ -163,11 +163,11 @@ ParameterSchema Build()
 	s.solverId = LiquidSolverId;
 	s.summary = "A free-surface liquid simulated by the liquid.mac solver (staggered grid, level-set interface advected "
 		"by WENO5, two-stage WENO5 momentum, ghost-fluid free surface and cut-cell static solids in one pressure solve, "
-		"inviscid, no surface tension), baked by `rise-sim bake <scene>`.  Publishes `surface` (mesh.v2, a new topology "
+		"optionally viscous (implicit, strain-rate form) and with surface tension (ghost-fluid Laplace jump), m7c), baked by `rise-sim bake <scene>`.  Publishes `surface` (mesh.v2, a new topology "
 		"every frame; render it with simulated_mesh_geometry and a dielectric), optionally `fields` (grid.v1: phi, "
 		"pressure, velocity) and `particles` (points.v1, the marker particles); rigid bodies (`body`) move with the liquid "
 		"in its pressure solve and publish `bodies` (transform.v1).  Parameters, evidence and limits: "
-		"docs/SIMULATION_M7A_RESULTS.md, docs/SIMULATION_M7B_RESULTS.md.";
+		"docs/SIMULATION_M7A_RESULTS.md, docs/SIMULATION_M7B_RESULTS.md, docs/SIMULATION_M7C_RESULTS.md.";
 	auto P = [&s](const char* name, SchemaType type, const char* def, const char* units, const char* doc) -> SchemaParameter& {
 		s.parameters.emplace_back();
 		SchemaParameter& p = s.parameters.back();
@@ -184,6 +184,9 @@ ParameterSchema Build()
 	P("density", SchemaType::Real, "1000", "kg/m^3", "Liquid density (the pressure output, and the forces on rigid bodies; without bodies the flow does not depend on it)");
 	{ auto& p = P("top", SchemaType::Enum, "wall", "", "The +y face of the box: a free-slip wall or open (p = 0)"); p.values = {"wall", "open"}; }
 	P("initial_velocity", SchemaType::Vector3, "0 0 0", "m/s", "Initial velocity of the liquid (projected)");
+	P("viscosity", SchemaType::Real, "0", "Pa s", "Dynamic viscosity (m7c; 0: inviscid).  Implicit, the strain-rate (variational) form with zero viscous traction at the free surface");
+	{ auto& p = P("viscous_walls", SchemaType::Enum, "no_slip", "", "With viscosity: the domain walls, static solids and bodies are no-slip or free-slip"); p.values = {"no_slip", "free_slip"}; }
+	P("surface_tension", SchemaType::Real, "0", "N/m", "Surface tension coefficient (m7c; 0: none).  The Laplace jump sigma kappa at the free surface; without viscosity the label is preview");
 	{ auto& p = P("momentum", SchemaType::Enum, "weno5", "", "Momentum advection (weno5 is second order with two stages; the others are first order, preview)");
 	  p.values = {"weno5", "maccormack", "semi_lagrangian"}; }
 	{ auto& p = P("momentum_stages", SchemaType::Count, "2", "", "1: advect then project (first order in time); 2: Heun with a projection per stage"); range(p, 1, 2); }
@@ -201,6 +204,10 @@ ParameterSchema Build()
 	P("speed_limit", SchemaType::Real, "3", "", "Safeguard: valid face speeds above this x sqrt(2 g D) are clamped and counted (0: off; not part of the validated model)");
 	P("min_face_fraction", SchemaType::Real, "0", "", "Cut faces less open than this are closed (0: none; closing locates solids only to half a cell)");
 	P("min_transport_fraction", SchemaType::Real, "0.25", "", "Cut faces less open than this keep their velocity in the pressure solve but are re-extrapolated before it is transported");
+	P("viscosity_tolerance", SchemaType::Real, "1e-08", "", "Relative residual of the viscous solve");
+	P("viscous_cfl", SchemaType::Real, "4", "", "With viscosity: dt <= viscous_cfl h^2 / nu (0: no limit), so the split viscous and pressure steps converge to Stokes flow");
+	P("capillary_cfl", SchemaType::Real, "0.5", "", "With surface tension: dt <= capillary_cfl sqrt(rho h^3 / (2 pi sigma))");
+	{ auto& p = P("curvature", SchemaType::Enum, "interpolated", "", "Surface tension: the curvature at the sub-cell interface position (interpolated) or the liquid cell's (cell)"); p.values = {"interpolated", "cell"}; }
 	{ auto& p = P("extrapolation_layers", SchemaType::Count, "6", "", "Cells the velocity is extrapolated into the air for momentum advection"); range(p, 1, 64); }
 	{ auto& p = P("interface_extrapolation_layers", SchemaType::Count, "4", "", "Cells the velocity is extrapolated into the air for the interface"); range(p, 1, 64); }
 	{ auto& p = P("linear_extrapolation_layers", SchemaType::Count, "1", "", "Of the interface layers, those extrapolated linearly (second-order surface velocity)"); range(p, 0, 8); }

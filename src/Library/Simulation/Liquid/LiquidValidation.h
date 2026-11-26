@@ -271,6 +271,130 @@ FloatDynamics RunFloatingDynamics(int cells, bool threeD, double ratio, double s
 struct NeutralResult { double bodySpeed = 0, liquidSpeed = 0, exactMassAcceleration = 0, volumeError = 0, seconds = 0; int steps = 0; };
 NeutralResult RunNeutralBody(int cells, bool threeD, double duration, const SolverOptions& options, Pool* pool);
 
+// ------------------------------------------------------------------ viscosity and surface tension (m7c: cases 10 and 11)
+
+//! Linear waves on deep liquid with viscosity and surface tension (Lamb
+//! 1932, section 349; derived in docs/SIMULATION_M7C_RESULTS.md): the root
+//! s of (s + 2 nu k^2)^2 + g k + (sigma / rho) k^3 = 4 nu^2 k^3 m with
+//! m = sqrt(k^2 + s / nu), Re m > 0, near -2 nu k^2 + i omega_0 (complex
+//! Newton): the amplitude decay rate -Re s and the frequency Im s.
+void ViscousWaveRoot(double g, double k, double nu, double sigmaOverRho, double& decay, double& omega);
+
+//! The standing wave of RunStandingWave (tank 1 m, mode k = 2 pi) with a
+//! kinematic viscosity nu (no-slip or free-slip walls and bottom): the
+//! measured amplitude decay rate (1/s) against the deep-water root above
+//! (`decayExact`; `decayLeading` = 2 nu k^2) and the inviscid run's own
+//! decay (`inviscidDecay`, the numerical damping at that level).
+struct ViscousWaveResult {
+	double decay = 0, decayExact = 0, decayLeading = 0, inviscidDecay = 0, error = 0, errorNet = 0;   // error: decay / exact - 1; net: (decay - inviscid) / exact - 1
+	double omega = 0, omegaExact = 0, seconds = 0;
+	int steps = 0, iterations = 0;
+};
+ViscousWaveResult RunViscousWave(int cells, double kd, double ka, double periods, double nu, bool noSlip, bool inviscidToo,
+	const SolverOptions& options, Pool* pool);
+
+//! The Taylor-Green vortex of RunTaylorGreen with kinematic viscosity nu and
+//! free-slip walls: an exact Navier-Stokes solution decaying as
+//! exp(-2 nu t) (k^2 = 2; the shear strain vanishes, so free slip holds).
+//! amplitudeError = A(T) / exp(-2 nu T) - 1 with A the projection of the
+//! face velocities on the initial field; maxError the largest face error /
+//! the exact amplitude.
+struct ViscousTaylorGreenResult { double amplitudeError = 0, maxError = 0, seconds = 0; int steps = 0, iterations = 0; };
+ViscousTaylorGreenResult RunViscousTaylorGreen(int n, double nu, double duration, const SolverOptions& options, Pool* pool);
+
+//! Circular Couette flow (2-D, no slip): a prescribed cylinder of radius R1
+//! spinning at omega inside a static cut-cell container of radius R2 (the
+//! unit box, centre offset by `shift` cells), full of liquid, no gravity,
+//! run `duration` s from rest.  Steady state u_theta = A r + B / r,
+//! A = -omega R1^2 / (R2^2 - R1^2), B = omega R1^2 R2^2 / (R2^2 - R1^2), and
+//! the torque on the cylinder per unit length -4 pi mu omega R1^2 R2^2 /
+//! (R2^2 - R1^2).  profileError: the largest |u - u_exact| / (omega R1) over
+//! the faces at least one cell from both walls; torqueError: the measured
+//! viscous torque of the last step / exact - 1.  `startupTime` > 0 also
+//! compares the profile at that time with a fine 1-D radial reference
+//! (Crank-Nicolson, 4000 radial cells: startupError, same norm).
+struct CouetteResult { double profileError = 0, torque = 0, pressureTorque = 0, torqueExact = 0, torqueError = 0, startupError = 0, seconds = 0; int steps = 0, maxIterations = 0; };
+CouetteResult RunCouette(int cells, double R1, double R2, double omega, double nu, double duration, double shift, double startupTime,
+	const SolverOptions& options, Pool* pool);
+//! The 1-D reference of RunCouette's start-up: u_theta(r, t) from rest, the
+//! inner wall at omega R1 from t = 0, the outer at rest.
+double CouetteStartup(double R1, double R2, double omega, double nu, double t, double r);
+
+//! Stokes drag on a translating cylinder in a concentric container (2-D, no
+//! slip, no gravity): a prescribed cylinder of radius a moving at U along x
+//! inside a static cut-cell container of radius b (the unit box), from rest
+//! for `duration`.  Exact (Happel and Brenner; checked in the results doc by
+//! the dissipation integral of the biharmonic solution): F = 4 pi mu U /
+//! (ln(b/a) - (b^2 - a^2)/(b^2 + a^2)) per unit length.  error: the last
+//! step's force (pressure and viscous) / exact - 1; viscousShare its viscous
+//! part / the total.  The cylinder drifts U duration (keep it small against b - a).
+struct DragResult { double force = 0, exact = 0, error = 0, viscousShare = 0, seconds = 0; int steps = 0, maxIterations = 0; };
+DragResult RunCylinderDrag(int cells, double a, double b, double U, double nu, double duration, double shift, const SolverOptions& options, Pool* pool);
+
+//! A disk (2-D, radius 0.3, unit box, no gravity) in rigid rotation at
+//! omega: one viscous step must leave it unchanged (its strain vanishes;
+//! a Laplacian with Neumann conditions would dissipate it at the free
+//! surface).  stepChange: max |u - u_rigid| / (omega R) after one implicit
+//! viscous step of the solver's operator alone; momentLoss: the relative
+//! change of the angular momentum over `duration` with viscosity nu minus
+//! the same without viscosity.
+struct RotationResult { double stepChange = 0, momentLoss = 0, inviscidLoss = 0, seconds = 0; int steps = 0; };
+RotationResult RunRotatingDisk(int cells, double nu, double duration, const SolverOptions& options, Pool* pool);
+
+//! A sphere of radius a and density ratio `ratio` settling under gravity
+//! from rest on the axis of a vertical cylindrical container (radius R, a
+//! static cut-cell solid; height H) full of liquid of kinematic viscosity
+//! nu, no slip, the body dynamic (coupled in the pressure and the viscous solves).
+//! The terminal velocity (the mean over the last fifth of the run) against
+//! Stokes' 2 (ratio - 1) g a^2 / (9 nu) times the wall factor of Haberman
+//! and Sayre (1958) for lambda = a / R (`corrected`; Bohlin's 1960 series
+//! as a cross-check, `bohlin`).  `cells` across the container's diameter.
+struct SettlingResult {
+	double velocity = 0, stokes = 0, corrected = 0, bohlin = 0, error = 0, reynolds = 0, drift = 0, seconds = 0;
+	int steps = 0, maxIterations = 0;
+	bool finite = true;
+	std::vector<double> t, v;
+};
+SettlingResult RunSettlingSphere(int cells, double a, double R, double H, double ratio, double nu, double duration,
+	const SolverOptions& options, Pool* pool);
+//! Haberman and Sayre (1958) wall factor U / U_Stokes for a sphere on the
+//! axis of a cylinder, lambda = a / R; Bohlin (1960) series of the same.
+double HabermanSayre(double lambda);
+double BohlinFactor(double lambda);
+
+//! A static drop (zero gravity) of radius R = 0.25 at the centre of the
+//! unit box (2-D: a cylinder, Laplace jump sigma / R; 3-D: a sphere,
+//! 2 sigma / R), rho = 1, sigma = 1, dynamic viscosity mu (0: inviscid),
+//! run `duration` capillary times t_s = sqrt(rho R^3 / sigma).  Reported:
+//! the mean pressure over cells more than 2h inside / the exact jump - 1;
+//! the largest face speed over the run as U / sqrt(sigma / (rho R)) and, if
+//! viscous, the capillary number mu U / sigma; the speed at the end; the
+//! largest curvature error at the interface cells at t = 0 (|kappa - 1/R|
+//! R, 2-D; 2/R in 3-D).
+struct DropResult {
+	double pressureError = 0, maxSpeed = 0, finalSpeed = 0, capillary = 0, capillaryNumber = 0, curvatureError = 0, seconds = 0;
+	int steps = 0;
+};
+DropResult RunStaticDrop(int cells, bool threeD, double duration, double mu, const SolverOptions& options, Pool* pool);
+
+//! The oscillating drop: r = R (1 + epsilon cos(2 theta)) (2-D, the n = 2
+//! mode of a liquid cylinder) or P2(cos theta) (3-D) in zero gravity,
+//! R = 0.25, rho = sigma = 1, inviscid: the frequency of the second moment
+//! (zero crossings over `periods`) against Lamb's omega^2 = n (n^2 - 1)
+//! sigma / (rho R^3) (2-D) and n (n - 1) (n + 2) sigma / (rho R^3) (3-D),
+//! n = 2; decay: its amplitude decay rate / omega (numerical, inviscid).
+//! With a dynamic viscosity mu (nu = mu: rho = 1) the amplitude decays at the
+//! irrotational rate gamma = 2 n (n - 1) nu / R^2 (2-D) or (n - 1)(2 n + 1) nu
+//! / R^2 (3-D) (`decayExact`, 1/s; derived in the results doc), and the
+//! frequency is sqrt(omega^2 - gamma^2); `decay` is then the measured rate
+//! (1/s), else the measured rate / omega.
+struct OscillationResult { double omega = 0, omegaExact = 0, error = 0, decay = 0, decayExact = 0, decayError = 0, seconds = 0; int steps = 0, crossings = 0; };
+OscillationResult RunOscillatingDrop(int cells, bool threeD, double epsilon, double periods, double mu, const SolverOptions& options, Pool* pool);
+
+//! The standing wave of RunStandingWave with surface tension sigma / rho
+//! (m^3/s^2): reference omega^2 = (g k + (sigma / rho) k^3) tanh(k d).
+WaveResult RunCapillaryWave(int cells, double kd, double ka, double sigmaOverRho, double periods, const SolverOptions& options, Pool* pool);
+
 } } }
 
 #endif

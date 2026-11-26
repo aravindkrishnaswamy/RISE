@@ -382,6 +382,14 @@ public:
 };
 
 std::size_t FaceRows(const Grid& g, int a) { return RowsOf(g.FaceDims(a)); }
+
+// The ghost-fluid interface value of the scaled pressure (surface tension, m7c):
+// liquid cell l, air cell r, theta the clamped fraction from l.
+double InterfaceJump(const PressureOptions& o, std::size_t l, std::size_t r, double theta)
+{
+	const std::vector<double>& k = *o.curvature;
+	return o.jumpScale*(o.interpolateCurvature ? k[l] + theta*(k[r] - k[l]) : k[l]);
+}
 } // namespace
 
 // ------------------------------------------------------------------ extrapolation
@@ -601,7 +609,7 @@ void Assemble(const Grid& g, const std::vector<double>& phi, const std::array<st
 				}
 				if (options.openTop && j == N[1] - 1) fine.top[c] = fraction[1][faceOf(1, i, j, k, 1)];
 				if (!fine.active[c]) continue;
-				double diag = 0, div = 0;
+				double diag = 0, div = 0, jump = 0;
 				bool dir = false;
 				for (int a = 0; a < 3; ++a) for (int s = 0; s < 2; ++s) {
 					const std::size_t f = faceOf(a, i, j, k, s);
@@ -623,11 +631,13 @@ void Assemble(const Grid& g, const std::vector<double>& phi, const std::array<st
 					// Air neighbour (an inactive cell across an open face has phi >= 0).
 					const double theta = std::min(1.0, std::max(options.thetaMin, phi[c]/(phi[c] - phi[nb])));
 					diag += A/theta;
+					if (options.curvature) jump += A*InterfaceJump(options, c, nb, theta)/theta;
 					dir = true;
 				}
 				fine.diag[c] = diag;
 				dirichlet[c] = dir;
 				b[c] = -div;
+				if (options.curvature) b[c] += jump;
 			}
 		}
 	});
@@ -804,11 +814,13 @@ bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std
 					else if (aL) {
 						const double theta = hasR ? std::min(1.0, std::max(options.thetaMin, phi[cl]/(phi[cl] - phi[cr])))
 							: std::min(0.5, std::max(options.thetaMin, -phi[cl]/g.h));
-						u.u[a][f] += q[cl]/theta;
+						if (options.curvature && hasR) u.u[a][f] += (q[cl] - InterfaceJump(options, cl, cr, theta))/theta;
+						else u.u[a][f] += q[cl]/theta;
 						valid[a][f] = transported;
 					} else if (aR) {
 						const double theta = std::min(1.0, std::max(options.thetaMin, phi[cr]/(phi[cr] - phi[cl])));
-						u.u[a][f] -= q[cr]/theta;
+						if (options.curvature) u.u[a][f] -= (q[cr] - InterfaceJump(options, cr, cl, theta))/theta;
+						else u.u[a][f] -= q[cr]/theta;
 						valid[a][f] = transported;
 					}
 				}
@@ -818,6 +830,45 @@ bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std
 	stats.update = Now() - mark;
 	stats.seconds = Now() - start;
 	return true;
+}
+
+void SubtractPressureGradient(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	const PressureOptions& options, const std::vector<double>& q, double scale, MacField& u, Pool* pool, bool interiorOnly)
+{
+	const auto& N = g.n;
+	std::vector<std::uint8_t> active;
+	ActiveCells(g, phi, fraction, active, pool);
+	for (int a = 0; a < 3; ++a) {
+		if (N[a] == 1) continue;
+		const auto d = g.FaceDims(a);
+		ForRows(pool, FaceRows(g, a), RowGrain(d[0]), [&](std::size_t r0, std::size_t r1) {
+			for (std::size_t r = r0; r < r1; ++r) {
+				const int j = int(r % std::size_t(d[1])), k = int(r/std::size_t(d[1]));
+				for (int i = 0; i < d[0]; ++i) {
+					const std::size_t f = Index(d, i, j, k);
+					const int idx[3] = {i, j, k};
+					if (!(fraction[a][f] > 0)) continue;
+					int lo[3] = {idx[0], idx[1], idx[2]};
+					--lo[a];
+					const bool hasL = idx[a] > 0, hasR = idx[a] < N[a];
+					const std::size_t cl = hasL ? g.C(lo[0], lo[1], lo[2]) : 0, cr = hasR ? g.C(idx[0], idx[1], idx[2]) : 0;
+					const bool aL = hasL && active[cl], aR = hasR && active[cr];
+					double grad = 0;
+					if (aL && aR) grad = q[cr] - q[cl];
+					else if (interiorOnly) continue;
+					else if (aL) {
+						const double theta = hasR ? std::min(1.0, std::max(options.thetaMin, phi[cl]/(phi[cl] - phi[cr])))
+							: std::min(0.5, std::max(options.thetaMin, -phi[cl]/g.h));
+						grad = -((options.curvature && hasR) ? q[cl] - InterfaceJump(options, cl, cr, theta) : q[cl])/theta;
+					} else if (aR) {
+						const double theta = std::min(1.0, std::max(options.thetaMin, phi[cr]/(phi[cr] - phi[cl])));
+						grad = (options.curvature ? q[cr] - InterfaceJump(options, cr, cl, theta) : q[cr])/theta;
+					} else continue;
+					u.u[a][f] -= scale*grad;
+				}
+			}
+		});
+	}
 }
 
 void ApplyPressureOperator(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,

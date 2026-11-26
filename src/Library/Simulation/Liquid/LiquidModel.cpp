@@ -314,6 +314,11 @@ double LiquidModel::MaxStep(double segment) const
 	const double speed = (bodies.empty() ? MaxSpeed() : std::max(MaxSpeed(), BodySpeed())) + gn*segment;
 	if (speed > 0) dt = std::min(dt, options_.cfl*g.h/speed);
 	if (gn > 0 && depth_ > 0) dt = std::min(dt, options_.waveCfl*g.h/std::sqrt(gn*depth_));
+	// m7c: the capillary limit (Brackbill, Kothe and Zemach 1992 with the liquid's density;
+	// docs/SIMULATION_M7C_RESULTS.md for the measured stability).
+	if (setup_.viscosity > 0 && options_.viscousCfl > 0) dt = std::min(dt, options_.viscousCfl*g.h*g.h*setup_.density/setup_.viscosity);
+	if (setup_.surfaceTension > 0)
+		dt = std::min(dt, options_.capillaryCfl*std::sqrt(setup_.density*g.h*g.h*g.h/(2*3.14159265358979323846*setup_.surfaceTension)));
 	return dt;
 }
 
@@ -322,6 +327,67 @@ PressureOptions LiquidModel::FinalPressure() const
 	PressureOptions po = options_.pressure;
 	po.minValidFraction = options_.minTransportFraction;
 	return po;
+}
+
+PressureOptions LiquidModel::WithJump(PressureOptions po, double dt, double weight) const
+{
+	if (!(setup_.surfaceTension > 0)) return po;
+	po.curvature = &kappa_;
+	po.jumpScale = setup_.surfaceTension*dt*weight/(setup_.density*setup_.grid.h);
+	po.interpolateCurvature = options_.interpolateCurvature;
+	return po;
+}
+
+bool LiquidModel::Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vector<Vec6>& impulse, StepStats& stats, std::string& error)
+{
+	const Grid& g = setup_.grid;
+	Pool* pool = pool_.get();
+	const double t0 = Now();
+	ViscosityOptions vo;
+	vo.kinematic = setup_.viscosity/setup_.density;
+	vo.noSlip = setup_.noSlip;
+	vo.openTop = setup_.openTop;
+	vo.tolerance = options_.viscosityTolerance;
+	vo.thetaMin = options_.viscousThetaMin;
+	vo.cvSamples = options_.viscousSamples;
+	vo.massThetaMin = options_.pressure.thetaMin;
+	ViscosityInput in;
+	std::vector<ViscousTwist> twists;
+	if (HasSolids()) in.solidNodes = &solidNodes;
+	if (!bodies.empty()) {
+		geometry_.SolidVelocity(w, solidVelocity_);
+		in.solid = &solidVelocity_;
+		for (int a = 0; a < 3; ++a) owner_[a].assign(g.Faces(a), std::int16_t(-1));
+		const auto& lists = geometry_.Faces();
+		for (std::size_t i = 0; i < lists.size(); ++i) for (const BodyFace& f : lists[i]) owner_[f.axis][f.face] = std::int16_t(i);
+		in.owner = &owner_;
+		for (std::size_t i = 0; i < bodies.size(); ++i) {
+			ViscousTwist t;
+			t.x = bodies[i].state.x;
+			t.v = {{w[i][0], w[i][1], w[i][2]}};
+			t.w = {{w[i][3], w[i][4], w[i][5]}};
+			// Bodies the liquid integrates are unknowns of the viscous solve (implicit coupling).
+			t.coupled = bodies[i].Coupled();
+			t.mass = bodies[i].state.mass;
+			std::array<double,9> inverse;
+			WorldInertia(bodies[i].state, t.inertia, inverse);
+			t.free = bodies[i].free;
+			twists.push_back(t);
+		}
+		in.bodies = &twists;
+	}
+	std::vector<Impulse6> onBodies;
+	if (!ViscousStep(g, phi, fraction, in, vo, dt, setup_.density, s, onBodies, viscousWallImpulse, stats.viscous, pool, error)) return false;
+	impulse.assign(bodies.size(), Vec6{{0, 0, 0, 0, 0, 0}});
+	bodyViscousImpulse = impulse;
+	// Coupled bodies were unknowns of the solve (their impulse M (w - w*)); the caller
+	// moves them by M^-1 of it before their pressure solve.
+	for (std::size_t i = 0; i < bodies.size(); ++i) {
+		for (int m = 0; m < 6; ++m) impulse[i][std::size_t(m)] = onBodies[i][std::size_t(m)];
+		bodyViscousImpulse[i] = impulse[i];
+	}
+	stats.viscosity += Now() - t0;
+	return true;
 }
 
 bool LiquidModel::ProjectState(std::string& error)
@@ -389,7 +455,30 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	MacField ui = u;
 	{
 		FaceMask known = valid;
-		ExtrapolateVelocity(g, ui, known, options_.interfaceExtrapolationLayers, options_.linearExtrapolationLayers, pool);
+		ExtrapolateVelocity(g, ui, known, options_.interfaceExtrapolationLayers, InterfaceLinearLayers(), pool);
+	}
+	// m7c, no slip: in the momentum field, closed faces and cut faces too narrow
+	// to be transported (minTransportFraction) take the solids' velocity (at rest,
+	// or the bodies' rigid velocity) instead of the liquid's extrapolated one, so
+	// the advection beside a no-slip wall carries the wall's momentum
+	// (docs/SIMULATION_M7C_RESULTS.md, circular Couette).  The interface field
+	// keeps the m7b extension.
+	if (setup_.viscosity > 0 && setup_.noSlip && solids) {
+		if (hasBodies) geometry_.SolidVelocity(BodyVelocities(), solidVelocity_);
+		for (int a = 0; a < 3; ++a) {
+			if (g.n[a] == 1) continue;
+			const auto d = g.FaceDims(a);
+			for (int k = 0; k < d[2]; ++k) for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+				const int idx[3] = {i, j, k};
+				if (idx[a] == 0 || idx[a] == g.n[a]) continue;
+				const std::size_t f = g.F(a, i, j, k);
+				if (valid[a][f]) continue;
+				const double A = fraction[a][f];
+				if (A >= options_.minTransportFraction) continue;
+				u.u[a][f] = hasBodies ? solidVelocity_.u[a][f] : 0.0;
+				valid[a][f] = 1;
+			}
+		}
 	}
 	ExtrapolateVelocity(g, u, valid, options_.extrapolationLayers, 0, pool);
 	double t1 = Now();
@@ -449,8 +538,72 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	t0 = Now();
 	stats.particles += t0 - t1;
 	if (options_.volumeCorrection) stats.volumeShift = CorrectVolume(g, phi, targetVolume_, open, pool);
+	// m7c: the curvature of the new interface for the surface-tension jump.
+	if (setup_.surfaceTension > 0) Curvature(g, phi, kappa_, pool);
 	t1 = Now();
 	stats.levelSet += t1 - t0;
+	const bool viscous = setup_.viscosity > 0;
+	std::vector<Vec6> viscousImpulse;
+	// m7c: the viscous step with an incremental pressure.  Splitting the implicit
+	// viscous step from the projection, u = P(V(u*)), has the steady state of
+	// minimising the strain energy without the incompressibility constraint
+	// and then projecting, which is not Stokes flow once nu dt / h^2 is large:
+	// the 2-D Stokes drag on a cylinder in a concentric container came out at 26%
+	// of the exact value at nu dt / h^2 = 30 (docs/SIMULATION_M7C_RESULTS.md).  The
+	// viscous solve therefore sees the step's gravity and the previous step's
+	// pressure gradient (scaled to this dt; `stagePart` the part of it this
+	// projection carries), s - G q_prev + w dt g, and G q_prev is added back
+	// before the projection, which then solves for the whole pressure (the
+	// incremental pressure-correction scheme): a steady Stokes flow is its fixed
+	// point.  Without viscosity the arithmetic is m7b's.
+	const std::vector<double> qPrev = viscous && lastDt_ > 0 ? q_ : std::vector<double>();
+	const double prevDt = lastDt_;
+	auto viscousStep = [&](MacField& s, std::vector<Vec6>& w, double gravityWeight, const std::vector<double>* stagePart,
+		const std::vector<Vec6>* stageImpulse) -> bool {
+		const double tv = Now();
+		std::vector<double> qp;
+		// The predictor's gradient carries the surface-tension jump of this stage's share
+		// (a drop's Laplace pressure is no gradient at its surface).
+		const PressureOptions pg = WithJump(options_.pressure, dt, stagePart ? 0.5 : 1.0);
+		if (!qPrev.empty()) {
+			qp = qPrev;
+			const double r = dt/prevDt;
+			for (std::size_t c = 0; c < qp.size(); ++c) qp[c] = qp[c]*r - (stagePart ? (*stagePart)[c] : 0.0);
+			SubtractPressureGradient(g, phi, fraction, pg, qp, 1.0, s, pool, true);
+		}
+		for (int a = 0; a < 3; ++a) {
+			if (g.n[a] == 1) continue;
+			const double dv = gravityWeight*dt*setup_.gravity[a];
+			for (double& x : s.u[a]) x += dv;
+		}
+		// Coupled bodies are unknowns of the viscous solve (implicit), starting from their
+		// predicted velocity with the previous step's pressure impulse (less the part
+		// this stage already holds): the body's counterpart of G q_prev, so that at a
+		// terminal velocity the drag is evaluated at the body's velocity (without it a
+		// settling sphere's drag was evaluated about g dt off, which at low Reynolds
+		// number is the terminal velocity itself).  Only the viscous impulse moves w.
+		std::vector<Vec6> wall = w;
+		if (!qPrev.empty() && bodyImpulse.size() == bodies.size() && bodyViscousImpulse.size() == bodies.size())
+			for (std::size_t i = 0; i < bodies.size(); ++i) {
+				if (!bodies[i].Coupled()) continue;
+				Vec6 I = bodyImpulse[i];
+				for (int m = 0; m < 6; ++m)
+					I[std::size_t(m)] = (I[std::size_t(m)] - bodyViscousImpulse[i][std::size_t(m)])*dt/prevDt - (stageImpulse ? 0.5*(*stageImpulse)[i][std::size_t(m)] : 0.0);
+				BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
+				const Vec6 dw = c.InverseMass(I);
+				for (int m = 0; m < 6; ++m) wall[i][std::size_t(m)] += dw[std::size_t(m)];
+			}
+		if (!Viscous(s, dt, wall, viscousImpulse, stats, error)) return false;
+		for (std::size_t i = 0; i < bodies.size(); ++i) {
+			if (!bodies[i].Coupled()) continue;
+			BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
+			const Vec6 dw = c.InverseMass(viscousImpulse[i]);
+			for (int m = 0; m < 6; ++m) w[i][std::size_t(m)] += dw[std::size_t(m)];
+		}
+		if (!qp.empty()) SubtractPressureGradient(g, phi, fraction, pg, qp, -1.0, s, pool, true);
+		stats.momentum -= Now() - tv;   // counted in stats.viscosity
+		return true;
+	};
 	// Momentum (step 3 of LiquidModel.h) with the new interface.
 	auto addGravity = [&](MacField& f, double scale) {
 		for (int a = 0; a < 3; ++a) {
@@ -464,13 +617,6 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	if (options_.momentumStages <= 1) AdvectVelocity(g, un, dt, options_.momentum, s1, pool);
 	else if (weno) LimitedAdvectionStage(g, un, dt, s1, pool);
 	else AdvectFieldAlong(g, un, un, dt, options_.momentum, s1, pool);
-	addGravity(s1, 1);
-	t0 = Now();
-	stats.momentum += t0 - t1;
-	// The step's last projection leaves cut faces narrower than minTransportFraction invalid
-	// (replaced by extrapolation before the next step transports them); the
-	// first stage's keeps every updated face for the second stage.
-	PressureOptions po = options_.momentumStages <= 1 ? FinalPressure() : options_.pressure;
 	// Bodies: predicted velocities w* (free degrees of freedom gain dt F_ext / m).
 	std::vector<Vec6> w0, w1star, impulse1, impulse2;
 	if (hasBodies) {
@@ -481,6 +627,20 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			if (!b.Coupled()) continue;
 			for (int a = 0; a < 3; ++a) if (b.free[std::size_t(a)]) w1star[i][std::size_t(a)] += dt*b.externalForce[std::size_t(a)]/b.state.mass;
 		}
+	}
+	// m7c: viscosity once per step, implicit over dt, before the step's last
+	// projection and before gravity's increment (a uniform field, which the
+	// hydrostatic pressure balances; diffused at a no-slip wall it would leave
+	// a splitting error there).
+	if (viscous && options_.momentumStages <= 1) { if (!viscousStep(s1, w1star, 1.0, nullptr, nullptr)) return false; }
+	else addGravity(s1, 1);
+	t0 = Now();
+	stats.momentum += t0 - t1;
+	// The step's last projection leaves cut faces narrower than minTransportFraction invalid
+	// (replaced by extrapolation before the next step transports them); the
+	// first stage's keeps every updated face for the second stage.
+	PressureOptions po = WithJump(options_.momentumStages <= 1 ? FinalPressure() : options_.pressure, dt, 1.0);
+	if (hasBodies) {
 		if (!ProjectBodies(s1, po, w1star, impulse1, stats.pressure, error)) return false;
 	} else if (!Project(g, phi, fraction, nullptr, po, {}, s1, q_, valid, stats.pressure, pool, error)) return false;
 	t1 = Now();
@@ -490,6 +650,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		if (hasBodies)
 			for (std::size_t i = 0; i < bodies.size(); ++i) {
 				bodyImpulse[i] = impulse1[i];
+				if (viscous) for (int m = 0; m < 6; ++m) bodyImpulse[i][std::size_t(m)] += viscousImpulse[i][std::size_t(m)];
 				if (!bodies[i].Coupled()) continue;
 				BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
 				const Vec6 dw = c.InverseMass(impulse1[i]);
@@ -504,26 +665,15 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			LimitedAdvectionStage(g, s1, dt, s2, pool);
 			for (int a = 0; a < 3; ++a) if (g.n[a] > 1)
 				for (std::size_t c = 0; c < s2.u[a].size(); ++c) s2.u[a][c] = 0.5*un.u[a][c] + 0.5*s2.u[a][c];
-			addGravity(s2, 0.5);
 		} else {
 			MacField mid;
 			mid.Resize(g);
 			for (int a = 0; a < 3; ++a) for (std::size_t c = 0; c < mid.u[a].size(); ++c) mid.u[a][c] = 0.5*(un.u[a][c] + s1.u[a][c]);
 			AdvectFieldAlong(g, un, mid, dt, options_.momentum, s2, pool);
-			addGravity(s2, 1);
 		}
-		t0 = Now();
-		stats.momentum += t0 - t1;
-		// The step's pressure impulse is q1/2 + q2 (Heun) or q2 (midpoint);
-		// q2 starts from q1/2 (Heun) or q1.
-		const std::vector<double> q1 = q_;
-		for (double& x : q_) x *= weno ? 0.5 : 1.0;
-		po = FinalPressure();
-		po.warmStart = true;
-		PressureStats second;
-		if (hasBodies) {
-			// Heun: w*2 = w*1 + M^-1 I1 / 2 for coupled bodies (the midpoint scheme: w*1).
-			std::vector<Vec6> w2star = w1star;
+		// Bodies: w*2 = w*1 + M^-1 I1 / 2 for coupled bodies under Heun (the midpoint scheme: w*1).
+		std::vector<Vec6> w2star = w1star;
+		if (hasBodies)
 			for (std::size_t i = 0; i < bodies.size(); ++i) {
 				if (!bodies[i].Coupled() || !weno) continue;
 				BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
@@ -532,11 +682,29 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 				const Vec6 dw = c.InverseMass(half);
 				for (int m = 0; m < 6; ++m) w2star[i][std::size_t(m)] += dw[std::size_t(m)];
 			}
+		if (viscous) {
+			// Heun: s2 holds q1 / 2 already (through s1); the midpoint scheme none.
+			std::vector<double> half;
+			if (weno) { half = q_; for (double& x : half) x *= 0.5; }
+			if (!viscousStep(s2, w2star, weno ? 0.5 : 1.0, weno ? &half : nullptr, weno && hasBodies ? &impulse1 : nullptr)) return false;
+		} else addGravity(s2, weno ? 0.5 : 1.0);
+		t0 = Now();
+		stats.momentum += t0 - t1;
+		// The step's pressure impulse is q1/2 + q2 (Heun) or q2 (midpoint);
+		// q2 starts from q1/2 (Heun) or q1.
+		const std::vector<double> q1 = q_;
+		for (double& x : q_) x *= weno ? 0.5 : 1.0;
+		po = WithJump(FinalPressure(), dt, weno ? 0.5 : 1.0);
+		po.warmStart = true;
+		PressureStats second;
+		if (hasBodies) {
 			if (!ProjectBodies(s2, po, w2star, impulse2, second, error)) return false;
-			// The step's impulse: I1 / 2 + I2 (Heun) or I2 (midpoint); new velocities w*2 + M^-1 I2.
+			// The step's impulse: I1 / 2 + I2 (Heun) or I2 (midpoint), and the viscous
+			// impulse; new velocities w*2 + M^-1 I2 (w*2 already holds the viscous part).
 			for (std::size_t i = 0; i < bodies.size(); ++i) {
 				Vec6 I = impulse2[i];
 				if (weno) for (int m = 0; m < 6; ++m) I[std::size_t(m)] += 0.5*impulse1[i][std::size_t(m)];
+				if (viscous) for (int m = 0; m < 6; ++m) I[std::size_t(m)] += viscousImpulse[i][std::size_t(m)];
 				bodyImpulse[i] = I;
 				if (!bodies[i].Coupled()) continue;
 				BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
@@ -583,7 +751,10 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	if (hasBodies) {
 		for (std::size_t i = 0; i < bodies.size(); ++i)
 			for (int m = 0; m < 6; ++m) bodyAccumulated[i][std::size_t(m)] += bodyImpulse[i][std::size_t(m)];
-		if (audit) AuditWalls();
+		if (audit) {
+			AuditWalls();
+			if (viscous) for (int a = 0; a < 3; ++a) wallImpulse[std::size_t(a)] += viscousWallImpulse[std::size_t(a)];
+		}
 	}
 	time_ += dt;
 	stats.project += Now() - t1;
@@ -839,7 +1010,7 @@ MacField LiquidModel::OutputVelocity() const
 	// narrow cut faces whose projected speed is not transported) re-extrapolated.
 	MacField v = u;
 	FaceMask known = valid;
-	ExtrapolateVelocity(setup_.grid, v, known, options_.interfaceExtrapolationLayers, options_.linearExtrapolationLayers, pool_.get());
+	ExtrapolateVelocity(setup_.grid, v, known, options_.interfaceExtrapolationLayers, InterfaceLinearLayers(), pool_.get());
 	return v;
 }
 

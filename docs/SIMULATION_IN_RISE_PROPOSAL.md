@@ -151,7 +151,11 @@ pressure in one symmetric positive-definite system), dynamic, prescribed or foll
 owned implicit group exchange; validated by added mass in concentric containers, Archimedes at density ratios 0.1,
 0.5 and 0.9 (second order), a neutral body at rest, and a bobbing frequency against an independent potential-flow
 solve; stable at light density ratios where the staggered exchange diverges; contact inside the liquid, thin gaps
-and small bodies stay preview ([M7b results](SIMULATION_M7B_RESULTS.md)). Next: viscosity and surface tension.
+and small bodies stay preview ([M7b results](SIMULATION_M7B_RESULTS.md)). M7c (in review): constant viscosity (implicit,
+the variational strain-rate form with a traction-free surface, no or free slip, bodies coupled implicitly in the
+viscous solve) and surface tension (ghost-fluid Laplace jump), each off by default and certified separately; inviscid
+surface tension and contact lines at solids stay preview ([M7c results](SIMULATION_M7C_RESULTS.md)). Next: cloth
+as a moving boundary (preview).
 
 ## 6. Rules that hold throughout
 

@@ -115,6 +115,19 @@ struct PressureOptions {
 	bool openTop = false;        // +y boundary: p = 0 there
 	bool warmStart = false;      // start PCG from the q passed in (else from zero)
 	double minValidFraction = 0; // updated cut faces less open than this are left invalid (re-extrapolated)
+	//! Surface tension (m7c): the Laplace jump p_liquid - p_air = sigma kappa
+	//! at the interface, imposed by the ghost fluid (Kang, Fedkiw and Liu
+	//! 2000): a face from a liquid cell L to an air cell R puts q = q_I at the
+	//! interface, q_I = jumpScale kappa_I, so the ghost value is
+	//! q_L + (q_I - q_L) / theta: the operator is unchanged and the right-hand
+	//! side gains A q_I / theta.  kappa_I is the cell-centred curvature
+	//! interpolated to the interface, kappa_L + theta (kappa_R - kappa_L), or
+	//! (interpolateCurvature false) the liquid cell's.  Null: no jump (the
+	//! m7b arithmetic).  jumpScale = sigma dt w / (rho h), w the stage's
+	//! weight in the step's pressure.  The open top keeps p = 0.
+	const std::vector<double>* curvature = nullptr;
+	double jumpScale = 0;
+	bool interpolateCurvature = true;
 };
 
 struct PressureStats {
@@ -145,6 +158,16 @@ struct PressureStats {
 bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
 	const MacField* solid, const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings,
 	MacField& u, std::vector<double>& q, FaceMask& valid, PressureStats& stats, Pool* pool, std::string& error);
+
+//! u -= scale G q on every face Project updates (an open part next to a liquid
+//! cell of the system phi and the fractions give), G Project's gradient
+//! (q_R - q_L between liquid cells; (q_L - q_I) / theta to the air, with the
+//! surface-tension jump of `options`).  m7c: the incremental pressure of the
+//! viscous step (LiquidModel.cpp), which subtracts the previous pressure
+//! gradient before the viscous solve and adds it back before the projection.
+//! `interiorOnly`: only the faces between two liquid cells.
+void SubtractPressureGradient(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	const PressureOptions& options, const std::vector<double>& q, double scale, MacField& u, Pool* pool, bool interiorOnly = false);
 
 //! The operator of Project's system for tests: y = (A + sum of the
 //! couplings' terms) x on the active cells (zero elsewhere), after the same

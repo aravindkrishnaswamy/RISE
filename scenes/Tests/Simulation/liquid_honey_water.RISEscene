@@ -1,0 +1,162 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           liquid_honey_water.RISEscene                                                            #
+#   Description:    Simulation M7c: the same dam break in honey and in water, side by side.  Two           #
+#                   `liquid_simulation` chunks (solver liquid.mac): `honey` (viscosity 10 Pa s, density     #
+#                   1420 kg/m^3, surface tension 0.07 N/m, no-slip walls) and `water` (inviscid, no surface #
+#                   tension).  Each is a 0.6 x 0.3 x 0.3 m tank with a 0.15 m column against its -x wall;   #
+#                   the surfaces are drawn through `simulated_mesh_geometry` as dielectrics (honey amber,  #
+#                   ior 1.49; water ior 1.33).                                                              #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> honey ; ... water                                  #
+#   Render:         scripts/simulation_m7c_honey.sh  (a private copy under ~/.cache/rise-m7c; path tracing; #
+#                   frames to rendered/simulation_m7/)                                                      #
+#                                                                                                           #
+#   Frames:         1/30 s apart over 2 s (61 frames); 48 cells along x (1.25 cm cells).  Positions are     #
+#                   metres, y up.                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.75 0.8 0.9
+}
+
+uniformcolor_painter
+{
+	name			stone
+	color			0.55 0.5 0.45
+}
+
+uniformcolor_painter
+{
+	name			brick
+	color			0.7 0.25 0.15
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		stone
+}
+
+lambertian_material
+{
+	name			mat_obstacle
+	reflectance		brick
+}
+
+dielectric_material
+{
+	name				water
+	tau					0.92 0.97 0.99
+	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+dielectric_material
+{
+	name				honey_mat
+	tau					0.93 0.6 0.15
+	ior					1.49
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+pinhole_camera
+{
+	location		0.95 0.7 1.15
+	lookat			0 0.06 0
+	up				0 1 0
+	fov				40.0
+}
+
+liquid_simulation
+{
+	name			honey
+	frames			61
+	domain_min		-0.3 0 0.04
+	domain_size		0.6 0.3 0.3
+	resolution		48
+	viscosity		10
+	density			1420
+	surface_tension	0.07
+	liquid			box -0.3 0 0.04 -0.15 0.15 0.34
+}
+
+liquid_simulation
+{
+	name			water
+	frames			61
+	domain_min		-0.3 0 -0.34
+	domain_size		0.6 0.3 0.3
+	resolution		48
+	liquid			box -0.3 0 -0.34 -0.15 0.15 -0.04
+}
+
+simulated_mesh_geometry
+{
+	name			geo_honey
+	source			honey.surface
+}
+
+standard_object
+{
+	name			honey_object
+	geometry		geo_honey
+	material		honey_mat
+}
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			water.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		water
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-2.0 -0.001 -2.0
+	ptb				 2.0 -0.001 -2.0
+	ptc				 2.0 -0.001  2.0
+	ptd				-2.0 -0.001  2.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.3 -1 -0.5
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.7
+	radiance_background	TRUE
+}

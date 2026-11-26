@@ -16,6 +16,13 @@
 //       the shift is reported);
 //    6. add gravity; project with the new interface (ghost-fluid free
 //       surface, cut-cell solids).
+//  m7c: with viscosity, the step's last stage (before its projection) solves
+//  the implicit viscous step on the advected field with gravity and the
+//  previous step's pressure gradient (an incremental pressure; LiquidViscosity.h),
+//  coupled bodies being unknowns of that solve; with surface tension each
+//  projection imposes the Laplace jump (LiquidFlow.h PressureOptions) with the
+//  curvature of the new interface, and the interface velocity is extrapolated
+//  by a constant.
 //  Rigid bodies (m7b, LiquidBodies.h): after step 2 every body moves to its
 //  pose at the step's end (dynamic and coupled bodies drift with their
 //  step-start velocity, as the interface does), its cut cells are rebuilt and
@@ -48,6 +55,7 @@
 #include "LiquidBodies.h"
 #include "LiquidFlow.h"
 #include "LiquidLevelSet.h"
+#include "LiquidViscosity.h"
 #include "../SimulationGrid.h"
 #include "../SimulationMesh.h"
 #include "../SimulationPoints.h"
@@ -77,6 +85,13 @@ struct SolverOptions {
 	int interfaceExtrapolationLayers = 4; // interface field: the cells within reach of the surface's stencils
 	int linearExtrapolationLayers = 1;
 	PressureOptions pressure;
+	// m7c (LiquidViscosity.h; the surface tension in LiquidFlow.h PressureOptions).
+	double viscosityTolerance = 1e-8;   // relative residual of the viscous solve
+	double viscousThetaMin = 0.05;      // smallest wall fraction of a no-slip difference
+	int viscousSamples = 4;             // samples per axis of a cut control volume (viscous weights)
+	double viscousCfl = 4;              // dt <= viscousCfl h^2 / nu with viscosity (0: none): the viscous-pressure splitting converges per step (docs)
+	double capillaryCfl = 0.5;          // dt <= capillaryCfl sqrt(rho h^3 / (2 pi sigma)) with surface tension
+	bool interpolateCurvature = true;   // the curvature at the sub-cell interface position (else the liquid cell's)
 };
 
 //! What a run simulates (everything but the numerics).
@@ -88,6 +103,11 @@ struct LiquidSetup {
 	std::vector<Shape> solids;        // static
 	std::vector<Shape> liquid;        // initial liquid (union)
 	V3 initialVelocity{{0, 0, 0}};
+	//! m7c: constant dynamic viscosity (Pa s; 0: inviscid), no-slip or free-slip
+	//! walls, solids and bodies for it, and the surface tension (N/m; 0: none).
+	double viscosity = 0;
+	bool noSlip = true;
+	double surfaceTension = 0;
 	//! Rigid bodies (m7b, LiquidBodies.h): their initial state (mass and
 	//! moments set; a Dynamic body's externalForce is m g).
 	std::vector<LiquidBody> bodies;
@@ -100,9 +120,10 @@ struct StepStats {
 	std::size_t escaped = 0;
 	bool reinitialised = false;
 	std::size_t clamped = 0;          // valid faces whose speed the safeguard limited this step
+	ViscosityStats viscous;           // m7c: the viscous solve (iterations 0 when off)
 	// Wall seconds per phase: extrapolation, level set (advection + reinit +
 	// volume), particles, momentum advection, pressure (assembly + solve + update).
-	double extrapolate = 0, levelSet = 0, particles = 0, momentum = 0, project = 0, bodies = 0;
+	double extrapolate = 0, levelSet = 0, particles = 0, momentum = 0, project = 0, bodies = 0, viscosity = 0;
 };
 
 class LiquidModel {
@@ -156,6 +177,13 @@ public:
 	//! and static solids exerted on the liquid through the pressure.
 	bool audit = false;
 	V3 wallImpulse{{0, 0, 0}};
+	//! m7c: the viscous impulse of the static solids and domain walls on the
+	//! liquid in the last step (included in wallImpulse when auditing).
+	V3 viscousWallImpulse{{0, 0, 0}};
+	//! m7c: the viscous part of each body's impulse in the last step (in bodyImpulse too).
+	std::vector<Vec6> bodyViscousImpulse;
+	//! m7c: the curvature of the last step's interface (surface tension only).
+	const std::vector<double>& Kappa() const { return kappa_; }
 	//! The liquid's discrete momentum rho h^3 sum_f w_f u_f per axis, w_f the
 	//! projection's kinetic-energy weight (A between liquid cells, A theta to
 	//! the air), on valid faces.
@@ -187,6 +215,12 @@ public:
 private:
 	//! The pressure options of a step's last projection (and of Initialize).
 	PressureOptions FinalPressure() const;
+	//! The options of a step's projection with the surface-tension jump of a
+	//! stage of weight `weight` in the step's pressure (m7c; unchanged without it).
+	PressureOptions WithJump(PressureOptions po, double dt, double weight) const;
+	//! m7c: the implicit viscous step on `s` with the bodies' wall velocities `w`
+	//! (`impulse` receives each body's viscous impulse).
+	bool Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vector<Vec6>& impulse, StepStats& stats, std::string& error);
 	//! The velocity the outputs sample: u with its invalid faces extrapolated
 	//! as for the interface (the field the next step moves the surface with).
 	MacField OutputVelocity() const;
@@ -204,7 +238,13 @@ private:
 	void SetBodyVelocity(std::size_t i, const Vec6& w);
 	void AuditWalls();
 	bool HasSolids() const { return !setup_.solids.empty() || !bodies.empty(); }
+	//! The interface field's linear layers: none with surface tension (m7c: the linear
+	//! extrapolation drove a static drop's parasitic currents to the capillary speed,
+	//! in 2-D without viscosity and in 3-D with it; docs/SIMULATION_M7C_RESULTS.md).
+	int InterfaceLinearLayers() const { return setup_.surfaceTension > 0 ? 0 : options_.linearExtrapolationLayers; }
 	BodyGeometry geometry_;
+	std::vector<double> kappa_;
+	std::array<std::vector<std::int16_t>,3> owner_;
 	MacField solidVelocity_;
 	std::vector<std::uint8_t> enclosedMark_;
 	LiquidSetup setup_;

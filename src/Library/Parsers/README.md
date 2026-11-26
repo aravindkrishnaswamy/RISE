@@ -344,6 +344,11 @@ liquid_simulation
 simulated_mesh_geometry { name water  source pool.surface }
 ```
 
+Viscosity and surface tension (M7c, docs/SIMULATION_M7C_RESULTS.md) are off by default: `viscosity` (Pa s;
+`viscous_walls no_slip|free_slip`) and `surface_tension` (N/m), with `density` (kg/m^3) for both; sample
+`scenes/Tests/Simulation/liquid_honey_water.RISEscene` (honey beside water).  Surface tension without viscosity is
+labelled preview.
+
 Rigid bodies (M7b, docs/SIMULATION_M7B_RESULTS.md) move with the liquid in its pressure solve: `body <name>
 sphere r | box sx sy sz | cylinder r h` (body frame at the centre of mass, cylinder axis z) then `motion dynamic`
 (default: the liquid integrates it; `density d` or `mass m`, `lock <xyzr>`), `motion prescribed` (`velocity`,

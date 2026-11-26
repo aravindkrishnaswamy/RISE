@@ -96,6 +96,18 @@ double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::v
 //! to `target` (one Newton step; the shift is returned: metres).
 double CorrectVolume(const Grid& g, std::vector<double>& phi, double target, const std::vector<double>* open, Pool* pool);
 
+//! Mean curvature (sum of the principal curvatures, 1/m) of the level sets
+//! of phi at every cell centre, kappa = div(grad phi / |grad phi|), from
+//! second-order central differences (m7c surface tension):
+//!   kappa = [phi_x^2 (phi_yy + phi_zz) + phi_y^2 (phi_xx + phi_zz) + phi_z^2 (phi_xx + phi_yy)
+//!            - 2 phi_x phi_y phi_xy - 2 phi_x phi_z phi_xz - 2 phi_y phi_z phi_yz] / |grad phi|^3.
+//! Positive for a convex liquid region (phi < 0 inside: 1/R for a circle, 2/R
+//! for a sphere).  At the domain walls the stencil mirrors phi (clamped
+//! indices), which is zero normal slope: a 90 degree contact angle in the
+//! curvature.  Clamped to |kappa| <= (dims - 1) / h (dims the axes with more
+//! than one cell); zero where |grad phi| < 1e-6.
+void Curvature(const Grid& g, const std::vector<double>& phi, std::vector<double>& kappa, Pool* pool);
+
 
 // ------------------------------------------------------------------ marker particles
 

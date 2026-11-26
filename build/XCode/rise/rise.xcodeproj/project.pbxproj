@@ -1687,9 +1687,13 @@
 		D0D38D18EB8B660840C11C6F /* LiquidFlow.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E4A0BC5BA562D8CCEBFA7D93 /* LiquidFlow.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FA9B58BF0498B812D6D83BF8 /* LiquidFlow.h in Headers */ = {isa = PBXBuildFile; fileRef = 1B819769E1B53967DEB11129 /* LiquidFlow.h */; };
 		BED31BF6526B857964DF0C14 /* LiquidBodies.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E9811FD11DA33AE688AA4D3 /* LiquidBodies.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		86F345B7C0B23146734ECEA9 /* LiquidViscosity.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 991ADCA3300E0DCE8C57C62B /* LiquidViscosity.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		9E8253DBFCFA40FFB7E8BF5C /* LiquidBodies.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E9811FD11DA33AE688AA4D3 /* LiquidBodies.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		382115B9BBEC6B9CB01FA1A4 /* LiquidViscosity.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 991ADCA3300E0DCE8C57C62B /* LiquidViscosity.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		860CEB18C7D31EB999F80594 /* LiquidBodies.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E9811FD11DA33AE688AA4D3 /* LiquidBodies.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		E9E18B3CA3AE005D0C64D4E4 /* LiquidViscosity.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 991ADCA3300E0DCE8C57C62B /* LiquidViscosity.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		4897A58E1AD70365EC54B3D1 /* LiquidBodies.h in Headers */ = {isa = PBXBuildFile; fileRef = FDCF4D6235C99B59C125CF3D /* LiquidBodies.h */; };
+		12D4E598CA98ACD43B85A2D4 /* LiquidViscosity.h in Headers */ = {isa = PBXBuildFile; fileRef = E727962830267CA6E17F3152 /* LiquidViscosity.h */; };
 		9375D924FC39B449CD414D68 /* LiquidModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17741ED1557F32AFA4312C83 /* LiquidModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		A4468CDAF364EE38AC14B031 /* LiquidModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17741ED1557F32AFA4312C83 /* LiquidModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		5072E58F748ED06827BC8BA7 /* LiquidModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17741ED1557F32AFA4312C83 /* LiquidModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -3756,7 +3760,9 @@
 		E4A0BC5BA562D8CCEBFA7D93 /* LiquidFlow.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = LiquidFlow.cpp; sourceTree = "<group>"; };
 		1B819769E1B53967DEB11129 /* LiquidFlow.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = LiquidFlow.h; sourceTree = "<group>"; };
 		1E9811FD11DA33AE688AA4D3 /* LiquidBodies.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = LiquidBodies.cpp; sourceTree = "<group>"; };
+		991ADCA3300E0DCE8C57C62B /* LiquidViscosity.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = LiquidViscosity.cpp; sourceTree = "<group>"; };
 		FDCF4D6235C99B59C125CF3D /* LiquidBodies.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = LiquidBodies.h; sourceTree = "<group>"; };
+		E727962830267CA6E17F3152 /* LiquidViscosity.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = LiquidViscosity.h; sourceTree = "<group>"; };
 		17741ED1557F32AFA4312C83 /* LiquidModel.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = LiquidModel.cpp; sourceTree = "<group>"; };
 		10CE8485B7D20D2F96E36DA8 /* LiquidModel.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = LiquidModel.h; sourceTree = "<group>"; };
 		BC1FBFE235DCFB692D29AFB0 /* LiquidValidation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = LiquidValidation.cpp; sourceTree = "<group>"; };
@@ -5459,7 +5465,9 @@
 				E4A0BC5BA562D8CCEBFA7D93 /* LiquidFlow.cpp */,
 				1B819769E1B53967DEB11129 /* LiquidFlow.h */,
 				1E9811FD11DA33AE688AA4D3 /* LiquidBodies.cpp */,
+				991ADCA3300E0DCE8C57C62B /* LiquidViscosity.cpp */,
 				FDCF4D6235C99B59C125CF3D /* LiquidBodies.h */,
+				E727962830267CA6E17F3152 /* LiquidViscosity.h */,
 				17741ED1557F32AFA4312C83 /* LiquidModel.cpp */,
 				10CE8485B7D20D2F96E36DA8 /* LiquidModel.h */,
 				BC1FBFE235DCFB692D29AFB0 /* LiquidValidation.cpp */,
@@ -6605,6 +6613,7 @@
 				FCE97DBF308A3F9F980BC9F5 /* LiquidLevelSet.h in Headers */,
 				FA9B58BF0498B812D6D83BF8 /* LiquidFlow.h in Headers */,
 				4897A58E1AD70365EC54B3D1 /* LiquidBodies.h in Headers */,
+				12D4E598CA98ACD43B85A2D4 /* LiquidViscosity.h in Headers */,
 				30D52A629E81F28147624A2E /* LiquidModel.h in Headers */,
 				20D71D36451D6188EF491F8B /* LiquidValidation.h in Headers */,
 				83163F1496A54353D35B04A8 /* LiquidSolver.h in Headers */,
@@ -7345,6 +7354,7 @@
 				326AF839DEB628ABD4321A60 /* LiquidLevelSet.cpp in Sources */,
 				84C48569FCB6CC20BA2B7C40 /* LiquidFlow.cpp in Sources */,
 				BED31BF6526B857964DF0C14 /* LiquidBodies.cpp in Sources */,
+				86F345B7C0B23146734ECEA9 /* LiquidViscosity.cpp in Sources */,
 				9375D924FC39B449CD414D68 /* LiquidModel.cpp in Sources */,
 				406C0538CA926E4A7554F0DF /* LiquidValidation.cpp in Sources */,
 				7A6F1D3044B94AF98C2282E3 /* LiquidSolver.cpp in Sources */,
@@ -8400,6 +8410,7 @@
 				7B18096EFB051B3A21B3D6AE /* LiquidLevelSet.cpp in Sources */,
 				44D10165AD9EF9435DB50D2F /* LiquidFlow.cpp in Sources */,
 				9E8253DBFCFA40FFB7E8BF5C /* LiquidBodies.cpp in Sources */,
+				382115B9BBEC6B9CB01FA1A4 /* LiquidViscosity.cpp in Sources */,
 				A4468CDAF364EE38AC14B031 /* LiquidModel.cpp in Sources */,
 				8B1C34121CA65B9C75AECF4B /* LiquidValidation.cpp in Sources */,
 				686BF8EC8764A715EC107D2A /* LiquidSolver.cpp in Sources */,
@@ -8888,6 +8899,7 @@
 				57C4F71CBB51D5F81894F775 /* LiquidLevelSet.cpp in Sources */,
 				D0D38D18EB8B660840C11C6F /* LiquidFlow.cpp in Sources */,
 				860CEB18C7D31EB999F80594 /* LiquidBodies.cpp in Sources */,
+				E9E18B3CA3AE005D0C64D4E4 /* LiquidViscosity.cpp in Sources */,
 				5072E58F748ED06827BC8BA7 /* LiquidModel.cpp in Sources */,
 				C6B467D2622815000EC6D21D /* LiquidValidation.cpp in Sources */,
 				7DDE236CE2FA0777B56E8D18 /* LiquidSolver.cpp in Sources */,

@@ -367,6 +367,54 @@ double CorrectVolume(const Grid& g, std::vector<double>& phi, double target, con
 	return shift;
 }
 
+void Curvature(const Grid& g, const std::vector<double>& phi, std::vector<double>& kappa, Pool* pool)
+{
+	const auto& n = g.n;
+	kappa.assign(g.Cells(), 0.0);
+	int dims = 0;
+	for (int a = 0; a < 3; ++a) dims += n[a] > 1;
+	const double limit = double(std::max(1, dims - 1))/g.h;
+	const double h = g.h, ih2 = 1/(h*h);
+	ForRows(pool, Rows(n), RowGrain(n[0]), [&](std::size_t r0, std::size_t r1) {
+		for (std::size_t r = r0; r < r1; ++r) {
+			const int j = int(r % std::size_t(n[1])), k = int(r/std::size_t(n[1]));
+			for (int i = 0; i < n[0]; ++i) {
+				// phi at offsets (-1, 0, +1) along each axis with clamped (mirrored) indices.
+				auto at = [&](int di, int dj, int dk) {
+					const int q[3] = {std::min(std::max(i + di, 0), n[0] - 1), std::min(std::max(j + dj, 0), n[1] - 1),
+						std::min(std::max(k + dk, 0), n[2] - 1)};
+					return phi[g.C(q[0], q[1], q[2])];
+				};
+				const double c = phi[g.C(i, j, k)];
+				double d1[3], d2[3], dm[3];   // first, second, mixed (xy, xz, yz)
+				const int e[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+				for (int a = 0; a < 3; ++a) {
+					if (n[a] == 1) { d1[a] = d2[a] = 0; continue; }
+					const double p = at(e[a][0], e[a][1], e[a][2]), m = at(-e[a][0], -e[a][1], -e[a][2]);
+					d1[a] = (p - m)/(2*h);
+					d2[a] = (p - 2*c + m)*ih2;
+				}
+				const int pairs[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+				for (int q = 0; q < 3; ++q) {
+					const int a = pairs[q][0], b = pairs[q][1];
+					if (n[a] == 1 || n[b] == 1) { dm[q] = 0; continue; }
+					int pp[3] = {0, 0, 0}, pm[3] = {0, 0, 0}, mp[3] = {0, 0, 0}, mm[3] = {0, 0, 0};
+					pp[a] = 1; pp[b] = 1; pm[a] = 1; pm[b] = -1; mp[a] = -1; mp[b] = 1; mm[a] = -1; mm[b] = -1;
+					dm[q] = (at(pp[0], pp[1], pp[2]) - at(pm[0], pm[1], pm[2]) - at(mp[0], mp[1], mp[2]) + at(mm[0], mm[1], mm[2]))*0.25*ih2;
+				}
+				const double gx = d1[0], gy = d1[1], gz = d1[2];
+				const double g2 = gx*gx + gy*gy + gz*gz;
+				const double gn = std::sqrt(g2);
+				if (!(gn >= 1e-6)) continue;
+				const double num = gx*gx*(d2[1] + d2[2]) + gy*gy*(d2[0] + d2[2]) + gz*gz*(d2[0] + d2[1])
+					- 2*gx*gy*dm[0] - 2*gx*gz*dm[1] - 2*gy*gz*dm[2];
+				const double kv = num/(g2*gn);
+				kappa[g.C(i, j, k)] = std::min(limit, std::max(-limit, kv));
+			}
+		}
+	});
+}
+
 // ------------------------------------------------------------------ marker particles
 
 void MarkerParticles::SeedCells(const Grid& g, const std::vector<double>& phi, const std::vector<std::size_t>& cells,

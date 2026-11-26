@@ -430,6 +430,103 @@ void MacroAndRollback()
 		"a token from another instance is refused");
 }
 
+// ---------------------------------------------------------------- H (m7c)
+
+// Viscosity, surface tension and a dynamic body (coupled in the viscous solve).
+V::Members Physics()
+{
+	V::Members m = Small();
+	m.emplace_back("viscosity", V::Float(0.5));
+	m.emplace_back("surface_tension", V::Float(0.07));
+	m.emplace_back("bodies", V::ArrayValue({V::MapValue({{"name", V::String("ball")}, {"shape", V::String("sphere")},
+		{"radius", V::Float(0.035)}, {"motion", V::String("dynamic")}, {"density", V::Float(500)}, {"position", Vec(0.3, 0.12, 0.05)}})}));
+	return m;
+}
+
+void ViscosityAndSurfaceTension()
+{
+	std::printf("H: viscosity and surface tension (m7c)\n");
+	std::string error;
+	auto s = Make();
+	// Labels: each option adds its cases; surface tension alone is preview.
+	SolverDescription v, st, both;
+	double t0 = Seconds();
+	Check(s->Configure(With(Small(), "viscosity", V::Float(0.5)), EmptySceneInputs(), v, error), "viscosity configures", error);
+	std::printf("   first Configure with viscosity %.2f s\n", Seconds() - t0);
+	t0 = Seconds();
+	Check(s->Configure(With(With(Small(), "viscosity", V::Float(0.5)).GetMap(), "surface_tension", V::Float(0.07)), EmptySceneInputs(), both, error),
+		"both configure", error);
+	std::printf("   first Configure with both %.2f s\n", Seconds() - t0);
+	Check(s->Configure(With(Small(), "surface_tension", V::Float(0.07)), EmptySceneInputs(), st, error), "surface tension configures", error);
+	for (const auto& c : both.evidence.cases)
+		if (c.id.find("viscous") != std::string::npos || c.id.find("couette") != std::string::npos || c.id.find("drag") != std::string::npos ||
+			c.id.find("rotation") != std::string::npos || c.id.find("laplace") != std::string::npos || c.id.find("parasitic") != std::string::npos ||
+			c.id.find("capillary") != std::string::npos || c.id.find("oscillating") != std::string::npos)
+			std::printf("   %-26s error %.3e tolerance %.1e %s\n", c.id.c_str(), c.error, c.tolerance, c.passed ? "pass" : "FAIL");
+	Check(EffectiveFidelity(v.evidence) == "predictive", "viscosity earns predictive", EffectiveFidelity(v.evidence));
+	Check(EffectiveFidelity(both.evidence) == "predictive", "viscosity and surface tension earn predictive", EffectiveFidelity(both.evidence));
+	Check(EffectiveFidelity(st.evidence) == "preview", "surface tension without viscosity is preview");
+	Check(v.evidence.cases.size() == 15 + 6 && both.evidence.cases.size() == 15 + 10 && st.evidence.cases.size() == 15 + 4, "the m7c cases are present when on",
+		std::to_string(v.evidence.cases.size()) + " " + std::to_string(both.evidence.cases.size()) + " " + std::to_string(st.evidence.cases.size()));
+	auto condition = [](const SolverDescription& d, const char* name) {
+		for (const auto& c : d.evidence.conditions) if (c.first == name && !c.second.empty()) return c.second[0];
+		return std::string();
+	};
+	Check(condition(both, "viscosity") == "on" && condition(both, "surface_tension") == "on" && condition(v, "surface_tension") == "off",
+		"conditions viscosity and surface_tension");
+	SolverDescription off;
+	Check(s->Configure(Map(Small()), EmptySceneInputs(), off, error) && condition(off, "viscosity") == "off" && off.evidence.cases.size() == 15,
+		"both off: m7b's cases, conditions off", error);
+	Check(Encoded(*v.effectiveParameters.Find("viscosity")) == Encoded(V::Float(0.5)) && off.effectiveParameters.Find("surface_tension"),
+		"the new parameters are effective (keyed)");
+	for (const auto& bad : {With(Small(), "viscosity", V::Float(-1)), With(Small(), "surface_tension", V::Float(-0.1)),
+		With(Small(), "viscous_walls", V::String("sticky")), With(Small(), "capillary_cfl", V::Float(0)), With(Small(), "viscosity_tolerance", V::Float(2)),
+		With(Small(), "curvature", V::String("height"))}) {
+		SolverDescription x;
+		Check(!s->Configure(bad, EmptySceneInputs(), x, error), "refused: " + error);
+	}
+	// Threads, twins, stop / restore and macro steps with both options and a dynamic body.
+	const V params = V::MapValue(Physics());
+	std::vector<std::map<std::pair<std::int64_t,std::string>,std::string>> runs;
+	for (unsigned threads : {1u, 3u, 8u, 8u}) {
+		auto r = Make();
+		SolverDescription d;
+		DigestSink sink;
+		Check(r->Configure(With(Physics(), "threads", V::Unsigned(threads)), EmptySceneInputs(), d, error) && r->Start(error) && RunAll(*r, sink, error),
+			"physics run with " + std::to_string(threads) + " threads", error);
+		runs.push_back(sink.digests);
+	}
+	Check(runs[0].size() == 12 && runs[0] == runs[1] && runs[0] == runs[2] && runs[2] == runs[3],
+		"1, 3 and 8 threads and twins publish identical frames (viscosity, surface tension, a body)");
+	StopRestore(params, "viscosity, surface tension and a body");
+	auto m = Make();
+	SolverDescription d;
+	DigestSink sink;
+	Check(m->Configure(params, EmptySceneInputs(), d, error) && m->Start(error), "macro configure", error);
+	AdvanceResult r;
+	for (int k = 0; k < 6; ++k) {
+		AdvanceRequest q;
+		q.mode = AdvanceRequest::Mode::MacroStep;
+		q.macroEnd = k*d.cache.interval;
+		Check(m->Advance(q, sink, nullptr, nullptr, r, error), "macro step", error);
+	}
+	Check(sink.digests == runs[0], "macro steps reproduce free stepping byte for byte (viscosity, surface tension, a body)");
+	// Rollback.
+	auto rb = Make();
+	DigestSink one, two;
+	Check(rb->Configure(params, EmptySceneInputs(), d, error) && rb->Start(error), "rollback configure", error);
+	AdvanceRequest q;
+	q.mode = AdvanceRequest::Mode::MacroStep;
+	q.macroEnd = 0;
+	Check(rb->Advance(q, one, nullptr, nullptr, r, error), "first output", error);
+	std::shared_ptr<const SolverStateToken> token;
+	Check(rb->SaveState(token, error), "save", error);
+	q.macroEnd = 2*d.cache.interval;
+	Check(rb->Advance(q, one, nullptr, nullptr, r, error) && rb->RestoreState(*token, error) && rb->Advance(q, two, nullptr, nullptr, r, error), "repeat", error);
+	Check(one.digests.at({2, "surface"}) == two.digests.at({2, "surface"}) && two.digests.at({2, "surface"}) == runs[0].at({2, "surface"}),
+		"the repeated macro step is identical (m7c)");
+}
+
 // ---------------------------------------------------------------- G
 
 int Worker(const std::vector<std::string>& args, std::string* output = nullptr)
@@ -501,6 +598,7 @@ int main()
 	StopRestore(With(Small(), "particles", V::Bool(false)), "level set");
 	StopRestore(Map(Small()), "with marker particles (the default)");
 	MacroAndRollback();
+	ViscosityAndSurfaceTension();
 	WorkerHost(RISE::TestSupport::ScratchRunDir("rise_liquid_solver_", "worker"));
 	std::printf("%s (%d failures, %.1f s)\n", failures ? "FAILED" : "PASSED", failures, Seconds() - t0);
 	return failures ? 1 : 0;

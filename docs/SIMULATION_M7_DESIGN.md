@@ -102,6 +102,11 @@ bake is on the order of 7 hours; 128³ is about 16 times cheaper. A first protot
    density-ratio limit of §2's staggered exchange was not measured as a threshold; a ratio-0.5 floating cylinder
    diverges with it and is stable in the coupled solve. Face fractions beside bodies are control-volume
    fractions (area fractions gave a staircase buoyancy).*
-5. Viscosity and surface tension; cases 10–11.
+5. Viscosity and surface tension; cases 10–11. *Done (M7c, 2026-11-26; [results](SIMULATION_M7C_RESULTS.md)):
+   implicit viscosity in the variational strain-rate form (Batty and Bridson 2008, derived here) with an incremental
+   pressure and bodies coupled in the viscous solve, and the ghost-fluid Laplace jump; case 10 against Stokes with
+   the Haberman–Sayre wall factor, case 11 against Lamb's frequency and the Laplace pressure. Hysing's rising bubble is
+   two-phase and was replaced (a capillary-gravity wave). Viscous splitting needs ν dt / h² ≤ 4 (a time-step limit);
+   inviscid surface tension stays preview (parasitic currents grow).*
 6. Checkpoint, rollback and thread-invariance tests; scene chunk `liquid_simulation`.
 7. Cloth as a moving boundary (`preview`).
