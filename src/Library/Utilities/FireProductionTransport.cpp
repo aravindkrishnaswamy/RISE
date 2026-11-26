@@ -571,6 +571,9 @@ namespace RISE
 			for(const FireProductionProjectionBoundary value:pair.boundary)
 				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
 			for(const std::size_t value:pair.packedFaceOffset)HashEOSUInt64(hash,value);
+			// M8b, fast mode (as the Metal owner's): a lineage token over the stage's
+			// authenticated inputs and parents below, not a hash of the payload bytes.
+			if(!::RISE::FireSim::FireFastMode()){
 			HashFluxValues(hash,pair.lowFlux);HashFluxValues(hash,pair.fluxDelta);
 			HashPrescribedInlet(hash,stage);
 			HashFluxValues(hash,stage.physicalMassFluxKGPerM2S);
@@ -579,6 +582,7 @@ namespace RISE
 				HashFluxValues(hash,stage.physicalGasFluxKGPerM2S[axis]);
 				HashFluxValues(hash,stage.advectiveGasLowFluxKGPerM2S[axis]);
 				HashFluxValues(hash,stage.advectiveGasFluxDeltaKGPerM2S[axis]);
+			}
 			}
 			HashEOSString(hash,stage.methaneRecordId);
 			HashEOSUInt64(hash,stage.attemptIdentity);
@@ -2253,7 +2257,14 @@ namespace RISE
 				const std::size_t xEnd=shape.nx+(axis==0u?1u:0u),
 					yEnd=shape.ny+(axis==1u?1u:0u),zEnd=shape.nz+(axis==2u?1u:0u),
 					extent=AxisCoordinateExtent(shape,axis);
-				for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+				// M8b: z planes in parallel. Each face is written once; the four certificate
+				// maxima are kept per slice and combined after (a maximum of finite values
+				// does not depend on the order); the reported failure is the first face's.
+				std::vector<std::array<double,4>> sliceMaximum(zEnd,std::array<double,4>{{0.0,0.0,0.0,0.0}});
+				FireProductionCPUFirstFailure faceFailure;
+				FireProductionCPUParallelFor(zEnd,[&](const std::size_t zBegin,const std::size_t zStop){
+				std::array<double,4>& maximum=sliceMaximum[zBegin];
+				for(std::size_t z=zBegin;z<zStop;++z)for(std::size_t y=0u;y<yEnd;++y)
 					for(std::size_t x=0u;x<xEnd;++x){
 						std::size_t normal=AxisCoordinate(axis,x,y,z);
 						const std::size_t face=FaceIndex(shape,axis,x,y,z),
@@ -2263,12 +2274,12 @@ namespace RISE
 								const float carrier=request.frozenVelocityMPerS[2][face]*
 									request.conservativeValues[component*cells+CellIndex(shape,x,y,0u)];
 								const float value=PrescribedInletFlux(request,face,component)-carrier;
-								if(!std::isfinite(value))return Fail(error,"scalar inlet physical flux is nonfinite");
+								if(!std::isfinite(value)){faceFailure.Record(packed,"scalar inlet physical flux is nonfinite");return;}
 								if(component<8u)computed.physicalMassFluxKGPerM2S[component*allFaces+packed]=value;
 								else computed.physicalEnergyFluxWPerM2[packed]=value;
 								if(component>=1u&&component<=6u)gas+=value;
 							}
-							if(!std::isfinite(gas))return Fail(error,"scalar inlet physical gas flux is nonfinite");
+							if(!std::isfinite(gas)){faceFailure.Record(packed,"scalar inlet physical gas flux is nonfinite");return;}
 							computed.physicalGasFluxKGPerM2S[2][face]=gas;continue;
 						}
 						bool boundaryFace=normal==0u||normal==extent;
@@ -2291,8 +2302,7 @@ namespace RISE
 								request.temperatureK[interior];
 							float total=0.0f;for(std::size_t species=0u;species<7u;++species)
 								total+=request.conservativeValues[(1u+species)*cells+interior];
-							if(!(total>0.0f)||!std::isfinite(total))return Fail(error,
-								"physical scalar-flux prerequisite boundary mass is invalid");
+							if(!(total>0.0f)||!std::isfinite(total)){faceFailure.Record(packed,"physical scalar-flux prerequisite boundary mass is invalid");return;}
 							rhoD=total*request.diffusivityM2PerS[interior];
 							conductivity=request.conductivityWPerMK[interior];distance=0.5f*shape.cellWidthM;
 						}else{
@@ -2304,8 +2314,7 @@ namespace RISE
 							float totalLeft=0.0f,totalRight=0.0f;for(std::size_t species=0u;species<7u;++species){
 								totalLeft+=request.conservativeValues[(1u+species)*cells+left];
 								totalRight+=request.conservativeValues[(1u+species)*cells+right];}
-							if(!(totalLeft>0.0f)||!(totalRight>0.0f))return Fail(error,
-								"physical scalar-flux prerequisite interior mass is invalid");
+							if(!(totalLeft>0.0f)||!(totalRight>0.0f)){faceFailure.Record(packed,"physical scalar-flux prerequisite interior mass is invalid");return;}
 							auto harmonic=[](float a,float b){return a>0.0f&&b>0.0f?2.0f*a*b/(a+b):0.0f;};
 							rhoD=harmonic(totalLeft*request.diffusivityM2PerS[left],
 								totalRight*request.diffusivityM2PerS[right]);
@@ -2318,8 +2327,7 @@ namespace RISE
 								request.conservativeValues[(1u+species)*cells+left];
 							totalRight+=rightAmbient?request.ambient[1u+species]:
 								request.conservativeValues[(1u+species)*cells+right];}
-						if(!(totalLeft>0.0f)||!(totalRight>0.0f))return Fail(error,
-							"physical scalar-flux prerequisite face mass is invalid");
+						if(!(totalLeft>0.0f)||!(totalRight>0.0f)){faceFailure.Record(packed,"physical scalar-flux prerequisite face mass is invalid");return;}
 						std::array<float,8> raw={{}},projected={{}};
 						for(std::size_t component=0u;component<8u;++component){
 							const float ql=leftAmbient?request.ambient[component]:
@@ -2334,19 +2342,18 @@ namespace RISE
 							raw64[component]=static_cast<double>(raw[component]);
 							rawScale+=std::fabs(raw64[component]);
 						}
+						std::string projectionError;
 						if(!projection.Project(raw64.data(),raw64.size(),projected64.data(),
-							projected64.size(),error))return false;
+							projected64.size(),&projectionError)){faceFailure.Record(packed,projectionError);return;}
 						for(std::size_t component=0u;component<8u;++component){
 							projected[component]=static_cast<float>(projected64[component]);
-							if(!std::isfinite(projected[component]))return Fail(error,
-								"physical scalar-flux prerequisite projection cast is nonfinite");
+							if(!std::isfinite(projected[component])){faceFailure.Record(packed,"physical scalar-flux prerequisite projection cast is nonfinite");return;}
 						}
 						const double epsilon=std::numeric_limits<double>::epsilon();
 						const double gamma=(8.0*epsilon)/(1.0-8.0*epsilon);
 						const double projectionFactor=record.AcceptedStateFeasibilityEnvelope().
 							nullspaceProjectionFactorEpsilon64;
-						if(!(projectionFactor>0.0)||!std::isfinite(projectionFactor))return Fail(error,
-							"physical scalar-flux prerequisite projection certificate is invalid");
+						if(!(projectionFactor>0.0)||!std::isfinite(projectionFactor)){faceFailure.Record(packed,"physical scalar-flux prerequisite projection certificate is invalid");return;}
 						for(std::size_t row=0u;row<projection.constraintRows;++row){
 								double residual=0.0,referenceResidual=0.0,castBound=0.0,
 									arithmeticScale=0.0,referenceScale=0.0,constraintNorm=0.0;
@@ -2370,39 +2377,43 @@ namespace RISE
 									gamma*referenceScale;
 								if(!std::isfinite(rawScale)||!std::isfinite(constraintNorm)||
 									!std::isfinite(referenceResidual)||!std::isfinite(referenceBound)||
-								std::fabs(referenceResidual)>referenceBound)return Fail(error,
-									"physical scalar-flux prerequisite fp64 reference exceeds its certificate");
+								std::fabs(referenceResidual)>referenceBound){faceFailure.Record(packed,"physical scalar-flux prerequisite fp64 reference exceeds its certificate");return;}
 							const double bound=referenceBound+castBound+
 								gamma*arithmeticScale;
-							computed.maximumFP64ReferenceResidualKGPerM2S=std::max(
-								computed.maximumFP64ReferenceResidualKGPerM2S,std::fabs(referenceResidual));
-							computed.fp64ReferenceForwardErrorBoundKGPerM2S=std::max(
-								computed.fp64ReferenceForwardErrorBoundKGPerM2S,referenceBound);
-							computed.maximumConstraintResidualKGPerM2S=std::max(
-								computed.maximumConstraintResidualKGPerM2S,std::fabs(residual));
-							computed.constraintForwardErrorBoundKGPerM2S=std::max(
-								computed.constraintForwardErrorBoundKGPerM2S,bound);
+							maximum[0]=std::max(maximum[0],std::fabs(referenceResidual));
+							maximum[1]=std::max(maximum[1],referenceBound);
+							maximum[2]=std::max(maximum[2],std::fabs(residual));
+							maximum[3]=std::max(maximum[3],bound);
 							if(!std::isfinite(residual)||!std::isfinite(bound)||std::fabs(residual)>bound)
-								return Fail(error,"physical scalar-flux prerequisite fp64 identity check failed");
+								{faceFailure.Record(packed,"physical scalar-flux prerequisite fp64 identity check failed");return;}
 						}
 						const float faceTemperature=0.5f*(leftTemperature+rightTemperature);
 						float energy=0.0f,gas=0.0f;
 						for(std::size_t component=0u;component<8u;++component){
-							if(!std::isfinite(projected[component]))return Fail(error,
-								"physical scalar-flux prerequisite mass flux is nonfinite");
+							if(!std::isfinite(projected[component])){faceFailure.Record(packed,"physical scalar-flux prerequisite mass flux is nonfinite");return;}
 							computed.physicalMassFluxKGPerM2S[component*allFaces+packed]=projected[component];
 							if(component>=1u&&component<=6u)gas+=projected[component];
 						}
 						for(std::size_t species=0u;species<7u;++species){float h=0.0f;
-							if(!enthalpy(species,faceTemperature,h))return Fail(error,
-								"physical scalar-flux prerequisite enthalpy is invalid");
+							if(!enthalpy(species,faceTemperature,h)){faceFailure.Record(packed,"physical scalar-flux prerequisite enthalpy is invalid");return;}
 							energy+=h*projected[1u+species];}
 						energy-=conductivity*(rightTemperature-leftTemperature)/distance;
-						if(!std::isfinite(energy)||!std::isfinite(gas))return Fail(error,
-							"physical scalar-flux prerequisite aggregate flux is nonfinite");
+						if(!std::isfinite(energy)||!std::isfinite(gas)){faceFailure.Record(packed,"physical scalar-flux prerequisite aggregate flux is nonfinite");return;}
 						computed.physicalEnergyFluxWPerM2[packed]=energy;
 						computed.physicalGasFluxKGPerM2S[axis][face]=gas;
 					}
+				},1u);
+				if(faceFailure.Failed())return Fail(error,faceFailure.Message().c_str());
+				for(const std::array<double,4>& maximum:sliceMaximum){
+					computed.maximumFP64ReferenceResidualKGPerM2S=std::max(
+						computed.maximumFP64ReferenceResidualKGPerM2S,maximum[0]);
+					computed.fp64ReferenceForwardErrorBoundKGPerM2S=std::max(
+						computed.fp64ReferenceForwardErrorBoundKGPerM2S,maximum[1]);
+					computed.maximumConstraintResidualKGPerM2S=std::max(
+						computed.maximumConstraintResidualKGPerM2S,maximum[2]);
+					computed.constraintForwardErrorBoundKGPerM2S=std::max(
+						computed.constraintForwardErrorBoundKGPerM2S,maximum[3]);
+				}
 			}
 			computed.fp64ReferenceIdentityVerified=true;
 			result=std::move(computed);if(error)error->clear();return true;
@@ -2433,7 +2444,8 @@ namespace RISE
 	namespace
 	{
 		bool ValidScalarHeunFluxStage(
-			const FireProductionScalarHeunFluxStage& stage,std::string* error )
+			const FireProductionScalarHeunFluxStage& stage,std::string* error,
+			const bool identityJustComputed=false )
 		{
 			const FireProductionScalarFCTFluxPair& pair=stage.compositeFluxPair;
 			const FireProductionProjectionShape& shape=pair.shape;
@@ -2569,7 +2581,9 @@ namespace RISE
 							"scalar Heun J_g differs from retained f_N bytes");
 				}
 			}
-			if(stage.compositionIdentity!=HeunFluxStageIdentity(stage))return Fail(error,
+			// M8b: a producer that has just computed the identity of this same, unchanged
+			// object skips the identical second evaluation (same bytes, same value).
+			if(!identityJustComputed&&stage.compositionIdentity!=HeunFluxStageIdentity(stage))return Fail(error,
 				"scalar Heun flux-stage content identity differs");
 			return true;
 		}
@@ -2726,7 +2740,7 @@ namespace RISE
 				}
 			}
 			computed.compositionIdentity=HeunFluxStageIdentity(computed);
-			if(!ValidScalarHeunFluxStage(computed,error))return false;
+			if(!ValidScalarHeunFluxStage(computed,error,true))return false;
 			result=std::move(computed);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){result=FireProductionScalarHeunFluxStage();
 			FailWithoutThrow(error,"scalar Heun flux-stage allocation failed");return false;}
@@ -3310,7 +3324,7 @@ namespace RISE
 			}
 			computed.fp64ReferenceIdentityVerified=true;
 			computed.compositionIdentity=HeunFluxStageIdentity(computed);
-			if(!ValidScalarHeunFluxStage(computed,error))return false;
+			if(!ValidScalarHeunFluxStage(computed,error,true))return false;
 			result=std::move(computed);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){result=FireProductionScalarHeunFluxStage();
 			FailWithoutThrow(error,"scalar Heun flux-stage average allocation failed");return false;}
@@ -3409,9 +3423,16 @@ namespace RISE
 					state[component]=static_cast<double>(value);
 				}
 				double temperature=0.0,pressureRatio=0.0;
+				// M8b: invert over the record's whole range, the canonical inversion every
+				// consumer recomputes (the R1 base target's accepted-state authority); the
+				// iterate depends on the bracket, and inverting over the case bounds published
+				// a temperature one binary32 ulp from it in rare cells (seen at tier 4, step 6).
+				// The case bounds below still refuse a temperature outside them.
 				if(!record.InvertAcceptedConservativeStateByComponentOrder(state.data(),
-					state.size(),lowerTemperatureK,upperTemperatureK,
+					state.size(),record.TemperatureMinK(),record.TemperatureMaxK(),
 					request.producerPrecision,temperature,pressureRatio,error))return false;
+				if(temperature<lowerTemperatureK)return Fail(error,
+					"scalar EOS acceptance temperature is below the case floor");
 				if(temperature>=upperTemperatureK)return Fail(error,
 					"scalar EOS acceptance temperature reaches the case ceiling");
 				const float publishedTemperature=static_cast<float>(temperature);
@@ -3564,6 +3585,32 @@ namespace RISE
 					if( !std::isfinite(accepted) ) return Fail(error,
 						"compatible FCT momentum accepted flux is nonfinite");
 					computed.acceptedGasFluxKGPerM2S[axis][face]=accepted;
+				}
+			}
+			// M8b: r264 centred interior carrier, the same expression and summation
+			// order as the Metal owner's fct_centered_momentum_carrier.
+			if( !request.centeredCellGasDensityKGPerM3.empty() ) {
+				if( allPeriodic||request.centeredCellGasDensityKGPerM3.size()!=shape.CellCount() )
+					return Fail(error,"compatible FCT momentum centred carrier operand is invalid");
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::size_t extent=AxisCoordinateExtent(shape,axis);
+					const std::size_t xEnd=shape.nx+(axis==0u?1u:0u),yEnd=shape.ny+(axis==1u?1u:0u),
+						zEnd=shape.nz+(axis==2u?1u:0u);
+					for( std::size_t z=0u;z<zEnd;++z ) for( std::size_t y=0u;y<yEnd;++y )
+						for( std::size_t x=0u;x<xEnd;++x ) {
+							const std::size_t normal=AxisCoordinate(axis,x,y,z);
+							if( normal==0u||normal==extent ) continue;
+							std::size_t lx=x,ly=y,lz=z;SetAxisCoordinate(axis,normal-1u,lx,ly,lz);
+							const std::size_t face=FaceIndex(shape,axis,x,y,z);
+							const float rhoL=request.centeredCellGasDensityKGPerM3[CellIndex(shape,lx,ly,lz)];
+							const float rhoR=request.centeredCellGasDensityKGPerM3[CellIndex(shape,x,y,z)];
+							const float physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
+								request.physicalGasFluxKGPerM2S[axis][face];
+							const float centered=0.5f*(rhoL+rhoR)*request.frozenVelocityMPerS[axis][face]+physical;
+							if( !std::isfinite(centered) ) return Fail(error,
+								"compatible FCT momentum centred carrier is nonfinite");
+							computed.acceptedGasFluxKGPerM2S[axis][face]=centered;
+						}
 				}
 			}
 
@@ -3760,10 +3807,39 @@ namespace RISE
 			request,true,result,error);
 	}
 
+	static bool EvaluateFireProductionCompatibleHeunMomentumCPUImpl(
+		const FireProductionScalarHeunFluxStage& stage,
+		const FireProductionScalarHeunSolveResult& solve,
+		const std::array<std::vector<float>,3>& frozenVelocityMPerS,
+		const std::vector<float>* centeredCellGasDensityKGPerM3,
+		FireProductionCompatibleFCTMomentumResult& result,std::string* error );
+
 	bool EvaluateFireProductionCompatibleHeunMomentumCPU(
 		const FireProductionScalarHeunFluxStage& stage,
 		const FireProductionScalarHeunSolveResult& solve,
 		const std::array<std::vector<float>,3>& frozenVelocityMPerS,
+		FireProductionCompatibleFCTMomentumResult& result,std::string* error )
+	{
+		return EvaluateFireProductionCompatibleHeunMomentumCPUImpl(stage,solve,
+			frozenVelocityMPerS,0,result,error);
+	}
+
+	bool EvaluateFireProductionCompatibleHeunMomentumCenteredCPU(
+		const FireProductionScalarHeunFluxStage& stage,
+		const FireProductionScalarHeunSolveResult& solve,
+		const std::array<std::vector<float>,3>& frozenVelocityMPerS,
+		const std::vector<float>& cellGasDensityKGPerM3,
+		FireProductionCompatibleFCTMomentumResult& result,std::string* error )
+	{
+		return EvaluateFireProductionCompatibleHeunMomentumCPUImpl(stage,solve,
+			frozenVelocityMPerS,&cellGasDensityKGPerM3,result,error);
+	}
+
+	static bool EvaluateFireProductionCompatibleHeunMomentumCPUImpl(
+		const FireProductionScalarHeunFluxStage& stage,
+		const FireProductionScalarHeunSolveResult& solve,
+		const std::array<std::vector<float>,3>& frozenVelocityMPerS,
+		const std::vector<float>* centeredCellGasDensityKGPerM3,
 		FireProductionCompatibleFCTMomentumResult& result,std::string* error )
 	{
 		result=FireProductionCompatibleFCTMomentumResult();
@@ -3789,6 +3865,8 @@ namespace RISE
 		request.physicalGasFluxKGPerM2S=stage.physicalGasFluxKGPerM2S;
 		request.sharedFaceAlpha=solve.scalar.sharedFaceAlpha;
 		request.frozenVelocityMPerS=frozenVelocityMPerS;
+		if(centeredCellGasDensityKGPerM3)
+			request.centeredCellGasDensityKGPerM3=*centeredCellGasDensityKGPerM3;
 		return EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
 			request,true,result,error);
 		} catch(const std::bad_alloc&) {
@@ -3983,7 +4061,9 @@ namespace RISE
 					const std::size_t xEnd=shape.nx+(axis==0u?1u:0u);
 					const std::size_t yEnd=shape.ny+(axis==1u?1u:0u);
 					const std::size_t zEnd=shape.nz+(axis==2u?1u:0u);
-					for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+					// M8b: z planes in parallel; every face is written by one index.
+					FireProductionCPUParallelFor(zEnd,[&](const std::size_t zBegin,const std::size_t zStop){
+					for(std::size_t z=zBegin;z<zStop;++z)for(std::size_t y=0u;y<yEnd;++y)
 						for(std::size_t x=0u;x<xEnd;++x){
 							const std::size_t face=FaceIndex(shape,axis,x,y,z);
 							const std::size_t packed=computed.packedFaceOffset[axis]+face;
@@ -4021,6 +4101,7 @@ namespace RISE
 							computed.lowFlux[output]=velocity*donor;
 							computed.fluxDelta[output]=velocity*(high-donor);
 						}
+					},1u);
 				}
 			}
 			for(const float value:computed.lowFlux)if(!std::isfinite(value))
@@ -4062,7 +4143,9 @@ namespace RISE
 			std::array<std::vector<float>,6> correction;
 			for(auto& direction:correction)direction.assign(components*cells,0.0f);
 			const float scale=request.timeStepS/shape.cellWidthM;
-			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+			FireProductionCPUFirstFailure lowFailure;
+			FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+			for(std::size_t cell=cellBegin;cell<cellEnd;++cell)for(std::size_t component=0u;
 				component<components;++component){
 				float low=request.beginning[component*cells+cell]+
 					request.sourceDelta[component*cells+cell];
@@ -4076,10 +4159,13 @@ namespace RISE
 					correction[2u*axis+1u][component*cells+cell]=-scale*
 						computed.fluxDelta[component*allFaces+upper];
 				}
-				if(!std::isfinite(low))return Fail(error,"scalar FCT low state is nonfinite");
+				if(!std::isfinite(low)){lowFailure.Record(cell,"scalar FCT low state is nonfinite");return;}
 				computed.lowState[component*cells+cell]=low;
-			}
-			for(std::size_t cell=0u;cell<cells;++cell){
+			}});
+			if(lowFailure.Failed())return Fail(error,lowFailure.Message().c_str());
+			FireProductionCPUFirstFailure envelopeFailure;
+			FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+			for(std::size_t cell=cellBegin;cell<cellEnd;++cell){
 				std::array<float,9> low={{}};float rowScale=1.0f;
 				for(std::size_t component=0u;component<components;++component){
 					low[component]=computed.lowState[component*cells+cell];
@@ -4087,13 +4173,16 @@ namespace RISE
 				}
 				for(std::size_t inequality=0u;inequality<inequalities;++inequality){
 					const float excess=inequalityValue(low.data(),inequality);
-					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale)
-						return Fail(error,"scalar FCT low state exceeds r60 envelope");
+					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale){
+						envelopeFailure.Record(cell,"scalar FCT low state exceeds r60 envelope");return;}
 				}
-			}
+			}});
+			if(envelopeFailure.Failed())return Fail(error,envelopeFailure.Message().c_str());
 			computed.limiterRatio.assign(inequalities*cells,1.0f);
+			FireProductionCPUFirstFailure ratioFailure;
 			for(std::size_t inequality=0u;inequality<inequalities;++inequality)
-				for(std::size_t cell=0u;cell<cells;++cell){
+				FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+				for(std::size_t cell=cellBegin;cell<cellEnd;++cell){
 					std::array<float,9> low={{}};std::array<std::array<float,9>,6> local={{}};
 					for(std::size_t component=0u;component<components;++component){
 						low[component]=computed.lowState[component*cells+cell];
@@ -4122,17 +4211,20 @@ namespace RISE
 						request.assemblyReserveFactor)*rowScale-
 						inequalityValue(low.data(),inequality));
 					const float ratio=requested>0.0f?std::min(1.0f,budget/requested):1.0f;
-					if(!std::isfinite(ratio)||ratio<0.0f||ratio>1.0f)return Fail(error,
-						"scalar FCT limiter ratio is invalid");
+					if(!std::isfinite(ratio)||ratio<0.0f||ratio>1.0f){
+						ratioFailure.Record(inequality*cells+cell,"scalar FCT limiter ratio is invalid");return;}
 					computed.limiterRatio[inequality*cells+cell]=ratio;
-				}
+				}});
+			if(ratioFailure.Failed())return Fail(error,ratioFailure.Message().c_str());
 			for(unsigned int axis=0u;axis<3u;++axis){
 				const std::size_t faceCount=FireProductionProjectionFaceCount(shape,axis);
 				computed.sharedFaceAlpha[axis].assign(faceCount,1.0f);
 				const std::size_t extent=AxisCoordinateExtent(shape,axis);
 				const std::size_t xEnd=shape.nx+(axis==0u?1u:0u),
 					yEnd=shape.ny+(axis==1u?1u:0u),zEnd=shape.nz+(axis==2u?1u:0u);
-				for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+				FireProductionCPUFirstFailure alphaFailure;
+				FireProductionCPUParallelFor(zEnd,[&](const std::size_t zBegin,const std::size_t zStop){
+				for(std::size_t z=zBegin;z<zStop;++z)for(std::size_t y=0u;y<yEnd;++y)
 					for(std::size_t x=0u;x<xEnd;++x){
 						const std::size_t face=FaceIndex(shape,axis,x,y,z);
 						const std::size_t packed=computed.packedFaceOffset[axis]+face;
@@ -4159,13 +4251,17 @@ namespace RISE
 								accepted=std::min(accepted,computed.limiterRatio[
 									inequality*cells+right]);
 						}
-						if(!std::isfinite(accepted)||accepted<0.0f||accepted>1.0f)
-							return Fail(error,"scalar FCT shared alpha is invalid");
+						if(!std::isfinite(accepted)||accepted<0.0f||accepted>1.0f){
+							alphaFailure.Record(face,"scalar FCT shared alpha is invalid");return;}
 						computed.sharedFaceAlpha[axis][face]=accepted;
 					}
+				},1u);
+				if(alphaFailure.Failed())return Fail(error,alphaFailure.Message().c_str());
 			}
 			computed.accepted=computed.lowState;
-			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+			FireProductionCPUFirstFailure acceptedFailure;
+			FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+			for(std::size_t cell=cellBegin;cell<cellEnd;++cell)for(std::size_t component=0u;
 				component<components;++component){
 				float value=computed.lowState[component*cells+cell];
 				for(unsigned int axis=0u;axis<3u;++axis){
@@ -4177,10 +4273,13 @@ namespace RISE
 						computed.packedFaceOffset[axis]]*computed.fluxDelta[
 						component*allFaces+upper]);
 				}
-				if(!std::isfinite(value))return Fail(error,"scalar FCT accepted state is nonfinite");
+				if(!std::isfinite(value)){acceptedFailure.Record(cell,"scalar FCT accepted state is nonfinite");return;}
 				computed.accepted[component*cells+cell]=value;
-			}
-			for(std::size_t cell=0u;cell<cells;++cell){
+			}});
+			if(acceptedFailure.Failed())return Fail(error,acceptedFailure.Message().c_str());
+			FireProductionCPUFirstFailure acceptedEnvelopeFailure;
+			FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+			for(std::size_t cell=cellBegin;cell<cellEnd;++cell){
 				std::array<float,9> value={{}};float rowScale=1.0f;
 				for(std::size_t component=0u;component<components;++component){
 					value[component]=computed.accepted[component*cells+cell];
@@ -4188,10 +4287,11 @@ namespace RISE
 				}
 				for(std::size_t inequality=0u;inequality<inequalities;++inequality){
 					const float excess=inequalityValue(value.data(),inequality);
-					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale)
-						return Fail(error,"scalar FCT accepted state exceeds r60 envelope");
+					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale){
+						acceptedEnvelopeFailure.Record(cell,"scalar FCT accepted state exceeds r60 envelope");return;}
 				}
-			}
+			}});
+			if(acceptedEnvelopeFailure.Failed())return Fail(error,acceptedEnvelopeFailure.Message().c_str());
 			for(unsigned int axis=0u;axis<3u;++axis){
 				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
 				computed.acceptedGasFluxKGPerM2S[axis].assign(faces,0.0f);

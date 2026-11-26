@@ -9327,8 +9327,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				// docs/FIRE_SMOKE_FLAME_CORE_R271.md sections 29-32): carry momentum with the scalar
 				// transport's accepted (limited) gas mass flux, low + alpha*delta, instead of the centred
 				// rho_face*v + physical carrier, so momentum and the face density see the same continuity.
-				static const bool limitedCarrier=[](){const char* value=std::getenv("RISE_FIRE_LIMITED_MOMENTUM_CARRIER");
-					return value&&std::string(value)=="1";}();
+				static const bool limitedCarrier=FireSim::FireLimitedMomentumCarrier();
 				if(!EvaluateFireProductionNonpressureMomentumRHSMetalResident(rhs,output.nonpressure,
 					rhsDiagnostics,error)||!Encode(command,fct_.compatibleStageRate,
 					{limitedCarrier?output.physical->lowComposite:central,limitedCarrier?output.physical->advectiveDelta:zero,

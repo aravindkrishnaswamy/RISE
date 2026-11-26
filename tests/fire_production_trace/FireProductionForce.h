@@ -273,10 +273,22 @@ namespace RISEFireProductionTrace
 		//! Qualification-only Picard-map trace.  It never changes an accepted
 		//! state or its owner identity; the sealed evidence artifact binds it.
 		bool qualificationCaptureIterationTrace;
+		//! M8b: carry interior momentum with the r264 centred gas-mass carrier, as the
+		//! Metal production owner does by default (its RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1
+		//! is this flag false). False keeps the historical calibration-reference carrier.
+		bool centeredMomentumCarrier;
+		//! M8b: working-set admission limit in bytes; zero keeps the historical
+		//! two-GiB calibration cap. The CPU production backend sizes it to the host.
+		std::uint64_t workingSetLimitBytes;
+		//! M8b: every owner projection follows the Metal resident owner's V-cycle schedule
+		//! (17 with an open boundary, doubled to 64 while validation fails) instead of the
+		//! standalone 16 (FireProductionProjectionRequest::cpuResidentSchedule).
+		bool residentProjectionSchedule;
 
 		FireProductionProjectedHeunOwnerRequest() : attemptIdentity(0u),
 			projectionTolerancePerS(0.0f),endpointVelocityToleranceMPerS(0.0f),
-			maximumPicardIterations(64u),qualificationCaptureIterationTrace(false) {}
+			maximumPicardIterations(64u),qualificationCaptureIterationTrace(false),
+			centeredMomentumCarrier(false),workingSetLimitBytes(0u),residentProjectionSchedule(false) {}
 	};
 
 	//! One evaluation of the coupled Picard map.  The fields are the actual
@@ -407,6 +419,8 @@ namespace RISEFireProductionTrace
 		FireProductionScalarHeunFluxStage averagedFlux;
 		FireProductionScalarHeunSolveResult heunSolve;
 		FireProductionProjectedHeunCoupledStageResult r0,r1,r2;
+		//! M8b: the Heun provisional (force-inclusive, pre-R2-projection) momentum.
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunProvisionalMomentumKGPerM2S;
 		std::uint64_t sourcePacketIdentity;
 		bool accepted;
 
@@ -1132,6 +1146,11 @@ namespace RISEFireProductionTrace
 			const FireProductionProjectedHeunMetalOwnerRequest&,
 			FireProductionResidentStepResult&,
 			FireProductionProjectedHeunMetalOwnerResult*,std::string* );
+		//! M8b: the CPU production backend mints the same token (FireCPUBackend.cpp).
+		friend bool AttemptFireProductionProjectedHeunResidentStepCPU(
+			const FireProductionProjectedHeunMetalOwnerRequest&,
+			FireProductionResidentStepResult&,
+			FireProductionProjectedHeunMetalOwnerResult*,unsigned int,std::string* );
 	};
 
 	//! Authority-bearing production entry for the resident Section 3.7 owner.
@@ -1142,6 +1161,18 @@ namespace RISEFireProductionTrace
 		FireProductionResidentStepResult& result,
 		FireProductionProjectedHeunMetalOwnerResult* diagnostics=0,
 		std::string* error=0 );
+
+	//! M8b: the same production step on the CPU (the r190 projected-Heun CPU owner
+	//! with the r264 centred carrier), from the same request the Metal entry takes,
+	//! publishing the same accepted-step result and token. `workers` threads the
+	//! step without changing any byte. Defined in Simulation/Fire/FireCPUBackend.cpp;
+	//! refuses Metal-only opt-in operators. No Metal is needed.
+	bool AttemptFireProductionProjectedHeunResidentStepCPU(
+		const FireProductionProjectedHeunMetalOwnerRequest& request,
+		FireProductionResidentStepResult& result,
+		FireProductionProjectedHeunMetalOwnerResult* diagnostics,
+		unsigned int workers,
+		std::string* error );
 
 	//! Single owner predicate for accepted-token issuance.  Diagnostics alone do
 	//! not mint authority; both projection validations are structural inputs.

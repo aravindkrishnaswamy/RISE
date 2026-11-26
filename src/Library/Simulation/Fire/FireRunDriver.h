@@ -102,6 +102,9 @@ namespace RISE
 		std::uint64_t stopAfterAdditionalAcceptedSteps=0u;
 		std::filesystem::path equivalenceSnapshotDirectory;
 		bool productionMetal=false;
+		// M8b: run the production projected-Heun step on the CPU backend
+		// (FireCPUBackend.h) instead of Metal. Everything else is shared.
+		bool cpuBackend=false;
 		// r212 engineering adoption. Historical baseline/replay flags remain
 		// explicit; the temporal production entry selects this full owner.
 		bool portedProductionTransport=false;

@@ -342,6 +342,9 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireParameterSchema.cpp">
       <Filter>Simulation\Fire</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Fire\FireCPUBackend.cpp">
+      <Filter>Simulation\Fire</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGrid.cpp">
       <Filter>Simulation</Filter>
     </ClCompile>
@@ -1801,6 +1804,9 @@
       <Filter>Simulation\Fire</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireParameterSchema.h">
+      <Filter>Simulation\Fire</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireCPUBackend.h">
       <Filter>Simulation\Fire</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Fire\FireRunHostMemory.h">

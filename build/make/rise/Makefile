@@ -284,7 +284,7 @@ TEST_SAFE_FP32_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	OslNoise.o OslVoronoi.o OslColor.o OslMath.o OslVector.o OslShaderNodes.o)
 # M2 track B: the fire run driver moved out of tests/FireSequenceTest.cpp.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
-	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o FireSolver.o)
+	FireRunCheckpoint.o FireRunFrames.o FireRunDriver.o FireRun.o FireSolver.o FireCPUBackend.o)
 # M3a: the cloth solver (strict IEEE arithmetic for reproducible checkpoints and evidence).
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, \
 	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
@@ -654,6 +654,10 @@ $(PATHLIBRARY)Simulation/Fire/FireRun.o : $(PATHLIBRARY)Simulation/Fire/FireRun.
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 # M2 track C: the fire solver adapter shares the driver's frame-clock arithmetic.
 $(PATHLIBRARY)Simulation/Fire/FireSolver.o : $(PATHLIBRARY)Simulation/Fire/FireSolver.cpp
+	@echo "Compiling (strict fire driver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+# M8b: the fire CPU backend shares the CPU owner's strict binary32 arithmetic.
+$(PATHLIBRARY)Simulation/Fire/FireCPUBackend.o : $(PATHLIBRARY)Simulation/Fire/FireCPUBackend.cpp
 	@echo "Compiling (strict fire driver): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 # M3a: the cloth solver runs without fast-math or FP contraction, so its

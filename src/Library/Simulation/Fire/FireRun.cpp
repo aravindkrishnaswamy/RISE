@@ -16,6 +16,7 @@
 #include "../../Utilities/FireSequence.h"
 #include "../../Utilities/FireFastMode.h"
 #include "../../Utilities/FireProductionForce.h"
+#include "FireCPUBackend.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -36,7 +37,8 @@ namespace RISE
 
 	bool ProductionTemporalCapstoneTierSupported(const double resolutionTier)
 	{
-		return resolutionTier==6.0||resolutionTier==8.0||resolutionTier==10.0;
+		// M8b: 4 is the coarse smoke tier (FireSolver), not a capstone tier.
+		return resolutionTier==4.0||resolutionTier==6.0||resolutionTier==8.0||resolutionTier==10.0;
 	}
 
 	bool BuildProductionTemporalWindowPlan(const SolverFrameValues& geometry,
@@ -155,6 +157,8 @@ namespace RISE
 		FireRunPersistenceOptions& persistence=launch.persistence;
 		persistence.productionMetal=true;
 		persistence.portedProductionTransport=true;
+		// M8b: RISE_FIRE_BACKEND=cpu (the solver's backend parameter) selects the CPU step.
+		persistence.cpuBackend=FireCPUBackendRequested();
 		persistence.r244LateralDouble=r244LateralDouble;
 		persistence.r246TopDouble=r246TopDouble;
 		launch.launchCase=RunFireMethaneDriver(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
@@ -225,6 +229,8 @@ namespace RISE
 		if(r245AcceptedBudget)receipt<<"accepted_stage_budget r245-v1\n";
 		// RISE_FIRE_FAST_MODE=1: uncertified arithmetic and no per-step seals; the trajectory is not reproducible.
 		if(FireSim::FireFastMode())receipt<<"fast_mode r275-uncertified-v1\n";
+		// M8b: the CPU backend's step is not byte-identical to Metal's; the receipt says which ran.
+		if(persistence.cpuBackend)receipt<<"backend cpu-m8-v1\n";
 		// r271 A/B: the opt-in compact viscous stencil does not change the case, and both
 		// settings share one kernel source text, so the receipt records the selection.
 		// v2 adds the compact-diagonal nu_t for heat, species and the combustion mixing

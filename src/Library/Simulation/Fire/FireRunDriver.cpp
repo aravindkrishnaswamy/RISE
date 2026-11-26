@@ -19,6 +19,7 @@
 #include "FireProductionOnsetEvidence.h"
 #include "FireProductionOwnerConvergenceProbe.h"
 #include "FireProductionStaggeredColumnBudget.h"
+#include "FireCPUBackend.h"
 #include "../../Utilities/FireSequence.h"
 #include "../../Utilities/FireOptics.h"
 #include "../../Utilities/FireFastMode.h"
@@ -2427,10 +2428,35 @@ namespace RISE
 		FireRunHostMemory::Policy hostMemoryPolicy;
 		std::vector<std::vector<unsigned char> > syntheticRetainedPayloads;
 		std::filesystem::path hostMemoryPath;
+		if(persistence.cpuBackend){
+			// M8b: the CPU backend runs the default production owner only; the Metal-only
+			// opt-in operators and the Metal evidence/replay drivers are refused here.
+			std::string reason;
+			if(!persistence.UsesProjectedHeunOwner()||!persistence.portedProductionTransport||
+				persistence.r245AcceptedBudget||persistence.Test().r245ObservationFixture||
+				persistence.r246TopDouble||persistence.sealedProjectedHeunReplay||
+				persistence.sealedProjectedHeunContinuation||persistence.projectedHeunCostDiagnostic||
+				persistence.projectedHeunEOSDiagnostic||persistence.acceptedFuelBudgetDiagnostic||
+				persistence.singleStageFCTDiagnostic||persistence.compatibleMomentumDiagnostic){
+				values.structuredError="cpu_backend_scope_conflict:the CPU fire backend runs the production "
+					"projected-Heun owner only";return values;}
+			if(!FireRun::FireCPUBackendOptionsSupported(reason)){
+				values.structuredError="cpu_backend_option_unsupported:"+reason;return values;}
+			FireProductionProjectionShape cpuShape;cpuShape.nx=shape.nx;cpuShape.ny=shape.ny;cpuShape.nz=shape.nz;
+			cpuShape.cellWidthM=static_cast<float>(shape.cellWidthM);
+			if(!FireRun::FireCPUBackendAdmits(cpuShape,reason)){
+				values.structuredError="host_memory_preflight_refused:"+reason;return values;}
+		}
 		if(hostMemoryMonitored){
 			std::uint64_t ownerBytes=0u;
-			if(!ProductionOwnerObservationReserveBytes(shape,
-				persistence.r245AcceptedBudget||persistence.Test().r245ObservationFixture,ownerBytes)){
+			FireProductionProjectionShape cpuShape;cpuShape.nx=shape.nx;cpuShape.ny=shape.ny;cpuShape.nz=shape.nz;
+			cpuShape.cellWidthM=static_cast<float>(shape.cellWidthM);
+			const bool certified=persistence.cpuBackend?FireRun::FireCPUBackendWorkingSetBytes(cpuShape,ownerBytes):
+				ProductionOwnerObservationReserveBytes(shape,
+				persistence.r245AcceptedBudget||persistence.Test().r245ObservationFixture,ownerBytes);
+			// M8b: a build without Metal has no Metal owner certificate. A case probe that takes
+			// no step (the launch plan's) needs none; a run that steps on Metal still refuses.
+			if(!certified&&!(minimumStepCount==0u&&targetTimeS<=0.0&&!persistence.cpuBackend)){
 				values.structuredError="host_memory_certificate_unavailable";return values;}
 			hostMemoryPolicy=FireRunHostMemory::ProductionPolicy(ownerBytes);
 			const auto memory=FireRunHostMemory::Read();
@@ -3069,9 +3095,11 @@ namespace RISE
 										&config.openBoundary:nullptr);
 								projectedHeunRequest.captureAcceptedBudgetFlux=persistence.r245AcceptedBudget||persistence.Test().r245ObservationFixture||
 									FastModeConservationDue(acceptedSteps);
-								attemptComputed=attemptComputed&&
+								attemptComputed=attemptComputed&&(persistence.cpuBackend?
+									RISE::AttemptFireProductionProjectedHeunResidentStepCPU(projectedHeunRequest,
+										production,&projectedHeunDiagnostics,workerCount,&error):
 									RISE::AttemptFireProductionProjectedHeunResidentStepMetal(projectedHeunRequest,
-										production,&projectedHeunDiagnostics,&error);
+										production,&projectedHeunDiagnostics,&error));
 							}else attemptComputed=persistence.compatibleMomentumDiagnostic?
 								RISE::AttemptFireProductionCompatibleMomentumDiagnosticMetal(
 									request,production,&error):

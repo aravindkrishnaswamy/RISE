@@ -261,9 +261,9 @@ void Configuration(const fs::path& root, bool metal)
 	const auto base = Configure(root, Window());
 	Check(base.code == 0 && base.key.size() == 64 && base.output.find("FRAMES 2") != std::string::npos &&
 		base.output.find("DETERMINISTIC 1") != std::string::npos &&
-		base.output.find("BACKEND cpu unsupported 0") != std::string::npos &&
+		base.output.find("BACKEND cpu experimental 1") != std::string::npos &&   // M8b: was unsupported
 		base.output.find(std::string("BACKEND metal supported ") + (metal ? "1" : "0")) != std::string::npos,
-		"configure: tier-6 window declares two frames, certified mode deterministic, metal supported, cpu unsupported",
+		"configure: tier-6 window declares two frames, certified mode deterministic, metal supported, cpu experimental",
 		base.output);
 
 	// Every result-affecting option changes the key (options that need

@@ -1763,6 +1763,7 @@ namespace RISEFireProductionFP64
 			destination.r0=source.r0;
 			destination.r1=source.r1;
 			destination.r2=source.r2;
+			destination.heunProvisionalMomentumKGPerM2S=source.heunProvisionalMomentumKGPerM2S;
 			destination.sourcePacketIdentity=source.sourcePacketIdentity;
 			destination.accepted=source.accepted;
 		}
@@ -1829,9 +1830,12 @@ namespace RISEFireProductionFP64
 			const FireProductionScalarHeunFluxStage& stage,
 			const FireProductionScalarFCTResult& scalar,
 			const std::array<std::vector<double>,3>& velocity,
-			FireProductionCompatibleFCTMomentumResult& result,std::string* error)
+			FireProductionCompatibleFCTMomentumResult& result,std::string* error,
+			const std::vector<double>* centeredCellGasDensityKGPerM3=0)
 		{
 			FireProductionCompatibleFCTMomentumRequest request;
+			if(centeredCellGasDensityKGPerM3)
+				request.centeredCellGasDensityKGPerM3=*centeredCellGasDensityKGPerM3;
 			request.shape=stage.compositeFluxPair.shape;
 			request.boundary=stage.compositeFluxPair.boundary;
 			request.lowGasFluxKGPerM2S=stage.advectiveGasLowFluxKGPerM2S;
@@ -2253,10 +2257,16 @@ namespace RISEFireProductionFP64
 			if(!FireProductionProjectedHeunCPUOwnerWorkingSetBytes(shape,ownerWorkingSetBytes,
 				!request.physicalContract.bottomFuelMassFluxKGPerM2S.empty()))
 				return Fail(error,"projected-Heun owner working-set query failed");
+			// M8b: a production backend may admit a host-sized working set; zero keeps
+			// the historical two-GiB calibration cap below.
+			if(request.workingSetLimitBytes!=0u){if(ownerWorkingSetBytes>request.workingSetLimitBytes)
+				return Fail(error,"projected-Heun owner working set exceeds its admission limit");}
+			else{
 			if(OwnerTestFailure("working-set-preflight"))
 				ownerWorkingSetBytes=FireProductionFP64QualificationOwnerCapacityBytes+1u;
 			if(!FireProductionFP64QualificationOwnerWorkingSetFits(ownerWorkingSetBytes))return Fail(error,
 				"projected-Heun fp64 qualification owner exceeds its scalar-slot capacity");
+			}
 			if(!RISE::FireCase::ValidateMethaneEnvelopeV1(request.caseRecordEnvelope,
 					methane,sealedCase,caseError)||
 				sealedCase.caseRecordId!=request.source.CaseRecordId()||
@@ -2338,6 +2348,7 @@ namespace RISEFireProductionFP64
 						projection.injectedGasDensityKGPerM3+=request_.physicalContract.injectedConservative[component];}
 				OwnerGasDensity(shape,state,projection.gasDensityKGPerM3);
 				projection.provisionalMomentumKGPerM2S=provisionalMomentum;
+				projection.cpuResidentSchedule=request_.residentProjectionSchedule;
 				if(!target)projection.divergenceTargetPerS.assign(cells,0.0);
 				if(prior){
 					projection.openClassificationMode=
@@ -2584,8 +2595,12 @@ namespace RISEFireProductionFP64
 				trace.faceDensityKGPerM3=projection.faceDensityKGPerM3;
 				trace.projectedMomentumKGPerM2S=projection.momentumKGPerM2S;
 				FireProductionCompatibleFCTMomentumResult compatible;
+				std::vector<double> centeredStageGas,centeredBeginningGas;
+				if(request_.centeredMomentumCarrier&&(!OwnerGasDensity(shape,state,centeredStageGas)||
+					!OwnerGasDensity(shape,request_.beginningConservativeValues,centeredBeginningGas)))
+					return Fail(error,"projected-Heun centred carrier gas density is invalid");
 				if(!OwnerCompatibleMomentum(stageFlux,scalarAcceptance,projection.velocityMPerS,
-					compatible,error))return false;
+					compatible,error,request_.centeredMomentumCarrier?&centeredStageGas:0))return false;
 				trace.advectionMomentumRateKGPerM2S2=compatible.advectionRateKGPerM2S2;
 				// Observer-only reconstruction of each CPU owner's own next-stage
 				// output, retaining SolveR0/SolveR1 expression order. The Metal trace
@@ -2593,7 +2608,8 @@ namespace RISEFireProductionFP64
 				// replacement for that device authority.
 				if(!r0){FireProductionCompatibleFCTMomentumResult firstCompatible;
 					if(!OwnerCompatibleMomentum(*firstStage,scalarAcceptance,
-						work_.r0.projection.velocityMPerS,firstCompatible,error))return false;
+						work_.r0.projection.velocityMPerS,firstCompatible,error,
+						request_.centeredMomentumCarrier?&centeredBeginningGas:0))return false;
 					trace.heunR0AdvectionRateKGPerM2S2=firstCompatible.advectionRateKGPerM2S2;}
 				const double diagnosticDt=request_.source.TimeStepS();
 				const double diagnosticHalfDt=0.5*diagnosticDt;
@@ -3010,8 +3026,13 @@ namespace RISEFireProductionFP64
 				!predictorEOS.accepted)return Fail(error,
 					"projected-Heun R0 EOS case lineage differs");
 			FireProductionCompatibleFCTMomentumResult advection;
+			std::vector<double> centeredGas;
+			if(request_.centeredMomentumCarrier&&!OwnerGasDensity(request_.source.Shape(),
+				request_.beginningConservativeValues,centeredGas))return Fail(error,
+					"projected-Heun R0 centred carrier gas density is invalid");
 			if(!OwnerCompatibleMomentum(r0.flux,r0.scalarAcceptance,
-				r0.projection.velocityMPerS,advection,error))return false;
+				r0.projection.velocityMPerS,advection,error,
+				request_.centeredMomentumCarrier?&centeredGas:0))return false;
 			std::array<std::vector<double>,3> predictorMomentum;
 			const double dt=request_.source.TimeStepS();
 			for(unsigned int axis=0u;axis<3u;++axis){
@@ -3081,7 +3102,18 @@ namespace RISEFireProductionFP64
 				!committedEOS.accepted)return Fail(error,
 					"projected-Heun R1 EOS case lineage differs");
 			FireProductionCompatibleFCTMomentumResult advection0,advection1;
-			if(!EvaluateFireProductionCompatibleHeunMomentumCPU(work_.r0.flux,heunSolve,
+			if(request_.centeredMomentumCarrier){
+				// r264: each Heun term carries momentum with its own stage state's
+				// centred carrier (R0: Q^n, R1: the predictor) under the R1 alpha.
+				std::vector<double> beginningGas,predictorGas;
+				if(!OwnerGasDensity(request_.source.Shape(),request_.beginningConservativeValues,
+					beginningGas)||!OwnerGasDensity(request_.source.Shape(),predictor_,predictorGas))
+					return Fail(error,"projected-Heun R1 centred carrier gas density is invalid");
+				if(!EvaluateFireProductionCompatibleHeunMomentumCenteredCPU(work_.r0.flux,heunSolve,
+					work_.r0.projection.velocityMPerS,beginningGas,advection0,error)||
+					!EvaluateFireProductionCompatibleHeunMomentumCenteredCPU(r1.flux,heunSolve,
+						r1.projection.velocityMPerS,predictorGas,advection1,error))return false;
+			}else if(!EvaluateFireProductionCompatibleHeunMomentumCPU(work_.r0.flux,heunSolve,
 				work_.r0.projection.velocityMPerS,advection0,error)||
 				!EvaluateFireProductionCompatibleHeunMomentumCPU(r1.flux,heunSolve,
 					r1.projection.velocityMPerS,advection1,error))return false;
@@ -3145,6 +3177,7 @@ namespace RISEFireProductionFP64
 						projection.injectedGasDensityKGPerM3+=request_.physicalContract.injectedConservative[component];}
 				projection.gasDensityKGPerM3=gasDensity;
 				projection.provisionalMomentumKGPerM2S=heunMomentum_;
+				projection.cpuResidentSchedule=request_.residentProjectionSchedule;
 				projection.openClassificationMode=
 					FireProductionProjectionUseSealedOpenClassification;
 				projection.openHeadMode=FireProductionProjectionUseSealedOpenHead;
@@ -3622,6 +3655,7 @@ namespace RISEFireProductionFP64
 			completed.momentumKGPerM2S=completed.r2.projection.momentumKGPerM2S;
 			completed.velocityMPerS=completed.r2.projection.velocityMPerS;
 			completed.stepAveragePressurePa=completed.r2.projection.pressurePa;
+			completed.heunProvisionalMomentumKGPerM2S=heunMomentum_;
 			completed.sourcePacketIdentity=request_.source.PacketIdentity();
 			completed.accepted=true;completed.ownerIdentity_=OwnerResultIdentity(completed);
 			if(OwnerTestFailure("result-copy"))

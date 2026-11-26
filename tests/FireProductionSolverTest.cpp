@@ -916,6 +916,16 @@ int main( int argc, char** argv )
 		default:return 89;
 		}
 	}
+	// M8b: without a Metal device (a build with Metal compiled out, or no GPU) the Metal
+	// checks of this program cannot run: skip cleanly instead of failing.
+	{
+		RISE::FireProductionComputeCapability metal;
+		RISE::QueryFireProductionComputeCapability(metal);
+		if(!metal.available){
+			std::printf("SKIP: %s needs a Metal device (%s)\n","FireProductionSolverTest",metal.structuredError.c_str());
+			return 0;
+		}
+	}
 	Check(ClassifyFireProductionDeviceDiscovery(false,true,true,1u)==
 			FireProductionDeviceBackendNotBuilt&&
 		ClassifyFireProductionDeviceDiscovery(true,true,true,0u)==

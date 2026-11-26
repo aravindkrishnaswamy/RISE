@@ -6,6 +6,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "../src/Library/Utilities/FireProductionCompute.h"   // M8b: Metal availability skip
+#include <cstdio>
 #include "../src/Library/Utilities/FireProductionProjection.h"
 #include "../tools/fire_simulator_core.h"
 
@@ -557,6 +559,16 @@ namespace
 int main()
 {
 	using namespace RISE;
+	// M8b: without a Metal device (a build with Metal compiled out, or no GPU) the Metal
+	// checks of this program cannot run: skip cleanly instead of failing.
+	{
+		RISE::FireProductionComputeCapability metal;
+		RISE::QueryFireProductionComputeCapability(metal);
+		if(!metal.available){
+			std::printf("SKIP: %s needs a Metal device (%s)\n","FireProductionProjectionTest",metal.structuredError.c_str());
+			return 0;
+		}
+	}
 	std::string error;
 	{
 		// r239: a prescribed burner is a constraint, not an initial momentum.

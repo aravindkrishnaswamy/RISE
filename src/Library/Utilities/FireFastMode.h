@@ -34,6 +34,16 @@ namespace RISE
 			return enabled;
 		}
 
+		// r271 opt-in (RISE_FIRE_LIMITED_MOMENTUM_CARRIER=1, read once per process): carry momentum
+		// with the scalar transport's accepted (limited) gas mass flux instead of the r264 centred
+		// carrier, the production default. Shared by the Metal owner and the M8 CPU backend.
+		inline bool FireLimitedMomentumCarrier()
+		{
+			static const bool limited=[](){const char* value=std::getenv("RISE_FIRE_LIMITED_MOMENTUM_CARRIER");
+				return value&&std::strcmp(value,"1")==0;}();
+			return limited;
+		}
+
 		// Fast mode stops the pressure projection's fixed V-cycle schedule once the unchanged validation
 		// band is met. RISE_FIRE_FAST_FIXED_VCYCLES=1 keeps the certified fixed count instead, so fast mode
 		// then differs from the certified path only by binary32 rounding (slower).

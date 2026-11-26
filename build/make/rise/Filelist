@@ -101,6 +101,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Simulation/Fire/FireRunDriver.cpp		\
 	$(PATHLIBRARY)Simulation/Fire/FireRun.cpp			\
 	$(PATHLIBRARY)Simulation/Fire/FireSolver.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireCPUBackend.cpp		\
 	$(PATHLIBRARY)Simulation/Fire/FireParameterSchema.cpp	\
 	$(PATHLIBRARY)Simulation/SimulationGrid.cpp			\
 	$(PATHLIBRARY)Simulation/SimulationCache.cpp			\

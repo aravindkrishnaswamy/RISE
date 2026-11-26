@@ -15,10 +15,131 @@
 #include <cstdint>
 #include <limits>
 #include <array>
+#include <condition_variable>
+#include <exception>
 #include <future>
+#include <thread>
 
 namespace RISE
 {
+	namespace
+	{
+		thread_local unsigned int fireProductionCPUWorkers=1u;
+		thread_local bool fireProductionCPUInsideSlice=false;
+	}
+
+	FireProductionCPUParallelScope::FireProductionCPUParallelScope(const unsigned int workers) :
+		previous_(fireProductionCPUWorkers)
+	{
+		fireProductionCPUWorkers=workers==0u?1u:std::min(workers,256u);
+	}
+
+	FireProductionCPUParallelScope::~FireProductionCPUParallelScope()
+	{
+		fireProductionCPUWorkers=previous_;
+	}
+
+	unsigned int FireProductionCPUParallelWorkers()
+	{
+		return fireProductionCPUInsideSlice?1u:fireProductionCPUWorkers;
+	}
+
+	namespace
+	{
+		// A persistent pool for FireProductionCPUParallelFor: one job at a time
+		// (callers serialize on runMutex), its slices handed out in order.
+		class FireProductionCPUPool
+		{
+		public:
+			~FireProductionCPUPool()
+			{
+				{std::lock_guard<std::mutex> hold(mutex_);quit_=true;}
+				wake_.notify_all();
+				for(std::thread& thread:threads_)thread.join();
+			}
+			void Run(const std::size_t slices,const std::size_t size,const std::size_t count,
+				const std::function<void(std::size_t,std::size_t)>& body)
+			{
+				std::lock_guard<std::mutex> serial(runMutex_);
+				std::unique_lock<std::mutex> lock(mutex_);
+				// A new worker starts from the generation before this job, so it takes part in it.
+				const std::uint64_t before=generation_;
+				while(threads_.size()+1u<slices)threads_.emplace_back([this,before](){Work(before);});
+				body_=&body;size_=size;count_=count;slices_=slices;next_=1u;pending_=slices-1u;
+				failure_=nullptr;++generation_;
+				lock.unlock();wake_.notify_all();
+				Slice(0u);
+				lock.lock();
+				finished_.wait(lock,[this](){return pending_==0u;});
+				body_=nullptr;
+				const std::exception_ptr failure=failure_;failure_=nullptr;
+				lock.unlock();
+				if(failure)std::rethrow_exception(failure);
+			}
+		private:
+			void Slice(const std::size_t slice)
+			{
+				const std::size_t begin=std::min(count_,slice*size_),end=std::min(count_,begin+size_);
+				fireProductionCPUInsideSlice=true;
+				try{if(begin<end)(*body_)(begin,end);}catch(...){
+					std::lock_guard<std::mutex> hold(mutex_);if(!failure_)failure_=std::current_exception();}
+				fireProductionCPUInsideSlice=false;
+			}
+			void Work(std::uint64_t seen)
+			{
+				std::unique_lock<std::mutex> lock(mutex_);
+				for(;;){
+					wake_.wait(lock,[&](){return quit_||(generation_!=seen&&next_<slices_);});
+					if(quit_)return;
+					while(next_<slices_){
+						const std::size_t slice=next_++;
+						lock.unlock();Slice(slice);lock.lock();
+						if(--pending_==0u)finished_.notify_all();
+					}
+					seen=generation_;
+				}
+			}
+			std::mutex runMutex_,mutex_;
+			std::condition_variable wake_,finished_;
+			std::vector<std::thread> threads_;
+			const std::function<void(std::size_t,std::size_t)>* body_=nullptr;
+			std::size_t size_=0u,count_=0u,slices_=0u,next_=0u,pending_=0u;
+			std::uint64_t generation_=0u;
+			std::exception_ptr failure_;
+			bool quit_=false;
+		};
+		FireProductionCPUPool& CPUPool()
+		{
+			static FireProductionCPUPool pool;
+			return pool;
+		}
+	}
+
+	void FireProductionCPUParallelFor(const std::size_t count,
+		const std::function<void(std::size_t,std::size_t)>& body,std::size_t grain)
+	{
+		// Slices of at least `grain` indices; the slicing only decides which thread
+		// computes an index, never how it is computed.
+		if(grain==0u)grain=1u;
+		const unsigned int workers=FireProductionCPUParallelWorkers();
+		const std::size_t slices=workers<=1u||count<2u*grain?1u:
+			std::min<std::size_t>(workers,(count+grain-1u)/grain);
+		if(slices<=1u){body(0u,count);return;}
+		CPUPool().Run(slices,(count+slices-1u)/slices,count,body);
+	}
+
+	FireProductionCPUFirstFailure::FireProductionCPUFirstFailure() :
+		index_(static_cast<std::size_t>(-1)),failed_(false) {}
+
+	void FireProductionCPUFirstFailure::Record(const std::size_t index,const std::string& message)
+	{
+		std::lock_guard<std::mutex> hold(mutex_);
+		if(!failed_||index<index_){index_=index;message_=message;failed_=true;}
+	}
+
+	bool FireProductionCPUFirstFailure::Failed() const { return failed_; }
+	const std::string& FireProductionCPUFirstFailure::Message() const { return message_; }
+
 	std::string FireProductionOwnerKernelSetSHA256(const std::array<std::string,5>& sources)
 	{
 		const char* labels[]={"producer", "fct", "force", "projection", "payload"};

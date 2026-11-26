@@ -12,6 +12,7 @@
 #include "../SimulationSolver.h"
 #include "../../Utilities/FireSequence.h"
 #include "../../Utilities/FireProductionForce.h"   // M5c: the owner working-set certificate
+#include "FireCPUBackend.h"                          // M8b
 
 #include <algorithm>
 
@@ -146,7 +147,8 @@ ParameterSchema Build()
 }
 } // namespace
 
-void FireEstimateCapabilities(double tier, bool fast, std::array<std::size_t, 3> grid, Capabilities& caps)
+void FireEstimateCapabilities(double tier, bool fast, std::array<std::size_t, 3> grid, Capabilities& caps,
+	bool cpu)
 {
 	if (grid[0] == 0 || grid[1] == 0 || grid[2] == 0) {
 		if (tier == 6) grid = {{52, 52, 80}};
@@ -158,6 +160,14 @@ void FireEstimateCapabilities(double tier, bool fast, std::array<std::size_t, 3>
 	shape.nx = grid[0]; shape.ny = grid[1]; shape.nz = grid[2];
 	shape.cellWidthM = static_cast<float>(0.2448/tier);   // D*/tier; the byte counts do not depend on it
 	std::uint64_t owner = 0;
+	if (cpu) {
+		// M8b: the CPU step's host certificate plus the driver's 2 GiB scratch reserve;
+		// no reference cost is measured for a full CPU window.
+		if (FireRun::FireCPUBackendWorkingSetBytes(shape, owner) && owner > 0)
+			caps.memoryEstimate = owner + (std::uint64_t(2) << 30);
+		caps.costEstimate = 0.0;
+		return;
+	}
 	// The scene bake's admission: ProductionOwnerObservationReserveBytes(shape,
 	// observe=false) + 2 GiB (FireRunDriver.cpp, FireRunHostMemory.h).
 	if (FireProductionProjectedHeunMetalObserverWorkingSetBytes(shape, owner, true, false) && owner > 0) {

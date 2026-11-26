@@ -10,6 +10,7 @@
 
 #include "pch.h"
 #include "FireProductionProjection.h"
+#include "FireProductionAdvection.h"   // M8b: FireProductionCPUParallelFor
 
 #include <algorithm>
 #include <cmath>
@@ -331,7 +332,9 @@ namespace RISEFireProductionFP64
 		{
 			const std::size_t nx=level.nx,ny=level.ny,nz=level.nz;
 			output.assign(nx*ny*nz,0.0);
-			for( std::size_t z=0;z<nz;++z ) for( std::size_t y=0;y<ny;++y )
+			// M8b: z planes in parallel on the CPU backend (each cell written once).
+			FireProductionCPUParallelFor(nz,[&](const std::size_t zBegin,const std::size_t zEnd){
+			for( std::size_t z=zBegin;z<zEnd;++z ) for( std::size_t y=0;y<ny;++y )
 				for( std::size_t x=0;x<nx;++x ) {
 					const std::size_t cell=CellIndex(nx,ny,x,y,z);
 					double value=0.0;
@@ -370,6 +373,7 @@ namespace RISEFireProductionFP64
 					}
 					output[cell]=value;
 				}
+			},nx*ny>=4096u?1u:(4096u+nx*ny-1u)/(nx*ny));
 		}
 
 		void Smooth( Level& level,
@@ -380,9 +384,10 @@ namespace RISEFireProductionFP64
 			for( unsigned int sweep=0;sweep<sweeps;++sweep ) {
 				++sweepCounter;
 				ApplyOperator(level,boundary,level.pressure,level.temporary);
-				for( std::size_t cell=0;cell<level.pressure.size();++cell )
+				FireProductionCPUParallelFor(level.pressure.size(),[&](const std::size_t begin,const std::size_t end){
+				for( std::size_t cell=begin;cell<end;++cell )
 					level.residual[cell]=level.pressure[cell]+omega*
-						(level.rhs[cell]-level.temporary[cell])/level.diagonal[cell];
+						(level.rhs[cell]-level.temporary[cell])/level.diagonal[cell];});
 				level.pressure.swap(level.residual);
 				if( nullspace ) RemoveMean(level.pressure);
 			}
@@ -428,7 +433,8 @@ namespace RISEFireProductionFP64
 
 		void ProlongateAndAdd( const Level& coarse, Level& fine, double damping )
 		{
-			for( std::size_t z=0;z<fine.nz;++z ) for( std::size_t y=0;y<fine.ny;++y )
+			FireProductionCPUParallelFor(fine.nz,[&](const std::size_t zBegin,const std::size_t zEnd){
+			for( std::size_t z=zBegin;z<zEnd;++z ) for( std::size_t y=0;y<fine.ny;++y )
 				for( std::size_t x=0;x<fine.nx;++x ) {
 					std::size_t x0=0,x1=0,y0=0,y1=0,z0=0,z1=0;
 					double wx=0.0,wy=0.0,wz=0.0;
@@ -445,6 +451,7 @@ namespace RISEFireProductionFP64
 						}
 					fine.pressure[CellIndex(fine.nx,fine.ny,x,y,z)]+=damping*value;
 				}
+			},fine.nx*fine.ny>=4096u?1u:(4096u+fine.nx*fine.ny-1u)/(fine.nx*fine.ny));
 		}
 
 		void VCycle( std::vector<Level>& hierarchy, std::size_t levelIndex,
@@ -1076,6 +1083,17 @@ namespace RISEFireProductionFP64
 		FireProductionProjectionResult& result, std::string* error )
 	{
 		try {
+			if( request.cpuResidentSchedule ) {
+				const bool open=HasOpenBoundary(request.boundary);
+				FireProductionProjectionRequest attempt=request;
+				for(;;) {
+					if( !ProjectFireProductionCPUImplementation(attempt,CPUProjectionResidentPhysical,
+						result,error) ) return false;
+					if( result.validationPassed||!open||attempt.residentPhysicalOpenVCycleCount>=64u ) return true;
+					attempt.residentPhysicalOpenVCycleCount=std::min(64u,
+						2u*attempt.residentPhysicalOpenVCycleCount);
+				}
+			}
 			return ProjectFireProductionCPUImplementation(request,CPUProjectionStandalone,
 				result,error);
 		} catch( const std::bad_alloc& ) {

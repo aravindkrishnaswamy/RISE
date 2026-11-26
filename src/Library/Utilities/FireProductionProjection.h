@@ -90,6 +90,11 @@ namespace RISE
 		FireProductionProjectionOpenHeadMode openHeadMode;
 		FireProductionProjectionOutputClassificationMode outputClassificationMode;
 		float endpointVelocityToleranceMPerS;
+		//! M8b: ProjectFireProductionCPU follows the Metal resident owner's schedule:
+		//! residentPhysicalOpenVCycleCount V-cycles with an open boundary (instead of the
+		//! standalone 16), doubled up to 64 while validation fails (r226: extra work, never
+		//! extra tolerance). False keeps the historical standalone schedule.
+		bool cpuResidentSchedule;
 
 		FireProductionProjectionRequest() : timeStepS(0.0f),ambientDensityKGPerM3(0.0f),
 			injectedGasDensityKGPerM3(0.0f),
@@ -97,7 +102,7 @@ namespace RISE
 			openClassificationMode(FireProductionProjectionDeriveOpenClassification),
 			openHeadMode(FireProductionProjectionDeriveCurrentOpenHead),
 			outputClassificationMode(FireProductionProjectionPreserveOpenClassification),
-			endpointVelocityToleranceMPerS(0.0f)
+			endpointVelocityToleranceMPerS(0.0f),cpuResidentSchedule(false)
 		{
 			boundary.fill(FireProductionProjectionWall);
 		}

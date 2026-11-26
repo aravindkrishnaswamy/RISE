@@ -203,6 +203,13 @@ namespace RISEFireProductionTrace
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> physicalGasFluxKGPerM2S;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> sharedFaceAlpha;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> frozenVelocityMPerS;
+		//! M8b, r264 centred momentum carrier (the Metal owner's default since
+		//! 2026-10-28). Empty keeps the historical accepted carrier on every face.
+		//! Non-empty: the signed six-row cell gas density of the stage state, and
+		//! every interior primal face (0 < normal < extent) carries
+		//! 0.5*(rho_L+rho_R)*u_face+J_g instead of low+alpha*delta+J_g.
+		//! Domain-boundary faces keep the accepted carrier. Not all-periodic.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> centeredCellGasDensityKGPerM3;
 
 		FireProductionCompatibleFCTMomentumRequest()
 		{
@@ -1058,6 +1065,15 @@ namespace RISEFireProductionTrace
 		const FireProductionScalarHeunFluxStage& stage,
 		const FireProductionScalarHeunSolveResult& solve,
 		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& frozenVelocityMPerS,
+		FireProductionCompatibleFCTMomentumResult& result,
+		std::string* error=0 );
+	//! M8b: the same consumer with the r264 centred interior carrier built from
+	//! the stage state's cell gas density (see FireProductionCompatibleFCTMomentumRequest).
+	bool EvaluateFireProductionCompatibleHeunMomentumCenteredCPU(
+		const FireProductionScalarHeunFluxStage& stage,
+		const FireProductionScalarHeunSolveResult& solve,
+		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& frozenVelocityMPerS,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& cellGasDensityKGPerM3,
 		FireProductionCompatibleFCTMomentumResult& result,
 		std::string* error=0 );
 

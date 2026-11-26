@@ -144,3 +144,7 @@ LDLIBS_OPENPGL = -lopenpgl
 # needs no Security framework (no manual TLS-trust API is called).
 CPPFLAGS += $(CPPFLAGS_OPENVDB)
 LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL) $(LDLIBS_OPENVDB) -framework Foundation -framework Metal
+# M8b: the fire run driver now calls the CPU projected-Heun owner (the CPU backend), so
+# shipped binaries reference its weak_import test probe; as the Xcode targets do, let it
+# stay undefined (it then resolves to null: no fault injection outside the test executables).
+LDLIBS += -Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe

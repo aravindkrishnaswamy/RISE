@@ -13,7 +13,9 @@ backend detail text and the trusted-roots separator).
   programs build warning-free with Metal compiled out, and the non-fire fast tier passes in that build (§3).
   Reading the Windows and Android builds found seven certain compile errors in the simulation and fire sources,
   four of which also broke every non-Apple build, plus one non-Metal test link error; all are fixed (§4). **Neither Windows nor Android was compiled.**
-- **Part A (fire on the CPU): an honest partial. The CPU backend stays `unsupported`.** A complete CPU
+- **Part A (fire on the CPU): finished later the same day, see §10. The CPU backend is now `experimental` and the
+  exit criterion is met; the gap below was r264's centred momentum carrier, missing on the CPU side.** The
+  first-pass text follows, superseded where §10 says so: **an honest partial. The CPU backend stays `unsupported`.** A complete CPU
   projected-Heun owner already exists (r190, extended for the burner inlet in r239) and runs one full owner step
   (R0/R1/R2 Picard, FCT, EOS, targets, projection, momentum) without Metal, but only as a calibration reference:
   single-threaded, capped at a 2 GiB working set, called only by two test programs, and not callable by the run
@@ -287,7 +289,7 @@ about 1.9 s ([r274/r275](FIRE_SMOKE_SPEED_R274.md)).
 | Solver | Backend | Label | Evidence |
 |---|---|---|---|
 | `fire.methane` | `metal` | supported (unchanged) | M0–M2 references, fire fast tier |
-| `fire.methane` | `cpu` | **unsupported** (unchanged) | §5: the step exists only as a one-step calibration owner the driver cannot call; no solver-level agreement run. Detail text now says so. |
+| `fire.methane` | `cpu` | **unsupported** (unchanged; **experimental since §10**) | §5: the step exists only as a one-step calibration owner the driver cannot call; no solver-level agreement run. Detail text now says so. |
 | `cloth.shell`, `rigid.bodies`, `liquid.mac` | `cpu` | supported (unchanged) | Their fast-tier tests pass on macOS with and without Metal (§3). Detail text now adds "built and tested on macOS (with and without Metal), Windows and Android builds not yet compiled": `liquid.mac` did not compile with MSVC before §4.1 (6, 7), so a platform-free "supported" was not true. |
 
 The contract's `backends` entry has no per-platform field; the detail text is where the platform evidence goes. Labels,
@@ -307,6 +309,8 @@ details and `backend` are not keyed, so no cache key changes.
 
 ## 9. Open items
 
+(Items 1 and 5 are done in §10; §10.7 lists what remains.)
+
 1. Fire CPU backend: transport provider and request/result adapters in the library, a driver backend switch with
    CPU-only memory admission, a thread pool with fixed-order reductions, a working-set limit sized to the machine,
    an audit that every default-on Metal change since r239 is mirrored, then the solver-level Metal-fast vs CPU run over
@@ -315,3 +319,171 @@ details and `backend` are not keyed, so no cache key changes.
 3. Windows ARM64 configurations.
 4. A first Windows and Android run of `SimulationGoldenCacheTest`.
 5. A skip, not a failure, for the four Metal-only fire test programs in a build without Metal.
+
+## 10. M8 part A finished: the fire CPU backend (2026-11-26, later the same day)
+
+**Outcome.** `fire.methane`'s CPU backend is a runnable backend and is labelled **`experimental`**. The run
+driver calls it through the same request, result, accepted-step token, frame, checkpoint and cache code as Metal
+(parameter `backend: "cpu"`), it runs in a build with Metal compiled out, its step is threaded and bit-identical at
+any worker count, and it agrees with Metal fast mode on the coarse case within a tolerance set from the measured
+curve (§10.3). **The M8 exit criterion "CPU fire agrees with Metal fast mode within tolerance on a coarse case" is
+met**, with the qualifications in §10.3 (not bit-identical; a localised step-2 difference whose trigger is not
+isolated). This section supersedes the Part A bullet of the outcome at the top, §5's "Missing" rows, §6's cause
+discussion and candidates, §7's `cpu` row and open items 1 and 5 of §9.
+
+### 10.1 Cause of the one-step gap: r264's centred momentum carrier (isolated)
+
+`FireSequenceTest --fire-production-burner-bisect` (new) runs the burner fixture of §6 through the CPU32, fp64 and
+Metal owners with the qualification trace on (the trace does not change the Metal state: checked, bytes equal) and
+compares every operand of every Picard-map evaluation, stage by stage. With the historical CPU carrier the first
+operand that departs from rounding is R0 iteration 0's `advectionMomentumRate`: 10 % of its magnitude (2.2e-2 of
+0.22 kg m⁻² s⁻²) while every earlier operand (projected velocity, transport coefficients, scalar fluxes, FCT alpha,
+accepted state, EOS ratio, target, buoyancy, stress, phase source) agrees to 0.7–3.4e-7 relative. Downstream the
+momentum difference flips one pressure-open face class at R1 (`s0f9`), which perturbs the R1 Picard path; the
+Picard map then contracts back, leaving the 0.9–3.2e-6 the M8 note reported. That is candidate (c) of §6, and it
+alone: with the r264 centred carrier on the CPU side (`--fire-production-burner-reference-centered`):
+
+| Field | Metal − CPU32 (max abs) | Unequal words | CPU32 − fp64 |
+|---|---:|---:|---:|
+| components 0–5 and 8 (densities, energy) | **0** | **0 / 64** each | 5.3e-10 – 0.045 J m⁻³ (1–2 ulps) |
+| components 6, 7 (soot traces, ~1e-14) | 9.5e-16, 5.4e-16 | 64 / 64 | 4.1e-14, 1.4e-14 |
+| velocity x, y, z | 3.7e-9, 7.5e-9, 3.7e-9 m/s (≤ 2 ulps of 0.07 m/s) | — | 1.1e-8, 6.7e-9, 5.9e-9 |
+
+Fast mode gives the same table. Both owners now take the same Picard iterations (R0 2, R1 2, R2 4) and the same
+open-boundary classes at every evaluation. Every intermediate operand differs by at most 3.1e-7 of its scale
+(about 2.6 binary32 ε), from operation order (GPU contraction, the GPU's binary32 nullspace projection of the
+physical flux where the CPU projects in binary64 and rounds, threadgroup reductions); the accepted scalars come out
+bit-identical because the step (2⁻¹⁶ s) puts those flux differences below half an ulp of the state. The soot rows
+are cancellation-dominated traces 1e-16 apart in absolute terms (eight orders below an ulp of the gas density).
+**The earlier claim that the Metal owner is 8–27 ulps from fp64 was the carrier difference, not Metal rounding:**
+with the same scheme Metal is as close to the fp64 mirror as the CPU owner is. Picard stopping iterates and GPU
+reduction order (candidates a, b) contribute nothing visible on this fixture.
+
+Other default-on Metal changes since r239 (r240–r275 docs and the 2026-10-01 onward commits to the owner files):
+none changes the arithmetic besides r264. `c77b5d7b9` canonicalises a subnormal-flushed −0 to +0 in
+`fct_commit_scalar` (no value change); r274 is byte-identical by construction; fast mode (r275) is opt-in; the r271
+variants are opt-in; r250/r270/r272/r273 are source-side, shared CPU code. One more Metal/CPU difference surfaced only
+on a real grid (§10.3): the resident owner projects with 17 V-cycles when a boundary is pressure-open, doubling to 64
+while validation fails (r226), where the CPU owner's projections used the standalone schedule of 16 without retry.
+
+### 10.2 What changed
+
+| Part | Change |
+|---|---|
+| CPU owner (`FireProductionForce/Transport/Projection.cpp`, mirrored) | Request flags `centeredMomentumCarrier` (the r264 carrier `0.5(ρL+ρR)u + J_g` on interior primal faces, accepted carrier on domain faces, the same expression and summation order as `fct_centered_momentum_carrier`; R0 term from Qⁿ, R1 from the predictor, R1 alpha on boundary faces, as Metal), `residentProjectionSchedule` (the resident V-cycle schedule above, through `FireProductionProjectionRequest::cpuResidentSchedule`) and `workingSetLimitBytes` (0 = the historical 2 GiB). All default off, so the calibration fixtures, the fp64 mirror's defaults and every existing test run the historical reference unchanged. The owner result also returns the Heun provisional momentum. |
+| EOS acceptance (CPU only) | Inverts over the record's whole temperature range (then refuses outside the case bounds) instead of over the case bounds: the inversion's binary32 result depends on the bracket, and the R1 base target recomputes it over the record range and demands equality; on the tier-4 run the two differed by one ulp in a cell at step 6 and the step was refused. Metal is unaffected (it has its own EOS). |
+| `Simulation/Fire/FireCPUBackend.{h,cpp}` (new; all five build lists) | The transport provider (the CPU transport authority of the r190 reference, threaded), the request adapter (Metal owner request → CPU owner request), `AttemptFireProductionProjectedHeunResidentStepCPU` (runs the owner, publishes `FireProductionResidentStepResult` with the accepted-step token exactly as the Metal entry does, and a diagnostics record with the fast-mode conservation-ledger packet), option refusals, working set and admission. |
+| `FireRunDriver.cpp` | `persistence.cpuBackend` (set by the launch plan from `RISE_FIRE_BACKEND=cpu`) switches the one owner call; refuses the Metal-only drivers (r245/r246 studies, replays, diagnostics) and opt-in operators; CPU memory admission from the CPU certificate; a zero-step case probe no longer needs the Metal certificate (Configure works in a non-Metal build). Everything after the step (EOS inversion, frames, checkpoints, budgets, the fast-mode ledger) is shared. The receipt adds `backend cpu-m8-v1` for CPU runs only. |
+| `FireRunHostMemory.h` | Physical memory and RSS on Linux/Android (`/proc/self/statm`, `sysconf`) and Windows (`GlobalMemoryStatusEx`, `K32GetProcessMemoryInfo`), read but not compiled; macOS unchanged. |
+| `FireSolver.cpp` | Parameter `backend` (`"metal"` default, `"cpu"`); `"cpu"` enters the effective parameters (so the key), `"metal"` or absent does not (every existing key is unchanged). Writes `RISE_FIRE_BACKEND` with the other options. `cpu` is `experimental`, available unless a Metal-only option is set; `capabilities.backend` says which runs; the CPU backend is `deterministic` in both modes. Tier 4 (35×35×53) is accepted as a coarse smoke tier (not a capstone tier; not in the scene schema). The `backend` parameter is not in the scene schema either: adding it there would change completion and so every fire scene key; scenes keep Metal. |
+| Threading | `FireProductionCPUParallelFor` (a persistent pool; disjoint outputs per index; maxima combined after; first failure by index) in the scalar FCT stages (reconstruction, low state, limiter ratios, shared alpha, accepted state and both envelope checks), the physical-flux prerequisite, the projection smoother, operator and prolongation, and the transport provider. Left serial: content hashing (FNV over every published payload, about a third of a certified step, sequential by construction), the commuting-identity check, multigrid restriction, the EOS acceptance and target composition loops, the driver's source build (already eight workers). |
+| Hashing | The flux stage's content identity is not recomputed immediately after it was computed (same object, same value); in fast mode it is a lineage token over the stage inputs, as Metal fast mode's seals are. |
+| `FireProductionAdvectionMac.mm` | `RISE_FIRE_LIMITED_MOMENTUM_CARRIER` is read through the shared `FireSim::FireLimitedMomentumCarrier()` (same parse, same once-per-process cache). The only Metal-source change. |
+| Make | `-Wl,-U,_RISEProjectedHeunOwnerTestFailureProbe` in `Config.OSX` (as the Xcode targets have): shipped binaries now link the CPU owner and its weak test probe. |
+| Tests | `FireCPUBackendTest`, `FireCPUMetalAgreementTest` (new, §10.4); `FireSequenceTest --fire-production-burner-bisect[-centered]` and `--fire-production-burner-reference-centered`; `FireSolverTest` expects `cpu experimental 1`; `FireSequenceTest`, `FireProductionSolverTest` and `FireProductionProjectionTest` print SKIP and pass without a Metal device. |
+
+### 10.3 Agreement over several steps (coarse case, tier 4, fast mode)
+
+`FireCPUMetalAgreementTest` (and `FireCPUBackendTest --agreement N`, `--agreement-fixed-vcycles N`) runs the tier-4
+case from zero on Metal and on the CPU through the solver interface and compares the accepted states after every
+step: species and density rows over the maximum gas density, energy over max |E|, temperature over its maximum,
+face velocity over the maximum speed (0.22 m/s). Per-species maxima are not useful scales here: the products are
+traces early in the run.
+
+| Step (dt 1.646 ms) | 1 | 2 | 3 | 4 | 5 | 8 | 12 | 16 | 20 | 24 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| species, densities (max) | 3.1e-7 | 3.7e-5 | 7.8e-5 | 1.1e-5 | 9.9e-6 | 6.1e-6 | 3.9e-6 | 2.9e-6 | 2.1e-6 | 1.8e-6 |
+| temperature | 1.1e-9 | 4.9e-5 | 1.0e-4 | 1.5e-5 | 1.4e-5 | 8.3e-6 | 5.6e-6 | 4.2e-6 | 3.2e-6 | 2.7e-6 |
+| energy | 3.0e-7 | 2.8e-3 | 4.0e-3 | 4.4e-4 | 3.0e-4 | 1.1e-4 | 5.0e-5 | 2.7e-5 | 1.7e-5 | 1.2e-5 |
+| velocity | 2.0e-4 | 1.9e-3 | 5.0e-3 | 4.4e-3 | 8.5e-5 | 8.5e-5 | 2.5e-4 | 9.7e-5 | 1.5e-5 | 1.3e-5 |
+
+(Metal in its default fast mode; CPU fast mode, which is the certified CPU arithmetic without per-step seals: the
+certified CPU run gives the same numbers to two digits.) Reading it:
+
+- **Step 1.** With Metal's V-cycle count fixed (`fast_fixed_vcycles`) the step agrees to rounding: species ≤ 1.0e-7,
+  temperature 7e-10, velocity 4.8e-7 (about 1e-7 m/s). In default fast mode Metal stops the pressure V-cycles early
+  once the validation band is met (r275); the remaining 2.0e-4 (4.4e-5 m/s) is that solve's slowest mode near the
+  upper open faces, the same pattern and size as Metal adaptive against Metal fixed (4.4e-5 m/s) and as the CPU
+  owner's old 16 against 17 V-cycles (1.7e-5 m/s). It is inside the projection's validation band. The CPU backend
+  does not implement the adaptive stop.
+- **Steps 2–4.** Four cells on the burner surface (z = 0, x 16–19, y 15–17) differ by 0.015 K (temperature 4.9e-5 of
+  its maximum, energy 2.8e-3 of max |E|, which is small near ambient), and the velocity near them by up to 7e-4 m/s;
+  nothing else moves above rounding. The same happens with Metal's V-cycles fixed and in certified mode, so it is
+  not fast mode. A 1e-7 difference after step 1 becoming 0.015 K in a few cells is a discrete decision in the step
+  (a source, limiter or boundary-class switch at the burner) taking different branches. **Which one is not
+  isolated**; candidates are the frozen source's pilot/ignition switches (shared CPU code, fed the two backends'
+  temperatures), the FCT limiter's active inequality, and the burner faces' classes.
+- **After step 4** the difference does not grow: it decays to 1–3e-6 (scalars) and 1e-5 (velocity) of the field scale
+  by step 24 (40 ms). This early, still laminar phase does not show chaotic divergence; whether and when the
+  turbulent plume decorrelates the two trajectories, and how its statistics then compare, was **not run** (a CPU run
+  to the first statistics frame at tier 4 is about 2 s × 6,000 steps).
+
+**Tolerance.** Per step, of the field scale: species and densities 2e-4, temperature 3e-4, energy 1e-2, velocity
+1e-2 (1e-2 of 0.22 m/s is about 1.5 times the owner's own endpoint velocity tolerance, 1e-3·√(g D*) = 1.5e-3 m/s).
+These are about 2.5 times the 24-step maxima above; they hold the agreement to the owner's convergence tolerances,
+not to rounding, because from step 2 the difference is set by the discrete event, not by rounding. The test checks
+steps 1–5, which contain the peak.
+
+### 10.4 Tests
+
+| Test | What it checks | Time |
+|---|---|---:|
+| `FireCPUBackendTest` | Tier 4 through the solver interface in child processes (in-process host): the description (`backend cpu`, `experimental`, available, deterministic); 1 and 8 workers accept bit-identical states (2 steps); restoring the step-1 checkpoint with 4 workers and taking one step equals step 2 of the 1-worker run bit for bit; finite, positive gas density, methane entering, 300 ≤ T < 2300 K, upward velocity (max 0.20 m/s); the CPU key differs from the Metal default's; an invalid `backend` and the compact stencil on the CPU backend are refused (the latter at Configure). Needs no Metal. | 18 s |
+| `FireCPUMetalAgreementTest` | §10.3, five steps; skipped where Metal is absent | 18 s |
+
+Determinism was also checked by hand in certified mode (1, 3 and 8 workers, 3 steps, identical bytes, and identical
+to the unthreaded build's bytes) and with the pool against the spawn-per-call threading (identical).
+
+**Without Metal.** A copy of the tree built with Metal compiled out (§3's method, under
+`/Volumes/SSD/claude-tmp/m8b-scratch/nometal`) builds warning-free; `otool -L` shows no Metal framework in
+`FireCPUBackendTest` or `rise_sim`; `FireCPUBackendTest`'s CPU checks run and pass there (§10.6).
+
+### 10.5 Cost (M1 Max, 8 workers, fast mode, wall seconds per accepted step)
+
+| Case | Cells | CPU | Metal | CPU / Metal |
+|---|---:|---:|---:|---:|
+| tier 4 | 64,925 | 2.0 (certified 3.2; 1 worker 3.5 fast, 4.7 certified) | 0.19 | 11 |
+| tier 8 | 504,666 | 14.5 | 0.96 | 15 |
+
+Tier 8 CPU peak RSS 3.3 GB (certificate 1.8 GB plus the driver's state and source arrays; admission is by RSS, see
+below). Eight workers give 1.5× (certified) to 1.7× (fast) over one: about half of a certified step is serial
+(hashing, validation scans, EOS loops). A 25 s tier-8 window (about 15,000 steps) would take about 60 hours on the
+CPU against about 4 on Metal.
+
+**Memory admission.** The CPU step's working set is the CPU owner certificate plus the adapter's copies; the 2 GiB
+cap is replaced by the host ceiling (half of physical memory, at most 32 GiB, the production host policy), and a
+grid whose certificate plus 2 GiB of scratch exceeds it is refused at Configure with the sizes in the message. The
+per-kernel two-GiB output checks inside the CPU operators remain; they bind only beyond tier 10 (the largest
+single kernel output at tier 10 is about 0.4 GiB).
+
+### 10.6 Verified versus inferred
+
+| Claim | Basis |
+|---|---|
+| The one-step gap was the centred carrier | Bisection over every Picard operand; with the carrier the fixture is bit-identical in 7 of 9 rows (run, both modes) |
+| No other default-on Metal scheme change since r239 is missing | Read: r240–r275 docs and the owner-file commits since 2026-10-01; the resident V-cycle schedule found by measurement (§10.3) |
+| Metal output bytes unchanged | Full fast tier in the checkout with Metal: **466 of 466** passed (464 before plus the two new tests), every fire test and reference baseline included; the only Metal-source edit reads the same option through a shared function |
+| CPU backend bit-identical at any worker count; resume bit-identical | Run (1/3/8 workers certified and fast; 1/8 workers and a 4-worker resume in the test) |
+| Agreement with Metal fast mode on tier 4 | Run, 24 steps (§10.3); beyond 24 steps and in the turbulent phase not run |
+| Works without Metal | No-Metal copy: library, `rise`, `rise-sim`, `simulation_cache_import`, all tests built warning-free, no Metal framework linked; `FireCPUBackendTest`, `FireCachePlaybackTest`, `FireSimulationSolverTest`, `FireProductionCalibrationTest`, `SimulationSceneTest` pass; `FireSolverTest`'s configuration checks pass and it skips its bakes; `FireSequenceTest`, `FireProductionSolverTest`, `FireProductionProjectionTest` and `FireCPUMetalAgreementTest` skip cleanly |
+| Linux/Windows/Android host memory telemetry, the Windows driver thread | Written or read only, not compiled; `FireSolver` still refuses to start a fire run on Windows (no large-stack driver thread there) |
+| Builds warning-free | Make build of `all tests rise_sim simulation_cache_import`, with and without Metal; mirrors' `--check` passes |
+| Cost | Three-step runs per case (§10.5); one machine |
+
+Pins: chunk keywords 191 and `RewireConnectionTest` 6 unchanged; no codec, manifest, checkpoint, key (Metal) or solver
+version changed. `FireSolverTest`'s expectation changed from `cpu unsupported 0` to `cpu experimental 1` (the label
+this work moves); no other existing expectation changed.
+
+### 10.7 Open items
+
+1. The step-2 burner-surface difference (§10.3): find which discrete switch the 1e-7 step-1 difference flips.
+2. Fast mode's adaptive V-cycle stop on the CPU side (Metal's r275 rule), so CPU fast mode matches Metal fast mode at
+   step 1 as the fixed-schedule pair does.
+3. A long Metal/CPU run into the turbulent phase, comparing statistics (centreline temperature and velocity, heat
+   release, entrainment) once trajectories decorrelate.
+4. Speed: about half of a certified CPU step is serial (FNV content hashes, validation scans, EOS and target loops);
+   the hashes are sequential by definition, so a faster certified mode needs a cheaper identity, a protocol change.
+5. Scene selection of the CPU backend (a schema parameter changes every fire scene's completed key) and a Windows
+   driver thread; Windows and Android remain uncompiled (§4).
+6. The CPU backend refuses the Metal-only opt-ins (compact stencil and its variants, scalar Vreman override, FCT alpha
+   override, slope variants); porting them is separate work.

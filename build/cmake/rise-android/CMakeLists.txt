@@ -173,6 +173,7 @@ set_source_files_properties(
     "${RISE_LIB}/Simulation/Fire/FireRunDriver.cpp"
     "${RISE_LIB}/Simulation/Fire/FireRun.cpp"
     "${RISE_LIB}/Simulation/Fire/FireSolver.cpp"
+    "${RISE_LIB}/Simulation/Fire/FireCPUBackend.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
 # M3a: the cloth solver's checkpoints and evidence digests must not depend on

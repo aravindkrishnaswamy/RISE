@@ -5,6 +5,7 @@
 #define unsetenv(name) _putenv_s(name,"")
 #endif
 
+#include "../src/Library/Utilities/FireProductionCompute.h"   // M8b: Metal availability skip
 #include "../src/Library/Utilities/FireSequence.h"
 #include "../src/Library/Utilities/FireSequenceCache.h"
 #include "../src/Library/Simulation/SimulationCache.h"
@@ -10933,6 +10934,11 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture(const bool boundaryOnly=fa
 	return passed?0:210;
 }
 
+// M8b: --fire-production-burner-bisect prints the stage-by-stage Metal/CPU32 trace comparison.
+static bool g_burnerBisect=false;
+// M8b: the *-centered variants run the CPU32 and fp64 owners with the r264 centred carrier.
+static bool g_burnerCentered=false;
+
 class ResidentOwnerTransportFP32 final : public FireProductionProjectedHeunTransportProvider
 {
 public:
@@ -12581,6 +12587,10 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				request.physicalContract.injectedConservative[component]=inlet.injectedConservative[component];}
 		};
 		configure(ownerRequest32);configure(ownerRequest64);
+		ownerRequest32.centeredMomentumCarrier=g_burnerCentered;
+		ownerRequest64.centeredMomentumCarrier=g_burnerCentered;
+		ownerRequest32.residentProjectionSchedule=g_burnerCentered;
+		ownerRequest64.residentProjectionSchedule=g_burnerCentered;
 	}
 	if(burnerReferenceOnly){
 		const auto& inlet=burnerReferenceInput.lineage.eos.physicalFlux;
@@ -12652,6 +12662,101 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				scale=std::max(scale,std::fabs(d[face]));}
 			std::fprintf(stderr,"BURNER_REFERENCE_VELOCITY axis=%u metal_cpu32_max_abs=%.17g cpu32_fp64_max_abs=%.17g fp64_max_magnitude=%.17g\n",
 				axis,pairMaximum,cpuMaximum,scale);}
+		if(g_burnerBisect){
+			// M8b: stage-by-stage bisection of the Metal/CPU32 one-step gap. Both owners
+			// publish the operands of every Picard-map evaluation (qualification trace;
+			// it never changes the accepted state, checked below).
+			auto traced=burnerReferenceInput;traced.qualificationProductionStageTokens=false;
+			traced.qualificationCaptureIterationTrace=true;
+			FireProductionProjectedHeunMetalOwnerResult metalTrace;std::string et;
+			if(!AttemptFireProductionProjectedHeunMetalOwner(traced,metalTrace,&et)){
+				std::fprintf(stderr,"BISECT metal_trace_refused=%s\n",et.c_str());return 221;}
+			std::fprintf(stderr,"BISECT trace_does_not_change_state=%d\n",
+				metalTrace.conservativeValues==metal.conservativeValues?1:0);
+			const FireProductionProjectedHeunCoupledStageResult* cpuStage[3]={&result32.r0,&result32.r1,&result32.r2};
+			const ::RISEFireProductionFP64::FireProductionProjectedHeunCoupledStageResult* fpStage[3]=
+				{&result64.r0,&result64.r1,&result64.r2};
+			for(unsigned int stage=0u;stage<3u;++stage){
+				const auto& mt=metalTrace.qualificationIterationTrace[stage];
+				const auto& ct=cpuStage[stage]->qualificationIterationTrace;
+				const auto& dt=fpStage[stage]->qualificationIterationTrace;
+				std::fprintf(stderr,"BISECT stage=R%u metal_iterations=%zu cpu_iterations=%zu fp64_iterations=%zu "
+					"metal_accepted=%u cpu_accepted=%u\n",stage,mt.size(),ct.size(),dt.size(),
+					metalTrace.acceptedPicardIterations[stage],cpuStage[stage]->acceptedIterationCount);
+				for(std::size_t k=0u;k<std::min(mt.size(),ct.size());++k){
+					const auto& m=mt[k];const auto& c=ct[k];
+					const bool haveFP=k<dt.size();
+					auto cmp=[&](const char* name,const std::vector<float>& a,const std::vector<float>& b,
+						const auto* d){
+						if(a.empty()&&b.empty())return;
+						if(a.size()!=b.size()){std::fprintf(stderr,"BISECT R%u it=%u %s size_metal=%zu size_cpu=%zu\n",
+							stage,m.iteration,name,a.size(),b.size());return;}
+						double diff=0.0,scale=0.0,cpuFP=0.0,metalFP=0.0;std::size_t unequal=0u;
+						for(std::size_t i=0u;i<a.size();++i){
+							diff=std::max(diff,std::fabs(double(a[i])-double(b[i])));
+							scale=std::max(scale,std::fabs(double(b[i])));
+							if(std::memcmp(&a[i],&b[i],sizeof(float))!=0)++unequal;
+							if(d&&d->size()==a.size()){cpuFP=std::max(cpuFP,std::fabs(double(b[i])-(*d)[i]));
+								metalFP=std::max(metalFP,std::fabs(double(a[i])-(*d)[i]));}}
+						std::fprintf(stderr,"BISECT R%u it=%u/%u %-34s n=%6zu unequal=%6zu metal_cpu=%.3e scale=%.3e rel=%.3e "
+							"cpu_fp64=%.3e metal_fp64=%.3e\n",stage,m.iteration,c.iteration,name,a.size(),unequal,diff,scale,
+							scale>0.0?diff/scale:0.0,cpuFP,metalFP);
+						if(const char* dump=std::getenv("RISE_M8B_BISECT_DUMP"))if(std::strcmp(dump,name)==0){
+							unsigned int shown=0u;
+							const char* relText=std::getenv("RISE_M8B_BISECT_DUMP_REL");
+							const double rel=relText?std::atof(relText):0.0;
+							for(std::size_t i=0u;i<a.size()&&shown<24u;++i)if(a[i]!=b[i]&&
+								std::fabs(double(a[i])-double(b[i]))>rel*std::fabs(double(b[i]))){++shown;
+								std::fprintf(stderr,"BISECT_DUMP R%u it=%u %s i=%zu metal=%.9g cpu=%.9g fp64=%.9g\n",stage,
+									m.iteration,name,i,double(a[i]),double(b[i]),d&&d->size()==a.size()?double((*d)[i]):0.0);}}};
+					auto cmp3=[&](const char* name,const std::array<std::vector<float>,3>& a,
+						const std::array<std::vector<float>,3>& b,const std::array<std::vector<double>,3>* d){
+						std::vector<float> fa,fb;std::vector<double> fd;
+						for(unsigned int axis=0u;axis<3u;++axis){fa.insert(fa.end(),a[axis].begin(),a[axis].end());
+							fb.insert(fb.end(),b[axis].begin(),b[axis].end());
+							if(d)fd.insert(fd.end(),(*d)[axis].begin(),(*d)[axis].end());}
+						cmp(name,fa,fb,d?&fd:static_cast<const std::vector<double>*>(nullptr));};
+					const auto* D=haveFP?&dt[k]:nullptr;
+					using DV=const std::vector<double>*;
+					{std::size_t activeDiff=0u,nextDiff=0u,activeFP=0u,count=0u;std::string where;
+						for(unsigned int side=0u;side<6u;++side){count+=m.activeClass[side].size();
+							for(std::size_t f=0u;f<m.activeClass[side].size()&&f<c.activeClass[side].size();++f){
+								if(m.activeClass[side][f]!=c.activeClass[side][f]){++activeDiff;
+									where+=" s"+std::to_string(side)+"f"+std::to_string(f)+":"+
+										std::to_string(int(m.activeClass[side][f]))+"/"+std::to_string(int(c.activeClass[side][f]));}
+								if(D&&f<D->activeClass[side].size()&&D->activeClass[side][f]!=c.activeClass[side][f])++activeFP;}
+							for(std::size_t f=0u;f<m.nextActiveClass[side].size()&&f<c.nextActiveClass[side].size();++f)
+								if(m.nextActiveClass[side][f]!=c.nextActiveClass[side][f])++nextDiff;}
+						std::fprintf(stderr,"BISECT R%u it=%u activeClass n=%zu metal_cpu_differ=%zu cpu_fp64_differ=%zu next_differ=%zu%s\n",
+							stage,m.iteration,count,activeDiff,activeFP,nextDiff,where.substr(0,200).c_str());}
+					cmp("projectionTargetPerS",m.projectionTargetPerS,c.projectionTargetPerS,D?&D->projectionTargetPerS:DV(nullptr));
+					cmp3("provisionalMomentum",m.provisionalMomentumKGPerM2S,c.provisionalMomentumKGPerM2S,D?&D->provisionalMomentumKGPerM2S:nullptr);
+					cmp3("projectedVelocity",m.projectedVelocityMPerS,c.projectedVelocityMPerS,D?&D->projectedVelocityMPerS:nullptr);
+					cmp3("projectedMomentum",m.projectedMomentumKGPerM2S,c.projectedMomentumKGPerM2S,D?&D->projectedMomentumKGPerM2S:nullptr);
+					cmp3("faceDensity",m.faceDensityKGPerM3,c.faceDensityKGPerM3,D?&D->faceDensityKGPerM3:nullptr);
+					cmp("transportConservative",m.transportConservativeValues,c.transportConservativeValues,D?&D->transportConservativeValues:DV(nullptr));
+					cmp("transportTemperatureK",m.transportTemperatureK,c.transportTemperatureK,D?&D->transportTemperatureK:DV(nullptr));
+					cmp("diffusivity",m.diffusivityM2PerS,c.diffusivityM2PerS,D?&D->diffusivityM2PerS:DV(nullptr));
+					cmp("conductivity",m.conductivityWPerMK,c.conductivityWPerMK,D?&D->conductivityWPerMK:DV(nullptr));
+					cmp("molecularNu",m.molecularKinematicViscosityM2PerS,c.molecularKinematicViscosityM2PerS,D?&D->molecularKinematicViscosityM2PerS:DV(nullptr));
+					cmp("gasDensity",m.gasDensityKGPerM3,c.gasDensityKGPerM3,D?&D->gasDensityKGPerM3:DV(nullptr));
+					cmp("scalarLowFlux",m.scalarLowFlux,c.scalarLowFlux,D?&D->scalarLowFlux:DV(nullptr));
+					cmp("scalarFluxDelta",m.scalarFluxDelta,c.scalarFluxDelta,D?&D->scalarFluxDelta:DV(nullptr));
+					cmp("physicalMassFlux",m.physicalMassFluxKGPerM2S,c.physicalMassFluxKGPerM2S,D?&D->physicalMassFluxKGPerM2S:DV(nullptr));
+					cmp("physicalEnergyFlux",m.physicalEnergyFluxWPerM2,c.physicalEnergyFluxWPerM2,D?&D->physicalEnergyFluxWPerM2:DV(nullptr));
+					cmp3("sharedFaceAlpha",m.sharedFaceAlpha,c.sharedFaceAlpha,D?&D->sharedFaceAlpha:nullptr);
+					cmp("acceptedConservative",m.acceptedConservativeValues,c.acceptedConservativeValues,D?&D->acceptedConservativeValues:DV(nullptr));
+					cmp("representedPressureRatio",m.representedPressureRatio,c.representedPressureRatio,D?&D->representedPressureRatio:DV(nullptr));
+					cmp("producedTargetPerS",m.producedTargetPerS,c.producedTargetPerS,D?&D->producedTargetPerS:DV(nullptr));
+					cmp3("advectionMomentumRate",m.advectionMomentumRateKGPerM2S2,c.advectionMomentumRateKGPerM2S2,D?&D->advectionMomentumRateKGPerM2S2:nullptr);
+					cmp3("buoyancyMomentumRate",m.buoyancyMomentumRateKGPerM2S2,c.buoyancyMomentumRateKGPerM2S2,D?&D->buoyancyMomentumRateKGPerM2S2:nullptr);
+					cmp3("stressMomentumRate",m.stressMomentumRateKGPerM2S2,c.stressMomentumRateKGPerM2S2,D?&D->stressMomentumRateKGPerM2S2:nullptr);
+					cmp3("phaseSourceMomentumRate",m.phaseSourceMomentumRateKGPerM2S2,c.phaseSourceMomentumRateKGPerM2S2,D?&D->phaseSourceMomentumRateKGPerM2S2:nullptr);
+					cmp3("nextCandidateMomentum",m.nextCandidateMomentumKGPerM2S,c.nextCandidateMomentumKGPerM2S,D?&D->nextCandidateMomentumKGPerM2S:nullptr);
+					cmp3("heunR0AdvectionRate",m.heunR0AdvectionRateKGPerM2S2,c.heunR0AdvectionRateKGPerM2S2,D?&D->heunR0AdvectionRateKGPerM2S2:nullptr);
+				}
+			}
+		}
 		return 0;
 	}
 	ResidentOwnerTransportFP32 ownerTransport32(ownerEOS.physicalFlux);
@@ -17169,6 +17274,18 @@ int main(int argc,char** argv)
 {
 	SetFireRunCheckpointTestHooks(&checkpointTestHooks);
 	SetFireRunCheckHandler(Check);
+	if(argc==1){
+		// M8b: without a Metal device (a build with Metal compiled out, or no GPU) the Metal
+		// checks of this program cannot run: skip cleanly instead of failing.
+		{
+			RISE::FireProductionComputeCapability metal;
+			RISE::QueryFireProductionComputeCapability(metal);
+			if(!metal.available){
+				std::printf("SKIP: %s needs a Metal device (%s)\n","FireSequenceTest",metal.structuredError.c_str());
+				return 0;
+			}
+		}
+	}
 #if defined(RISE_ENABLE_OPENVDB)
 	if(argc==2 && std::strcmp(argv[1],"--fire-cache-playback-contract")==0)
 		return RunFireCachePlaybackContract();
@@ -17218,6 +17335,13 @@ int main(int argc,char** argv)
 		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-reference")==0)
 		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-bisect")==0){
+		g_burnerBisect=true;return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,true);}
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-bisect-centered")==0){
+		g_burnerBisect=true;g_burnerCentered=true;
+		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,true);}
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-reference-centered")==0){
+		g_burnerCentered=true;return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,true);}
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-owner-gate")==0)
 		return RunProductionResidentTargetLineageMetalFP64Fixture(nullptr,false,false,false,true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-burner-cold-start-probe")==0)

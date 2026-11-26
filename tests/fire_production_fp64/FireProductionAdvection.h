@@ -14,11 +14,52 @@
 #include <cstddef>
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace RISEFireProductionFP64
 {
+	//! M8b: worker threads for the CPU production operators on the calling thread.
+	//! The CPU fire backend opens a scope for one step; everything else (calibration
+	//! owners, mirrors, tests) runs with one worker. Loops handed to
+	//! FireProductionCPUParallelFor write disjoint outputs per index and keep every
+	//! reduction in index order, so results do not depend on the worker count.
+	class FireProductionCPUParallelScope
+	{
+	public:
+		explicit FireProductionCPUParallelScope(unsigned int workers);
+		~FireProductionCPUParallelScope();
+		FireProductionCPUParallelScope(const FireProductionCPUParallelScope&)=delete;
+		FireProductionCPUParallelScope& operator=(const FireProductionCPUParallelScope&)=delete;
+	private:
+		unsigned int previous_;
+	};
+	unsigned int FireProductionCPUParallelWorkers();
+	//! Runs body(begin,end) over contiguous slices of [0,count): on the calling thread
+	//! alone with one worker, or for small counts; otherwise on the scope's workers.
+	//! Inside a slice nothing is parallel (nested calls run serially).
+	//! `grain` is the smallest slice worth a thread (indices, or planes for plane loops).
+	void FireProductionCPUParallelFor(std::size_t count,
+		const std::function<void(std::size_t,std::size_t)>& body,std::size_t grain=2048u);
+	//! Index-ordered failure collection for parallel loops with early-out checks:
+	//! each slice records its first failing index; Failed() reports the smallest, so
+	//! the reported failure equals the serial loop's first failure.
+	class FireProductionCPUFirstFailure
+	{
+	public:
+		FireProductionCPUFirstFailure();
+		void Record(std::size_t index,const std::string& message);
+		bool Failed() const;
+		const std::string& Message() const;
+	private:
+		std::size_t index_;
+		bool failed_;
+		std::string message_;
+		std::mutex mutex_;
+	};
+
 	//! r204 byte-payload digest namespace (distinct from historical manifold
 	//! token digest variants). SHA-256 Merkle tree: 4096-byte leaves, fan-in 16.
 	struct FireProductionPayloadDigestV2

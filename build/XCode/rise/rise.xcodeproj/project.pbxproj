@@ -899,6 +899,7 @@
 		45442A37E9DCB1FCE32C852A /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		F5EAF8098A45004B8CC2542C /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		0A09DCAF8E305338CDC23482 /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		AE5ABED5E322559AC34E312E /* FireCPUBackend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63C6876AD413C1E4A85845FC /* FireCPUBackend.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		585A9A36311C2039C2A9B1A0 /* FireParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */; };
 		A573C249A71F45E086A3C5EA /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		6829BFCEBD1748B090C2A074 /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -1656,6 +1657,7 @@
 		00C10732F96A8F6A100187BF /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		05F7F3997CB782000CF75A5F /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		8DC57724A9F43A06F0EFA95B /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		EA82B2D2F1AE00A5D632B14D /* FireCPUBackend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63C6876AD413C1E4A85845FC /* FireCPUBackend.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		39F81B17D48A6E7643AB9352 /* FireParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */; };
 		E4194BFEA3004934A4ACC263 /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		F39CE5124D6F4A5C83C80C9C /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -1746,6 +1748,7 @@
 		B80864811244EB7EA5E77382 /* FireRun.h in Headers */ = {isa = PBXBuildFile; fileRef = F171F7FE1DC0B53FBC16ACA4 /* FireRun.h */; };
 		0273E2AFA42EAB62FF0AC547 /* FireSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = BF7F2C96B42CF67630134748 /* FireSolver.h */; };
 		EC1545E36E7C227C9E74391F /* FireParameterSchema.h in Headers */ = {isa = PBXBuildFile; fileRef = 122135E9D28B11F3D3B70860 /* FireParameterSchema.h */; };
+		B7A412F5D57741FF0A555854 /* FireCPUBackend.h in Headers */ = {isa = PBXBuildFile; fileRef = AA3B4E6B5AE235E1C0D7C498 /* FireCPUBackend.h */; };
 		20869C80EB77B43D3229E786 /* FireRunHostMemory.h in Headers */ = {isa = PBXBuildFile; fileRef = 3B91B33F567812A35FDD65AA /* FireRunHostMemory.h */; };
 		3D51895E00B240CE88706D82 /* ClothMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 096BADAD2FEC436DB149BB53 /* ClothMaterial.h */; };
 		4CFE9FAD02554D55BB45C8EC /* ClothLinearAlgebra.h in Headers */ = {isa = PBXBuildFile; fileRef = 460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */; };
@@ -2735,6 +2738,7 @@
 		281F924C2A9FD5231AD2EF9E /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		D9099A356A92E6622F1B9D14 /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		EDB1CC540DE7EC57AEA7C10E /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		2FD013F8DDB6C554A56986FC /* FireCPUBackend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63C6876AD413C1E4A85845FC /* FireCPUBackend.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		44583F1F84811061DD2CAFAF /* FireParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */; };
 		2317A37943195D41846A84E4 /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		5CF655A5501AA59F7EFD0ACF /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -3727,6 +3731,8 @@
 		5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireRunDriver.cpp; sourceTree = "<group>"; };
 		027EAD51B3C9501735854804 /* FireRun.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireRun.cpp; sourceTree = "<group>"; };
 		CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSolver.cpp; sourceTree = "<group>"; };
+		63C6876AD413C1E4A85845FC /* FireCPUBackend.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireCPUBackend.cpp; sourceTree = "<group>"; };
+		AA3B4E6B5AE235E1C0D7C498 /* FireCPUBackend.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireCPUBackend.h; sourceTree = "<group>"; };
 		9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireParameterSchema.cpp; sourceTree = "<group>"; };
 		465AB2ABDE8F84C26D9032FC /* FireRunCheckpoint.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRunCheckpoint.h; sourceTree = "<group>"; };
 		903132B8D9393D3FFBB2A168 /* FireRunFrames.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireRunFrames.h; sourceTree = "<group>"; };
@@ -5505,6 +5511,8 @@
 				5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */,
 				027EAD51B3C9501735854804 /* FireRun.cpp */,
 				CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */,
+				63C6876AD413C1E4A85845FC /* FireCPUBackend.cpp */,
+				AA3B4E6B5AE235E1C0D7C498 /* FireCPUBackend.h */,
 				9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */,
 				465AB2ABDE8F84C26D9032FC /* FireRunCheckpoint.h */,
 				903132B8D9393D3FFBB2A168 /* FireRunFrames.h */,
@@ -6601,6 +6609,7 @@
 				B80864811244EB7EA5E77382 /* FireRun.h in Headers */,
 				0273E2AFA42EAB62FF0AC547 /* FireSolver.h in Headers */,
 				EC1545E36E7C227C9E74391F /* FireParameterSchema.h in Headers */,
+				B7A412F5D57741FF0A555854 /* FireCPUBackend.h in Headers */,
 				20869C80EB77B43D3229E786 /* FireRunHostMemory.h in Headers */,
 				3D51895E00B240CE88706D82 /* ClothMaterial.h in Headers */,
 				4CFE9FAD02554D55BB45C8EC /* ClothLinearAlgebra.h in Headers */,
@@ -7343,6 +7352,7 @@
 				00C10732F96A8F6A100187BF /* FireRunDriver.cpp in Sources */,
 				05F7F3997CB782000CF75A5F /* FireRun.cpp in Sources */,
 				8DC57724A9F43A06F0EFA95B /* FireSolver.cpp in Sources */,
+				EA82B2D2F1AE00A5D632B14D /* FireCPUBackend.cpp in Sources */,
 				39F81B17D48A6E7643AB9352 /* FireParameterSchema.cpp in Sources */,
 				E4194BFEA3004934A4ACC263 /* ClothMaterial.cpp in Sources */,
 				F39CE5124D6F4A5C83C80C9C /* ClothLinearAlgebra.cpp in Sources */,
@@ -8400,6 +8410,7 @@
 				45442A37E9DCB1FCE32C852A /* FireRunDriver.cpp in Sources */,
 				F5EAF8098A45004B8CC2542C /* FireRun.cpp in Sources */,
 				0A09DCAF8E305338CDC23482 /* FireSolver.cpp in Sources */,
+				AE5ABED5E322559AC34E312E /* FireCPUBackend.cpp in Sources */,
 				585A9A36311C2039C2A9B1A0 /* FireParameterSchema.cpp in Sources */,
 				A573C249A71F45E086A3C5EA /* ClothMaterial.cpp in Sources */,
 				6829BFCEBD1748B090C2A074 /* ClothLinearAlgebra.cpp in Sources */,
@@ -8890,6 +8901,7 @@
 				281F924C2A9FD5231AD2EF9E /* FireRunDriver.cpp in Sources */,
 				D9099A356A92E6622F1B9D14 /* FireRun.cpp in Sources */,
 				EDB1CC540DE7EC57AEA7C10E /* FireSolver.cpp in Sources */,
+				2FD013F8DDB6C554A56986FC /* FireCPUBackend.cpp in Sources */,
 				44583F1F84811061DD2CAFAF /* FireParameterSchema.cpp in Sources */,
 				2317A37943195D41846A84E4 /* ClothMaterial.cpp in Sources */,
 				5CF655A5501AA59F7EFD0ACF /* ClothLinearAlgebra.cpp in Sources */,

@@ -48,7 +48,9 @@ const ParameterSchema& FireParameterSchema();
 //!    tier-10 / tier-8 ratio (1.29); tier 6 unknown (0).
 //! `grid` is the case's (nx, ny, nz) when known (Configure's launch case);
 //! zeros use the tier's capstone grid (52x52x80, 69x69x106, 86x86x132).
-void FireEstimateCapabilities(double tier, bool fast, std::array<std::size_t, 3> grid, Capabilities& caps);
+//! M8b: `cpu` estimates the CPU backend: memory from its host certificate, cost unknown (0).
+void FireEstimateCapabilities(double tier, bool fast, std::array<std::size_t, 3> grid, Capabilities& caps,
+	bool cpu = false);
 
 } }
 

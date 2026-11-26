@@ -18,6 +18,7 @@
 #if defined(RISE_ENABLE_OPENVDB)
 #include "FireRun.h"
 #include "FireParameterSchema.h"   // M5c: FireEstimateCapabilities
+#include "FireCPUBackend.h"        // M8b
 #endif
 
 #include <algorithm>
@@ -139,9 +140,22 @@ const std::vector<OptionSpec>& Options()
 	return options;
 }
 constexpr const char* fastModeEnvironment = "RISE_FIRE_FAST_MODE";
+// M8b: how Configure hands the backend to the fire library (FireRun::FireCPUBackendRequested).
+// Not a legacy default: Configure writes it from the parameter and never reads it.
+constexpr const char* backendEnvironment = "RISE_FIRE_BACKEND";
 
 #if defined(RISE_ENABLE_OPENVDB)
 using namespace RISE::FireRun;
+
+// M8b: the CPU backend's status evidence (docs/SIMULATION_M8_RESULTS.md section 10).
+std::string CPUBackendDetail()
+{
+	return "experimental (M8): the r190 projected-Heun CPU owner with the r264 centred momentum carrier, "
+		"selected by parameter backend \"cpu\"; deterministic at any RISE_FIRE_WORKERS count; agrees with Metal "
+		"to binary32 rounding over the first steps of a coarse case (not bit-identical; trajectories decorrelate "
+		"later); refuses the Metal-only opt-in operators; built and tested on macOS with and without Metal, "
+		"Windows and Android not compiled";
+}
 
 constexpr char legacyName[] = "legacy";
 constexpr char restoreName[] = ".rise-sim.restore.checkpoint";
@@ -463,7 +477,7 @@ private:
 	V effective_;
 	std::vector<std::pair<std::string,std::string>> environment_;     // variable -> applied text ("" unset)
 	double tier_=8, originS_=0, endS_=0, targetS_=0, statisticsStartS_=0;
-	bool fast_=false, partialWindow_=false, metal_=false;
+	bool fast_=false, partialWindow_=false, metal_=false, cpu_=false;
 	std::string metalDetail_;
 	std::uint64_t frames_=0;
 	fs::path side_;
@@ -561,7 +575,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	if (!environmentError_.empty()) return Fail(error,environmentError_);
 	if (parameters.GetType()!=V::Map) return Fail(error,"parameters must be a map");
 	std::vector<std::string> known={"tier","frame_cadence_s","frame_origin_s","end_time_s","pool_diameter_m",
-		"heat_release_rate_kw","mode"};
+		"heat_release_rate_kw","mode","backend"};
 	for (const auto& o : Options()) known.emplace_back(o.parameter);
 	for (const auto& m : parameters.GetMap())
 		if (std::find(known.begin(),known.end(),m.first)==known.end()) return Fail(error,"unknown parameter "+m.first);
@@ -569,8 +583,10 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 
 	// The case.  Only the production capstone's case is supported for now.
 	double x=8;
-	if (const V* v=given("tier"); v && (!Number(v,x) || (x!=6 && x!=8 && x!=10)))
-		return Fail(error,"parameter tier must be 6, 8 or 10");
+	// M8b: tier 4 is a coarse smoke tier (35 x 35 x 53 cells) for the CPU backend's tests and the
+	// Metal/CPU agreement check; it is not a capstone tier and scenes do not offer it.
+	if (const V* v=given("tier"); v && (!Number(v,x) || (x!=4 && x!=6 && x!=8 && x!=10)))
+		return Fail(error,"parameter tier must be 6, 8 or 10 (or 4, the coarse smoke tier)");
 	tier_=x;
 	double cadence=capstoneCadenceS;
 	if (const V* v=given("frame_cadence_s"); v && (!Number(v,cadence) || cadence!=capstoneCadenceS))
@@ -587,6 +603,14 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 		mode=v->GetText();
 	}
 	fast_=mode=="fast";
+	// M8b: the backend the step runs on. Absent = "metal" (unchanged keys); "cpu" selects the
+	// experimental CPU backend and enters the effective parameters (the bytes differ).
+	cpu_=false;
+	if (const V* v=given("backend")) {
+		if (v->GetType()!=V::Text || (v->GetText()!="metal" && v->GetText()!="cpu"))
+			return Fail(error,"parameter backend must be \"metal\" or \"cpu\"");
+		cpu_=v->GetText()=="cpu";
+	}
 
 	// Result-affecting options: explicit > legacy environment > library default.
 	V::Members options;
@@ -605,6 +629,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	}
 	if (!given("mode")) for (const auto& f : fromEnvironment_) if (f.first=="mode") notes.push_back("mode from legacy "+f.second);
 	environment.emplace_back(fastModeEnvironment,fast_ ? "1" : "");
+	environment.emplace_back(backendEnvironment,cpu_ ? "cpu" : "");
 	auto option=[&](const char* name) -> const V& {
 		for (const auto& m : options) if (m.first==name) return m.second;
 		return options.front().second;
@@ -668,6 +693,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 		{"end_time_s",V::Float(endS_)},{"frame_cadence_s",V::Float(cadence)},{"frame_origin_s",V::Float(originS_)},
 		{"heat_release_rate_kw",V::Float(hrr)},{"mode",V::String(mode)},{"pool_diameter_m",V::Float(diameter)},
 		{"tier",V::Unsigned(static_cast<std::uint64_t>(tier_))}};
+	if (cpu_) members.emplace_back("backend",V::String("cpu"));
 	for (auto& m : options) members.push_back(m);
 	effective_=V::MapValue(members);
 
@@ -691,18 +717,22 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	for (const auto& ch : template_.Channels()) volume.channels.push_back({ch.name,ch.units,ch.valueType});
 	c.outputs={volume};
 	c.physicalRecords=envelope;
+	std::string cpuDetail;
+	const bool cpuAvailable=FireRun::FireCPUBackendOptionsSupported(cpuDetail);
 	out.capabilities.backends={
 		{"metal",BackendStatus::Supported,metal_,metalDetail_},
-		{"cpu",BackendStatus::Unsupported,false,"no CPU run path: the CPU projected-Heun owner is a one-step calibration reference (single-threaded, 2 GiB cap) that the run driver does not call (M8)"}};
+		{"cpu",BackendStatus::Experimental,cpuAvailable,cpuAvailable ? CPUBackendDetail() :
+			CPUBackendDetail()+"; not available with these options: "+cpuDetail}};
 	out.capabilities.interactive=false;
-	// Certified mode is bit-reproducible (r274/M0 identity checks); fast mode is
-	// not claimed to be (FireFastMode.h: "not bit-reproducible").
-	out.capabilities.deterministic=!fast_;
+	// Certified mode is bit-reproducible (r274/M0 identity checks); Metal fast mode is
+	// not claimed to be (FireFastMode.h: "not bit-reproducible"). The CPU backend runs
+	// the same strict binary32 C++ in both modes, identical at any worker count (M8b).
+	out.capabilities.deterministic=cpu_ || !fast_;
 	out.capabilities.resumable=true;
 	out.capabilities.externalMacroStep=false;
 	out.capabilities.modes={"certified","fast"};
-	out.capabilities.backend="metal";   // M4: the backend this configuration runs on (not keyed)
-	FireEstimateCapabilities(tier_,fast_,launch_.launchCase.dimensions,out.capabilities);   // M5c: not keyed
+	out.capabilities.backend=cpu_ ? "cpu" : "metal";   // M4: the backend this configuration runs on (not keyed)
+	FireEstimateCapabilities(tier_,fast_,launch_.launchCase.dimensions,out.capabilities,cpu_);   // M5c: not keyed
 	out.capabilities.earnableFidelity={"preview"};
 	out.capabilities.fidelityLimit="no computed, digest-bound validation case exists for a fire configuration yet";
 	// The sealed fire sequences are preview_only; no computed, digest-bound
@@ -727,8 +757,11 @@ bool FireSolver::Startable(std::string& error) const
 	if (phase_!=Phase::Configured) return Fail(error,"fire solver must be configured once before Start or Restore");
 	if (side_.empty()) return Fail(error,"the fire solver needs a side-output directory for its legacy frames "
 		"(run it through rise-sim)");
-	if (!metal_) return Fail(error,"the fire solver needs its Metal backend, unavailable here: "+metalDetail_+
-		" (the CPU backend is unsupported)");
+	if (cpu_) {
+		std::string why;
+		if (!FireRun::FireCPUBackendOptionsSupported(why)) return Fail(error,why);
+	} else if (!metal_) return Fail(error,"the fire solver needs its Metal backend, unavailable here: "+metalDetail_+
+		" (parameter backend \"cpu\" selects the experimental CPU backend)");
 	return EnvironmentMatches(environment_,error);
 }
 
@@ -893,7 +926,7 @@ bool FireSolver::LaunchThread(std::string& error)
 	};
 	wallStart_=std::chrono::steady_clock::now();
 #if defined(_WIN32)
-	return Fail(error,"the fire solver needs Metal");
+	return Fail(error,"the fire solver's driver thread is not implemented on Windows yet");
 #else
 	// The driver keeps large frames on its stack; give it room like a main thread.
 	pthread_attr_t attributes;
@@ -1086,8 +1119,8 @@ public:
 private:
 	static std::string Unavailable()
 	{
-		return "the fire solver needs a build with OpenVDB (its legacy frame export) and Metal; this build has no "
-			"OpenVDB (Metal backend: unavailable here; CPU backend: unsupported)";
+		return "the fire solver needs a build with OpenVDB (its legacy frame export); this build has no "
+			"OpenVDB (neither the Metal nor the experimental CPU backend can run here)";
 	}
 };
 #endif // RISE_ENABLE_OPENVDB
