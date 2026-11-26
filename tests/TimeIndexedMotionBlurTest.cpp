@@ -26,6 +26,10 @@
 //    L  NON-RENDER light policy: exact built-ins get independent time views;
 //       custom subclasses retain virtual RGB/NM behavior on the serial path.
 //
+//    O  NON-RENDER object policy: exact Object transforms are independent;
+//       custom animated objects and hierarchy nodes keep virtual setters and
+//       finalization through the serial path.
+//
 //    Options are process-wide and read once, so every render runs in a
 //    child process of this binary (`--child ...`) with its own options
 //    file (force_number_of_threads / render_thread_reserve_count 0 /
@@ -45,7 +49,7 @@
 //    rasterizer covers its spectral half; explicit section `B` runs the
 //    full 2-scene x 6-rasterizer matrix).
 //
-//    Usage: TimeIndexedMotionBlurTest [--extended] [all|S|A|B|C|D|L] [spp] [n]
+//    Usage: TimeIndexedMotionBlurTest [--extended] [all|S|A|B|C|D|L|O] [spp] [n]
 //
 //  Author: Claude (debt-dl465)
 //  Tabs: 4
@@ -91,6 +95,7 @@ static int RiseTestPid() { return static_cast<int>( ::getpid() ); }
 #include "../src/Library/Interfaces/IAnimator.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Objects/Object.h"
 #include "../src/Library/Lights/PointLight.h"
 #include "../src/Library/Lights/SpotLight.h"
 #include "../src/Library/Lights/DirectionalLight.h"
@@ -698,6 +703,108 @@ static void SectionL()
     }
 }
 
+// O exercises the production sample-posing helper without rendering. A
+// nonvirtual Object pose-holder clone cannot preserve subclass overrides.
+class CustomAnimatedObject final : public Object
+{
+public:
+    void SetIntermediateValue(const IKeyframeParameter& parameter) override
+    {
+        Object::SetIntermediateValue(parameter);
+        SetPosition(Point3(9,0,0));
+    }
+};
+class CustomHierarchyObject final : public Object
+{
+public:
+    using Object::FinalizeTransformations;
+    void FinalizeTransformations(const Matrix4& parentWorld) override
+    {
+        // Depend on the current parent, so copying the shutter-close local
+        // transform into a base Object cannot accidentally match the result.
+        const Point3 parentOrigin=Point3Ops::Transform(parentWorld,Point3(0,0,0));
+        SetPosition(Point3(3*parentOrigin.x,0,0));
+        Object::FinalizeTransformations(parentWorld);
+    }
+};
+static Scalar ObjectWorldX(const Object& object)
+{
+    return Point3Ops::Transform(object.GetFinalTransformMatrix(),Point3(0,0,0)).x;
+}
+static void SectionO()
+{
+    std::cout << "\nO: exact Object time views and custom-object serial fallback (no render)\n";
+    for(const bool hierarchy : {false,true}) for(const bool custom : {false,true}) {
+        const std::string label=Fmt("O %s %s: ",custom ? "custom":"built-in",hierarchy ? "hierarchy":"animated");
+        IJobPriv* job=nullptr;
+        Check(RISE_CreateJobPriv(&job),label+"job fixture");
+        if(!job) continue;
+        Object* root=custom&&!hierarchy ? static_cast<Object*>(new CustomAnimatedObject):new Object;
+        Object* child=hierarchy ? (custom ? static_cast<Object*>(new CustomHierarchyObject):new Object):nullptr;
+        auto* manager=job->GetObjects();
+        Check(manager->AddItem(root,"root"),label+"manager owns animated root");
+        if(child) {
+            child->SetPosition(Point3(3,0,0));
+            Check(manager->AddItem(child,"child")&&manager->SetObjectParent("child","root"),label+"moving hierarchy fixture");
+        }
+        auto* animator=job->GetScene()->GetAnimator();
+        Check(animator->InsertKeyframe(root,"position","0 0 0",0,nullptr,nullptr)&&
+            animator->InsertKeyframe(root,"position","2 0 0",1,nullptr,nullptr),label+"position timeline");
+        // Follow the production sweep protocol, including its moved-hierarchy
+        // census. The custom hierarchy child itself has no animation timeline.
+        manager->BeginMotionSweep();
+        PixelBasedRasterizerHelper::AnimateSceneToSampleTime(*job->GetScene(),0);
+        manager->AccumulateMotionBounds();
+        PixelBasedRasterizerHelper::AnimateSceneToSampleTime(*job->GetScene(),1);
+        manager->AccumulateMotionBounds();
+        manager->EndMotionSweep();
+        if(hierarchy) {
+            std::vector<std::pair<IObjectPriv*,IObjectPriv*>> plan;
+            Check(manager->GetPerSampleRecomposePlan(plan)&&plan.size()==2,
+                label+"sweep narrows root and unkeyframed child into recompose plan");
+        }
+        Object* observed=child ? child:root;
+        const Scalar sharedBefore=ObjectWorldX(*observed);
+        const Scalar expected=custom ? (hierarchy ? 4:9):(hierarchy ? 4:1);
+        const auto count=TimeIndexedFrame::CreatedCount();
+        std::string reason;
+        auto* frame=TimeIndexedFrame::TryCreate(*job->GetScene(),reason);
+        if(custom) {
+            Check(!frame,label+"derived object refuses sliced clone [custom-object-motion-fallback]");
+            Check(reason.find("custom object subclass")!=std::string::npos&&
+                reason.find(hierarchy ? "moving hierarchy node":"keyframed object")!=std::string::npos,
+                label+"refusal identifies unsupported object role");
+            Check(TimeIndexedFrame::CreatedCount()==count,label+"refused frame is not published");
+        } else {
+            Check(frame&&frame->NumSlots()==(hierarchy ? 2u:1u),label+"exact Object remains time-indexable");
+            Check(TimeIndexedFrame::CreatedCount()==count+1,label+"accepted frame is published");
+        }
+        if(frame) {
+            {
+                TimeIndexedThread view(frame);
+                PixelBasedRasterizerHelper::AnimateSceneToSampleTime(*job->GetScene(),.5);
+                Check(ObjectWorldX(*observed)==expected,
+                    label+Fmt("production sample world x %.17g equals %.17g [custom-object-motion-fallback]",ObjectWorldX(*observed),expected));
+            }
+            Check(ObjectWorldX(*observed)==sharedBefore,label+"thread view preserves live transform");
+            delete frame;
+        }
+        Check(root->GetTimeSlot()==-1&&(!child||child->GetTimeSlot()==-1),
+            label+"retirement or refusal leaves all objects unslotted");
+        {
+            TimeIndexedThread serialView(nullptr);
+            Check(TimeIndexedThread::Current()==nullptr,label+"null frame uses ordinary serial sample path");
+            PixelBasedRasterizerHelper::AnimateSceneToSampleTime(*job->GetScene(),.5);
+            Check(ObjectWorldX(*observed)==expected,
+                label+Fmt("serial production sample world x %.17g equals %.17g [custom-object-motion-fallback]",ObjectWorldX(*observed),expected));
+        }
+        Check(root->GetTimeSlot()==-1&&(!child||child->GetTimeSlot()==-1),label+"serial posing leaves no dangling time slots");
+        job->release();
+        root->release();
+        if(child) child->release();
+    }
+}
+
 int main( int argc, char** argv )
 {
 	std::setvbuf( stdout, nullptr, _IONBF, 0 );
@@ -727,6 +834,7 @@ int main( int argc, char** argv )
 	const int n = posArgs.size() > 2 ? std::atoi( posArgs[2] ) : 4;
 	std::cout << "TimeIndexedMotionBlurTest (DL-465)\n";
 	if( only == "all" || only == "L" ) SectionL();
+	if( only == "all" || only == "O" ) SectionO();
 	if( only == "all" || only == "S" ) SectionS( spp );
 	if( only == "all" || only == "A" ) SectionA( spp );
 	if( only == "all" ) {

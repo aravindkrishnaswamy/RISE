@@ -164,7 +164,11 @@ one table.
 
 `SceneObjectInputProvider::Capture(names, upstreamKeys)` returns a detached `ISceneInputs`. Each named object, and
 each of its ancestors, becomes a **pose holder**: `Object::ClonePoseHolder`, owned and never shared. The provider
-also keeps a counted reference to the scene's animator. After `Capture` returns, nothing reads the live scene again.
+also keeps a counted reference to the scene's animator. The named object and every ancestor must be exact built-in
+`Object` instances. CSG composites and custom subclasses are refused before any pose holder is cloned: this
+nonvirtual clone cannot preserve their overridden setters, finalization or geometry behavior. CSG operands
+are also refused: their stored pose is composite-local, and a shared operand can have multiple world placements.
+After `Capture` returns, nothing reads the live scene again.
 
 **SampleTransform(name, t)** works on private clones:
 

@@ -62,6 +62,12 @@ namespace
 		if( dynamic_cast<const CSGObject*>( o ) ) {
 			return "a CSG composite";
 		}
+		// ClonePoseHolder is nonvirtual and creates an exact Object. A
+		// subclass may override keyframe setters, finalization or queries;
+		// keep those behaviors on the serial path instead of slicing them.
+		if( typeid(*o) != typeid(Object) ) {
+			return "a custom object subclass";
+		}
 		if( o->IsConsumed() ) {
 			return "a CSG operand";
 		}
@@ -283,6 +289,8 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 			}
 			r.parent = f->SlotOf( parent );
 			if( r.parent < 0 ) {
+				// Unslotted parents are not cloned or re-posed. Keep their
+				// virtual world-transform query; no subclass slicing occurs.
 				r.parentShared = parent;
 			}
 		}

@@ -6,6 +6,7 @@
 //  centres, querying the source painter through its angular-probe UV map.
 //  Each cell spans 4*pi/(width*height) steradians. Sampling is uniform
 //  inside the chosen cell; queried density is its PMF divided by that area.
+//  The normalized midpoint PMF includes a 5% uniform support component.
 //  The spectral-domain baseline remains uniform in WORLD solid angle.
 //
 //  Author: Aravind Krishnaswamy
@@ -50,7 +51,7 @@ namespace RISE
 			unsigned int			height;			///< Equal-area z cells
 
 			// Marginal/conditional CDF for importance sampling.
-            // Normalized row/column CDFs. A zero-mass row is never sampled.
+            // Normalized row/column CDFs, including uniform directional support.
             // Solid-angle density uses their cell-probability differences.
 			std::vector< std::vector<Scalar> >	conditionalCDF;
 			std::vector<Scalar>					marginalCDF;
@@ -72,6 +73,9 @@ namespace RISE
 				);
 
 		public:
+            /// Proposal-policy fraction, never added to the physical power estimate.
+            static constexpr Scalar UniformSupportFraction() { return .05; }
+
 			EnvironmentSampler(
 				const IPainter& painter,
 				const Scalar scale,
@@ -104,14 +108,15 @@ namespace RISE
 				) const;
 
 			/// \return True if the importance map has been built and is valid.
-			bool IsValid() const { return spectralDomain ? spectralMap != nullptr : totalLuminance > 0; }
+			bool IsValid() const { return spectralDomain ? spectralMap != nullptr : !marginalCDF.empty(); }
 
             /// Approximate integral over solid angle of the nonnegative
             /// max-channel RGB source proxy, including scale (not CIE luminance).
             /// A constant source C gives exactly 4*pi*C at every resolution.
             /// LightSampler multiplies by scene-disc area for root-class power.
-            /// Zero for black/unbuilt legacy maps and for spectral-domain mode;
-            /// spectral root selection reads SpectralPower() instead.
+            /// Zero can mean missed source features, black/unbuilt legacy maps,
+            /// or spectral-domain mode; it is not a blackness certificate.
+            /// Spectral root selection reads SpectralPower() instead.
 			Scalar TotalLuminance() const { return totalLuminance; }
 		};
 	}

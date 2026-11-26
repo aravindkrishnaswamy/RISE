@@ -640,11 +640,11 @@ namespace RISE
 			/// (vs an alias-table light) on the next call.  Set during
 			/// `Prepare()` and `SetEnvironmentSampler()` from env
 			/// totalLuminance × disc area vs the alias table's total
-			/// weight.  Zero when env doesn't exist or env total
-			/// radiance is zero; 1 when env exists and the alias table
-			/// is empty (env-only scenes); fractional in mixed
-			/// env+other-lights scenes (continuous PMF, matching PBRT-
-			/// v4's `LightSampler::PMF(env)` semantics).
+			/// weight, with 5% uniform support across present classes in
+			/// legacy mixed roots. A zero midpoint estimate cannot disable
+			/// a present environment. Zero when env is absent, zero-scale,
+			/// or vertex placement is infeasible; one in env-only scenes.
+			/// Explicit spectral domains use their separate support policy.
 			Scalar						cachedEnvSelectProb;
 
 			/// Recomputes `cachedEnvSelectProb` from current env +
@@ -1536,7 +1536,8 @@ namespace RISE
 			/// next call.  Continuous in (0, 1] when env exists, by
 			/// the env-vs-alias selection roll in `SampleLight()` —
 			/// computed during `Prepare()` from env totalLuminance ×
-			/// disc area vs the alias table's total weight.  Matches
+			/// disc area vs the alias table's total weight, including the
+			/// legacy 5% uniform class-support mixture. Matches
 			/// PBRT-v4's `LightSampler::PMF(env)` semantics so MIS at
 			/// the Path B s=0 site has a non-zero pdfRev in mixed
 			/// scenes (env + other lights), which closes the MIS

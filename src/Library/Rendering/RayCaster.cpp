@@ -776,7 +776,7 @@ void RayCaster::RebuildEnvironmentSampler(LightSampler& sampler)
 		}
 		else
 		{
-			GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
+			GlobalLog()->PrintEasyWarning( "Environment proposal disabled by zero radiance scale" );
 		}
 
 		// LightSampler::SetEnvironmentSampler addrefs if valid, so
@@ -4163,12 +4163,10 @@ void RayCaster::SetLuminaireSampling(
 	ISampling2D* pLumSam							///< [in] Kernel to use for luminaire sampling
 	)
 {
-	safe_release( pLumSampling );
-
-	if( pLumSam ) {
-		pLumSampling = pLumSam;
-		pLumSampling->addref();
-	}
+    // A caller may pass the borrowed current kernel with no other owner.
+    if (pLumSam) pLumSam->addref();
+    safe_release(pLumSampling);
+    pLumSampling = pLumSam;
 }
 
 bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const

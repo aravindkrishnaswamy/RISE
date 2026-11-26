@@ -168,32 +168,41 @@ void EnvironmentSampler::Build()
         rows[y][x+1] = weight;
         maximum = r_max(maximum,weight);
     }
-    if (!(maximum > 0)) return;
-    // Rescale before summing. The integral is accumulated in exponent-factored
-    // form so an intermediate sum cannot overflow while its mean is finite.
-    int exponent = 0, angularExponent = 0;
-    const Scalar mantissa = std::frexp(maximum,&exponent);
+    if (dScale == 0) return; // This explicit multiplicative factor proves no emission.
+    Scalar integral = 0;
     Scalar sum = 0;
+    if (maximum > 0) {
+        // Normalize before summing. Keep the raw midpoint power separate from
+        // the proposal's support mixture: zero probes do not prove blackness.
+        int exponent = 0, angularExponent = 0;
+        const Scalar mantissa = std::frexp(maximum,&exponent);
+        for (unsigned int y=0;y<height;++y) for (unsigned int x=0;x<width;++x) {
+            rows[y][x+1] = std::ldexp(rows[y][x+1],-exponent)/mantissa;
+            sum += rows[y][x+1];
+        }
+        const Scalar meanAngularFactor = (sum/Scalar(width)/Scalar(height))*FOUR_PI;
+        const Scalar angularMantissa = std::frexp(meanAngularFactor,&angularExponent);
+        integral = std::ldexp(mantissa*angularMantissa,exponent+angularExponent);
+        if (!RISE::IsFiniteDouble(integral) || !(integral > 0))
+            throw std::invalid_argument("environment angular power integral is outside the representable range");
+    }
+    // A disclosed 5% uniform-solid-angle component protects arbitrary source
+    // features between midpoint probes. Integrate it into this one table;
+    // there is no extra mixture draw or conditional random-number remapping.
+    const Scalar uniformCell = 1/Scalar(width)/Scalar(height);
     for (unsigned int y=0;y<height;++y) {
         Scalar row = 0;
         for (unsigned int x=0;x<width;++x) {
-            row += std::ldexp(rows[y][x+1],-exponent)/mantissa;
+            const Scalar probability = sum > 0 ?
+                (1-UniformSupportFraction())*(rows[y][x+1]/sum)+UniformSupportFraction()*uniformCell : uniformCell;
+            row += probability;
             rows[y][x+1] = row;
         }
-        sum += row;
-        marginal[y+1] = sum;
-        if (row > 0) {
-            int rowExponent = 0;const Scalar rowMantissa = std::frexp(row,&rowExponent);
-            for (unsigned int x=1;x<=width;++x) rows[y][x] = std::ldexp(rows[y][x],-rowExponent)/rowMantissa;
-        }
+        marginal[y+1] = marginal[y]+row;
+        for (unsigned int x=1;x<=width;++x) rows[y][x] /= row;
         rows[y][width] = 1;
     }
-    const Scalar meanAngularFactor = (sum/Scalar(width)/Scalar(height))*FOUR_PI;
-    const Scalar angularMantissa = std::frexp(meanAngularFactor,&angularExponent);
-    const Scalar integral = std::ldexp(mantissa*angularMantissa,exponent+angularExponent);
-    if (!RISE::IsFiniteDouble(integral) || !(integral > 0))
-        throw std::invalid_argument("environment angular power integral is outside the representable range");
-    for (unsigned int y=1;y<=height;++y) marginal[y] /= sum;
+    for (unsigned int y=1;y<=height;++y) marginal[y] /= marginal[height];
     marginal[height] = 1;
     conditionalCDF.swap(rows); marginalCDF.swap(marginal);
     totalLuminance = integral;
@@ -214,7 +223,7 @@ void EnvironmentSampler::Sample(
         pdf = 1/(4*PI);
         return;
     }
-    if (!(totalLuminance > 0)) {
+    if (!IsValid()) {
         direction = Vector3(0,0,1); pdf = 0; return;
     }
     Scalar fractionalV=0,fractionalU=0;
@@ -232,7 +241,7 @@ void EnvironmentSampler::Sample(
 Scalar EnvironmentSampler::Pdf(const Vector3& direction) const
 {
     if (spectralDomain) return 1/(4*PI);
-    if (!(totalLuminance > 0)) return 0;
+    if (!IsValid()) return 0;
     Scalar u=0,v=0;
     if (!DirectionToEqualArea(Vector3Ops::Transform(mxtransform,direction),u,v)) return 0;
     const unsigned int x = r_min(static_cast<unsigned int>(u*width),width-1);

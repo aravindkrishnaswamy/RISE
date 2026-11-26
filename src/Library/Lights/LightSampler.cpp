@@ -1411,46 +1411,23 @@ void LightSampler::SetEnvironmentSampler(
 	const EnvironmentSampler* pSampler
 	)
 {
-	if( pEnvSampler ) {
-		pEnvSampler->release();
-	}
-	// Addref `pEnvironmentMap` so it can't go away from under us via
-	// `Scene::SetGlobalRadianceMap` swapping the scene-level pointer
-	// mid-render (which `release()`s its old map).  Workers inside
-	// `SampleEnvLightEmission` call `pEnvironmentMap->GetRadiance(...)`;
-	// without the addref a concurrent swap dangles the pointer and
-	// crashes.  Same shape as the existing `pEnvSampler` ownership.
-	if( pEnvironmentMap ) {
-		pEnvironmentMap->release();
-	}
-	pEnvironmentMap = pEnvMap;
-	if( pEnvironmentMap ) {
-		pEnvironmentMap->addref();
-	}
-	pEnvSampler = pSampler;
-	if( pEnvSampler ) {
-		pEnvSampler->addref();
-	}
+    // Retain both incoming objects before releasing either previous owner.
+    // Self-assignment is valid when this sampler owns the final reference;
+    // either old object can also be the only owner of the other incoming one.
+    if (pEnvMap) pEnvMap->addref();
+    if (pSampler) pSampler->addref();
+    if (pEnvSampler) pEnvSampler->release();
+    if (pEnvironmentMap) pEnvironmentMap->release();
+    pEnvironmentMap = pEnvMap;
+    pEnvSampler = pSampler;
 	RecomputeEnvSelectProbability();
 }
 
 void LightSampler::RecomputeEnvSelectProbability()
 {
-	// Continuous-PMF env selection (2026-05-29 architectural fix —
-	// see docs/PRE_PHASE1_STATUS.md Session 9).  Replaces the prior
-	// binary 0-or-1 `EnvSelectProbability()` that crowded env out of
-	// NEE in mixed scenes — root cause of the documented BDPT/VCM
-	// env-IBL deficit (env+omni / env+mesh at ~85 % of PT because env
-	// never participated in light-subpath emission or s=1 NEE MIS
-	// bookkeeping).  envWeight is the env totalLuminance × scene-disc
-	// area — dimensionally comparable to mesh exitance × area.  In
-	// env-only scenes (alias table empty) this gives 1.0 — identical
-	// to the old binary behaviour.  In env+other-lights scenes it's
-	// fractional and env participates via the env-vs-alias roll in
-	// `SampleLight()`.  Called from both `SetEnvironmentSampler` and
-	// `Prepare` so the cache stays valid regardless of which gets
-	// invoked first (RayCaster::AttachScene calls Prepare first, then
-	// SetEnvironmentSampler — and the order may differ elsewhere).
+    // Cache the actual class PMF used by root sampling and every MIS query.
+    // Legacy proxy power guides importance, but midpoint estimates cannot
+    // establish absence. Mixed present classes retain a uniform support share.
 	const bool bEnvExists = pEnvSampler && pEnvSampler->IsValid() &&
 		pEnvironmentMap && cachedSceneRadius > 0;
     if (spectralDomain) {
@@ -1470,29 +1447,29 @@ void LightSampler::RecomputeEnvSelectProbability()
         throw std::invalid_argument("legacy finite-light power proxy is nonfinite or negative");
     if (bEnvExists) {
         const Scalar angularPower = pEnvSampler->TotalLuminance();
-        if (!RISE::IsFiniteDouble(angularPower) || !(angularPower > 0) ||
+        if (!RISE::IsFiniteDouble(angularPower) || angularPower < 0 ||
             !RISE::IsFiniteDouble(cachedSceneRadius))
             throw std::invalid_argument("legacy environment power/radius proxy is invalid");
-        if (!(aliasWeight > 0)) { cachedEnvSelectProb = 1; return; }
-        // Power products and the final sum can exceed Scalar even though their
-        // ratio is ordinary. Form log masses and a stable logistic ratio.
-        const Scalar logEnvironment = std::log(angularPower)+std::log(PI)+2*std::log(cachedSceneRadius);
-        const Scalar logFinite = std::log(aliasWeight);
-        Scalar probability;
-        if (logEnvironment >= logFinite) {
-            probability = 1/(1+std::exp(logFinite-logEnvironment));
-        } else {
-            const Scalar relative = std::exp(logEnvironment-logFinite);
-            probability = relative/(1+relative);
+        if (!aliasTable.IsValid()) { cachedEnvSelectProb = 1; return; }
+        // Power products and their sum can overflow although the ratio is
+        // ordinary. Form log masses and a stable logistic ratio; an estimated
+        // zero environment mass contributes zero importance, never zero support.
+        Scalar probability = 0;
+        if (angularPower > 0) {
+            const Scalar logEnvironment = std::log(angularPower)+std::log(PI)+2*std::log(cachedSceneRadius);
+            const Scalar logFinite = std::log(aliasWeight);
+            if (logEnvironment >= logFinite) {
+                probability = 1/(1+std::exp(logFinite-logEnvironment));
+            } else {
+                const Scalar relative = std::exp(logEnvironment-logFinite);
+                probability = relative/(1+relative);
+            }
         }
-        // Legacy roots reuse/remap the class draw, unlike the independently
-        // drawn spectral-domain conditional. Refuse ratios outside the known
-        // two-Sobol-cell class range instead of rounding a live class to 0/1
-        // or silently changing the authored power-ratio proposal.
-        const Scalar floor = SpectralSourceDomain::MinimumSourceProbability();
-        if (probability < floor || probability > 1-floor)
-            throw std::invalid_argument("legacy mixed-light root ratio exceeds the supported 32-bit Sobol class range");
-        cachedEnvSelectProb = probability;
+        // Mix 5% uniformly across the two present root classes. This is proposal
+        // policy, not fabricated physical power, and keeps the remapped legacy
+        // class intervals away from 0/1 even for extreme finite power ratios.
+        const Scalar support = EnvironmentSampler::UniformSupportFraction();
+        cachedEnvSelectProb = support/2+(1-support)*probability;
     } else {
         cachedEnvSelectProb = 0;
     }

@@ -62,7 +62,11 @@ Two consequences of these defaults that bite contributors:
 The scene's global environment radiance map is sampled by
 [`EnvironmentSampler`](../src/Library/Rendering/EnvironmentSampler.h), attached
 through `LightSampler::SetEnvironmentSampler`. Its RGB proposal uses equal-area
-azimuth/z cells and participates in NEE with the same density queried by MIS.
+azimuth/z cells with a 5% uniform-solid-angle support mixture and participates
+in NEE with the same density queried by MIS. Zero midpoint power does not
+certify a black source. Legacy mixed environment/finite root selection also
+mixes 5% uniformly across the two present classes, retaining each class even
+when its importance estimate is zero; this does not alter physical power.
 Distinct per-object radiance-map overrides do not gain a global NEE partner.
 An explicit spectral source domain currently uses a uniform world-sphere
 proposal evaluated through the actual NM map. See
