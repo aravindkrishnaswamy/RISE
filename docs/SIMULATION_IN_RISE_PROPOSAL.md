@@ -154,8 +154,14 @@ solve; stable at light density ratios where the staggered exchange diverges; con
 and small bodies stay preview ([M7b results](SIMULATION_M7B_RESULTS.md)). M7c (in review): constant viscosity (implicit,
 the variational strain-rate form with a traction-free surface, no or free slip, bodies coupled implicitly in the
 viscous solve) and surface tension (ghost-fluid Laplace jump), each off by default and certified separately; inviscid
-surface tension and contact lines at solids stay preview ([M7c results](SIMULATION_M7C_RESULTS.md)). Next: cloth
-as a moving boundary (preview).
+surface tension and contact lines at solids stay preview ([M7c results](SIMULATION_M7C_RESULTS.md)). M7d (in review):
+thin sheets as moving boundaries of the liquid (preview: grid faces crossed by the sheet closed, no volume removed, no
+leakage found), prescribed or following a cloth's `surface_state` with the pressure load returned as its
+`surface_load`, lagged one macro step; that exchange is stable only for sheets of about 500 kg/m² and up (about 50
+with under-relaxation), so real cloth is one-way only; closed-mesh rigid bodies; the dam break at 256³ costs 2.3 s per
+step and 6.3 GB ([M7d results](SIMULATION_M7D_RESULTS.md)). **M7 is complete as planned** (design §7, steps 1–7). Not
+done within M7: a stable two-way cloth-in-water coupling (implicit; design §2's later step), spray and thin films,
+contact inside the liquid, and the multigrid weakness with large bodies at 256³ (PCG iterations triple).
 
 ## 6. Rules that hold throughout
 

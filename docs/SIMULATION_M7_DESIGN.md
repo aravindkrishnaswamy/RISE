@@ -109,4 +109,9 @@ bake is on the order of 7 hours; 128³ is about 16 times cheaper. A first protot
    two-phase and was replaced (a capillary-gravity wave). Viscous splitting needs ν dt / h² ≤ 4 (a time-step limit);
    inviscid surface tension stays preview (parasitic currents grow).*
 6. Checkpoint, rollback and thread-invariance tests; scene chunk `liquid_simulation`.
-7. Cloth as a moving boundary (`preview`).
+7. Cloth as a moving boundary (`preview`). *Done (M7d, 2026-11-26; [results](SIMULATION_M7D_RESULTS.md)): sheets close
+   the grid faces whose cell-centre segment they cross (no volume removed), carry their normal velocity there and
+   receive the pressure impulse on those faces as a per-vertex load; prescribed or following a cloth's `surface_state`,
+   the load returned as its `surface_load` once per macro step. The lagged exchange is stable only for sheets far
+   heavier than cloth (measured in §6 of the results); a stable two-way treatment is still the later step. Also in
+   M7d: closed-mesh bodies, and the dam break at 256³.*

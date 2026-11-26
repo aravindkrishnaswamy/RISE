@@ -116,6 +116,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Simulation/Liquid/LiquidFlow.cpp"
     "${RISE_LIB}/Simulation/Liquid/LiquidBodies.cpp"
     "${RISE_LIB}/Simulation/Liquid/LiquidViscosity.cpp"
+    "${RISE_LIB}/Simulation/Liquid/LiquidSheets.cpp"
     "${RISE_LIB}/Simulation/Liquid/LiquidModel.cpp"
     "${RISE_LIB}/Simulation/Liquid/LiquidValidation.cpp"
     "${RISE_LIB}/Simulation/Liquid/LiquidSolver.cpp"

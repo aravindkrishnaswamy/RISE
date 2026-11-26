@@ -375,6 +375,34 @@ simulation_group
 standard_object { name buoy ... transform_source drop.bodies[buoy] }
 ```
 
+M7d (docs/SIMULATION_M7D_RESULTS.md): `body_object <object> [options]` makes a body from a scene object's closed
+mesh (world space at t = 0; body frame at its centroid and principal axes, mass properties from the mesh; the
+options of `body` but `at` and `orientation`; an open mesh is refused).  `sheet <name> port [port <accepted>]
+[load_port <offered>] [relaxation w]` is a thin open sheet as a moving boundary of the liquid (preview), following a
+mesh surface such as a cloth's: connect the cloth's `surface_state` to `<accepted>` (default `sheet_state`) and
+`<offered>` (default `sheet_load`) to its `surface_load`, with the liquid first in `member_order`; the load is
+lagged one macro step and unstable for light sheets (the results document gives the measured range).
+`sheet <name> rect sx sy [divisions nx ny] [at x y z] [orientation w x y z] [velocity ..] [spin ..] [amplitude ..]
+[frequency f] [phase p]` is a prescribed rectangle (its frame's xy plane, normal +z).  Sample:
+`scenes/Tests/Simulation/liquid_cloth_flap.RISEscene`:
+
+```text
+cloth_simulation { name flap  frames 61  size_u 0.3  size_v 0.45  origin 0.6123 0.55 0.05  axis_u 0 0 1  axis_v 0 -1 0
+                   material cotton-plain-weave  material_density 50  pin v0 }
+liquid_simulation { name pool  frames 61  liquid box -1 -1 -1 0.3 0.45 2  sheet flap port relaxation 0.3 }
+simulation_group
+{
+    name            flume
+    members         pool
+    members         flap
+    connect         flap.surface_state -> pool.sheet_state
+    connect         pool.sheet_load -> flap.surface_load
+    order           gauss-seidel
+    member_order    pool flap                 # the liquid reads the flap's state at the macro step's start
+    macro_step      0.008333333333333333      # exactly 1/120 s: a macro step must divide the frame interval
+}
+```
+
 ## Coupling (M6)
 
 docs/SIMULATION_M6_RESULTS.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and

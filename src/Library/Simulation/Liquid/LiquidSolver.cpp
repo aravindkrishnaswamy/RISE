@@ -33,7 +33,9 @@ using namespace Liquid;
 
 constexpr std::size_t CodecBudget = std::size_t(16) << 30;
 constexpr std::size_t InputBudget = std::size_t(256) << 20;
-constexpr const char* SolverVersion = "m7c.1";
+// m7d.1: sheets (thin open surfaces as moving boundaries, preview) and closed-mesh
+// bodies; bakes without either publish the frames of m7c.1.
+constexpr const char* SolverVersion = "m7d.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
@@ -127,6 +129,7 @@ public:
 		return a;
 	}
 	const V* Raw(const char* key) { return Use(key); }
+	bool Ok() const { return ok_; }
 	bool Finish() {
 		if (!ok_) return false;
 		for (const auto& m : map_.GetMap())
@@ -276,14 +279,62 @@ bool ParseSolid(const V& item, const ISceneInputs& inputs, std::vector<std::stri
 // amplitude sin(2 pi frequency t + phase), a constant angular velocity);
 // port: coupling implicit | staggered (the pose and twist from
 // rigid.bodies' body_state; the initial state must equal rigid.bodies')}.
-bool ParseBody(const V& item, const V3& gravity, LiquidBody& b, V& effective, std::string& error)
+bool ParseBody(const V& item, const V3& gravity, double h, const ISceneInputs& inputs, std::vector<std::string>& sceneNames,
+	LiquidBody& b, V& effective, std::string& error)
 {
 	Reader r(item, "body", error);
 	b.name = r.Text("name", "");
 	if (b.name.empty() || b.name.find('\0') != std::string::npos || !RISECBOR64::IsUTF8NFC(b.name))
 		return r.Bad("a body needs a nonempty NFC name");
-	const std::string shape = r.Text("shape", "sphere", {"sphere", "box", "cylinder"});
-	if (shape == "sphere") {
+	const std::string shape = r.Text("shape", "sphere", {"sphere", "box", "cylinder", "mesh"});
+	// m7d: a closed mesh (inline in its authoring frame, or a scene object's geometry in
+	// world space at t = 0); the body frame is its centroid and principal axes.
+	bool sceneMesh = false;
+	V3 centroid{{0, 0, 0}};
+	Rigid::M3 axes{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+	if (shape == "mesh") {
+		std::vector<double> verts;
+		std::vector<std::uint32_t> tris;
+		const std::string input = r.Text("scene_input", "-", {}, false);
+		if (input != "-") {
+			std::string hash, codec;
+			std::shared_ptr<const Bytes> bytes;
+			MeshFrame frame;
+			if (!inputs.Identity(input, hash, error) || !inputs.Sample(input, 0.0, bytes, codec, error) || !bytes)
+				return Fail(error, "body scene input " + input + ": " + error);
+			const StaticPayloadResolver resolve = [&inputs](const std::string& digest, std::size_t budget,
+				std::shared_ptr<const Bytes>& fixed, std::string& why) { return inputs.ResolveStatic(digest, budget, fixed, why); };
+			if ((codec != "mesh.v1" && codec != "mesh.v2") || !DecodeMesh(*bytes, InputBudget, resolve, frame, error))
+				return Fail(error, "body scene input " + input + " is not a mesh frame: " + error);
+			for (std::uint32_t bits : frame.positions) verts.push_back(FromF32(bits));
+			tris = frame.indices;
+			if (std::find(sceneNames.begin(), sceneNames.end(), input) == sceneNames.end()) sceneNames.push_back(input);
+			r.out.emplace_back("scene_input", V::String(input));
+			r.out.emplace_back("identity", V::String(hash));
+			r.Raw("identity");
+			sceneMesh = true;
+		} else {
+			std::vector<double> idx;
+			if (!Numbers(r.Raw("vertices"), verts) || verts.size() % 3 != 0 || verts.empty())
+				return r.Bad("mesh vertices must be a flat array of 3n finite numbers");
+			if (!Numbers(r.Raw("triangles"), idx) || idx.size() % 3 != 0 || idx.empty())
+				return r.Bad("mesh triangles must be a flat array of 3m vertex indices");
+			for (double k : idx) {
+				if (!(k >= 0) || std::floor(k) != k || k >= static_cast<double>(verts.size()/3)) return r.Bad("mesh triangle index out of range");
+				tris.push_back(static_cast<std::uint32_t>(k));
+			}
+			V::Values vs, ts;
+			for (double x : verts) vs.push_back(V::Float(x));
+			for (std::uint32_t k : tris) ts.push_back(V::Unsigned(k));
+			r.out.emplace_back("vertices", V::ArrayValue(vs));
+			r.out.emplace_back("triangles", V::ArrayValue(ts));
+		}
+		if (!r.Ok()) return false;
+		// The distance lattice at h / 2 with a margin of the liquid's band (4 h) plus two cells.
+		std::string why;
+		if (!MakeMeshShape(verts, tris, 0.5*h, 6*h, b.shape, centroid, axes, why))
+			return Fail(error, "body " + b.name + ": " + why + " (a mesh body must be a closed, consistently outward-oriented triangle mesh)");
+	} else if (shape == "sphere") {
 		b.shape.type = BodyShape::Type::Sphere;
 		b.shape.radius = r.Real("radius", 0.1);
 		if (!(b.shape.radius > 0)) return r.Bad("radius must be positive");
@@ -299,15 +350,30 @@ bool ParseBody(const V& item, const V3& gravity, LiquidBody& b, V& effective, st
 	}
 	const std::string motion = r.Text("motion", "dynamic", {"dynamic", "prescribed", "port"});
 	b.motion = motion == "dynamic" ? BodyMotion::Dynamic : motion == "prescribed" ? BodyMotion::Prescribed : BodyMotion::Port;
-	const V3 position = r.Vector("position", {{0, 0, 0}});
+	V3 position{{0, 0, 0}};
 	Quat q{{1, 0, 0, 0}};
-	if (const V* v = r.Raw("orientation")) {
-		std::vector<double> xs;
-		if (!Numbers(v, xs) || xs.size() != 4) return r.Bad("orientation must be an array of 4 finite numbers (w, x, y, z)");
-		for (int k = 0; k < 4; ++k) q[std::size_t(k)] = xs[std::size_t(k)];
+	if (sceneMesh) {
+		// A scene object's geometry is in world space: its pose is the mesh's own.
+		if (r.Has("position") || r.Has("orientation")) return r.Bad("a scene_input body takes its pose from the scene");
+	} else {
+		position = r.Vector("position", {{0, 0, 0}});
+		if (const V* v = r.Raw("orientation")) {
+			std::vector<double> xs;
+			if (!Numbers(v, xs) || xs.size() != 4) return r.Bad("orientation must be an array of 4 finite numbers (w, x, y, z)");
+			for (int k = 0; k < 4; ++k) q[std::size_t(k)] = xs[std::size_t(k)];
+		}
+		if (!CanonicalQuaternion(q)) return r.Bad("orientation must be a nonzero quaternion (w, x, y, z)");
+		r.out.emplace_back("orientation", V::ArrayValue({V::Float(q[0]), V::Float(q[1]), V::Float(q[2]), V::Float(q[3])}));
 	}
-	if (!CanonicalQuaternion(q)) return r.Bad("orientation must be a nonzero quaternion (w, x, y, z)");
-	r.out.emplace_back("orientation", V::ArrayValue({V::Float(q[0]), V::Float(q[1]), V::Float(q[2]), V::Float(q[3])}));
+	if (b.shape.type == BodyShape::Type::Mesh) {
+		// m7d: the authoring pose (position, Ra) puts the centre of mass at position + Ra c
+		// and the body frame at Ra P (P the principal axes), as rigid.bodies does.
+		const Rigid::M3 Ra = Rigid::QMatrix(q);
+		const V3 c = Rigid::Apply(Ra, centroid);
+		for (int a = 0; a < 3; ++a) position[std::size_t(a)] += c[std::size_t(a)];
+		q = MatrixQuaternion(Rigid::Multiply(Ra, axes));
+		CanonicalQuaternion(q);
+	}
 	const V3 velocity = r.Vector("velocity", {{0, 0, 0}});
 	const V3 omega = r.Vector("angular_velocity", {{0, 0, 0}});
 	double mass = 1;
@@ -352,6 +418,93 @@ bool ParseBody(const V& item, const V3& gravity, LiquidBody& b, V& effective, st
 	b.q0 = q;
 	b.spin = omega;
 	for (int a = 0; a < 3; ++a) b.externalForce[std::size_t(a)] = b.motion == BodyMotion::Dynamic ? mass*gravity[std::size_t(a)] : 0.0;
+	effective = V::MapValue(r.out);
+	return true;
+}
+
+// m7d: a sheet (LiquidSheets.h): {name, motion: prescribed | port; prescribed: a
+// rectangle `size` [sx, sy] in its frame's xy plane (normal +z) with `divisions`
+// [nx, ny], or an open mesh `vertices`/`triangles` in its frame, then `position`,
+// `orientation`, `velocity`, `angular_velocity`, `amplitude`, `frequency`, `phase`
+// (the motion of a prescribed body); port: `port` (accepts a mesh.v2 surface such
+// as cloth's surface_state; default sheet_state), `load_port` (offers the
+// pressure load as cloth's surface_load; default sheet_load), `relaxation` (the
+// offered load is relaxation x the new one + (1 - relaxation) x the last
+// offered, in (0, 1], default 1)}.
+bool ParseSheet(const V& item, LiquidSheet& sh, double& relaxation, V& effective, std::string& error)
+{
+	Reader r(item, "sheet", error);
+	sh.name = r.Text("name", "");
+	if (sh.name.empty() || sh.name.find('\0') != std::string::npos || !RISECBOR64::IsUTF8NFC(sh.name))
+		return r.Bad("a sheet needs a nonempty NFC name");
+	const std::string motion = r.Text("motion", "prescribed", {"prescribed", "port"});
+	relaxation = 1;
+	if (motion == "port") {
+		sh.motion = LiquidSheet::Motion::Port;
+		sh.port = r.Text("port", "sheet_state");
+		sh.loadPort = r.Text("load_port", "sheet_load");
+		relaxation = r.Real("relaxation", 1.0);
+		if (!(relaxation > 0 && relaxation <= 1)) return r.Bad("relaxation must be in (0, 1]");
+		if (sh.port == sh.loadPort) return r.Bad("port and load_port must differ");
+	} else {
+		sh.motion = LiquidSheet::Motion::Prescribed;
+		if (r.Has("vertices") || r.Has("triangles")) {
+			std::vector<double> idx;
+			if (!Numbers(r.Raw("vertices"), sh.local) || sh.local.size() % 3 != 0 || sh.local.empty())
+				return r.Bad("sheet vertices must be a flat array of 3n finite numbers");
+			if (!Numbers(r.Raw("triangles"), idx) || idx.size() % 3 != 0 || idx.empty())
+				return r.Bad("sheet triangles must be a flat array of 3m vertex indices");
+			for (double k : idx) {
+				if (!(k >= 0) || std::floor(k) != k || k >= static_cast<double>(sh.local.size()/3)) return r.Bad("sheet triangle index out of range");
+				sh.triangles.push_back(static_cast<std::uint32_t>(k));
+			}
+			V::Values vs, ts;
+			for (double x : sh.local) vs.push_back(V::Float(x));
+			for (std::uint32_t k : sh.triangles) ts.push_back(V::Unsigned(k));
+			r.out.emplace_back("vertices", V::ArrayValue(vs));
+			r.out.emplace_back("triangles", V::ArrayValue(ts));
+		} else {
+			std::vector<double> size{0.2, 0.2}, div{8, 8};
+			if (const V* v = r.Raw("size")) if (!Numbers(v, size) || size.size() != 2 || !(size[0] > 0) || !(size[1] > 0))
+				return r.Bad("size must be two positive numbers (sx, sy)");
+			if (const V* v = r.Raw("divisions")) if (!Numbers(v, div) || div.size() != 2) return r.Bad("divisions must be two counts (nx, ny)");
+			for (double d : div) if (!(d >= 1 && d <= 4096) || std::floor(d) != d) return r.Bad("divisions must be two counts in [1, 4096]");
+			r.out.emplace_back("size", V::ArrayValue({V::Float(size[0]), V::Float(size[1])}));
+			r.out.emplace_back("divisions", V::ArrayValue({V::Unsigned(std::uint64_t(div[0])), V::Unsigned(std::uint64_t(div[1]))}));
+			const int nx = int(div[0]), ny = int(div[1]);
+			for (int j = 0; j <= ny; ++j) for (int i = 0; i <= nx; ++i) {
+				sh.local.push_back(-0.5*size[0] + size[0]*i/nx);
+				sh.local.push_back(-0.5*size[1] + size[1]*j/ny);
+				sh.local.push_back(0.0);
+			}
+			for (int j = 0; j < ny; ++j) for (int i = 0; i < nx; ++i) {
+				const std::uint32_t a = std::uint32_t(i + (nx + 1)*j), b = a + 1, c = a + std::uint32_t(nx + 1) + 1, d = a + std::uint32_t(nx + 1);
+				for (std::uint32_t k : {a, b, c, a, c, d}) sh.triangles.push_back(k);   // counter-clockwise seen from +z
+			}
+		}
+		const V3 position = r.Vector("position", {{0, 0, 0}});
+		Quat q{{1, 0, 0, 0}};
+		if (const V* v = r.Raw("orientation")) {
+			std::vector<double> xs;
+			if (!Numbers(v, xs) || xs.size() != 4) return r.Bad("orientation must be an array of 4 finite numbers (w, x, y, z)");
+			for (int k = 0; k < 4; ++k) q[std::size_t(k)] = xs[std::size_t(k)];
+		}
+		if (!CanonicalQuaternion(q)) return r.Bad("orientation must be a nonzero quaternion (w, x, y, z)");
+		r.out.emplace_back("orientation", V::ArrayValue({V::Float(q[0]), V::Float(q[1]), V::Float(q[2]), V::Float(q[3])}));
+		LiquidBody& path = sh.path;
+		path.motion = BodyMotion::Prescribed;
+		path.x0 = position;
+		path.q0 = q;
+		path.v0 = r.Vector("velocity", {{0, 0, 0}});
+		path.spin = r.Vector("angular_velocity", {{0, 0, 0}});
+		path.amplitude = r.Vector("amplitude", {{0, 0, 0}});
+		path.frequency = r.Real("frequency", 0.0);
+		path.phase = r.Real("phase", 0.0);
+		if (!(path.frequency >= 0)) return r.Bad("frequency must not be negative");
+		sh.x.assign(sh.local.size(), 0.0);
+		sh.v.assign(sh.local.size(), 0.0);
+	}
+	if (!r.Finish()) return false;
 	effective = V::MapValue(r.out);
 	return true;
 }
@@ -748,6 +901,11 @@ struct LiquidToken final : SolverStateToken {
 	double macroStart = 0;
 	std::vector<std::string> portNames;
 	std::uint64_t contacts = 0;
+	// M7d: sheets.
+	std::vector<LiquidSheet> sheets;
+	std::vector<std::vector<double>> sheetImpulse, sheetLastPressure;
+	bool sheetOpen = false;
+	double sheetStart = 0;
 };
 
 // The pack of a body's state in checkpoints: x (3), q (4), v (3), pi (3), mass,
@@ -848,6 +1006,15 @@ private:
 	double macroStart_ = 0;
 	std::vector<std::string> portNames_;
 	std::uint64_t contacts_ = 0;
+	// M7d: port sheets (a mesh surface accepted at each exchange's start, the
+	// pressure load offered at its end; one exchange per macro step, or per
+	// segment when free-running with a cached feed).
+	bool AcceptSheets(IPortExchange* ports, std::string& error);
+	bool OfferSheetLoads(IPortExchange* ports, double time, double span, std::string& error);
+	bool portSheets_ = false, sheetOpen_ = false;
+	double sheetStart_ = 0;
+	std::vector<double> sheetRelaxation_;
+	std::vector<std::vector<double>> sheetLastPressure_;
 };
 
 bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, SolverDescription& d, std::string& error)
@@ -920,12 +1087,30 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			for (const V& item : list->GetArray()) {
 				LiquidBody b;
 				V eff;
-				if (!ParseBody(item, setup.gravity, b, eff, error)) return false;
+				if (!ParseBody(item, setup.gravity, setup.grid.h, inputs, sceneNames, b, eff, error)) return false;
 				setup.bodies.push_back(std::move(b));
 				out.push_back(eff);
 			}
 		}
 		p.out.emplace_back("bodies", V::ArrayValue(out));
+	}
+	std::vector<double> sheetRelaxation;
+	{
+		// m7d: sheets (written back only when present: earlier effective parameters are unchanged).
+		V::Values out;
+		if (const V* list = p.Raw("sheets")) {
+			if (list->GetType() != V::Array) return p.Bad("sheets must be an array");
+			for (const V& item : list->GetArray()) {
+				LiquidSheet sh;
+				double relax = 1;
+				V eff;
+				if (!ParseSheet(item, sh, relax, eff, error)) return false;
+				setup.sheets.push_back(std::move(sh));
+				sheetRelaxation.push_back(relax);
+				out.push_back(eff);
+			}
+		}
+		if (!out.empty()) p.out.emplace_back("sheets", V::ArrayValue(out));
 	}
 	SolverOptions o;
 	{
@@ -982,6 +1167,22 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	for (std::size_t i = 0; i < setup.bodies.size(); ++i)
 		for (std::size_t j = 0; j < i; ++j)
 			if (setup.bodies[i].name == setup.bodies[j].name) return Fail(error, "body names must be unique: " + setup.bodies[i].name);
+	{
+		// m7d: sheet names and port names unique; no viscosity (the viscous solve does not see sheets).
+		std::vector<std::string> portNames{FieldsPort, StatePort, MassPort, LoadPort};
+		for (std::size_t i = 0; i < setup.sheets.size(); ++i) {
+			for (std::size_t j = 0; j < i; ++j)
+				if (setup.sheets[i].name == setup.sheets[j].name) return Fail(error, "sheet names must be unique: " + setup.sheets[i].name);
+			if (setup.sheets[i].motion != LiquidSheet::Motion::Port) continue;
+			for (const std::string* n : {&setup.sheets[i].port, &setup.sheets[i].loadPort}) {
+				if (std::find(portNames.begin(), portNames.end(), *n) != portNames.end()) return Fail(error, "sheet port names must be unique: " + *n);
+				portNames.push_back(*n);
+			}
+		}
+		if (!setup.sheets.empty() && setup.viscosity > 0)
+			return Fail(error, "sheets with viscosity are not supported (m7d: the viscous solve does not see a sheet, so viscous stress would "
+				"cross it and no viscous traction would be returned)");
+	}
 	candidate.effectiveParameters = V::MapValue(p.out);
 	setup_ = setup;
 	options_ = o;
@@ -994,6 +1195,9 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	for (const LiquidBody& b : setup.bodies) if (b.motion == BodyMotion::Port) portBodies_ = true;
 	implicitPorts_ = portBodies_;
 	for (const LiquidBody& b : setup.bodies) if (b.motion == BodyMotion::Port && b.staggered) implicitPorts_ = false;
+	portSheets_ = false;
+	for (const LiquidSheet& sh : setup.sheets) if (sh.motion == LiquidSheet::Motion::Port) portSheets_ = true;
+	sheetRelaxation_ = sheetRelaxation;
 	configured_ = true;
 
 	candidate.solverId = LiquidSolverId;
@@ -1041,6 +1245,15 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, ""});
 		candidate.ports.push_back({LoadPort, "body load", "N", "field.v1", true, "",
 			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, ""});
+	}
+	// M7d: sheets that follow a mesh surface (cloth's surface_state) and return the pressure load
+	// (declared as cloth's ports are, so a direct connection needs no adapter).
+	for (const LiquidSheet& sh : setup.sheets) {
+		if (sh.motion != LiquidSheet::Motion::Port) continue;
+		candidate.ports.push_back({sh.port, "surface", "m", "mesh.v2", false, "",
+			{{"normal", "normal", "1", 3}, {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""});
+		candidate.ports.push_back({sh.loadPort, "surface load", "Pa", "field.v1", true, "",
+			{{"pressure", "pressure", "Pa", 1}, {"traction", "traction", "Pa", 3}}, ""});
 	}
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17; `threads` does not change results"}};
@@ -1112,7 +1325,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		std::sort(candidate.evidence.conditions.begin(), candidate.evidence.conditions.end(),
 			[](const auto& a, const auto& b) { return a.first < b.first; });
 		candidate.evidence.scope = "Single-phase inviscid incompressible liquid with a free surface (p = 0, no surface tension) "
-			"in a box with free-slip walls, static solids and rigid bodies (sphere, box, cylinder) whose six degrees of freedom are "
+			"in a box with free-slip walls, static solids and rigid bodies (sphere, box, cylinder, closed triangle mesh) whose six degrees of freedom are "
 			"solved with the liquid in one symmetric pressure system (dynamic or rigid.bodies-driven bodies) or that move on a "
 			"prescribed path, on a uniform staggered grid: certified on canonical problems (those of the liquid alone, and the "
 			"added mass of an impulsively started and of an oscillating cylinder and an impulsively started sphere in concentric "
@@ -1205,6 +1418,31 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			candidate.notes.push_back("viscosity with bodies: case 10 (a settling sphere) is in the validation test, not in this evidence "
 				"(too slow for Configure; docs/SIMULATION_M7C_RESULTS.md)");
 	}
+	if (!setup.sheets.empty()) {
+		// M7d: sheets as moving boundaries, always preview.
+		std::vector<std::string> kinds;
+		for (const LiquidSheet& sh : setup.sheets) kinds.push_back(sh.motion == LiquidSheet::Motion::Port ? "port" : "prescribed");
+		std::sort(kinds.begin(), kinds.end());
+		kinds.erase(std::unique(kinds.begin(), kinds.end()), kinds.end());
+		candidate.evidence.conditions.push_back({"sheets", kinds});
+		std::sort(candidate.evidence.conditions.begin(), candidate.evidence.conditions.end(),
+			[](const auto& a, const auto& b) { return a.first < b.first; });
+		candidate.evidence.scope += " M7d adds thin open sheets (a cloth's surface through a port, or a prescribed paddle) as moving "
+			"boundaries: a grid face is closed where the segment between the two cell centres it separates crosses the sheet (no "
+			"volume removed, the sheet located to the cell-centre lattice, half a cell), with the sheet's normal velocity there, and "
+			"the liquid's pressure impulse on those faces is the load on the sheet. This is preview and not certified: no case "
+			"bounds its error; a cell whose centre the sheet crosses changes side within one step (noise in the load); the load "
+			"returned to a cloth is lagged by one macro step of a staggered exchange, which is unstable for sheets light against "
+			"the liquid they move (the added-mass instability, measured in docs/SIMULATION_M7D_RESULTS.md); tangential (viscous) "
+			"traction is not returned; liquid films thinner than a cell on a sheet are not resolved.";
+		candidate.evidence.fidelity = "preview";
+		if (caps.fidelityLimit.empty())
+			caps.fidelityLimit = "sheets: a thin surface as a face-crossing moving boundary with a lagged pressure load (preview, not certified)";
+		candidate.notes.push_back("sheets: face-crossing moving boundaries (preview); a port sheet's load is offered once per macro step "
+			"(the liquid should step before the cloth, or use Jacobi order, so that it reads the sheet's state at the macro step's start)");
+		// Measured (docs/SIMULATION_M7D_RESULTS.md): the crossings cost little next to the pressure solve.
+		caps.costEstimate *= 1.05;
+	}
 	d = std::move(candidate);
 	return true;
 }
@@ -1219,6 +1457,9 @@ bool LiquidSolver::Start(std::string& error)
 	macroStart_ = 0;
 	portNames_.clear();
 	contacts_ = 0;
+	sheetOpen_ = false;
+	sheetStart_ = 0;
+	sheetLastPressure_.assign(setup_.sheets.size(), {});
 	started_ = true;
 	return true;
 }
@@ -1333,6 +1574,67 @@ bool LiquidSolver::OfferLoads(IPortExchange* ports, double time, double span, st
 	return ports->Offer(LoadPort, time, bytes, error);
 }
 
+// M7d: each port sheet's surface (mesh.v2 or mesh.v1 with velocities; a fixed
+// topology) becomes its state; the faces it crosses are closed again.
+bool LiquidSolver::AcceptSheets(IPortExchange* ports, std::string& error)
+{
+	for (std::size_t i = 0; i < model_.sheets.size(); ++i) {
+		LiquidSheet& sh = model_.sheets[i];
+		if (sh.motion != LiquidSheet::Motion::Port) continue;
+		std::shared_ptr<const Bytes> bytes;
+		std::string why;
+		if (ports->Accept(sh.port, s_.t, bytes, why) != PortStatus::Ready || !bytes)
+			return Fail(error, "sheet " + sh.name + " needs a surface on port " + sh.port + " (a cloth's surface_state in a simulation_group, "
+				"or port_source)" + (why.empty() ? std::string() : ": " + why));
+		MeshTopology top;
+		MeshFrame f;
+		if (!PeekMeshTopology(*bytes, top, error) || !DecodeMesh(*bytes, InputBudget, ports->Resolver(), f, error))
+			return Fail(error, "sheet " + sh.name + ": the surface on " + sh.port + " is not a mesh frame: " + error);
+		if (f.velocities.size() != f.positions.size())
+			return Fail(error, "sheet " + sh.name + ": the surface on " + sh.port + " has no velocities");
+		if (!sh.topology.empty() && top.digest != sh.topology)
+			return Fail(error, "sheet " + sh.name + ": the surface on " + sh.port + " changed its topology");
+		if (sh.topology.empty()) {
+			sh.topology = top.digest;
+			sh.triangles = f.indices;
+		}
+		sh.x.resize(f.positions.size());
+		sh.v.resize(f.positions.size());
+		for (std::size_t k = 0; k < f.positions.size(); ++k) { sh.x[k] = FromF32(f.positions[k]); sh.v[k] = FromF32(f.velocities[k]); }
+	}
+	model_.UpdateSheetGeometry();
+	model_.ResetSheetImpulses();
+	return true;
+}
+
+// M7d: each port sheet's load over [sheetStart_, time]: the per-vertex pressure of
+// the liquid's mean force (LiquidSheets.h SheetPressure), relaxed with the last
+// offered load when `relaxation` < 1, as cloth's surface_load (field.v1 over the
+// surface's topology digest; channel pressure only, the traction being zero).
+bool LiquidSolver::OfferSheetLoads(IPortExchange* ports, double time, double span, std::string& error)
+{
+	const auto bits = [](double x) { const float v = static_cast<float>(x); std::uint32_t b; std::memcpy(&b, &v, 4); return b; };
+	for (std::size_t i = 0; i < model_.sheets.size(); ++i) {
+		const LiquidSheet& sh = model_.sheets[i];
+		if (sh.motion != LiquidSheet::Motion::Port || sh.topology.empty()) continue;
+		std::vector<double> p;
+		SheetPressure(sh, model_.sheetImpulse[i], span, p);
+		std::vector<double>& last = sheetLastPressure_[i];
+		const double w = sheetRelaxation_[i];
+		if (w < 1 && last.size() == p.size()) for (std::size_t k = 0; k < p.size(); ++k) p[k] = w*p[k] + (1 - w)*last[k];
+		last = p;
+		FieldFrame f;
+		f.domain = sh.topology;
+		f.count = static_cast<std::uint32_t>(sh.Vertices());
+		FieldChannel pressure{"pressure", "Pa", 1, {}};
+		for (double x : p) pressure.values.push_back(bits(x));
+		f.channels = {pressure};
+		auto bytes = std::make_shared<Bytes>();
+		if (!EncodeField(f, CodecBudget, *bytes, error) || !ports->Offer(sh.loadPort, time, bytes, error)) return false;
+	}
+	return true;
+}
+
 void LiquidSolver::WallContact(double dt)
 {
 	// Bodies the liquid integrates stop at the domain walls: sequential
@@ -1362,7 +1664,9 @@ void LiquidSolver::WallContact(double dt)
 		if (b.state.support.empty() && !b.state.sphere) {
 			Rigid::Shape rs;
 			rs.type = b.shape.type == BodyShape::Type::Sphere ? Rigid::Shape::Type::Sphere :
-				b.shape.type == BodyShape::Type::Box ? Rigid::Shape::Type::Box : Rigid::Shape::Type::Cylinder;
+				b.shape.type == BodyShape::Type::Box ? Rigid::Shape::Type::Box :
+				b.shape.type == BodyShape::Type::Mesh ? Rigid::Shape::Type::Mesh : Rigid::Shape::Type::Cylinder;
+			if (b.shape.mesh) { rs.vertices = b.shape.mesh->vertices; rs.triangles = b.shape.mesh->triangles; }   // m7d: body frame
 			rs.size = b.shape.size;
 			rs.radius = b.shape.radius;
 			rs.height = b.shape.height;
@@ -1444,7 +1748,22 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 		macroOpen_ = true;
 		macroStart_ = s_.t;
 	}
+	// M7d: port sheets: their surface at each macro step's start (each segment's
+	// when free-running with a cached feed), their load offered at its end.
+	if (portSheets_ && !ports)
+		return Fail(error, "the liquid's port sheets need their surface: run it in a simulation_group or feed the port with port_source");
+	if (portSheets_ && macro && !sheetOpen_ && s_.t < request.macroEnd && !s_.finished) {
+		if (!AcceptSheets(ports, error)) return false;
+		sheetOpen_ = true;
+		sheetStart_ = s_.t;
+	}
+	auto closeSheets = [&]() {
+		if (!portSheets_ || !sheetOpen_ || (macro && s_.t != request.macroEnd)) return true;
+		sheetOpen_ = false;
+		return OfferSheetLoads(ports, s_.t, s_.t - sheetStart_, error);
+	};
 	auto closeMacro = [&]() {
+		if (!closeSheets()) return false;
 		if (!portBodies_ || s_.t != request.macroEnd) return true;
 		const double span = macroOpen_ ? s_.t - macroStart_ : 0.0;
 		macroOpen_ = false;
@@ -1474,6 +1793,13 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			const double dtmax = model_.MaxStep(len);
 			s_.segN = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::ceil(len/dtmax*(1 - 1e-12))));
 			s_.segJ = 0;
+			if (portSheets_ && !macro && !sheetOpen_) {
+				if (!AcceptSheets(ports, error)) return false;
+				sheetOpen_ = true;
+				sheetStart_ = s_.t;
+				// The time step with the accepted sheet's speed.
+				s_.segN = std::max<std::uint64_t>(s_.segN, static_cast<std::uint64_t>(std::ceil(len/model_.MaxStep(len)*(1 - 1e-12))));
+			}
 		} else if (macro && s_.segTarget > request.macroEnd) return Fail(error, "macro end inside an interrupted segment");
 		offered = false;
 		while (s_.segJ < s_.segN) {
@@ -1497,6 +1823,7 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			++s_.segJ;
 		}
 		s_.segN = s_.segJ = 0;
+		if (!macro && !closeSheets()) return false;
 	}
 }
 
@@ -1537,6 +1864,19 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 			m.emplace_back("bodyImpulse", V::BytesValue(DoublesBytes(last)));
 		}
 	}
+	if (!model_.sheets.empty()) {
+		// M7d: per sheet its sizes and topology in the header, the arrays after the particles
+		// (only when there are sheets: other streams are m7c's).
+		V::Values list;
+		for (std::size_t i = 0; i < model_.sheets.size(); ++i) {
+			const LiquidSheet& sh = model_.sheets[i];
+			list.push_back(V::MapValue({{"vertices", V::Unsigned(sh.x.size()/3)}, {"triangles", V::Unsigned(sh.triangles.size()/3)},
+				{"pressure", V::Unsigned(sheetLastPressure_[i].size())}, {"topology", V::String(sh.topology)}}));
+		}
+		m.emplace_back("sheets", V::ArrayValue(list));
+		m.emplace_back("sheetOpen", V::Bool(sheetOpen_));
+		m.emplace_back("sheetStart", V::Float(sheetStart_));
+	}
 	Bytes header;
 	if (!RISECBOR64::Encode(V::MapValue(m), header, &error)) return false;
 	StreamWriter w(sink);
@@ -1549,6 +1889,12 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 	for (const auto& q : ps) { pd.push_back(q.x[0]); pd.push_back(q.x[1]); pd.push_back(q.x[2]); pd.push_back(q.radius); pd.push_back(q.sign); }
 	if (!w.Doubles(pd, error)) return false;
 	for (const auto& q : ps) if (!w.U64(q.id, error)) return false;
+	for (std::size_t i = 0; i < model_.sheets.size(); ++i) {
+		const LiquidSheet& sh = model_.sheets[i];
+		for (std::uint32_t k : sh.triangles) if (!w.U64(k, error)) return false;
+		if (!w.Doubles(sh.x, error) || !w.Doubles(sh.v, error) || !w.Doubles(model_.sheetImpulse[i], error) ||
+			!w.Doubles(sheetLastPressure_[i], error)) return false;
+	}
 	return true;
 }
 
@@ -1602,6 +1948,27 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 			portNames.push_back(n.GetText());
 		}
 	} else if (v.Find("bodies")) return Fail(error, "the liquid checkpoint holds bodies the configuration does not have");
+	// M7d: sheets.
+	struct SheetSizes { std::uint64_t vertices = 0, triangles = 0, pressure = 0; std::string topology; };
+	std::vector<SheetSizes> sheetSizes;
+	bool sheetOpen = false;
+	double sheetStart = 0;
+	if (!setup_.sheets.empty()) {
+		const V* list = v.Find("sheets");
+		if (!list || list->GetType() != V::Array || list->GetArray().size() != setup_.sheets.size() || !flag("sheetOpen", sheetOpen) ||
+			!real("sheetStart", sheetStart))
+			return Fail(error, "the liquid checkpoint does not hold the configured sheets");
+		for (const V& e : list->GetArray()) {
+			SheetSizes z;
+			const V* a = e.Find("vertices"); const V* b = e.Find("triangles"); const V* c = e.Find("pressure"); const V* t = e.Find("topology");
+			if (!a || !b || !c || !t || a->GetType() != V::UnsignedInteger || b->GetType() != V::UnsignedInteger ||
+				c->GetType() != V::UnsignedInteger || t->GetType() != V::Text || a->GetIntegerArgument() > (std::uint64_t(1) << 28) ||
+				b->GetIntegerArgument() > (std::uint64_t(1) << 28) || c->GetIntegerArgument() > (std::uint64_t(1) << 28))
+				return Fail(error, "invalid liquid checkpoint fields (sheets)");
+			z.vertices = a->GetIntegerArgument(); z.triangles = b->GetIntegerArgument(); z.pressure = c->GetIntegerArgument(); z.topology = t->GetText();
+			sheetSizes.push_back(z);
+		}
+	} else if (v.Find("sheets")) return Fail(error, "the liquid checkpoint holds sheets the configuration does not have");
 	// The static data (solid fractions) come from the configuration.
 	if (!model_.Initialize(setup_, options_, threads_, error)) return false;
 	const Grid& g = model_.GridSpec();
@@ -1624,6 +1991,27 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 		ps[i].sign = pd[5*i + 4];
 		if (!r.U64(ps[i].id, error)) return false;
 	}
+	std::vector<LiquidSheet> sheets = model_.sheets;
+	std::vector<std::vector<double>> sheetImpulse(sheets.size()), lastPressure(sheets.size());
+	for (std::size_t i = 0; i < sheets.size(); ++i) {
+		const SheetSizes& z = sheetSizes[i];
+		LiquidSheet& sh = sheets[i];
+		if (sh.motion == LiquidSheet::Motion::Prescribed && (z.vertices != sh.local.size()/3 || z.triangles != sh.triangles.size()/3))
+			return Fail(error, "the liquid checkpoint's sheet " + sh.name + " does not match the configuration");
+		if (24*(z.vertices*3 + z.triangles) > r.Remaining()) return Fail(error, "liquid checkpoint stream is truncated");
+		std::vector<std::uint32_t> tris(std::size_t(3*z.triangles));
+		for (auto& k : tris) {
+			std::uint64_t x = 0;
+			if (!r.U64(x, error)) return false;
+			if (x >= z.vertices) return Fail(error, "invalid liquid checkpoint (sheet triangles)");
+			k = std::uint32_t(x);
+		}
+		if (!r.Doubles(sh.x, std::size_t(3*z.vertices), error) || !r.Doubles(sh.v, std::size_t(3*z.vertices), error) ||
+			!r.Doubles(sheetImpulse[i], std::size_t(3*z.vertices), error) || !r.Doubles(lastPressure[i], std::size_t(z.pressure), error))
+			return false;
+		sh.triangles = std::move(tris);
+		sh.topology = z.topology;
+	}
 	if (r.Remaining() != 0) return Fail(error, "trailing bytes after the liquid checkpoint");
 	model_.phi = std::move(phi);
 	model_.q_ = std::move(q);
@@ -1633,6 +2021,16 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 	model_.targetVolume_ = target;
 	model_.steps = steps;
 	model_.particles.SetState(std::move(ps), nextId, options_.particle);
+	if (!sheets.empty()) {
+		// Before the bodies' geometry, which closes the sheets' faces again too.
+		model_.sheets = std::move(sheets);
+		model_.sheetImpulse = std::move(sheetImpulse);
+		sheetLastPressure_ = std::move(lastPressure);
+		model_.UpdateSheetGeometry();
+		model_.SetTime(seg.t);
+	}
+	sheetOpen_ = sheetOpen;
+	sheetStart_ = sheetStart;
 	if (!setup_.bodies.empty()) {
 		for (std::size_t i = 0; i < model_.bodies.size(); ++i) UnpackBody(&packed[BodyDoubles*i], model_.bodies[i], model_.bodyAccumulated[i]);
 		if (!lastImpulse.empty()) {
@@ -1692,6 +2090,11 @@ bool LiquidSolver::SaveState(std::shared_ptr<const SolverStateToken>& token, std
 	t->macroStart = macroStart_;
 	t->portNames = portNames_;
 	t->contacts = contacts_;
+	t->sheets = model_.sheets;
+	t->sheetImpulse = model_.sheetImpulse;
+	t->sheetLastPressure = sheetLastPressure_;
+	t->sheetOpen = sheetOpen_;
+	t->sheetStart = sheetStart_;
 	token = std::move(t);
 	return true;
 }
@@ -1709,6 +2112,15 @@ bool LiquidSolver::RestoreState(const SolverStateToken& token, std::string& erro
 	model_.targetVolume_ = t->targetVolume;
 	model_.steps = t->steps;
 	model_.particles.SetState(t->particles, t->nextId, options_.particle);
+	if (!t->sheets.empty()) {
+		model_.sheets = t->sheets;
+		model_.sheetImpulse = t->sheetImpulse;
+		sheetLastPressure_ = t->sheetLastPressure;
+		model_.UpdateSheetGeometry();
+		model_.SetTime(t->seg.t);
+	}
+	sheetOpen_ = t->sheetOpen;
+	sheetStart_ = t->sheetStart;
 	if (!t->bodies.empty()) {
 		model_.bodies = t->bodies;
 		model_.bodyAccumulated = t->accumulated;

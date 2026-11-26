@@ -791,7 +791,8 @@ double Submerged(bool threeD, double R, double h, double depth)
 }
 } // namespace
 
-AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, double shift, const SolverOptions& options, Pool* pool)
+AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, double shift, const SolverOptions& options, Pool* pool,
+	const BodyShape* shape)
 {
 	const double start = Now();
 	AddedMassResult r;
@@ -812,7 +813,7 @@ AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, 
 	fill.point = {{0, 2, 0}};
 	fill.axis = {{0, 1, 0}};
 	s.liquid.push_back(fill);
-	LiquidBody body = MakeBody(RoundBody(threeD, a, h), BodyMotion::Prescribed, 1, c, s.gravity);
+	LiquidBody body = MakeBody(shape && threeD ? *shape : RoundBody(threeD, a, h), BodyMotion::Prescribed, 1, c, s.gravity);
 	body.v0 = {{V, 0, 0}};
 	s.bodies.push_back(body);
 	SolverOptions o = options;
@@ -822,7 +823,7 @@ AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, 
 	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.error = 1e300; return r; }
 	r.added = -m.bodyImpulse[0][0]/V;
 	r.sideForce = std::fabs(m.bodyImpulse[0][1])/std::max(1e-300, std::fabs(m.bodyImpulse[0][0]));
-	r.exact = threeD ? 0.5*rho*RoundVolume(true, a, h)*(b*b*b + 2*a*a*a)/(b*b*b - a*a*a) :
+	r.exact = threeD ? 0.5*rho*(shape ? shape->Volume() : RoundVolume(true, a, h))*(b*b*b + 2*a*a*a)/(b*b*b - a*a*a) :
 		rho*Pi*a*a*(b*b + a*a)/(b*b - a*a)*h;
 	r.error = r.added/r.exact - 1;
 	r.seconds = Now() - start;
@@ -1140,13 +1141,15 @@ LiquidSetup FloatTank(int cells, bool threeD)
 }
 
 // The net vertical force on a kinematic body held at rest at height y (one step of 1e-4 s).
-double HeldForce(int cells, bool threeD, double ratio, double y, double shift, const SolverOptions& options, Pool* pool, bool& ok)
+double HeldForce(int cells, bool threeD, double ratio, double y, double shift, const SolverOptions& options, Pool* pool, bool& ok,
+	const BodyShape* shape)
 {
 	LiquidSetup s = FloatTank(cells, threeD);
 	const double h = s.grid.h;
-	const double mass = ratio*s.density*RoundVolume(threeD, FloatR, h);
+	const bool own = shape && threeD;
+	const double mass = ratio*s.density*(own ? shape->Volume() : RoundVolume(threeD, FloatR, h));
 	const V3 x{{0.5 + shift*h, y, threeD ? 0.5 + shift*h : 0.0}};
-	s.bodies.push_back(MakeBody(RoundBody(threeD, FloatR, h), BodyMotion::Prescribed, mass, x, s.gravity));
+	s.bodies.push_back(MakeBody(own ? *shape : RoundBody(threeD, FloatR, h), BodyMotion::Prescribed, mass, x, s.gravity));
 	SolverOptions o = options;
 	o.particles = false;
 	LiquidModel m;
@@ -1159,24 +1162,25 @@ double HeldForce(int cells, bool threeD, double ratio, double y, double shift, c
 }
 } // namespace
 
-FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shift, const SolverOptions& options, Pool* pool)
+FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shift, const SolverOptions& options, Pool* pool,
+	const BodyShape* shape)
 {
 	const double start = Now();
 	FloatStatics r;
 	const double h = 1.0/cells, R = FloatR;
-	const double mg = ratio*1000*RoundVolume(threeD, R, h)*9.81;
+	const double mg = ratio*1000*(shape && threeD ? shape->Volume() : RoundVolume(threeD, R, h))*9.81;
 	r.yExact = FloatEta + R - FloatingDepth(threeD, R, ratio);
 	bool ok = true;
-	double y0 = r.yExact, f0 = HeldForce(cells, threeD, ratio, y0, shift, options, pool, ok);
+	double y0 = r.yExact, f0 = HeldForce(cells, threeD, ratio, y0, shift, options, pool, ok, shape);
 	++r.solves;
 	r.imbalance = f0/mg;
-	double y1 = r.yExact + 0.02*R, f1 = HeldForce(cells, threeD, ratio, y1, shift, options, pool, ok);
+	double y1 = r.yExact + 0.02*R, f1 = HeldForce(cells, threeD, ratio, y1, shift, options, pool, ok, shape);
 	++r.solves;
 	for (int it = 0; it < 12 && ok && std::fabs(f1) > 1e-11*mg && f1 != f0; ++it) {
 		const double y2 = y1 - f1*(y1 - y0)/(f1 - f0);
 		y0 = y1; f0 = f1;
 		y1 = y2;
-		f1 = HeldForce(cells, threeD, ratio, y1, shift, options, pool, ok);
+		f1 = HeldForce(cells, threeD, ratio, y1, shift, options, pool, ok, shape);
 		++r.solves;
 	}
 	if (!ok) { r.offset = 1e300; return r; }

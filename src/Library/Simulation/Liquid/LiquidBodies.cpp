@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <thread>
 
 namespace RISE { namespace Simulation { namespace Liquid {
 
@@ -31,12 +32,242 @@ V3 ToBody(const Rigid::M3& R, const V3& X, const V3& p)
 
 const char* BodyShapeName(BodyShape::Type t)
 {
-	return t == BodyShape::Type::Sphere ? "sphere" : t == BodyShape::Type::Box ? "box" : "cylinder";
+	return t == BodyShape::Type::Sphere ? "sphere" : t == BodyShape::Type::Box ? "box" : t == BodyShape::Type::Cylinder ? "cylinder" : "mesh";
+}
+
+// ------------------------------------------------------------------ mesh bodies (m7d)
+
+namespace {
+V3 Sub3(const V3& a, const V3& b) { return {{a[0] - b[0], a[1] - b[1], a[2] - b[2]}}; }
+double Dot3(const V3& a, const V3& b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+
+// The point of triangle abc nearest p (Ericson, Real-Time Collision Detection, 5.1.5).
+V3 ClosestPoint(const V3& p, const V3& a, const V3& b, const V3& c)
+{
+	const V3 ab = Sub3(b, a), ac = Sub3(c, a), ap = Sub3(p, a);
+	const double d1 = Dot3(ab, ap), d2 = Dot3(ac, ap);
+	if (d1 <= 0 && d2 <= 0) return a;
+	const V3 bp = Sub3(p, b);
+	const double d3 = Dot3(ab, bp), d4 = Dot3(ac, bp);
+	if (d3 >= 0 && d4 <= d3) return b;
+	const double vc = d1*d4 - d3*d2;
+	if (vc <= 0 && d1 >= 0 && d3 <= 0) { const double v = d1/(d1 - d3); return {{a[0] + v*ab[0], a[1] + v*ab[1], a[2] + v*ab[2]}}; }
+	const V3 cp = Sub3(p, c);
+	const double d5 = Dot3(ab, cp), d6 = Dot3(ac, cp);
+	if (d6 >= 0 && d5 <= d6) return c;
+	const double vb = d5*d2 - d1*d6;
+	if (vb <= 0 && d2 >= 0 && d6 <= 0) { const double w = d2/(d2 - d6); return {{a[0] + w*ac[0], a[1] + w*ac[1], a[2] + w*ac[2]}}; }
+	const double va = d3*d6 - d5*d4;
+	if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+		const double w = (d4 - d3)/((d4 - d3) + (d5 - d6));
+		return {{b[0] + w*(c[0] - b[0]), b[1] + w*(c[1] - b[1]), b[2] + w*(c[2] - b[2])}};
+	}
+	const double denom = 1/(va + vb + vc), v = vb*denom, w = vc*denom;
+	return {{a[0] + ab[0]*v + ac[0]*w, a[1] + ab[1]*v + ac[1]*w, a[2] + ab[2]*v + ac[2]*w}};
+}
+
+// A bounding-volume tree over triangles for nearest-point queries (median
+// splits on the longest axis, ties by triangle index: deterministic).
+class TriangleTree {
+public:
+	TriangleTree(const std::vector<double>& v, const std::vector<std::uint32_t>& t) : v_(v), t_(t) {
+		std::vector<std::uint32_t> ids;
+		for (std::uint32_t k = 0; 3*std::size_t(k) < t.size(); ++k) {
+			const V3 a = P(t[3*k]), b = P(t[3*k + 1]), c = P(t[3*k + 2]);
+			const V3 n{{(b[1] - a[1])*(c[2] - a[2]) - (b[2] - a[2])*(c[1] - a[1]), (b[2] - a[2])*(c[0] - a[0]) - (b[0] - a[0])*(c[2] - a[2]),
+				(b[0] - a[0])*(c[1] - a[1]) - (b[1] - a[1])*(c[0] - a[0])}};
+			if (Dot3(n, n) > 0) ids.push_back(k);   // a collapsed triangle has no nearest point of its own
+		}
+		if (!ids.empty()) { nodes_.emplace_back(); Build(0, ids, 0, ids.size()); }
+		order_ = ids;
+	}
+	double Nearest(const V3& p) const {
+		if (nodes_.empty()) return 1e300;
+		double best = 1e300;
+		std::vector<std::uint32_t> stack{0};
+		while (!stack.empty()) {
+			const Node& n = nodes_[stack.back()];
+			stack.pop_back();
+			if (BoxDistance2(n, p) >= best) continue;
+			if (n.count) {
+				for (std::uint32_t m = 0; m < n.count; ++m) {
+					const std::uint32_t k = order_[n.first + m];
+					const V3 q = ClosestPoint(p, P(t_[3*k]), P(t_[3*k + 1]), P(t_[3*k + 2]));
+					const V3 d = Sub3(p, q);
+					best = std::min(best, Dot3(d, d));
+				}
+				continue;
+			}
+			const double l = BoxDistance2(nodes_[n.first], p), r = BoxDistance2(nodes_[n.first + 1], p);
+			if (l < r) { stack.push_back(n.first + 1); stack.push_back(n.first); }
+			else { stack.push_back(n.first); stack.push_back(n.first + 1); }
+		}
+		return std::sqrt(best);
+	}
+private:
+	struct Node { V3 lo, hi; std::uint32_t first = 0, count = 0; };   // leaf: triangles [first, first + count) of order_; else children first, first + 1
+	V3 P(std::uint32_t k) const { return {{v_[3*std::size_t(k)], v_[3*std::size_t(k) + 1], v_[3*std::size_t(k) + 2]}}; }
+	static double BoxDistance2(const Node& n, const V3& p) {
+		double s = 0;
+		for (int a = 0; a < 3; ++a) {
+			const double e = p[a] < n.lo[a] ? n.lo[a] - p[a] : p[a] > n.hi[a] ? p[a] - n.hi[a] : 0.0;
+			s += e*e;
+		}
+		return s;
+	}
+	void Build(std::uint32_t at, std::vector<std::uint32_t>& ids, std::size_t b, std::size_t e) {
+		Node n;
+		n.lo = {{1e300, 1e300, 1e300}};
+		n.hi = {{-1e300, -1e300, -1e300}};
+		for (std::size_t i = b; i < e; ++i)
+			for (int m = 0; m < 3; ++m) {
+				const V3 q = P(t_[3*std::size_t(ids[i]) + std::size_t(m)]);
+				for (int a = 0; a < 3; ++a) { n.lo[a] = std::min(n.lo[a], q[a]); n.hi[a] = std::max(n.hi[a], q[a]); }
+			}
+		if (e - b <= 4) { n.first = std::uint32_t(b); n.count = std::uint32_t(e - b); nodes_[at] = n; return; }
+		int axis = 0;
+		for (int a = 1; a < 3; ++a) if (n.hi[a] - n.lo[a] > n.hi[axis] - n.lo[axis]) axis = a;
+		auto centre = [&](std::uint32_t k) {
+			return P(t_[3*std::size_t(k)])[axis] + P(t_[3*std::size_t(k) + 1])[axis] + P(t_[3*std::size_t(k) + 2])[axis];
+		};
+		std::sort(ids.begin() + std::ptrdiff_t(b), ids.begin() + std::ptrdiff_t(e), [&](std::uint32_t x, std::uint32_t y) {
+			const double cx = centre(x), cy = centre(y);
+			return cx != cy ? cx < cy : x < y;
+		});
+		const std::size_t mid = b + (e - b)/2;
+		// The two children are allocated next to each other.
+		n.first = std::uint32_t(nodes_.size());
+		nodes_.emplace_back();
+		nodes_.emplace_back();
+		nodes_[at] = n;
+		Build(n.first, ids, b, mid);
+		Build(n.first + 1, ids, mid, e);
+	}
+	const std::vector<double>& v_;
+	const std::vector<std::uint32_t>& t_;
+	std::vector<Node> nodes_;
+	std::vector<std::uint32_t> order_;
+};
+} // namespace
+
+double MeshDistance::Sample(const V3& y) const
+{
+	double f[3], out = 0;
+	int i[3];
+	for (int a = 0; a < 3; ++a) {
+		const double x = (y[a] - origin[a])/spacing;
+		const double top = double(nodes[a] - 1);
+		if (x < 0) out += x*x;
+		else if (x > top) out += (x - top)*(x - top);
+		const double c = Clamp(x, 0.0, top);
+		i[a] = std::min(nodes[a] - 2, int(std::floor(c)));
+		f[a] = c - i[a];
+	}
+	if (out > 0) return pad + spacing*std::sqrt(out);
+	auto at = [&](int di, int dj, int dk) {
+		return d[std::size_t(i[0] + di) + std::size_t(nodes[0])*(std::size_t(i[1] + dj) + std::size_t(nodes[1])*std::size_t(i[2] + dk))];
+	};
+	const double c00 = at(0, 0, 0) + f[0]*(at(1, 0, 0) - at(0, 0, 0)), c10 = at(0, 1, 0) + f[0]*(at(1, 1, 0) - at(0, 1, 0));
+	const double c01 = at(0, 0, 1) + f[0]*(at(1, 0, 1) - at(0, 0, 1)), c11 = at(0, 1, 1) + f[0]*(at(1, 1, 1) - at(0, 1, 1));
+	const double c0 = c00 + f[1]*(c10 - c00), c1 = c01 + f[1]*(c11 - c01);
+	return c0 + f[2]*(c1 - c0);
+}
+
+bool MakeMeshShape(const std::vector<double>& vertices, const std::vector<std::uint32_t>& triangles, double spacing, double pad,
+	BodyShape& shape, V3& centroid, Rigid::M3& axes, std::string& error)
+{
+	if (!(spacing > 0) || !(pad >= 0)) { error = "mesh body: invalid distance lattice"; return false; }
+	Rigid::Shape rs;
+	rs.type = Rigid::Shape::Type::Mesh;
+	rs.vertices = vertices;
+	rs.triangles = triangles;
+	Rigid::MassProperties mp;
+	if (!Rigid::ShapeMass(rs, 1.0, mp, error)) { error = "mesh body: " + error; return false; }
+	V3 moments;
+	Rigid::PrincipalAxes(mp.inertia, moments, axes);
+	if (!(moments[0] > 0) || !(moments[1] > 0) || !(moments[2] > 0)) { error = "mesh body has a degenerate inertia"; return false; }
+	centroid = mp.centroid;
+	auto m = std::make_shared<MeshDistance>();
+	m->volume = mp.volume;
+	m->unitMoments = moments;
+	m->triangles = triangles;
+	m->vertices.resize(vertices.size());
+	V3 lo{{1e300, 1e300, 1e300}}, hi{{-1e300, -1e300, -1e300}};
+	for (std::size_t k = 0; k + 2 < vertices.size(); k += 3) {
+		const V3 y = Rigid::ApplyT(axes, V3{{vertices[k] - centroid[0], vertices[k + 1] - centroid[1], vertices[k + 2] - centroid[2]}});
+		for (int a = 0; a < 3; ++a) {
+			m->vertices[k + std::size_t(a)] = y[a];
+			lo[a] = std::min(lo[a], y[a]);
+			hi[a] = std::max(hi[a], y[a]);
+		}
+		m->boundingRadius = std::max(m->boundingRadius, Norm3(y));
+	}
+	m->smallestExtent = std::min(hi[0] - lo[0], std::min(hi[1] - lo[1], hi[2] - lo[2]));
+	m->spacing = spacing;
+	m->pad = pad;
+	std::size_t total = 1;
+	for (int a = 0; a < 3; ++a) {
+		m->origin[a] = lo[a] - pad;
+		m->nodes[a] = std::max(2, int(std::ceil((hi[a] - lo[a] + 2*pad)/spacing)) + 1);
+		total *= std::size_t(m->nodes[a]);
+	}
+	if (total > (std::size_t(1) << 28)) { error = "mesh body: the distance lattice is too large (more than 2^28 nodes)"; return false; }
+	m->d.assign(total, 0.0);
+	const TriangleTree tree(m->vertices, m->triangles);
+	const auto& vb = m->vertices;
+	auto vert = [&](std::uint32_t k) { return V3{{vb[3*std::size_t(k)], vb[3*std::size_t(k) + 1], vb[3*std::size_t(k) + 2]}}; };
+	// The triangles each x row of nodes may cross (by their yz bounds), for the sign.
+	const int ny = m->nodes[1], nz = m->nodes[2], nx = m->nodes[0];
+	std::vector<std::vector<std::uint32_t>> rows(std::size_t(ny)*std::size_t(nz));
+	for (std::uint32_t t = 0; 3*std::size_t(t) < triangles.size(); ++t) {
+		double l[3] = {1e300, 1e300, 1e300}, u[3] = {-1e300, -1e300, -1e300};
+		for (int c = 0; c < 3; ++c) {
+			const V3 p = vert(triangles[3*std::size_t(t) + std::size_t(c)]);
+			for (int a = 0; a < 3; ++a) { l[a] = std::min(l[a], p[a]); u[a] = std::max(u[a], p[a]); }
+		}
+		const int j0 = std::max(0, int(std::floor((l[1] - m->origin[1])/spacing)) - 1), j1 = std::min(ny - 1, int(std::ceil((u[1] - m->origin[1])/spacing)) + 1);
+		const int k0 = std::max(0, int(std::floor((l[2] - m->origin[2])/spacing)) - 1), k1 = std::min(nz - 1, int(std::ceil((u[2] - m->origin[2])/spacing)) + 1);
+		for (int k = k0; k <= k1; ++k) for (int j = j0; j <= j1; ++j) rows[std::size_t(j) + std::size_t(ny)*std::size_t(k)].push_back(t);
+	}
+	const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+	Pool pool(std::min(16u, hw));
+	const double oy = 0.0001234567*spacing, oz = 0.0000987654*spacing;   // off the lattice so the line misses edges
+	ForRows(&pool, rows.size(), 16, [&](std::size_t r0, std::size_t r1) {
+		std::vector<double> xs;
+		for (std::size_t r = r0; r < r1; ++r) {
+			const int j = int(r % std::size_t(ny)), k = int(r/std::size_t(ny));
+			const double y = m->origin[1] + j*spacing + oy, z = m->origin[2] + k*spacing + oz;
+			xs.clear();
+			for (std::uint32_t t : rows[r]) {
+				const V3 a = vert(triangles[3*std::size_t(t)]), b = vert(triangles[3*std::size_t(t) + 1]), c = vert(triangles[3*std::size_t(t) + 2]);
+				const double det = (b[1] - a[1])*(c[2] - a[2]) - (c[1] - a[1])*(b[2] - a[2]);
+				if (det == 0) continue;
+				const double u = ((y - a[1])*(c[2] - a[2]) - (c[1] - a[1])*(z - a[2]))/det;
+				const double v = ((b[1] - a[1])*(z - a[2]) - (y - a[1])*(b[2] - a[2]))/det;
+				if (u < 0 || v < 0 || u + v > 1) continue;
+				xs.push_back(a[0] + u*(b[0] - a[0]) + v*(c[0] - a[0]));
+			}
+			std::sort(xs.begin(), xs.end());
+			std::size_t q = 0;
+			for (int i = 0; i < nx; ++i) {
+				const V3 p{{m->origin[0] + i*spacing, m->origin[1] + j*spacing, m->origin[2] + k*spacing}};
+				while (q < xs.size() && xs[q] <= p[0]) ++q;
+				const bool inside = ((xs.size() - q) & 1) != 0;
+				const double dist = tree.Nearest(p);
+				m->d[std::size_t(i) + std::size_t(nx)*r] = inside ? -dist : dist;
+			}
+		}
+	});
+	shape = BodyShape();
+	shape.type = BodyShape::Type::Mesh;
+	shape.mesh = std::move(m);
+	return true;
 }
 
 double BodyShape::Distance(const V3& y) const
 {
 	switch (type) {
+	case Type::Mesh: return mesh ? mesh->Sample(y) : 1e300;
 	case Type::Sphere: return Norm3(y) - radius;
 	case Type::Box: {
 		double outside = 0, inside = -1e300;
@@ -62,6 +293,7 @@ double BodyShape::BoundingRadius() const
 	case Type::Sphere: return radius;
 	case Type::Box: return 0.5*Norm3(size);
 	case Type::Cylinder: return std::sqrt(radius*radius + 0.25*height*height);
+	case Type::Mesh: return mesh ? mesh->boundingRadius : 0;
 	}
 	return 0;
 }
@@ -72,6 +304,7 @@ double BodyShape::Volume() const
 	case Type::Sphere: return 4.0/3.0*Pi*radius*radius*radius;
 	case Type::Box: return size[0]*size[1]*size[2];
 	case Type::Cylinder: return Pi*radius*radius*height;
+	case Type::Mesh: return mesh ? mesh->volume : 0;
 	}
 	return 0;
 }
@@ -88,6 +321,11 @@ V3 BodyShape::Moments(double m) const
 		const double r = m*(3*radius*radius + height*height)/12;
 		return {{r, r, 0.5*m*radius*radius}};
 	}
+	case Type::Mesh: {
+		if (!mesh || !(mesh->volume > 0)) return {{0, 0, 0}};
+		const double rho = m/mesh->volume;
+		return {{rho*mesh->unitMoments[0], rho*mesh->unitMoments[1], rho*mesh->unitMoments[2]}};
+	}
 	}
 	return {{0, 0, 0}};
 }
@@ -98,6 +336,7 @@ double BodyShape::SmallestExtent() const
 	case Type::Sphere: return 2*radius;
 	case Type::Box: return std::min(size[0], std::min(size[1], size[2]));
 	case Type::Cylinder: return std::min(2*radius, height);
+	case Type::Mesh: return mesh ? mesh->smallestExtent : 0;
 	}
 	return 0;
 }

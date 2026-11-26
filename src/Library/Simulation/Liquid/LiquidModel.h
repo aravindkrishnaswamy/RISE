@@ -55,6 +55,7 @@
 #include "LiquidBodies.h"
 #include "LiquidFlow.h"
 #include "LiquidLevelSet.h"
+#include "LiquidSheets.h"
 #include "LiquidViscosity.h"
 #include "../SimulationGrid.h"
 #include "../SimulationMesh.h"
@@ -111,6 +112,9 @@ struct LiquidSetup {
 	//! Rigid bodies (m7b, LiquidBodies.h): their initial state (mass and
 	//! moments set; a Dynamic body's externalForce is m g).
 	std::vector<LiquidBody> bodies;
+	//! Sheets (m7d, LiquidSheets.h): thin open surfaces as moving boundaries
+	//! (preview); a Port sheet's geometry arrives through its port.
+	std::vector<LiquidSheet> sheets;
 };
 
 struct StepStats {
@@ -121,6 +125,8 @@ struct StepStats {
 	bool reinitialised = false;
 	std::size_t clamped = 0;          // valid faces whose speed the safeguard limited this step
 	ViscosityStats viscous;           // m7c: the viscous solve (iterations 0 when off)
+	std::size_t sheetCellsKept = 0;   // m7d: cells beside a sheet kept from filling across it
+	std::size_t sheetParticlesRemoved = 0;   // m7d: marker particles carried through a sheet
 	// Wall seconds per phase: extrapolation, level set (advection + reinit +
 	// volume), particles, momentum advection, pressure (assembly + solve + update).
 	double extrapolate = 0, levelSet = 0, particles = 0, momentum = 0, project = 0, bodies = 0, viscosity = 0;
@@ -197,6 +203,18 @@ public:
 	void UpdateBodyGeometry(bool extrapolate);
 	//! The speed bound the time step uses for the bodies.
 	double BodySpeed() const;
+	//! m7d: the sheets' current state (positions and velocities at the end of
+	//! the last step), the impulse the liquid exerted on each sheet's vertices
+	//! since ResetSheetImpulses (3 per vertex, N s) and in the last step in total
+	//! (N s per axis).  Without sheets nothing of this runs.
+	std::vector<LiquidSheet> sheets;
+	std::vector<std::vector<double>> sheetImpulse;
+	std::vector<V3> sheetStepImpulse;
+	void ResetSheetImpulses();
+	//! Recomputes the faces the sheets close (after their positions were set
+	//! from outside: a port, a restored state).
+	void UpdateSheetGeometry();
+	const std::vector<SheetCrossing>& SheetFaces() const { return sheetFaces_; }
 
 	// Static data derived from the setup.
 	std::vector<double> solidNodes, openCells;
@@ -242,6 +260,18 @@ private:
 	//! extrapolation drove a static drop's parasitic currents to the capillary speed,
 	//! in 2-D without viscosity and in 3-D with it; docs/SIMULATION_M7C_RESULTS.md).
 	int InterfaceLinearLayers() const { return setup_.surfaceTension > 0 ? 0 : options_.linearExtrapolationLayers; }
+	// m7d sheets: the closed faces, their fractions before closing (same order), the
+	// solid face velocity without bodies, and the faces whose velocity was set.
+	void MoveSheets(double dt);
+	void RestoreSheetFaces();
+	void CloseSheetFaces();
+	void ClearSheetVelocity(MacField& solid);
+	void SetSheetVelocity(MacField& solid);
+	void AccumulateSheetImpulse();
+	std::vector<SheetCrossing> sheetFaces_;
+	std::vector<double> sheetSaved_;
+	MacField sheetSolid_;
+	std::array<std::vector<std::size_t>,3> sheetTouched_;
 	BodyGeometry geometry_;
 	std::vector<double> kappa_;
 	std::array<std::vector<std::int16_t>,3> owner_;

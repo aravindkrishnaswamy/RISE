@@ -174,7 +174,10 @@ LiquidBody MakeBody(const BodyShape& shape, BodyMotion motion, double mass, cons
 //! docs/SIMULATION_M7B_RESULTS.md section 4).  The box is [0, 1]^d, the centre
 //! offset from the grid by `shift` cells along each axis; `cells` per unit.
 struct AddedMassResult { double added = 0, exact = 0, error = 0, seconds = 0; int iterations = 0, steps = 0; double sideForce = 0; };
-AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, double shift, const SolverOptions& options, Pool* pool);
+//! m7d: `shape` (3-D only; e.g. a tessellated sphere as a mesh body) replaces
+//! the analytic sphere; the reference stays the sphere's with the shape's volume.
+AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, double shift, const SolverOptions& options, Pool* pool,
+	const BodyShape* shape = nullptr);
 //! The same container in 2-D with the cylinder in prescribed oscillation
 //! x = x0 + X sin(w t): the force's Fourier sine coefficient over `periods`
 //! periods against m_a X w^2 (the nonlinear terms are O((X / b)^2) and
@@ -229,7 +232,10 @@ double FloatingDepth(bool threeD, double R, double ratio);
 //! / (m g).  The body's centre is offset from the grid by `shift` cells in x
 //! and z (0: on a node, symmetric).
 struct FloatStatics { double offset = 0, imbalance = 0, yExact = 0, yDiscrete = 0, seconds = 0; int solves = 0; };
-FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shift, const SolverOptions& options, Pool* pool);
+//! m7d: `shape` (3-D only) replaces the analytic sphere, with the mass ratio rho
+//! times the shape's volume; the reference stays the sphere's.
+FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shift, const SolverOptions& options, Pool* pool,
+	const BodyShape* shape = nullptr);
 
 //! Floating dynamics: the same tank with the body Dynamic (coupled in the
 //! pressure solve), released at rest `start` R above (+) or below its

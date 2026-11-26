@@ -85,18 +85,10 @@ bool TranslateSolid(const std::string& text, V& solid, std::string& error)
 // `motion dynamic|prescribed|port`, `density d`, `mass m`, `at x y z`,
 // `orientation w x y z`, `velocity vx vy vz`, `spin wx wy wz`, `lock <xyzr>`,
 // `amplitude ax ay az`, `frequency f`, `phase p`, `coupling implicit|staggered`.
-bool TranslateBody(const std::string& text, V& body, std::string& error)
+// The options of `body` and `body_object` (from token i).
+bool BodyOptions(const std::vector<std::string>& t, std::size_t i, V::Members& m, const std::string& where, std::string& error)
 {
-	const auto t = Tokens(text);
-	const std::string where = "body `" + text + "`";
-	if (t.size() < 2) return Fail(error, where + ": expected `<name> sphere r | box sx sy sz | cylinder r h [options]`");
-	V::Members m{{"name", V::String(t[0])}, {"shape", V::String(t[1])}};
-	std::size_t i = 2;
 	V v;
-	if (t[1] == "sphere" && Numbers(t, 2, 1, v)) { m.emplace_back("radius", v.GetArray()[0]); i = 3; }
-	else if (t[1] == "box" && Numbers(t, 2, 3, v)) { m.emplace_back("size", v); i = 5; }
-	else if (t[1] == "cylinder" && Numbers(t, 2, 2, v)) { m.emplace_back("radius", v.GetArray()[0]); m.emplace_back("height", v.GetArray()[1]); i = 4; }
-	else return Fail(error, where + ": the shape is `sphere r`, `box sx sy sz` or `cylinder r h` (metres, body frame, cylinder axis z)");
 	while (i < t.size()) {
 		const std::string& k = t[i];
 		double x = 0;
@@ -117,7 +109,87 @@ bool TranslateBody(const std::string& text, V& body, std::string& error)
 			"orientation w x y z | velocity vx vy vz | spin wx wy wz | lock <xyzr> | amplitude ax ay az | frequency f | phase p | "
 			"coupling implicit|staggered)");
 	}
+	return true;
+}
+
+bool TranslateBody(const std::string& text, V& body, std::string& error)
+{
+	const auto t = Tokens(text);
+	const std::string where = "body `" + text + "`";
+	if (t.size() < 2) return Fail(error, where + ": expected `<name> sphere r | box sx sy sz | cylinder r h [options]`");
+	V::Members m{{"name", V::String(t[0])}, {"shape", V::String(t[1])}};
+	std::size_t i = 2;
+	V v;
+	if (t[1] == "sphere" && Numbers(t, 2, 1, v)) { m.emplace_back("radius", v.GetArray()[0]); i = 3; }
+	else if (t[1] == "box" && Numbers(t, 2, 3, v)) { m.emplace_back("size", v); i = 5; }
+	else if (t[1] == "cylinder" && Numbers(t, 2, 2, v)) { m.emplace_back("radius", v.GetArray()[0]); m.emplace_back("height", v.GetArray()[1]); i = 4; }
+	else return Fail(error, where + ": the shape is `sphere r`, `box sx sy sz` or `cylinder r h` (metres, body frame, cylinder axis z)");
+	if (!BodyOptions(t, i, m, where, error)) return false;
 	body = V::MapValue(m);
+	return true;
+}
+
+// m7d: `body_object <object> [options]`: the object's closed mesh (world space at
+// t = 0) as a body named after it, with the options of `body` but `at` and
+// `orientation` (the solver refuses those: the pose is the mesh's own).
+bool TranslateBodyObject(const std::string& text, V& body, std::string& error)
+{
+	const auto t = Tokens(text);
+	if (t.empty()) return Fail(error, "body_object names a scene object");
+	V::Members m{{"name", V::String(t[0])}, {"shape", V::String("mesh")}, {"scene_input", V::String(t[0])}};
+	if (!BodyOptions(t, 1, m, "body_object `" + text + "`", error)) return false;
+	body = V::MapValue(m);
+	return true;
+}
+
+// m7d: `sheet <name> port [port <accepted>] [load_port <offered>] [relaxation w]`
+// (a mesh surface through a port, e.g. a cloth's surface_state) or `sheet <name>
+// rect sx sy [divisions nx ny] [at x y z] [orientation w x y z] [velocity vx vy vz]
+// [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` (a prescribed
+// rectangle in its frame's xy plane, normal +z).
+bool TranslateSheet(const std::string& text, V& sheet, std::string& error)
+{
+	const auto t = Tokens(text);
+	const std::string where = "sheet `" + text + "`";
+	if (t.size() < 2) return Fail(error, where + ": expected `<name> port [options]` or `<name> rect sx sy [options]`");
+	V::Members m{{"name", V::String(t[0])}};
+	std::size_t i = 2;
+	V v;
+	if (t[1] == "port") {
+		m.emplace_back("motion", V::String("port"));
+		while (i < t.size()) {
+			double x = 0;
+			if ((t[i] == "port" || t[i] == "load_port") && i + 1 < t.size()) { m.emplace_back(t[i], V::String(t[i + 1])); i += 2; }
+			else if (t[i] == "relaxation" && i + 1 < t.size() && Real(t[i + 1], x)) { m.emplace_back("relaxation", V::Float(x)); i += 2; }
+			else return Fail(error, where + ": unexpected `" + t[i] + "` (port <name> | load_port <name> | relaxation w)");
+		}
+	} else if (t[1] == "rect" && Numbers(t, 2, 2, v)) {
+		m.emplace_back("size", v);
+		i = 4;
+		while (i < t.size()) {
+			const std::string& k = t[i];
+			double x = 0;
+			if ((k == "frequency" || k == "phase") && i + 1 < t.size() && Real(t[i + 1], x)) { m.emplace_back(k, V::Float(x)); i += 2; }
+			else if (k == "divisions" && i + 2 < t.size()) {
+				V::Values d;
+				for (int q = 1; q <= 2; ++q) {
+					double c = 0;
+					if (!Real(t[i + std::size_t(q)], c) || c < 1 || std::floor(c) != c) return Fail(error, where + ": divisions are two counts");
+					d.push_back(V::Unsigned(std::uint64_t(c)));
+				}
+				m.emplace_back("divisions", V::ArrayValue(d));
+				i += 3;
+			}
+			else if (k == "at" && Numbers(t, i + 1, 3, v)) { m.emplace_back("position", v); i += 4; }
+			else if (k == "orientation" && Numbers(t, i + 1, 4, v)) { m.emplace_back("orientation", v); i += 5; }
+			else if (k == "velocity" && Numbers(t, i + 1, 3, v)) { m.emplace_back("velocity", v); i += 4; }
+			else if (k == "spin" && Numbers(t, i + 1, 3, v)) { m.emplace_back("angular_velocity", v); i += 4; }
+			else if (k == "amplitude" && Numbers(t, i + 1, 3, v)) { m.emplace_back("amplitude", v); i += 4; }
+			else return Fail(error, where + ": unexpected `" + k + "` (divisions nx ny | at x y z | orientation w x y z | velocity vx vy vz | "
+				"spin wx wy wz | amplitude ax ay az | frequency f | phase p)");
+		}
+	} else return Fail(error, where + ": the kind is `port` or `rect sx sy`");
+	sheet = V::MapValue(m);
 	return true;
 }
 
@@ -151,7 +223,21 @@ bool Translate(const SchemaFieldValues& values, SchemaTranslation& out, std::str
 		if (!TranslateBody(text, b, error)) return false;
 		bodies.push_back(b);
 	}
+	for (const auto& text : all("body_object")) {
+		V b;
+		if (!TranslateBodyObject(text, b, error)) return false;
+		bodies.push_back(b);
+		const std::string object = Tokens(text)[0];
+		if (std::find(out.sceneInputs.begin(), out.sceneInputs.end(), object) == out.sceneInputs.end()) out.sceneInputs.push_back(object);
+	}
+	V::Values sheets;
+	for (const auto& text : all("sheet")) {
+		V sh;
+		if (!TranslateSheet(text, sh, error)) return false;
+		sheets.push_back(sh);
+	}
 	if (!liquid.empty()) out.parameters.emplace_back("liquid", V::ArrayValue(liquid));
+	if (!sheets.empty()) out.parameters.emplace_back("sheets", V::ArrayValue(sheets));
 	if (!solids.empty()) out.parameters.emplace_back("solids", V::ArrayValue(solids));
 	if (!bodies.empty()) out.parameters.emplace_back("bodies", V::ArrayValue(bodies));
 	return true;
@@ -163,11 +249,11 @@ ParameterSchema Build()
 	s.solverId = LiquidSolverId;
 	s.summary = "A free-surface liquid simulated by the liquid.mac solver (staggered grid, level-set interface advected "
 		"by WENO5, two-stage WENO5 momentum, ghost-fluid free surface and cut-cell static solids in one pressure solve, "
-		"optionally viscous (implicit, strain-rate form) and with surface tension (ghost-fluid Laplace jump), m7c), baked by `rise-sim bake <scene>`.  Publishes `surface` (mesh.v2, a new topology "
+		"optionally viscous (implicit, strain-rate form) and with surface tension (ghost-fluid Laplace jump), m7c; rigid bodies including closed meshes and thin sheets as moving boundaries, m7d), baked by `rise-sim bake <scene>`.  Publishes `surface` (mesh.v2, a new topology "
 		"every frame; render it with simulated_mesh_geometry and a dielectric), optionally `fields` (grid.v1: phi, "
 		"pressure, velocity) and `particles` (points.v1, the marker particles); rigid bodies (`body`) move with the liquid "
 		"in its pressure solve and publish `bodies` (transform.v1).  Parameters, evidence and limits: "
-		"docs/SIMULATION_M7A_RESULTS.md, docs/SIMULATION_M7B_RESULTS.md, docs/SIMULATION_M7C_RESULTS.md.";
+		"docs/SIMULATION_M7A_RESULTS.md, docs/SIMULATION_M7B_RESULTS.md, docs/SIMULATION_M7C_RESULTS.md, docs/SIMULATION_M7D_RESULTS.md.";
 	auto P = [&s](const char* name, SchemaType type, const char* def, const char* units, const char* doc) -> SchemaParameter& {
 		s.parameters.emplace_back();
 		SchemaParameter& p = s.parameters.back();
@@ -232,6 +318,16 @@ ParameterSchema Build()
 		"implicit|staggered`), `at x y z`, `orientation w x y z`, `velocity vx vy vz`, `spin wx wy wz`, dynamic `density d` "
 		"(default 1000) or `mass m` and `lock <xyzr>`, prescribed `amplitude ax ay az`, `frequency f`, `phase p`; "
 		"render it with transform_source <simulation>.bodies[<name>]");
+	F("sheet", SchemaChunkField::Kind::Text, "A thin open sheet as a moving boundary (m7d, preview): `<name> port [port <accepted>] "
+		"[load_port <offered>] [relaxation w]` follows a mesh surface (connect a cloth's surface_state to <accepted>, default "
+		"sheet_state, and <offered>, default sheet_load, to its surface_load in a simulation_group; the load is lagged one macro "
+		"step and unstable for light sheets: docs/SIMULATION_M7D_RESULTS.md), or `<name> rect sx sy [divisions nx ny] [at x y z] "
+		"[orientation w x y z] [velocity vx vy vz] [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` a prescribed "
+		"rectangle (its frame's xy plane, normal +z)");
+	// Text, as rigid_simulation's body_object: the object's name is followed by options.
+	F("body_object", SchemaChunkField::Kind::Text, "A rigid body made from a scene object's closed mesh (m7d; world "
+		"space at t = 0, the body frame at its centroid and principal axes, mass properties from the mesh): `<object>` then the "
+		"options of `body` but `at` and `orientation`; the body is named after the object");
 	s.outputs = {{"surface", "mesh.v2", "The liquid surface: positions (m), velocities (m/s), normals; a new topology every frame"},
 		{"fields", "grid.v1", "phi (m), pressure (Pa), cell-centred velocity (m/s), when publish_fields"},
 		{"particles", "points.v1", "Marker particles: positions, velocities, radii, sign attribute, when publish_particles"},

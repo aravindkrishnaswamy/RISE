@@ -396,40 +396,88 @@ double InterfaceJump(const PressureOptions& o, std::size_t l, std::size_t r, dou
 
 void ExtrapolateVelocity(const Grid& g, MacField& u, FaceMask& valid, int layers, int linearLayers, Pool* pool)
 {
+	// m7d (profiled at 256^3: 9% of the samples, scanning every face per layer): a
+	// layer changes only the unknown faces with a known neighbour, so each layer
+	// visits that front alone (the first from one scan; the next are the unknown
+	// neighbours of the faces the layer filled).  Every value is the same
+	// expression of the same layer-start values as the full scan computed, so the
+	// result is bitwise the same.
 	for (int a = 0; a < 3; ++a) {
 		const auto d = g.FaceDims(a);
 		std::vector<std::uint8_t>& known = valid[a];
-		std::vector<std::uint8_t> next;
 		std::vector<double>& f = u.u[a];
-		for (int layer = 0; layer < layers; ++layer) {
-			next = known;
-			ForRows(pool, FaceRows(g, a), RowGrain(d[0]), [&](std::size_t r0, std::size_t r1) {
-				for (std::size_t r = r0; r < r1; ++r) {
-					const int j = int(r % std::size_t(d[1])), k = int(r/std::size_t(d[1]));
+		const std::size_t rows = FaceRows(g, a), grain = RowGrain(d[0]);
+		auto neighbours = [&](std::size_t c, int out[6][3], int& count) {
+			const int idx[3] = {int(c % std::size_t(d[0])), int((c/std::size_t(d[0])) % std::size_t(d[1])),
+				int(c/(std::size_t(d[0])*std::size_t(d[1])))};
+			count = 0;
+			for (int b = 0; b < 3; ++b) for (int dir = -1; dir <= 1; dir += 2) {
+				int q[3] = {idx[0], idx[1], idx[2]};
+				q[b] += dir;
+				if (q[b] < 0 || q[b] >= d[b]) continue;
+				out[count][0] = q[0]; out[count][1] = q[1]; out[count][2] = q[2];
+				++count;
+			}
+		};
+		// The first front: unknown faces with a known neighbour, in index order.
+		std::vector<std::size_t> front;
+		{
+			std::vector<std::vector<std::size_t>> part(Cloth::Chunks(rows, grain));
+			Cloth::ParallelFor(pool, part.size(), [&](std::size_t ch) {
+				for (std::size_t r = ch*grain; r < std::min(rows, (ch + 1)*grain); ++r)
 					for (int i = 0; i < d[0]; ++i) {
-						const std::size_t c = Index(d, i, j, k);
+						const std::size_t c = std::size_t(i) + std::size_t(d[0])*r;
 						if (known[c]) continue;
-						const int idx[3] = {i, j, k};
-						double s = 0;
-						int m = 0;
-						for (int b = 0; b < 3; ++b) for (int dir = -1; dir <= 1; dir += 2) {
-							int q[3] = {idx[0], idx[1], idx[2]};
-							q[b] += dir;
-							if (q[b] < 0 || q[b] >= d[b]) continue;
-							const std::size_t nb = Index(d, q[0], q[1], q[2]);
-							if (!known[nb]) continue;
-							// Linear along the axis in the first `linearLayers` layers when the
-							// next face is known too; else the neighbour's value.
-							q[b] += dir;
-							const bool two = layer < linearLayers && q[b] >= 0 && q[b] < d[b] && known[Index(d, q[0], q[1], q[2])];
-							s += two ? 2*f[nb] - f[Index(d, q[0], q[1], q[2])] : f[nb];
-							++m;
-						}
-						if (m) { f[c] = s/m; next[c] = 1; }
+						int q[6][3], m = 0;
+						neighbours(c, q, m);
+						for (int e = 0; e < m; ++e) if (known[Index(d, q[e][0], q[e][1], q[e][2])]) { part[ch].push_back(c); break; }
 					}
+			});
+			for (auto& p : part) front.insert(front.end(), p.begin(), p.end());
+		}
+		std::vector<double> value;
+		for (int layer = 0; layer < layers && !front.empty(); ++layer) {
+			value.assign(front.size(), 0.0);
+			constexpr std::size_t FrontGrain = 4096;
+			Cloth::ParallelFor(pool, Cloth::Chunks(front.size(), FrontGrain), [&](std::size_t ch) {
+				for (std::size_t e = ch*FrontGrain; e < std::min(front.size(), (ch + 1)*FrontGrain); ++e) {
+					const std::size_t c = front[e];
+					const int idx[3] = {int(c % std::size_t(d[0])), int((c/std::size_t(d[0])) % std::size_t(d[1])),
+						int(c/(std::size_t(d[0])*std::size_t(d[1])))};
+					double s = 0;
+					int m = 0;
+					for (int b = 0; b < 3; ++b) for (int dir = -1; dir <= 1; dir += 2) {
+						int q[3] = {idx[0], idx[1], idx[2]};
+						q[b] += dir;
+						if (q[b] < 0 || q[b] >= d[b]) continue;
+						const std::size_t nb = Index(d, q[0], q[1], q[2]);
+						if (!known[nb]) continue;
+						// Linear along the axis in the first `linearLayers` layers when the
+						// next face is known too; else the neighbour's value.
+						q[b] += dir;
+						const bool two = layer < linearLayers && q[b] >= 0 && q[b] < d[b] && known[Index(d, q[0], q[1], q[2])];
+						s += two ? 2*f[nb] - f[Index(d, q[0], q[1], q[2])] : f[nb];
+						++m;
+					}
+					value[e] = s/m;   // m >= 1 on the front
 				}
 			});
-			known.swap(next);
+			for (std::size_t e = 0; e < front.size(); ++e) { f[front[e]] = value[e]; known[front[e]] = 1; }
+			if (layer + 1 == layers) break;
+			// The next front: the unknown neighbours of the faces just filled (sorted, unique).
+			std::vector<std::size_t> next;
+			next.reserve(2*front.size());
+			for (std::size_t c : front) {
+				int q[6][3], m = 0;
+				neighbours(c, q, m);
+				for (int e = 0; e < m; ++e) {
+					const std::size_t nb = Index(d, q[e][0], q[e][1], q[e][2]);
+					if (!known[nb]) next.push_back(nb);
+				}
+			}
+			std::sort(next.begin(), next.end());
+			next.erase(std::unique(next.begin(), next.end()), next.end());
+			front.swap(next);
 		}
 		for (std::size_t c = 0; c < f.size(); ++c) if (!known[c]) f[c] = 0;
 	}

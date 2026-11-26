@@ -387,6 +387,7 @@ scenes/Tests/Signals/proximity_mesh_contact.RISEscene  1d1febb74b8e2436c498c27d5
 scenes/Tests/Simulation/cloth_chain_scene_inputs.RISEscene  1cc34326abe100a253ab7f0ab6700cb0d8f8dae55e84102afae750f696350638  1491  28
 scenes/Tests/Simulation/cloth_flag_scene.RISEscene  8f3ae2ab4045512d2ceb240a795ee1ed0c2949c25315dc880c7c91675a47ae04  1211  27
 scenes/Tests/Simulation/fire_campfire_scene.RISEscene  fa06cc6b2b8846c576f15443ae5ca66c153611834e61313011d2a0000e2cf386  599  21
+scenes/Tests/Simulation/liquid_cloth_flap.RISEscene  5b5d3ddbc054032694d63f17855d687bf8916b19ad5c9246fa7d3e4d8b3418b5  2505  41
 scenes/Tests/Simulation/liquid_dam_break.RISEscene  cc52a0ede6e7a8bc4e7bb1bca483d589a55db18142343a42e2a7c6a624f2fc0f  1754  33
 scenes/Tests/Simulation/liquid_honey_water.RISEscene  9dbe671a4b0b1f99e6b24d4224fa85a16d2f1bf594d03bcb9d19856cf983875f  1992  35
 scenes/Tests/Simulation/liquid_rigid_bodies.RISEscene  ce916114dd4b964f9ab8a5825c97318315dcada0beaa12c15787683fc82de541  2870  47

@@ -47,6 +47,7 @@
 #include "../Rigid/RigidBody.h"
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -55,12 +56,33 @@ namespace RISE { namespace Simulation { namespace Liquid {
 using Quat = Rigid::Quat;
 using Vec6 = std::array<double,6>;
 
+//! m7d: a closed triangle mesh as a body (MakeMeshShape).  Its signed
+//! distance in the body frame (the centroid, principal axes) is computed once
+//! on a lattice of spacing `spacing` covering the mesh and `pad` beyond it:
+//! at each lattice node the exact distance to the nearest triangle (a
+//! bounding-volume tree), the sign by the parity of crossings along +x (a
+//! closed mesh).  Distance() interpolates trilinearly (exact for a plane;
+//! O(spacing^2 curvature) otherwise) and returns pad plus the distance to the
+//! lattice beyond it, a lower bound of the true distance there.
+struct MeshDistance {
+	V3 origin{{0, 0, 0}};
+	double spacing = 1, pad = 0;
+	std::array<int,3> nodes{{0, 0, 0}};
+	std::vector<double> d;                     // per node, x fastest
+	std::vector<double> vertices;              // body frame, 3 per vertex
+	std::vector<std::uint32_t> triangles;
+	double volume = 0, boundingRadius = 0, smallestExtent = 0;
+	V3 unitMoments{{0, 0, 0}};                 // principal moments at unit density (kg m^2 per kg/m^3)
+	double Sample(const V3& y) const;
+};
+
 //! A body's shape in its body frame (centred at the centre of mass).
 struct BodyShape {
-	enum class Type { Sphere, Box, Cylinder };
+	enum class Type { Sphere, Box, Cylinder, Mesh };
 	Type type = Type::Sphere;
 	double radius = 0.1, height = 0.2;   // sphere, cylinder (axis z, capped, total length)
 	V3 size{{0.2, 0.2, 0.2}};            // box: full extents
+	std::shared_ptr<const MeshDistance> mesh;   // Mesh (m7d)
 	//! Exact signed distance at a body-frame point (negative inside).
 	double Distance(const V3& local) const;
 	double BoundingRadius() const;
@@ -71,6 +93,18 @@ struct BodyShape {
 	double SmallestExtent() const;
 };
 const char* BodyShapeName(BodyShape::Type t);
+
+//! m7d: a mesh body from a closed, outward-oriented triangle mesh in its
+//! authoring frame.  The volume, centroid and inertia come from the mesh by
+//! the divergence theorem (Rigid::ShapeMass, which refuses an open or
+//! inconsistently oriented mesh); the body frame is the centroid and the
+//! principal axes (Rigid::PrincipalAxes: the frame rigid.bodies gives the same
+//! mesh), so a body at authoring pose (position p, rotation Ra) has its centre
+//! of mass at p + Ra centroid and orientation Ra axes.  `spacing` is the
+//! distance lattice's (the liquid uses h / 2), `pad` its margin beyond the
+//! mesh (at least the liquid's band plus a cell).
+bool MakeMeshShape(const std::vector<double>& vertices, const std::vector<std::uint32_t>& triangles, double spacing, double pad,
+	BodyShape& shape, V3& centroid, Rigid::M3& axes, std::string& error);
 
 enum class BodyMotion {
 	Dynamic,      // integrated by the liquid (mass from its density or mass), coupled in the pressure solve
