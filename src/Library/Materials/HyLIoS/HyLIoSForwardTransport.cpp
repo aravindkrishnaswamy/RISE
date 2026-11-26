@@ -76,6 +76,31 @@ SmoothDielectricEvaluation ParticleDielectric(SlabVector direction,ParticleVecto
 const SlabBoundaryEncounter& ForwardState::PendingBoundary() const {
     if(!pending_) throw std::logic_error("no pending forward boundary");return encounter_;
 }
+ForwardLayerValidation ValidateForwardLayers(const std::array<ForwardLayer,6>& layers) {
+    ForwardLayerValidation result;
+    for(std::size_t i=0;i<6;++i) {
+        const auto& l=layers[i];
+        Require(Finite(l.thicknessMetres)&&l.thicknessMetres>0&&Finite(l.hostAbsorptionPerMetre)&&l.hostAbsorptionPerMetre>=0&&Finite(l.realIOR)&&l.realIOR>0,"invalid layer");
+        result.planes[i+1]=result.planes[i]+l.thicknessMetres;
+        Require(Finite(result.planes[i+1])&&result.planes[i+1]>result.planes[i],"layer planes not representably separated");
+        if(l.organelle) {
+            const auto& o=*l.organelle;
+            Require(o.organization==ForwardOrganization::IndividualSpheroids||o.organization==ForwardOrganization::ExplicitComplexPackV1,"unversioned complex transport is unsupported");
+            Require(Finite(o.volumeFraction)&&o.volumeFraction>=0&&o.volumeFraction<=1&&Finite(o.absorptionPerMetre)&&o.absorptionPerMetre>=0&&Finite(o.realIOR)&&o.realIOR>0,"invalid organelle coefficients");
+            if(o.organization==ForwardOrganization::ExplicitComplexPackV1) {
+                // Constructor validates count, conservative support and range even
+                // at zero outer fraction; it does not generate a layout.
+                ComplexLayout check(o.envelopeRadiusMetres,o.semiMinorMetres,o.semiMajorMetres,o.childCount);
+                result.geometricRates[i]=GeometricEncounterRate(ProlateSurfaceToVolume(o.envelopeRadiusMetres,o.envelopeRadiusMetres),o.volumeFraction);
+                if(o.volumeFraction>0) Require(o.envelopeRadiusMetres<l.thicknessMetres/2,"layer cannot contain positive-measure envelopes");
+            } else {
+                result.geometricRates[i]=GeometricEncounterRate(ProlateSurfaceToVolume(o.semiMinorMetres,o.semiMajorMetres),o.volumeFraction);
+                if(o.volumeFraction>0) Require(o.semiMinorMetres<l.thicknessMetres/2,"layer cannot contain positive-measure spheroid placements");
+            }
+        }
+    }
+    return result;
+}
 HyLIoSForwardTransport::HyLIoSForwardTransport(std::array<ForwardLayer,6> layers,double wavelengthNm,
     double exteriorIOR,double fiberRate,AbsorptionEstimator estimator,double rouletteTarget,ForwardPlacementPolicy placementPolicy,ForwardPostScatterPolicy postScatterPolicy):
     layers_(layers),wavelengthNm_(wavelengthNm),exteriorIOR_(exteriorIOR),fiberRate_(fiberRate),
@@ -86,28 +111,11 @@ HyLIoSForwardTransport::HyLIoSForwardTransport(std::array<ForwardLayer,6> layers
     Require(Finite(fiberRate)&&fiberRate>=0,"invalid PD fiber rate");
     Require(estimator==AbsorptionEstimator::Analog||estimator==AbsorptionEstimator::Weighted,"invalid estimator");
     Require(Finite(rouletteTarget)&&rouletteTarget>=0&&(estimator==AbsorptionEstimator::Weighted||rouletteTarget==0),"invalid roulette target");
-    for(std::size_t i=0;i<6;++i) {
-        const auto& l=layers_[i];
-        Require(Finite(l.thicknessMetres)&&l.thicknessMetres>0&&Finite(l.hostAbsorptionPerMetre)&&l.hostAbsorptionPerMetre>=0&&Finite(l.realIOR)&&l.realIOR>0,"invalid layer");
-        planes_[i+1]=planes_[i]+l.thicknessMetres;
-        Require(Finite(planes_[i+1])&&planes_[i+1]>planes_[i],"layer planes not representably separated");
-        if(l.organelle) {
-            const auto& o=*l.organelle;
-            Require(o.organization==ForwardOrganization::IndividualSpheroids||o.organization==ForwardOrganization::ExplicitComplexPackV1,"unversioned complex transport is unsupported");
-            Require(Finite(o.volumeFraction)&&o.volumeFraction>=0&&o.volumeFraction<=1&&Finite(o.absorptionPerMetre)&&o.absorptionPerMetre>=0&&Finite(o.realIOR)&&o.realIOR>0,"invalid organelle coefficients");
-            if(o.organization==ForwardOrganization::ExplicitComplexPackV1) {
-                Require(i!=4||fiberRate_==0,"PD complex host gaps with fiber scattering are unsupported");
-                // Constructor validates count, conservative support and range even
-                // at zero outer fraction; it does not generate a layout.
-                ComplexLayout check(o.envelopeRadiusMetres,o.semiMinorMetres,o.semiMajorMetres,o.childCount);
-                geometricRates_[i]=GeometricEncounterRate(ProlateSurfaceToVolume(o.envelopeRadiusMetres,o.envelopeRadiusMetres),o.volumeFraction);
-                if(o.volumeFraction>0) Require(o.envelopeRadiusMetres<l.thicknessMetres/2,"layer cannot contain positive-measure envelopes");
-            } else {
-                geometricRates_[i]=GeometricEncounterRate(ProlateSurfaceToVolume(o.semiMinorMetres,o.semiMajorMetres),o.volumeFraction);
-                if(o.volumeFraction>0) Require(o.semiMinorMetres<l.thicknessMetres/2,"layer cannot contain positive-measure spheroid placements");
-            }
-        }
-    }
+    const auto validated=ValidateForwardLayers(layers_);
+    planes_=validated.planes;
+    geometricRates_=validated.geometricRates;
+    if(layers_[4].organelle&&layers_[4].organelle->organization==ForwardOrganization::ExplicitComplexPackV1)
+        Require(fiberRate_==0,"PD complex host gaps with fiber scattering are unsupported");
 }
 ForwardState HyLIoSForwardTransport::Begin(SlabVector position,SlabVector direction) const {
     Require(direction.z>=0,"forward launch points outward");direction=Unit(direction);

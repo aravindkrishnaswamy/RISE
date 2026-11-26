@@ -140,3 +140,6 @@ HyLIoSMeasurementStatisticsTest	pool	2
 EnvironmentSamplerDomainTest	pool	2
 HyLIoSAngularLineageTest	pool	3
 HyLIoSCoupledAngularLineageTest	pool	3	Scheduling estimate; deterministic support-certificate controls
+HyLIoSResolvedExperimentTest	pool	2	Scheduling estimate; deterministic resolver and driver controls
+AgentJsonLocaleTest	pool	2	Scheduling estimate; locale isolated to standalone process
+AgentJsonLifetimeTest	pool	1	Scheduling estimate; process teardown controls

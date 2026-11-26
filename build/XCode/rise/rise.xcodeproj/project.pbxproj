@@ -2367,12 +2367,20 @@
 		5B90B7BBFD1058E46B67BBCB /* RadiometricEXRWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = D99AFBB7562F1E34E43E6857 /* RadiometricEXRWriter.h */; };
 		315CE684522C6F3DC4ED2738 /* HyLIoSLocalResponse.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */; };
 		89E867628ED4DE3682734DA9 /* HyLIoSLocalResponseAsset.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 326B3136204C91364DAB712E /* HyLIoSLocalResponseAsset.cpp */; };
+		103CFCD385129F36F1E2391A /* HyLIoSForwardExperiment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AEED4C9D1A736A1C9F26F913 /* HyLIoSForwardExperiment.cpp */; };
+		2B1770C192A47D9219FF1874 /* HyLIoSResolvedExperiment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4175506315E6D39804790E43 /* HyLIoSResolvedExperiment.cpp */; };
 		E5949482CA8C75B5E1B37E73 /* HyLIoSLocalResponse.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */; };
 		B8AC542CE55B4B335AA3B84C /* HyLIoSLocalResponseAsset.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 326B3136204C91364DAB712E /* HyLIoSLocalResponseAsset.cpp */; };
+		63BAC765CDD5B454CC9A1D58 /* HyLIoSForwardExperiment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AEED4C9D1A736A1C9F26F913 /* HyLIoSForwardExperiment.cpp */; };
+		E7A96B971F2FD2BD2EE67F81 /* HyLIoSResolvedExperiment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4175506315E6D39804790E43 /* HyLIoSResolvedExperiment.cpp */; };
 		3562E0EBF2ADB623EACED14B /* HyLIoSLocalResponse.h in Headers */ = {isa = PBXBuildFile; fileRef = 8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */; };
 		277EEB5EE46B5F6DAED29084 /* HyLIoSLocalResponseAsset.h in Headers */ = {isa = PBXBuildFile; fileRef = 8E5D4159876DC4B276758977 /* HyLIoSLocalResponseAsset.h */; };
+		A6EA73EAB80E81B89E361FEE /* HyLIoSForwardExperiment.h in Headers */ = {isa = PBXBuildFile; fileRef = 7B019C594DF6994A09850764 /* HyLIoSForwardExperiment.h */; };
+		0F883AA73C8F642C30FF203C /* HyLIoSResolvedExperiment.h in Headers */ = {isa = PBXBuildFile; fileRef = 9841BFFFB0E13104B88B1814 /* HyLIoSResolvedExperiment.h */; };
 		DF47C212F5911C2563A7280C /* HyLIoSLocalResponse.h in Sources */ = {isa = PBXBuildFile; fileRef = 8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */; };
 		D57B20B43A357ED891FE72A1 /* HyLIoSLocalResponseAsset.h in Sources */ = {isa = PBXBuildFile; fileRef = 8E5D4159876DC4B276758977 /* HyLIoSLocalResponseAsset.h */; };
+		7A09EC64FE900A3091244416 /* HyLIoSForwardExperiment.h in Sources */ = {isa = PBXBuildFile; fileRef = 7B019C594DF6994A09850764 /* HyLIoSForwardExperiment.h */; };
+		037A1C1479C695DAD4B62859 /* HyLIoSResolvedExperiment.h in Sources */ = {isa = PBXBuildFile; fileRef = 9841BFFFB0E13104B88B1814 /* HyLIoSResolvedExperiment.h */; };
 		83D1B8E7409543769B9A413B /* BeautyMoments.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ADF64BEF802E79B5E2593F13 /* BeautyMoments.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		09AA73CDCDF9C464EFBCF1CB /* BeautyMoments.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ADF64BEF802E79B5E2593F13 /* BeautyMoments.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		33940A8ECB57646F9ED87F72 /* BeautyMoments.h in Headers */ = {isa = PBXBuildFile; fileRef = 4F7ACBD67B9C06888F28002C /* BeautyMoments.h */; };
@@ -3694,8 +3702,12 @@
 		D99AFBB7562F1E34E43E6857 /* RadiometricEXRWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RadiometricEXRWriter.h; sourceTree = "<group>"; };
 		E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSLocalResponse.cpp; sourceTree = "<group>"; };
 		326B3136204C91364DAB712E /* HyLIoSLocalResponseAsset.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSLocalResponseAsset.cpp; sourceTree = "<group>"; };
+		AEED4C9D1A736A1C9F26F913 /* HyLIoSForwardExperiment.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSForwardExperiment.cpp; sourceTree = "<group>"; };
+		4175506315E6D39804790E43 /* HyLIoSResolvedExperiment.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSResolvedExperiment.cpp; sourceTree = "<group>"; };
 		8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSLocalResponse.h; sourceTree = "<group>"; };
 		8E5D4159876DC4B276758977 /* HyLIoSLocalResponseAsset.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSLocalResponseAsset.h; sourceTree = "<group>"; };
+		7B019C594DF6994A09850764 /* HyLIoSForwardExperiment.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSForwardExperiment.h; sourceTree = "<group>"; };
+		9841BFFFB0E13104B88B1814 /* HyLIoSResolvedExperiment.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSResolvedExperiment.h; sourceTree = "<group>"; };
 		ADF64BEF802E79B5E2593F13 /* BeautyMoments.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BeautyMoments.cpp; sourceTree = "<group>"; };
 		4F7ACBD67B9C06888F28002C /* BeautyMoments.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BeautyMoments.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -4245,8 +4257,12 @@
 			children = (
 				E1D47A2EBD05D87A88F3A5D1 /* HyLIoSLocalResponse.cpp */,
 				326B3136204C91364DAB712E /* HyLIoSLocalResponseAsset.cpp */,
+				AEED4C9D1A736A1C9F26F913 /* HyLIoSForwardExperiment.cpp */,
+				4175506315E6D39804790E43 /* HyLIoSResolvedExperiment.cpp */,
 				8DA9A324E91C8014877F988A /* HyLIoSLocalResponse.h */,
 				8E5D4159876DC4B276758977 /* HyLIoSLocalResponseAsset.h */,
+				7B019C594DF6994A09850764 /* HyLIoSForwardExperiment.h */,
+				9841BFFFB0E13104B88B1814 /* HyLIoSResolvedExperiment.h */,
 				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
 				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
 				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
@@ -5425,6 +5441,8 @@
 				33940A8ECB57646F9ED87F72 /* BeautyMoments.h in Headers */,
 				3562E0EBF2ADB623EACED14B /* HyLIoSLocalResponse.h in Headers */,
 				277EEB5EE46B5F6DAED29084 /* HyLIoSLocalResponseAsset.h in Headers */,
+				A6EA73EAB80E81B89E361FEE /* HyLIoSForwardExperiment.h in Headers */,
+				0F883AA73C8F642C30FF203C /* HyLIoSResolvedExperiment.h in Headers */,
 				E7181177FFCED65B0FC5D3B5 /* RadiometricFilm.h in Headers */,
 				E6FA99CBB391FA9356BF6513 /* RadiometricCheckpoint.h in Headers */,
 				3BE2A88523DB258FEA765D3F /* RadiometricPublication.h in Headers */,
@@ -6399,6 +6417,8 @@
 				83D1B8E7409543769B9A413B /* BeautyMoments.cpp in Sources */,
 				315CE684522C6F3DC4ED2738 /* HyLIoSLocalResponse.cpp in Sources */,
 				89E867628ED4DE3682734DA9 /* HyLIoSLocalResponseAsset.cpp in Sources */,
+				103CFCD385129F36F1E2391A /* HyLIoSForwardExperiment.cpp in Sources */,
+				2B1770C192A47D9219FF1874 /* HyLIoSResolvedExperiment.cpp in Sources */,
 				C24074A619394CD3F9637B70 /* RadiometricFilm.cpp in Sources */,
 				0ADC0537D9646D193CB1FC2D /* RadiometricCheckpoint.cpp in Sources */,
 				A0B84D492F89FFF497649EA7 /* RadiometricEXRWriter.cpp in Sources */,
@@ -6880,8 +6900,12 @@
 				CFB111ADCB6C001C652395C7 /* BeautyMoments.h in Sources */,
 				E5949482CA8C75B5E1B37E73 /* HyLIoSLocalResponse.cpp in Sources */,
 				B8AC542CE55B4B335AA3B84C /* HyLIoSLocalResponseAsset.cpp in Sources */,
+				63BAC765CDD5B454CC9A1D58 /* HyLIoSForwardExperiment.cpp in Sources */,
+				E7A96B971F2FD2BD2EE67F81 /* HyLIoSResolvedExperiment.cpp in Sources */,
 				DF47C212F5911C2563A7280C /* HyLIoSLocalResponse.h in Sources */,
 				D57B20B43A357ED891FE72A1 /* HyLIoSLocalResponseAsset.h in Sources */,
+				7A09EC64FE900A3091244416 /* HyLIoSForwardExperiment.h in Sources */,
+				037A1C1479C695DAD4B62859 /* HyLIoSResolvedExperiment.h in Sources */,
 				BD8EF538D52001CCF0074612 /* RadiometricFilm.cpp in Sources */,
 				63D1305BFE2D852336D6FC19 /* RadiometricCheckpoint.cpp in Sources */,
 				98F8809810850A0FD1DD4A46 /* RadiometricEXRWriter.cpp in Sources */,

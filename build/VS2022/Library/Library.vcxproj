@@ -247,6 +247,8 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponseAsset.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardExperiment.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSResolvedExperiment.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp" />
@@ -908,6 +910,8 @@
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponseAsset.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardExperiment.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSResolvedExperiment.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.h" />

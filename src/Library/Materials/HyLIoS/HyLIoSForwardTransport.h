@@ -62,6 +62,17 @@ struct ForwardLayer {
     double thicknessMetres, hostAbsorptionPerMetre, realIOR;
     std::optional<ForwardOrganelle> organelle;
 };
+// Shared no-RNG resolved-layer validation. Coefficient/geometry rules, cumulative
+// plane representability and positive-measure containment match the kernel.
+// Experiment-dependent policies (fiber scattering, estimator, exterior) remain
+// constructor checks. Input/numeric failures throw std::exception-derived
+// errors, including std::invalid_argument and std::runtime_error from delegated
+// geometry/rate validation.
+struct ForwardLayerValidation {
+    std::array<double,7> planes{};
+    std::array<double,6> geometricRates{};
+};
+ForwardLayerValidation ValidateForwardLayers(const std::array<ForwardLayer,6>&);
 enum class ForwardTermination {
     None, ExternalReflection, SubsurfaceReturn, Absorbed, RouletteKilled,
     ZeroWeight, Cancelled, InvalidSample, NumericalFailure,
