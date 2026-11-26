@@ -71,6 +71,9 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
 - [LIGHTS.md](LIGHTS.md): emitter and light-sampling architecture;
   [ENVIRONMENT_SAMPLING.md](ENVIRONMENT_SAMPLING.md) records environment proposal
   coordinates, PDFs, power and ownership contracts
+- [RADIOMETRIC_PRIMITIVES.md](RADIOMETRIC_PRIMITIVES.md): fixed-wavelength scalar
+  accumulation, exact represented-moment variance resolution, checkpoints and raw
+  EXR output; the P6b renderer adapter and calibration gates remain open
 - [MIS_HEURISTICS.md](MIS_HEURISTICS.md): PT/BDPT/VCM/MLT MIS choices and
   subsurface-jump partitions
 - [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md): $\eta^2$

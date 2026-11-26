@@ -591,6 +591,9 @@
     <ClCompile Include="..\..\..\src\Library\RasterImages\EXRWriter.cpp">
       <Filter>Raster Images\EXR</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\RadiometricEXRWriter.cpp">
+      <Filter>Raster Images\EXR</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RasterImages\PPMWriter.cpp">
       <Filter>Raster Images\PPM</Filter>
     </ClCompile>
@@ -1579,6 +1582,12 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\FilteredFilm.cpp">
       <Filter>Rendering</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricFilm.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\MLTRasterizer.cpp">
       <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
@@ -2227,6 +2236,9 @@
       <Filter>Raster Images\EXR</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRWriter.h">
+      <Filter>Raster Images\EXR</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\RadiometricEXRWriter.h">
       <Filter>Raster Images\EXR</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRCompression.h">
@@ -3864,6 +3876,18 @@
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricPublication.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricExactResolve.h">
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\MLTRasterizer.h">

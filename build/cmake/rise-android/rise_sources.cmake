@@ -369,6 +369,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/SplatFilm.cpp"
     "${RISE_LIB}/Rendering/ThreadLocalSplatBuffer.cpp"
     "${RISE_LIB}/Rendering/FilteredFilm.cpp"
+    "${RISE_LIB}/Rendering/RadiometricFilm.cpp"
+    "${RISE_LIB}/Rendering/RadiometricCheckpoint.cpp"
     "${RISE_LIB}/Rendering/AdaptiveTileSizer.cpp"
     "${RISE_LIB}/Rendering/PreviewScheduler.cpp"
     "${RISE_LIB}/Rendering/BidirectionalRasterizerBase.cpp"
@@ -439,6 +441,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBRASTERIMAGES
     "${RISE_LIB}/RasterImages/EXRReader.cpp"
     "${RISE_LIB}/RasterImages/EXRWriter.cpp"
+    "${RISE_LIB}/RasterImages/RadiometricEXRWriter.cpp"
     "${RISE_LIB}/RasterImages/HDRReader.cpp"
     "${RISE_LIB}/RasterImages/HDRWriter.cpp"
     "${RISE_LIB}/RasterImages/PPMWriter.cpp"

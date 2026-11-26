@@ -85,6 +85,7 @@ OpenSheetHalfSpaceSeedingTest	pool	10
 OpenSheetIndexConventionTest	pool	26
 PTGuidingMISPartitionTest	pool	15
 PathTracingThermalEmissionTest	pool	7
+RadiometricPrimitivesTest	pool	10	Scheduling estimate; scalar primitive checks, no renderer or timing assertion
 RandomWalkFogEnergyTest	pool	50
 RefractiveRadianceScalingTest	single	78	one render thread so 10 tests share cores cleanly
 SMSDomainReplayTest	pool	11
