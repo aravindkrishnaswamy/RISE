@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <random>
 #include <stdexcept>
+#include <limits>
+#include <string>
 using namespace RISE::HyLIoS;
 namespace {
 unsigned checks=0;
@@ -17,6 +19,47 @@ void Near(double actual,double expected,const char* message) {
 std::array<double,5> Draw(std::mt19937_64& rng) {
     std::array<double,5> u;for(double& x:u) x=static_cast<double>(rng()>>11)*0x1p-53;return u;
 }
+
+void MinimumPolarAxisControl() {
+    ComplexLayout minimum(2,1,2,1);
+    const auto result=minimum.Propose({.5,.5,.5,std::numeric_limits<double>::denorm_min(),0});
+    // The original radius is nonzero (~4.45e-162), below the certified
+    // overlap predicate's supported axis-component range. Preserve that
+    // honest refusal rather than silently replacing the proposal by a pole.
+    Check(result.kind==ComplexProposalKind::NumericalFailure&&result.geometryStatus==ParticleOverlapStatus::UnsupportedRange&&minimum.Children().empty(),
+        "COMPLEX_AXIS_MINSUB unsupported nonzero axis is refused rather than fabricated pole");
+    Check(minimum.Propose({.5,.5,.5,.5,0}).kind==ComplexProposalKind::NumericalFailure&&minimum.Counters().proposals==1,
+        "minimum-subnormal axis range refusal is sticky and consumes no retry");
+    std::puts("ok: COMPLEX_AXIS_MINSUB explicit sticky unsupported-range refusal");
+}
+void PolarAxisControls() {
+    struct Case { double u, z, radial; };
+    // Independently rounded exact isotropic inverse-CDF components. Tiny u
+    // has rounded z=1 while the transverse radius is still 2e-10.
+    const Case cases[]={{1e-20,1,2e-10},{.125,.75,0x1.52a7fa9d2f8eap-1},
+        {.25,.5,0x1.bb67ae8584caap-1},{.5,0,1},{.875,-.75,0x1.52a7fa9d2f8eap-1},
+        {std::nextafter(1.,0.),-0x1.ffffffffffffep-1,0x1.6a09e667f3bccp-26}};
+    for(const auto& q:cases) {
+        ComplexLayout layout(2,1,2,1);
+        const auto result=layout.Propose({.5,.5,.5,q.u,0});
+        Check(result.kind==ComplexProposalKind::Complete&&layout.Complete()&&layout.Children().size()==1,
+            "COMPLEX_AXIS_RADIUS supported proposal owns an accepted child");
+        const auto& child=layout.Children()[0];const auto axis=child.particle.axis;
+        Check(axis.x>0&&std::abs(axis.x/q.radial-1)<2e-15&&axis.y==0&&axis.z==q.z,
+            "COMPLEX_AXIS_RADIUS accepted child preserves quantitative tiny/ordinary/tail components");
+        Check(std::abs(std::hypot(axis.x,axis.y,axis.z)-1)<2e-15,
+            "accepted child axis preserves unit length");
+        Check(child.centreFromEnvelopeMetres.x==0&&child.centreFromEnvelopeMetres.y==0&&child.centreFromEnvelopeMetres.z==0&&
+            layout.Counters().proposals==1&&layout.Counters().overlapChecks==0,
+            "axis correction preserves supplied centre and one-proposal accounting");
+    }
+    ComplexLayout pole(2,1,2,1);
+    Check(pole.Propose({.5,.5,.5,0,0}).kind==ComplexProposalKind::Complete&&pole.Children()[0].particle.axis.x==0&&pole.Children()[0].particle.axis.z==1,
+        "exact zero polar variate remains an exact accepted pole");
+    std::puts("ok: COMPLEX_AXIS_RADIUS quantitative accepted-child components");
+
+}
+
 void ExactControls() {
     const int savedRounding=std::fegetround();
     if(std::fesetround(FE_DOWNWARD)==0) {
@@ -132,4 +175,4 @@ void SampledControlsAndConstructionCosts() {
     }
 }
 }
-int main() {ExactControls();IndependentBallMoments();SampledControlsAndConstructionCosts();std::printf("%u checks passed\n",checks);}
+int main(int argc,char** argv) {if(argc>1&&std::string(argv[1])=="--minsub-only"){MinimumPolarAxisControl();return 0;}PolarAxisControls();MinimumPolarAxisControl();if(argc>1){Check(std::string(argv[1])=="--axis-only","recognized focused axis test");return 0;}ExactControls();IndependentBallMoments();SampledControlsAndConstructionCosts();std::printf("%u checks passed\n",checks);}

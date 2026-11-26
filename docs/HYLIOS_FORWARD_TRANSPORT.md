@@ -166,10 +166,10 @@ FP flags. For mixed full LTO, compile `HyLIoSParticleGeometry.cpp`,
 `-O3 -flto=full`. Do not put geometry, overlap or layout into the fast-math caller batch. Their strict
 compilation guards are part of the tested contract.
 
-## Explicit complex integration (`hylios-forward-explicit-complex-draft-v2`)
+## Explicit complex integration (introduced in forward draft v2)
 
 `ForwardOrganization::ExplicitComplexPackV1` uses the selected
-`hylios_complex_explicit_pack_v1` layout. `envelopeRadiusMetres` and `childCount`
+`hylios_complex_explicit_pack_v2` layout. `envelopeRadiusMetres` and `childCount`
 are explicit inputs; the former unversioned `UnsupportedComplexes` organization
 remains rejected. `childCount` is the actual number of spatial children, bounded
 by 64, rather than an optical interaction cap. Individual aggregate inputs retain

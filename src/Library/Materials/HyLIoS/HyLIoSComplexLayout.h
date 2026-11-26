@@ -8,7 +8,9 @@
 namespace RISE::HyLIoS {
 // Versioned clean-room construction, not the authors' spatial model. The integer
 // counts actual children, never interactions. No ray or transport state is used.
-inline constexpr const char* ComplexLayoutVersion="hylios_complex_explicit_pack_v1";
+// Numerical revision v2 retains the isotropic ideal law and five-variates
+// proposal contract, preserving transverse axes from the original polar u.
+inline constexpr const char* ComplexLayoutVersion="hylios_complex_explicit_pack_v2";
 struct ComplexChild {
     ProlateParticle particle;
     ParticleVector centreFromEnvelopeMetres;

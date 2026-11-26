@@ -290,7 +290,7 @@ class MeasurementCLI(unittest.TestCase):
         p = specimen();p["layers"][1]["particles"] = active_complex()
         a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard", "--histories": "500"})
         self.assertEqual(a["measurement_version"], "hylios-forward-measure-v6")
-        self.assertEqual(a["complex_layout_policy"], "hylios_complex_explicit_pack_v1")
+        self.assertEqual(a["complex_layout_policy"], "hylios_complex_explicit_pack_v2")
         self.assertEqual(a["explicit_cli_options"]["--complex-layout"], "explicit-pack-v1")
         convention = a["complex_layout_convention"]
         self.assertEqual(convention["maximum_children"], 64)

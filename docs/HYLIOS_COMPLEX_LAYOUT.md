@@ -1,6 +1,6 @@
 # HYLIOS explicit complex layout
 
-This document specifies the selected `hylios_complex_explicit_pack_v1` construction. The helper and forward integration are implemented; independent review gates determine readiness. A 64-child resource limit bounds allocation and per-proposal pair checks; larger requests fail before allocation, without truncating a physical history.
+This document specifies the selected `hylios_complex_explicit_pack_v2` construction. The helper and forward integration are implemented; independent review gates determine readiness. A 64-child resource limit bounds allocation and per-proposal pair checks; larger requests fail before allocation, without truncating a physical history.
 
 ## Selected construction contract
 
@@ -10,7 +10,7 @@ paper/thesis “at most n_m interactions” interpretation: the resolved composi
 integer is N actual children; geometric revisits have no count cap. The inspected
 paper §4.2.1 and thesis printed p.28 do not specify the layout/occupancy law.
 
-## Layout law: `hylios_complex_explicit_pack_v1`
+## Layout law: `hylios_complex_explicit_pack_v2`
 
 Each accepted outer sphere receives a fresh layout, generated without consulting
 its incoming ray. Its R is the resolved complex radius, and each child's a,b are
@@ -166,3 +166,28 @@ and transport can use `-ffast-math -fno-finite-math-only`. Exact source commands
 and CLI controls are in [HYLIOS_FORWARD_TRANSPORT.md](HYLIOS_FORWARD_TRANSPORT.md)
 and [HYLIOS_MEASUREMENT.md](HYLIOS_MEASUREMENT.md). These checks do not rely on a
 shared archive being rebuilt or relinked concurrently.
+
+## Isotropic-axis numerical revision v2
+
+`ComplexLayoutVersion` is `hylios_complex_explicit_pack_v2`. This numerical
+identity retains the same ideal explicit-pack layout law and five independent
+variates per proposal. The CLI choice remains `--complex-layout explicit-pack-v1`;
+that selector names the model, while reports/assets record the numerical version.
+For the polar variate u, z=1-2*u and the transverse radius is evaluated directly
+as 2*sqrt(u)*sqrt(1-u). Recovering the radius from rounded z loses a nonzero axis
+component when u=1e-20, for example: z rounds to one, while the radius is 2e-10.
+No epsilon, jitter, additional draw, retry, or altered ideal orientation prior is
+introduced. Finite trajectories and acceptance/refusal can change. A minimum
+subnormal u yields a representable nonzero transverse radius below the certified
+overlap predicate's supported component range; it now fails explicitly with
+UnsupportedRange and sticky NumericalFailure instead of becoming a fabricated
+pole. Existing stored v1 reports describe the earlier numerical implementation.
+
+Quantitative accepted-child controls cover tiny/ordinary/upper-tail components,
+exact endpoint identity and accounting, plus explicit minimum-subnormal range
+refusal. The complete layout suite, root-strengthened forward direction suite
+and existing Optics suite pass strict, ASan/UBSan and mixed full-LTO private gates
+using canonical COLORS_RGB/MERSENNE53 definitions and a copied dependency archive.
+Independent OLD-formula and missing-factor mutations must fail normally on the
+accepted-child component oracle; a separate old-formula test must fail the
+minimum-subnormal refusal oracle. Fresh independent review gates promotion.

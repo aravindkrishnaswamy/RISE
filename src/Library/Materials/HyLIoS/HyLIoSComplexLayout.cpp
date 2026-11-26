@@ -112,7 +112,9 @@ ComplexProposalResult ComplexLayout::Propose(const std::array<double,5>& u) {
         }
     }
     const double z=1-2*u[3],azimuth=2*Pi*u[4];
-    const double radial=std::sqrt((1-z)*(1+z));
+    // Retain the original polar variate: z can round to one at tiny u,
+    // erasing a representable transverse axis if recovered from 1-z*z.
+    const double radial=2*std::sqrt(u[3])*std::sqrt(1-u[3]);
     const ProlateParticle child{minor_,major_,{radial*std::cos(azimuth),radial*std::sin(azimuth),z}};
     // Self-classification certifies the orientation/axis range and FP environment
     // even for the first child or the degenerate one-centre support.
