@@ -149,6 +149,37 @@ public:
 	}
 };
 
+// A scene input whose cube grows by 10% per second about its centre: a deforming collider.
+class GrowingCube final : public ISceneInputs {
+public:
+	bool Identity(const std::string& name, std::string& hash, std::string& error) const override {
+		if (name != "cube") { error = "no such input"; return false; }
+		hash = "growing-cube";
+		return true;
+	}
+	bool Sample(const std::string& name, double t, std::shared_ptr<const Bytes>& encoded, std::string& codec,
+		std::string& error) const override {
+		if (name != "cube") { error = "no such input"; return false; }
+		MeshFrame m;
+		const double c[3] = {-0.3, 0.8, 0.3}, s = 1 + 0.1*t;
+		for (int k = 0; k < 8; ++k) {
+			const double p[3] = {(k & 1) ? -0.2 : -0.4, (k & 2) ? 0.9 : 0.7, (k & 4) ? 0.4 : 0.2};
+			for (int d = 0; d < 3; ++d) {
+				const float f = static_cast<float>(c[d] + s*(p[d] - c[d]));
+				std::uint32_t bits;
+				std::memcpy(&bits, &f, 4);
+				m.positions.push_back(bits);
+			}
+		}
+		m.indices = {0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5};
+		auto bytes = std::make_shared<Bytes>();
+		if (!EncodeMesh(m, budget, *bytes, error)) return false;
+		encoded = std::move(bytes);
+		codec = "mesh.v1";
+		return true;
+	}
+};
+
 void Description()
 {
 	std::string error;
@@ -158,9 +189,9 @@ void Description()
 	const double t0 = Seconds();
 	Check(solver->Configure(Map(Small()), inputs, d, error), "cloth configures", error);
 	const double first = Seconds() - t0;
-	Check(d.solverId == ClothSolverId && d.version == "m3a.3" && d.cache.outputs.size() == 1 &&
+	Check(d.solverId == ClothSolverId && d.version == "m3a.4" && d.cache.outputs.size() == 1 &&
 		d.cache.outputs[0].name == "surface" && d.cache.outputs[0].type == "mesh.v2" && d.cache.count == 10,
-		"cloth describes one mesh.v2 output (version m3a.3)");
+		"cloth describes one mesh.v2 output (version m3a.4)");
 	const PortDeclaration* offer = nullptr; const PortDeclaration* accept = nullptr;
 	for (const auto& p : d.ports) (p.offers ? offer : accept) = &p;
 	std::vector<std::uint32_t> indices;
@@ -204,8 +235,9 @@ void Description()
 	Check(!other->Configure(With(Small(), "material", V::String("unobtainium")), inputs, again, error), "unknown material refused");
 	Check(!other->Configure(With(With(Small(), "mode", V::String("interactive")).GetMap(), "integrator", V::String("bdf2")),
 		inputs, again, error), "interactive mode refuses a non-backward-Euler integrator");
-	// Labels: interactive, penalty contact, self-collision and the hinge bending model are preview;
-	// bake-mode barrier contact earns predictive from its own evidence cases.
+	// Labels: interactive, penalty contact and the hinge bending model are preview;
+	// bake-mode barrier contact earns predictive from its own evidence cases, with
+	// self-collision from its self-collision cases too (m3a.4).
 	SolverDescription interactive, contact, barrier, self, interactiveContact, hinges, midpoint;
 	Check(other->Configure(With(Small(), "mode", V::String("interactive")), inputs, interactive, error) &&
 		interactive.evidence.fidelity == "preview" && EffectiveFidelity(interactive.evidence) == "preview" &&
@@ -222,8 +254,18 @@ void Description()
 	for (const auto& e : barrier.evidence.cases)
 		if (e.id.compare(0, 8, "contact-") == 0)
 			std::printf("  %-22s error %.3e tolerance %.2e %s\n", e.id.c_str(), e.error, e.tolerance, e.passed ? "pass" : "FAIL");
+	const double ts = Seconds();
 	Check(other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "self_collision", V::Bool(true)), inputs, self, error) &&
-		EffectiveFidelity(self.evidence) == "preview", "self-collision is preview", error);
+		self.evidence.fidelity == "predictive" && EffectiveFidelity(self.evidence) == "predictive" &&
+		self.evidence.cases.size() == d.evidence.cases.size() + 10, "bake-mode self-collision earns predictive from its self-collision cases", error);
+	std::printf("self-collision evidence (defaults), first Configure %.2f s:\n", Seconds() - ts);
+	for (const auto& e : self.evidence.cases)
+		if (e.id.compare(0, 5, "self-") == 0)
+			std::printf("  %-22s error %.3e tolerance %.2e %s\n", e.id.c_str(), e.error, e.tolerance, e.passed ? "pass" : "FAIL");
+	SolverDescription selfFriction;
+	Check(other->Configure(With(With(With(Small(), "colliders", sphere).GetMap(), "self_collision", V::Bool(true)).GetMap(),
+		"self_friction", V::Float(0)), inputs, selfFriction, error) && EffectiveFidelity(selfFriction.evidence) == "preview",
+		"self-collision without friction between layers fails its stick case and is preview", error);
 	Check(other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "mode", V::String("interactive")), inputs,
 		interactiveContact, error) && EffectiveFidelity(interactiveContact.evidence) == "preview", "interactive contact is preview", error);
 	Check(!other->Configure(With(With(Small(), "colliders", sphere).GetMap(), "integrator", V::String("implicit_midpoint")), inputs,
@@ -245,6 +287,18 @@ void Description()
 	Check(list && list->GetArray().size() == 1 && list->GetArray()[0].Find("identity") &&
 		list->GetArray()[0].Find("identity")->GetText() == "cube-identity" && scene.inputs == std::vector<std::string>{"cube"},
 		"the scene input's identity enters the parameters and the input is listed");
+	Check(EffectiveFidelity(scene.evidence) == "predictive", "a static scene-input mesh collider is predictive");
+	// A deforming collider is followed as its t = 0 geometry moved rigidly: an
+	// approximation the description states, labelled preview.
+	GrowingCube growing;
+	SolverDescription grows;
+	Check(other->Configure(With(Small(), "colliders", V::ArrayValue({Map({{"type", V::String("mesh")},
+		{"scene_input", V::String("cube")}})})), growing, grows, error) && grows.evidence.fidelity == "preview" &&
+		EffectiveFidelity(grows.evidence) == "preview", "a deforming scene-input collider is preview", error);
+	bool stated = false;
+	for (const auto& n : grows.notes) stated = stated || (n.find("deforms during the run") != std::string::npos &&
+		n.find("t = 0 geometry moved rigidly") != std::string::npos);
+	Check(stated, "the description states the deforming-collider approximation");
 	Check(other->Configure(With(Small(), "bending_model", V::String("hinges")), inputs, hinges, error) &&
 		hinges.evidence.fidelity == "predictive" && EffectiveFidelity(hinges.evidence) == "preview",
 		"the hinge bending model fails its evidence and is preview", error);
@@ -357,6 +411,7 @@ void Threads()
 	V::Members base = Small();
 	base.emplace_back("colliders", V::ArrayValue({Map({{"type", V::String("sphere")}, {"center", Vec(-0.1, 0.85, 0.25)},
 		{"radius", V::Float(0.04)}}), CubeCollider(true).GetArray()[0]}));
+	base.emplace_back("self_collision", V::Bool(true)); // cloth-cloth couplings in the matrix extension
 	std::vector<std::vector<Bytes>> runs;
 	for (unsigned threads : {1u, 3u, 4u}) {
 		auto solver = Make();
@@ -380,6 +435,77 @@ void Threads()
 		}
 	}
 	Check(runs[0] == runs[1] && runs[0] == runs[2], "1, 3 and 4 threads publish identical frames");
+}
+
+// A mesh ball (24 x 24 UV sphere, as sphere_geometry tessellates it) moving
+// laterally under a pinned 25 x 25 sheet at the default 8 substeps: m3a.3
+// failed Newton here at t = 0.33 s.  And a ball rising into a pinned edge: the
+// run fails with the specific diagnostic.
+V UVBall(double r, double cx, double cy, double cz, double vx, double vy)
+{
+	const double pi = 3.14159265358979323846;
+	const int n = 24;
+	V::Values vs, ts;
+	std::vector<std::vector<unsigned>> rows(n + 1);
+	unsigned north = 0, south = 0, count = 0;
+	auto add = [&](double x, double y, double z) {
+		vs.push_back(V::Float(cx + r*x)); vs.push_back(V::Float(cy + r*y)); vs.push_back(V::Float(cz + r*z));
+		return count++;
+	};
+	for (int j = 0; j <= n; ++j) {
+		const double phi = pi*j/n;
+		if (j == 0 || j == n) { (j == 0 ? north : south) = add(-std::sin(phi), std::cos(phi), 0); continue; }
+		for (int i = 0; i <= n; ++i) {
+			const double th = 2*pi*i/n;
+			rows[j].push_back(add(-std::sin(phi)*std::cos(th), std::cos(phi), std::sin(phi)*std::sin(th)));
+		}
+	}
+	auto I = [&](int j, int i) { return j == 0 ? north : j == n ? south : rows[j][i]; };
+	for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) {
+		const unsigned a = I(j, i), b = I(j, i + 1), c = I(j + 1, i), d = I(j + 1, i + 1);
+		if (j != 0) for (unsigned k : {a, c, b}) ts.push_back(V::Unsigned(k));
+		if (j + 1 != n) for (unsigned k : {b, c, d}) ts.push_back(V::Unsigned(k));
+	}
+	return Map({{"type", V::String("mesh")}, {"vertices", V::ArrayValue(vs)}, {"triangles", V::ArrayValue(ts)},
+		{"motion", Map({{"type", V::String("translate")}, {"velocity", Vec(vx, vy, 0)}})}});
+}
+
+void MovingColliders()
+{
+	std::string error;
+	NoSceneInputs inputs;
+	const double t0 = Seconds();
+	{
+		auto solver = Make();
+		SolverDescription d;
+		CountingSink sink;
+		AdvanceResult r;
+		const V params = Map({{"vertices_u", V::Unsigned(25)}, {"vertices_v", V::Unsigned(25)}, {"frames", V::Unsigned(16)},
+			{"origin", Vec(-0.5, 0.6, 0.5)}, {"pins", V::ArrayValue({Map({{"select", V::String("u0v0")}}), Map({{"select", V::String("u1v0")}})})},
+			{"colliders", V::ArrayValue({UVBall(0.25, 0, 0.25, 0, 0.15, 0)})}});
+		Check(solver->Configure(params, inputs, d, error) && solver->Start(error), "lateral ball configures", error);
+		while (!solver->Position().finished && solver->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, error)) {}
+		Check(error.empty() && sink.frames.size() == 16 && EffectiveFidelity(d.evidence) == "predictive",
+			"a mesh ball moving laterally under a pinned 25 x 25 sheet bakes at 8 substeps (predictive)", error);
+		std::printf("lateral UV ball, 25 x 25, 16 frames at 8 substeps: %zu frames, %.2f s\n", sink.frames.size(), Seconds() - t0);
+	}
+	{
+		auto solver = Make();
+		SolverDescription d;
+		CountingSink sink;
+		AdvanceResult r;
+		const V params = Map({{"vertices_u", V::Unsigned(15)}, {"vertices_v", V::Unsigned(15)}, {"frames", V::Unsigned(10)},
+			{"origin", Vec(-0.5, 0.6, 0.5)}, {"pins", V::ArrayValue({Map({{"select", V::String("v0")}})})},
+			{"colliders", V::ArrayValue({UVBall(0.1, 0, 0.45, 0.5, 0, 0.3)})}});
+		Check(solver->Configure(params, inputs, d, error) && solver->Start(error), "pinch configures", error);
+		error.clear();
+		bool failed = false;
+		while (!solver->Position().finished) if (!solver->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, error)) { failed = true; break; }
+		Check(failed && error.find("infeasible at t = ") != std::string::npos &&
+			error.find("pinched between mesh collider 0 and pin group 0") != std::string::npos,
+			"a ball pressing into a pinned edge fails with the pinch diagnostic", error);
+		std::printf("pinch through the contract: %s\n", error.c_str());
+	}
 }
 
 // Macro steps on the output grid equal free stepping exactly; half-interval
@@ -746,8 +872,19 @@ int main()
 			contact.emplace_back("colliders", V::ArrayValue({Map({{"type", V::String("sphere")}, {"center", Vec(-0.1, 0.85, 0.25)},
 				{"radius", V::Float(0.04)}}), CubeCollider(true).GetArray()[0]}));
 			StopRestore(V::MapValue(contact), "barrier contact with friction and a rotating mesh");
+			// Kinematic stages (moving pins and a translating mesh) and self-collision.
+			V::Members moving = Small();
+			moving[6].second = V::ArrayValue({Map({{"select", V::String("u0v0")}, {"motion", Map({{"type", V::String("translate")},
+				{"velocity", Vec(0.2, 0, 0)}})}}), Map({{"select", V::String("u1v0")}})});
+			V cube = CubeCollider(false).GetArray()[0];
+			V::Members cm = cube.GetMap();
+			cm.emplace_back("motion", Map({{"type", V::String("translate")}, {"velocity", Vec(0, 0.3, 0)}}));
+			moving.emplace_back("colliders", V::ArrayValue({V::MapValue(cm)}));
+			moving.emplace_back("self_collision", V::Bool(true));
+			StopRestore(V::MapValue(moving), "moving pins, a rising mesh and self-collision");
 		}
 		Threads();
+		MovingColliders();
 		MacroSteps();
 		PortFeed();
 		StickyStop();

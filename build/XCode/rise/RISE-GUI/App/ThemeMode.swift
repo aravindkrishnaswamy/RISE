@@ -60,6 +60,11 @@ enum ThemeState {
     /// every `Theme.*` token re-evaluates), and updates
     /// `NSApplication`'s appearance so system chrome (menus, window
     /// titlebar, NSAlert/NSSavePanel) follows.
+    /// Headless probes only (SimulationProbes, M5c): switch the in-memory
+    /// mode for an offscreen render.  Persists nothing and leaves
+    /// NSApplication's appearance alone.
+    static func overrideForOffscreenRender(_ newMode: ThemeMode) { mode = newMode }
+
     static func setMode(_ newMode: ThemeMode) {
         mode = newMode
         UserDefaults.standard.set(newMode.rawValue, forKey: userDefaultsKey)

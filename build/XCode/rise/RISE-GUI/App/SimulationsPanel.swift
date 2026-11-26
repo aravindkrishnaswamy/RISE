@@ -13,6 +13,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+import AppKit
 import SwiftUI
 
 struct SimulationsPanel: View {
@@ -105,6 +106,7 @@ struct SimulationsPanel: View {
 
 private struct SimulationRowView: View {
     @ObservedObject var model: SimulationsModel
+    @EnvironmentObject var viewModel: RenderViewModel
     let row: SimulationRow
     let selected: Bool
 
@@ -134,6 +136,9 @@ private struct SimulationRowView: View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 model.selected = selected ? nil : row.name
+                // M5c: the row also selects the simulation in the scene, so the
+                // Inspector shows its solver fields (the Simulation category).
+                if !selected { viewModel.jumpToEntity(category: .simulation, name: row.name) }
             } label: {
                 HStack(spacing: 6) {
                     Circle().fill(stateColor).frame(width: 7, height: 7)
@@ -164,6 +169,23 @@ private struct SimulationRowView: View {
             .foregroundColor(Theme.textMuted)
             .lineLimit(1)
 
+            if row.state == .stale && !row.staleReason.isEmpty {
+                Text("stale: " + row.staleReason)
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.dirty)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !row.estimateSummary.isEmpty && job?.isActive != true && row.isProducer {
+                Text("bake estimate " + row.estimateSummary)
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.textMuted)
+                    .lineLimit(1)
+                    .help("The solver's estimate for a whole bake on this machine class: approximate. "
+                          + "Memory is the peak it declares; the bake manager counts it against its budget.")
+            }
+
             if !row.cacheDirectory.isEmpty {
                 Text(row.cacheDirectory)
                     .font(Theme.mono(9))
@@ -171,6 +193,13 @@ private struct SimulationRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(row.cacheDirectory)
+                    .contextMenu {
+                        Button("Copy path") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(row.cacheDirectory, forType: .string)
+                        }
+                        Button("Reveal in Finder") { revealInFinder(row.cacheDirectory) }
+                    }
             }
 
             if row.isProducer { actions }
@@ -254,7 +283,7 @@ private struct SimulationRowView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
-            Text("Parameters: edit the `\(row.name)` chunk in the Scene file tab; an edit marks the cache stale and never starts a bake.")
+            Text("Parameters: in the Inspector (this row selects `\(row.name)`). An edit marks the cache stale and never starts a bake.")
                 .font(Theme.sans(10))
                 .foregroundColor(Theme.textDim)
                 .fixedSize(horizontal: false, vertical: true)
@@ -276,12 +305,23 @@ private struct SimulationRowView: View {
         }
     }
 
+    /// The app's outline pill (PillButtonStyle): Theme colours, legible in
+    /// both appearances (the system `.bordered` style drew dark-on-dark
+    /// labels against the panel's own dark surface).
     private func actionButton(_ title: String, _ help: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(Theme.sans(10.5, .semibold))
+            Text(title).lineLimit(1)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(PillButtonStyle(filled: false))
         .help(help)
+    }
+
+    /// Selects the cache directory in Finder (its parent when it does not exist yet).
+    private func revealInFinder(_ path: String) {
+        var url = URL(fileURLWithPath: path)
+        while !FileManager.default.fileExists(atPath: url.path) && url.pathComponents.count > 1 {
+            url = url.deletingLastPathComponent()
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }

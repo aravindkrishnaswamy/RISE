@@ -259,6 +259,9 @@ APP="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app"
 DSYM="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app.dSYM"
 APP_EXECUTABLE="${APP}/Contents/MacOS/RISE-GUI"
 IMPORT_EXECUTABLE="${APP}/Contents/MacOS/rise-cache-import"
+# The simulation bake worker (Xcode target rise-sim, embedded by RISE-GUI);
+# the bake manager runs it from here first (docs/SIMULATION_M5C_RESULTS.md).
+SIM_EXECUTABLE="${APP}/Contents/MacOS/rise-sim"
 FRAMEWORKS_DIR="${APP}/Contents/Frameworks"
 DMG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}.dmg"
 DSYM_ZIP="${OUTPUT_DIR}/${ARTIFACT_BASENAME}.dSYM.zip"
@@ -289,6 +292,8 @@ xcodebuild -project "${PROJECT}" -scheme "${SCHEME}" \
 	MARKETING_VERSION="${VERSION}" CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
 	GCC_PREPROCESSOR_DEFINITIONS="\$(inherited) RISE_VER_MAJOR_VERSION=${VERSION_MAJOR} RISE_VER_MINOR_VERSION=${VERSION_MINOR} RISE_VER_REVISION_VERSION=${VERSION_REVISION} RISE_VER_BUILD_VERSION=${BUILD_NUMBER}" \
 	CODE_SIGNING_ALLOWED=NO GCC_TREAT_WARNINGS_AS_ERRORS=YES \
+	${OPENVDB_PREFIX:+RISE_OPENVDB_PREFIX="${OPENVDB_PREFIX}"} ${TBB_PREFIX:+RISE_TBB_PREFIX="${TBB_PREFIX}"} \
+	${BLOSC_PREFIX:+RISE_BLOSC_PREFIX="${BLOSC_PREFIX}"} \
 	SWIFT_TREAT_WARNINGS_AS_ERRORS=YES 2>&1 | tee "${STAGED_BUILD_LOG}"
 build_status=${PIPESTATUS[0]}
 set -e
@@ -298,6 +303,7 @@ if [ "${build_status}" -ne 0 ]; then
 fi
 [ -d "${APP}" ] || die "build succeeded but app bundle is missing: ${APP}"
 [ -x "${IMPORT_EXECUTABLE}" ] || die "bundled simulation importer is missing: ${IMPORT_EXECUTABLE}"
+[ -x "${SIM_EXECUTABLE}" ] || die "bundled simulation worker is missing: ${SIM_EXECUTABLE}"
 [ -x "${APP_EXECUTABLE}" ] || die "app executable is missing: ${APP_EXECUTABLE}"
 plutil -lint "${APP}/Contents/Info.plist" >/dev/null
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Contents/Info.plist")" = "${VERSION}" ] || \
@@ -316,7 +322,7 @@ for definition in \
 done
 
 bash "${SOURCE_ROOT}/scripts/bundle_macos_runtime.sh" "${APP}" "${OIDN_SNAPSHOT_INSTALL}" "${HOMEBREW_PREFIX}" \
-	"${APP_EXECUTABLE}" "${IMPORT_EXECUTABLE}"
+	"${APP_EXECUTABLE}" "${IMPORT_EXECUTABLE}" "${SIM_EXECUTABLE}"
 
 # Notices for third-party sources compiled directly into the executable;
 # these have no bundled dylib for copy_dependency_license to hang off.
@@ -437,7 +443,7 @@ verify_rpaths() {
 	[ "${count}" -eq 1 ] || die "${binary} must contain exactly one bundle-local LC_RPATH"
 }
 
-# The scan above starts at both intended executables. Anything else Mach-O
+# The scan above starts at the three intended executables. Anything else Mach-O
 # in the bundle would ship unrelinked and unverified, so fail closed rather
 # than quietly shipping a binary still bound to this build machine.
 # `lipo -archs` succeeds on thin and universal Mach-O alike and fails on
@@ -446,7 +452,7 @@ verify_rpaths() {
 while IFS= read -r -d '' macho; do
 	lipo -archs "${macho}" >/dev/null 2>&1 || continue
 	case "${macho}" in
-		"${APP_EXECUTABLE}"|"${IMPORT_EXECUTABLE}"|"${FRAMEWORKS_DIR}"/*.dylib) ;;
+		"${APP_EXECUTABLE}"|"${IMPORT_EXECUTABLE}"|"${SIM_EXECUTABLE}"|"${FRAMEWORKS_DIR}"/*.dylib) ;;
 		*) die "unprocessed Mach-O image in the app bundle: ${macho} (extend the bundling scan)" ;;
 	esac
 done < <(find "${APP}" -type f -print0)
@@ -457,6 +463,9 @@ verify_rpaths "${APP_EXECUTABLE}"
 verify_architectures "${IMPORT_EXECUTABLE}"
 verify_dependencies "${IMPORT_EXECUTABLE}"
 verify_rpaths "${IMPORT_EXECUTABLE}"
+verify_architectures "${SIM_EXECUTABLE}"
+verify_dependencies "${SIM_EXECUTABLE}"
+verify_rpaths "${SIM_EXECUTABLE}"
 for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
 	[ -f "${binary}" ] || continue
 	verify_architectures "${binary}"
@@ -480,6 +489,7 @@ if [ "${SIGN_IDENTITY}" = "-" ]; then
 		codesign --force --sign - --timestamp=none "${binary}"
 	done
 	codesign --force --sign - --timestamp=none "${IMPORT_EXECUTABLE}"
+	codesign --force --sign - --timestamp=none "${SIM_EXECUTABLE}"
 	codesign --force --sign - --timestamp=none "${APP}"
 else
 	for binary in "${FRAMEWORKS_DIR}"/*.dylib; do
@@ -487,6 +497,7 @@ else
 		codesign --force --sign "${SIGN_IDENTITY}" --options runtime --timestamp "${binary}"
 	done
 	codesign --force --sign "${SIGN_IDENTITY}" --options runtime --timestamp "${IMPORT_EXECUTABLE}"
+	codesign --force --sign "${SIGN_IDENTITY}" --options runtime --timestamp "${SIM_EXECUTABLE}"
 	codesign --force --sign "${SIGN_IDENTITY}" --options runtime --timestamp "${APP}"
 fi
 codesign --verify --deep --strict --verbose=2 "${APP}"

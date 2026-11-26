@@ -79,6 +79,12 @@ struct SimulationRow: Identifiable, Equatable {
     let upstream: String
     let inputs: String
     let errorMessage: String
+    /// M5c: the library's estimate before a bake ("≈ 5 h, 4.0 GB"; "" when
+    /// unknown) and why a stale cache is stale ("" unless stale).
+    let estimateSummary: String
+    let memoryEstimate: UInt64
+    let wallEstimate: Double
+    let staleReason: String
 
     init(_ info: RISESimulationInfo) {
         name = info.name
@@ -98,6 +104,10 @@ struct SimulationRow: Identifiable, Equatable {
         upstream = info.upstream
         inputs = info.inputs
         errorMessage = info.errorMessage
+        estimateSummary = info.estimateSummary
+        memoryEstimate = info.memoryEstimate
+        wallEstimate = info.wallEstimate
+        staleReason = info.staleReason
     }
 
     /// A `simulation_cache` has no solver: it is never baked or run live.

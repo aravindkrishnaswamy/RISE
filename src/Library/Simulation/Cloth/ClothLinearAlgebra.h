@@ -5,7 +5,11 @@
 //
 //  BlockMatrix stores both triangles of a symmetric matrix in block CSR
 //  (3x3 blocks, row-major inside a block, columns sorted per row), with a
-//  fixed pattern built once from the element connectivity.  Two solvers:
+//  fixed pattern built once from the element connectivity, plus an
+//  extension: off-diagonal blocks outside the pattern that change from one
+//  Newton iteration to the next (the couplings of cloth-cloth contact pairs).
+//  Products include the extension; the preconditioners and the banded
+//  factorisation see only the pattern part.  Two solvers:
 //  preconditioned conjugate gradient with a block symmetric Gauss-Seidel
 //  (default) or block-Jacobi preconditioner (the default for dynamics, where
 //  the mass term keeps the system reasonably conditioned), and a banded Cholesky factorisation under the better of
@@ -33,16 +37,27 @@ public:
 	//! Pattern: the diagonal plus both (i,j) and (j,i) for every listed pair.
 	void Build(std::uint32_t blocks, const std::vector<std::pair<std::uint32_t,std::uint32_t>>& pairs);
 	std::uint32_t Blocks() const { return n_; }
-	//! Slot of block (i,j); the pair must be in the pattern.
+	//! Slot of block (i,j); the pair must be in the pattern or the extension.
 	std::size_t Slot(std::uint32_t i, std::uint32_t j) const;
+	//! Replaces the extension by the blocks (i,j) and (j,i) of the listed pairs
+	//! that are not in the pattern (slots after the pattern's, in (row, column)
+	//! order); their values start at zero.  An empty list removes it.
+	void Extend(const std::vector<std::pair<std::uint32_t,std::uint32_t>>& pairs);
+	std::size_t PatternBlocks() const { return column_.size(); }
+	std::size_t ExtensionBlocks() const { return extRow_.size(); }
+	const std::vector<std::uint32_t>& ExtensionRow() const { return extRow_; }
+	const std::vector<std::uint32_t>& ExtensionColumn() const { return extColumn_; }
 	std::size_t DiagonalSlot(std::uint32_t i) const { return diagonal_[i]; }
 	void Zero();
 	double* Block(std::size_t slot) { return &values_[9*slot]; }
 	const double* Block(std::size_t slot) const { return &values_[9*slot]; }
 	void Add(std::size_t slot, const double* block) { double* b = Block(slot); for (int k = 0; k < 9; ++k) b[k] += block[k]; }
-	//! y = A x (3n vectors); rows in parallel on `pool` (same result for any pool).
+	//! y = A x (3n vectors); rows in parallel on `pool`, then the extension in
+	//! slot order on the caller (same result for any pool).
 	void Multiply(const std::vector<double>& x, std::vector<double>& y, ParallelPool* pool = nullptr) const;
-	//! Copies values (same pattern) scaled: this += s * other.
+	//! y = (the pattern part of A) x.
+	void MultiplyPattern(const std::vector<double>& x, std::vector<double>& y, ParallelPool* pool = nullptr) const;
+	//! Pattern values (same pattern) scaled: this += s * other.
 	void AddScaled(const BlockMatrix& other, double s);
 	const std::vector<std::size_t>& RowStart() const { return rowStart_; }
 	const std::vector<std::uint32_t>& Column() const { return column_; }
@@ -50,6 +65,7 @@ private:
 	std::uint32_t n_ = 0;
 	std::vector<std::size_t> rowStart_, diagonal_;
 	std::vector<std::uint32_t> column_;
+	std::vector<std::uint32_t> extRow_, extColumn_; // extension slots (pattern size + k), sorted by (row, column)
 	std::vector<double> values_;
 };
 
@@ -155,6 +171,11 @@ private:
 	BandedCholesky coarse_;
 	std::vector<std::uint32_t> coarseOrder_;
 };
+
+//! PCG preconditioned by a banded factorisation (of the pattern part of A, for
+//! a matrix with an extension).  Same conventions as below.
+bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
+	double rtol, int maxIterations, LinearSolveStats& stats, const BandedCholesky& factor, ParallelPool* pool);
 
 //! PCG with the multigrid V-cycle as preconditioner.  Returns false on a
 //! breakdown (non-positive curvature or a non-positive preconditioned

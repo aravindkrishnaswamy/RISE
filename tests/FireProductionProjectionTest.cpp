@@ -1849,6 +1849,7 @@ int main()
 		makefile.find("\n\n",metalMakeRule);
 	const std::string projectionMetalMakeRule=metalMakeRule==std::string::npos?std::string():
 		makefile.substr(metalMakeRule,metalMakeRuleEnd-metalMakeRule);
+	// Three Xcode targets compile the library sources: rise, RISE-GUI and (M5c) rise-sim.
 	Check(projectionMakeRule.find("$(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math "
 		"-ffp-contract=off")!=std::string::npos&&projectionMetalMakeRule.find(
 		"$(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off")!=
@@ -1856,16 +1857,16 @@ int main()
 			"COMPILE_OPTIONS \"-fno-fast-math;-ffp-contract=off\"")!=std::string::npos&&
 		visualStudio.find("FireProductionProjection.cpp\">\n      <FloatingPointModel>Strict")!=
 			std::string::npos&&Count(xcode,"FireProductionProjection.cpp in Sources */ = "
-			"{isa = PBXBuildFile;")==2u&&Count(xcode,"FireProductionProjection.cpp */; settings = "
-			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; };")==2u&&
-		Count(xcode,"FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile;")==2u&&
+			"{isa = PBXBuildFile;")==3u&&Count(xcode,"FireProductionProjection.cpp */; settings = "
+			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; };")==3u&&
+		Count(xcode,"FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile;")==3u&&
 		Count(xcode,"FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "
-			"\"-fobjc-arc -fno-fast-math -ffp-contract=off\"; };")==2u&&
+			"\"-fobjc-arc -fno-fast-math -ffp-contract=off\"; };")==3u&&
 		filelist.find("FireProductionProjectionMac.mm")!=std::string::npos&&
 		filelist.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&
 		androidSources.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&
 		visualStudio.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&
-		Count(xcode,"FireProductionProjectionMac.mm in Sources */,")==2u,
+		Count(xcode,"FireProductionProjectionMac.mm in Sources */,")==3u,
 		"P2 strict-fp32 bindings are present on every authoritative build surface");
 
 	if( failures==0 ) {

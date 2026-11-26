@@ -13960,6 +13960,37 @@ namespace RISE
 		} );
 	}
 
+	bool RISE_API_SceneEditController_GetSimulationEstimate(
+		SceneEditController* p, unsigned int index,
+		unsigned long long* outMemoryBytes, double* outCostEstimate, double* outWallSeconds,
+		char* summaryBuf, unsigned int summaryBufLen,
+		char* staleReasonBuf, unsigned int staleReasonBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			std::vector<Simulation::SceneSimulationStatus> statuses;
+			if( !p->GetSimulations( statuses, error ) || index >= statuses.size() ) return false;
+			const Simulation::SceneSimulationStatus& s = statuses[index];
+			M3cSet( outMemoryBytes, static_cast<unsigned long long>( s.memoryEstimate ) );
+			M3cSet( outCostEstimate, s.costEstimate );
+			M3cSet( outWallSeconds, s.wallEstimate );
+			M3cCopyText( Simulation::FormatSimulationEstimate( s ), summaryBuf, summaryBufLen );
+			M3cCopyText( s.staleReason, staleReasonBuf, staleReasonBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetPlaybackTimeScale( SceneEditController* p, double* outTimeScale )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Implementation::PlaybackStatus s;
+			if( !p->GetPlaybackStatus( s ) ) return false;
+			M3cSet( outTimeScale, s.timeScale );
+			return true;
+		} );
+	}
+
 	bool RISE_API_AddTrustedCacheRoot( const char* root, char* errorBuf, unsigned int errorBufLen )
 	{
 		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {

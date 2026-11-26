@@ -1532,9 +1532,11 @@ static void Part6_OccurrenceScopingSweep()
 	// Re-derived 2026-11-23 (simulation M4): cloth_simulation.follow_object and
 	// cloth_simulation.collider_object are repeatable References to objects on
 	// ChunkCategory::Simulation, which is not an addressable rewire category.
-	Check( knownUnaddressable == 4,
-		"6: ...and the four that exist at all (standard_shader.shaderop, modifier_stack.modifier, "
-		"cloth_simulation.follow_object, cloth_simulation.collider_object) "
+	// Re-derived 2026-11-25 (simulation M6): + simulation_group.members, a
+	// repeatable Reference to {Simulation} on ChunkCategory::Simulation.
+	Check( knownUnaddressable == 5,
+		"6: ...and the five that exist at all (standard_shader.shaderop, modifier_stack.modifier, "
+		"cloth_simulation.follow_object, cloth_simulation.collider_object, simulation_group.members) "
 		"are on unaddressable categories, so the claim is a real narrowing, not a vacuous one "
 		"(if this fails, another repeatable pure-Reference param appeared -- or one of these "
 		"became addressable -- and this count needs re-deriving, not just bumping)" );

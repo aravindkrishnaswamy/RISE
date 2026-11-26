@@ -35,6 +35,7 @@
 #include "SceneSimulation.h"
 #include "SimulatedMeshSource.h"
 #include <functional>
+#include <set>
 
 namespace RISE {
 class IScene;
@@ -61,9 +62,15 @@ public:
 		std::string& error) const override;
 	std::shared_ptr<const ISceneInputs> Capture(const std::vector<std::string>& inputs,
 		const std::map<std::string, std::string>& upstreamKeys, std::string& error) const override;
+	//! M6: objects whose transform a simulation drives (`transform_source`):
+	//! a scene input reads them at their authored pose (their simulation
+	//! keyframes neither move them nor enter their identity -- a body must not
+	//! depend on its own output).
+	void SetSimulationDriven(std::set<std::string> objects) { driven_ = std::move(objects); }
 private:
 	const IScene& scene_;
 	SimulatedGeometryLookup lookup_;
+	std::set<std::string> driven_;
 };
 
 //! Polar decomposition of a 3x3 linear part (column-vector convention,

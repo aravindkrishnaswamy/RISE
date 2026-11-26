@@ -41,7 +41,8 @@
 //     the closest-point weights and a tangent basis T are frozen; the
 //     dissipative potential (mu lambda / c) F0(|T^T v_rel|) with
 //     v = c (x - xtilde) the integrator's velocity, F0' = f1,
-//     f1(y) = 2y/eps - y^2/eps^2 below eps (the slip speed), 1 above.
+//     f1(y) = 2y/eps - y^2/eps^2 below eps (the slip speed), 1 above; mu is
+//     `friction` against colliders and `self_friction` between cloth layers.
 //   * Mesh colliders move rigidly (fixed, translate, rotate, oscillate);
 //     within a step they sit at the step's end time.
 //
@@ -97,6 +98,7 @@ struct FrictionRecord {
 	double weight[4] = {0, 0, 0, 0};              // relative velocity = sum weight_k v_k
 	double tangent[6] = {0, 0, 0, 0, 0, 0};       // T: two orthonormal columns, row-major 3x2
 	double normalForce = 0;                       // lambda, N
+	double mu = 0;                                // Coulomb coefficient (cloth-collider or cloth-cloth)
 };
 
 //! Uniform hash grid of primitive ids; a primitive covering more than 4096
@@ -105,6 +107,17 @@ struct HashGrid {
 	std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> cells;
 	std::vector<std::uint32_t> oversize;
 	void Clear() { cells.clear(); oversize.clear(); }
+};
+
+//! One stage of the kinematic continuation (ClothSystem::KinematicStages): from
+//! t0 to t1 the moving mesh colliders follow their rigid motions, and each
+//! cloth vertex with a motion follows it (moving pins, and free vertices
+//! carried by a moving collider: the pointer is then BarrierContact::MeshMotion);
+//! the other cloth vertices stay.
+struct KinematicStage {
+	double t0 = 0, t1 = 0;
+	std::vector<const Motion*> follow;   // per cloth vertex (null: stays)
+	std::vector<const Motion*> mesh;     // per mesh collider: the motion it follows in this stage (null: static)
 };
 
 //! Per-step and per-iteration contact state, owned by the Newton solve.
@@ -139,8 +152,12 @@ public:
 	//! (X(t) - X(t0))/(t - t0) when t0 < t (a step from t0: consistent with the
 	//! colliders' discrete motion), else the instantaneous ones.
 	void Place(double t, ContactFrame& f, double t0 = -1) const;
-	//! Candidate pairs for x (dx null) or for the segment x -> x + dx, within xi + dhat.
-	void Candidates(ContactFrame& f, const std::vector<double>& x, const std::vector<double>* dx) const;
+	//! Collider positions (boxes, grid) at t with the given per-mesh motions; velocities are left as they are.
+	void PlaceStage(double t, ContactFrame& f, const std::vector<const Motion*>& mesh) const;
+	std::size_t Meshes() const { return motions_.size(); }
+	//! Candidate pairs for x (dx null) or for the segment x -> x + dx, within xi +
+	//! dhat (plus `inflate`, m: room for motions not in dx, such as the colliders').
+	void Candidates(ContactFrame& f, const std::vector<double>& x, const std::vector<double>* dx, double inflate = 0) const;
 	//! Freezes friction at x (with f.candidates for x).
 	void LagFriction(ContactFrame& f, const std::vector<double>& x, double scale, const std::vector<double>& xTilde) const;
 	//! Barrier (and friction) energy on f.candidates; +infinity when a pair is at or inside the offset.
@@ -151,23 +168,52 @@ public:
 		ContactStats* stats = nullptr) const;
 	//! Smallest gap d - xi over f.candidates (infinity when none).
 	double SmallestGap(const ContactFrame& f, const std::vector<double>& x) const;
+	//! Pairs of f.candidates within the barrier's reach (0 < d - xi < dhat) at x.
+	std::size_t ActivePairs(const ContactFrame& f, const std::vector<double>& x) const;
 	//! Sum of the barrier forces on the cloth (N) at x over f.candidates.
 	V3 TotalForce(const ContactFrame& f, const std::vector<double>& x) const;
+	//! M6 (coupling, accessor for the cloth's collider_reaction port): the contact
+	//! force (barrier and f's lagged friction) that mesh collider `mesh` exerts on
+	//! each cloth vertex at x (3 per vertex, N; pinned vertices included), from
+	//! f's colliders with candidates rebuilt for x.  Uses Evaluate only.
+	void MeshForces(const ContactFrame& f, const std::vector<double>& x, std::uint32_t mesh, std::vector<double>& force) const;
 	//! Exact check that no cloth-collider (and, with self-collision, cloth-cloth)
 	//! pair touches on the straight path x0 -> x1 with the colliders of f
 	//! (`skipMoving`: pairs with moving mesh colliders are left out).
+	//! With `f1` the mesh colliders move linearly from their poses in f to those in
+	//! f1 along the path (each collider vertex on its chord).
 	bool IntersectionFree(ContactFrame& f, const std::vector<double>& x0, const std::vector<double>& x1,
-		std::string& detail, bool skipMoving = false) const;
-	//! Moves x rigidly with the mesh colliders from t0 to t1 where a vertex is
-	//! near a moving collider at t0 (each vertex with its nearest one; the start
-	//! of a step); false when no vertex needed it.
-	bool Carry(const std::vector<double>& x, double t0, double t1, std::vector<double>& out) const;
+		std::string& detail, bool skipMoving = false, const ContactFrame* f1 = nullptr) const;
+
+	// Kinematic continuation (moving pins and mesh colliders).
+	const Motion& MeshMotion(std::uint32_t mesh) const { return motions_[mesh]; }
+	//! Upper bound on the distance any collider vertex travels from t0 to t1.
+	double ColliderTravel(double t0, double t1, const std::vector<const Motion*>& mesh) const;
+	//! Per cloth vertex, the moving mesh collider nearest to it within `radius` at
+	//! f's pose (-1: none).
+	void Owners(const ContactFrame& f, const std::vector<double>& x, double radius, std::vector<int>& owner) const;
+	//! The fraction tau in [0, 1] of the stage the kinematics can advance:
+	//! conservative advancement along the true paths of every point of every
+	//! candidate pair (f.candidates, built at the stage's start with room for its
+	//! motion), keeping each gap above 0.1 of its value; pairs whose points all
+	//! move with one rigid motion keep their gap and are skipped.  `blocking`: the
+	//! pair that limited tau.
+	double KinematicStep(const ContactFrame& f, const std::vector<double>& x, const KinematicStage& stage,
+		ContactPair* blocking) const;
+	//! For a diagnostic: a pair's cloth vertices and a name for its collider.
+	void DescribePair(const ContactFrame& f, const ContactPair& p, std::vector<std::uint32_t>& cloth,
+		std::vector<std::string>& colliders) const;
+	//! Names of the colliders within the barrier's reach of cloth vertex q at x.
+	void ContactsOf(const ContactFrame& f, const std::vector<double>& x, std::uint32_t q, std::vector<std::string>& names) const;
 
 private:
 	struct PairGeometry;
 	bool Points(const ContactFrame& f, const std::vector<double>& x, const ContactPair& p, V3* xs,
 		std::uint32_t* ids, bool* cloth, int& kind) const;
 	double Weight(const ContactPair& p) const;
+	void PlaceGrid(ContactFrame& f) const;  // boxes and grids for f.colliderX
+	//! The edge-edge mollifier's eps (1e-3 |ea_rest|^2 |eb_rest|^2); 0 for other pairs.
+	double MollifierScale(const ContactPair& p) const;
 
 	bool active_ = false, moving_ = false;
 	BarrierSettings settings_;
@@ -178,10 +224,12 @@ private:
 	std::vector<std::uint32_t> triangles_;   // 3 per cloth triangle
 	std::vector<std::uint32_t> edges_;       // 2 per cloth edge
 	std::vector<double> vertexWeight_, edgeWeight_, triangleWeight_;
+	std::vector<double> edgeRest2_;          // squared rest length per cloth edge (material coordinates)
 	// Colliders (all meshes concatenated).
 	std::vector<double> colliderV0_;         // rest positions
 	std::vector<std::uint32_t> colliderMesh_; // per vertex: mesh index
 	std::vector<std::uint32_t> colliderTriangles_, colliderEdges_;
+	std::vector<double> colliderEdgeRest2_;  // squared length per collider edge (rigid)
 	std::vector<Motion> motions_;
 	double meanEdge_ = 0;
 };

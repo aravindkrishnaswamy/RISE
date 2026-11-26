@@ -913,10 +913,12 @@ CaseResult RunContactMesh(const CaseSettings& settings, const ContactSettings& c
 	std::string first;
 	for (int k = 0; k < steps; ++k) {
 		const std::vector<double> before = system.x;
+		const double t0 = system.time;
 		const int halvings = r.stats.halvings;
 		if (!system.Step(dt, settings.scheme, newton, r.stats, error)) return Failed(error);
 		std::string detail;
-		if (!system.PathIntersectionFree(before, system.x, system.time, detail)) { ++violations; if (first.empty()) first = detail; }
+		// The cloth's straight path while the cube moves on its chord over the step.
+		if (!system.PathIntersectionFree(before, system.x, t0, system.time, detail)) { ++violations; if (first.empty()) first = detail; }
 		const double gap = system.ContactGap(system.x, system.time);
 		if (!(gap > 0)) { ++violations; if (first.empty()) first = "gap " + std::to_string(gap); }
 		if (std::isfinite(gap)) ++contactSteps;
@@ -987,6 +989,369 @@ CaseResult RunContactBounce(const CaseSettings& settings, const ContactSettings&
 	r.secondary = peak;
 	r.detail = Format("largest energy rise / drop energy %.3e (final change %.3e); smallest gap %.3e m; bounce peak %.4f m",
 		worst, (energy() - e0)/scale, smallest, peak) + Format(" (dropped from %.4f m)", spec.origin[1]);
+	return r;
+}
+
+// ---------------------------------------------------------------- self-collision cases
+
+namespace {
+// Two square layers of `cells` x `cells` cells (side `size`) in one sheet: rows
+// 0 .. n-1 the lower layer, n .. 2n-1 the upper, no element joining them (the
+// rows next to the cut get boundary masses and rod shares).  The upper layer
+// sits at `offset` from the lower one (world), the lower at `spec.origin`.
+bool BuildLayers(SheetSpec spec, const Material& material, int cells, double size, const V3& offset, Sheet& sheet,
+	std::string& error)
+{
+	const std::uint32_t n = static_cast<std::uint32_t>(cells + 1);
+	spec.verticesU = n; spec.verticesV = 2*n;
+	spec.sizeU = size;
+	spec.sizeV = size*static_cast<double>(2*n - 1)/static_cast<double>(n - 1);
+	Sheet s;
+	if (!BuildSheet(spec, material, s, error)) return false;
+	auto layer = [&](std::uint32_t v) { return v/n >= n ? 1 : 0; }; // vertex v = i + n j
+	auto mixed = [&](const std::uint32_t* v, int count) {
+		for (int k = 1; k < count; ++k) if (layer(v[k]) != layer(v[0])) return true;
+		return false;
+	};
+	std::vector<Triangle> tris;
+	for (const auto& t : s.triangles) if (!mixed(t.v, 3)) tris.push_back(t);
+	std::vector<Hinge> hinges;
+	for (const auto& h : s.hinges) if (!mixed(h.v, 4)) hinges.push_back(h);
+	std::vector<Rod> rods;
+	for (auto r : s.rods) {
+		if (mixed(r.v, 3)) continue;
+		const std::uint32_t j = r.v[1]/n;
+		if (r.kind == HingeKind::Warp && (j == n - 1 || j == n)) r.stiffness *= 0.5; // now an edge row
+		rods.push_back(r);
+	}
+	s.triangles.swap(tris); s.hinges.swap(hinges); s.rods.swap(rods);
+	for (std::uint32_t i = 0; i < n; ++i)
+		for (std::uint32_t j : {n - 1, n}) { const std::uint32_t q = s.Index(i, j); s.mass[q] *= 0.5; s.area[q] *= 0.5; }
+	for (std::uint32_t j = n; j < 2*n; ++j) for (std::uint32_t i = 0; i < n; ++i) {
+		const std::uint32_t q = s.Index(i, j);
+		const double u = static_cast<double>(i)*s.hu, v = static_cast<double>(j - n)*s.hv;
+		for (int d = 0; d < 3; ++d) s.initial[3*q + d] = spec.origin[d] + offset[d] + spec.axisU[d]*u + spec.axisV[d]*v;
+	}
+	sheet = std::move(s);
+	return true;
+}
+
+ModelConfig SelfConfig(const CaseSettings& settings, const ContactSettings& contact)
+{
+	ModelConfig config = ContactConfig(settings, contact);
+	config.barrier.selfCollision = true;
+	return config;
+}
+}
+
+CaseResult RunSelfStack(const CaseSettings& settings, const ContactSettings& contact)
+{
+	const Material& mat = settings.material;
+	const int cells = settings.resolution;
+	const double size = 0.1, dhat = contact.barrier.activation, xi = contact.thickness, h = size/cells;
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+	spec.origin = {{-0.5*size, xi + 0.5*dhat, -0.5*size}};
+	ModelConfig config = SelfConfig(settings, contact);
+	config.gravity = {{0, -Gravity, 0}};
+	config.damping = false;
+	config.barrier.friction = 0;
+	config.barrier.selfFriction = 0;
+	Collider plane;
+	plane.type = Collider::Type::Plane; plane.a = {{0, 0, 0}}; plane.b = {{0, 1, 0}};
+	config.colliders.push_back(plane);
+	const double wall = 0.5*size + xi + dhat;
+	for (int k = 0; k < 4; ++k) {
+		Collider w;
+		w.type = Collider::Type::Plane;
+		w.a = {{k == 0 ? -wall : k == 1 ? wall : 0, 0, k == 2 ? -wall : k == 3 ? wall : 0}};
+		w.b = {{k == 0 ? 1.0 : k == 1 ? -1.0 : 0, 0, k == 2 ? 1.0 : k == 3 ? -1.0 : 0}};
+		config.colliders.push_back(w);
+	}
+	// The layers aligned in plan.
+	Sheet sheet;
+	std::string error;
+	(void)h;
+	if (!BuildLayers(spec, mat, cells, size, {{0, xi + 0.5*dhat, 0}}, sheet, error)) return Failed(error);
+	ClothSystem system;
+	if (!system.Initialize(sheet, config, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-9*Gravity;
+	newton.maxIterations = 100;
+	CaseResult r;
+	r.resolution = cells;
+	// Frictionless layers slide freely: the solve keeps the last stage's mass
+	// term (each stage converged), and frictionless walls keep the layers over
+	// each other (their forces are horizontal: the vertical balance is unaffected).
+	if (!system.SolveStatic(newton, r.stats, error, 0.01, 10, false, 100)) return Failed(error);
+	const std::uint32_t n = static_cast<std::uint32_t>(cells + 1), count = system.Vertices();
+	double upperWeight = 0, weight = 0;
+	for (std::uint32_t q = 0; q < count; ++q) {
+		weight += sheet.mass[q]*Gravity;
+		if (q/n >= n) upperWeight += sheet.mass[q]*Gravity;
+	}
+	std::vector<double> forces;
+	system.ContactForces(system.x, system.time, forces);
+	double upperForce = 0, totalForce = 0;
+	for (std::uint32_t q = 0; q < count; ++q) {
+		totalForce += forces[3*static_cast<std::size_t>(q) + 1];
+		if (q/n >= n) upperForce += forces[3*static_cast<std::size_t>(q) + 1];
+	}
+	// Gap between the layers above the offset: each upper vertex's height above
+	// the lower vertex under it, less xi.
+	double gapMin = std::numeric_limits<double>::infinity(), gapMax = -gapMin, gapMean = 0;
+	for (std::uint32_t q = n*n; q < count; ++q) {
+		const double z = system.x[3*static_cast<std::size_t>(q) + 1] - system.x[3*static_cast<std::size_t>(q - n*n) + 1] - xi;
+		gapMin = std::min(gapMin, z); gapMax = std::max(gapMax, z); gapMean += z/(n*n);
+	}
+	const double planeBalance = std::fabs(totalForce - weight)/weight, layerBalance = std::fabs(upperForce - upperWeight)/upperWeight;
+	r.ok = true;
+	r.error = std::max(planeBalance, layerBalance);
+	if (!(gapMin > 0) || !(gapMax < dhat) || !(system.ContactGap(system.x, system.time) > 0)) r.error = 1;
+	r.measured = gapMean;
+	r.reference = dhat;
+	r.secondary = layerBalance;
+	r.detail = Format("plane force / both weights - 1 = %.2e; force on the upper layer / its weight - 1 = %.2e; ",
+		(totalForce - weight)/weight, (upperForce - upperWeight)/upperWeight) +
+		Format("gap between layers above the offset %.4e m (%.4e .. %.4e) for dhat %.1e m", gapMean, gapMin, gapMax, dhat);
+	return r;
+}
+
+CaseResult RunSelfIncline(const CaseSettings& settings, const ContactSettings& contact, double angle)
+{
+	const Material& mat = settings.material;
+	const int cells = settings.resolution;
+	const double size = 0.1, dhat = contact.barrier.activation, xi = contact.thickness, mu = contact.barrier.selfFriction;
+	const double h = size/cells, gn = Gravity*std::cos(angle), gt = Gravity*std::sin(angle);
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+	spec.origin = {{-0.5*size, 0, -0.5*size}};
+	ModelConfig config = SelfConfig(settings, contact);
+	config.gravity = {{gt, -gn, 0}};
+	config.damping = false;
+	Sheet sheet;
+	std::string error;
+	// The layers aligned in plan.
+	(void)h;
+	if (!BuildLayers(spec, mat, cells, size, {{0, xi + 0.5*dhat, 0}}, sheet, error)) return Failed(error);
+	const std::uint32_t n = static_cast<std::uint32_t>(cells + 1);
+	PinGroup lower;
+	for (std::uint32_t q = 0; q < n*n; ++q) lower.vertices.push_back(q);
+	config.pins.push_back(lower);
+	ClothSystem system;
+	if (!system.Initialize(sheet, config, error)) return Failed(error);
+	CaseResult r;
+	r.resolution = cells;
+	// Settle the upper layer on the lower one (static, gravity normal to the layers), then tilt.
+	NewtonOptions settle = settings.newton;
+	settle.tolerance = 1e-8*Gravity;
+	settle.maxIterations = 100;
+	{
+		// Frictionless walls (horizontal forces only) keep the upper layer over the lower one.
+		ModelConfig normal = config;
+		normal.gravity = {{0, -gn, 0}};
+		const double wall = 0.5*size + xi + dhat;
+		for (int k = 0; k < 4; ++k) {
+			Collider w;
+			w.type = Collider::Type::Plane;
+			w.a = {{k == 0 ? -wall : k == 1 ? wall : 0, 0, k == 2 ? -wall : k == 3 ? wall : 0}};
+			w.b = {{k == 0 ? 1.0 : k == 1 ? -1.0 : 0, 0, k == 2 ? 1.0 : k == 3 ? -1.0 : 0}};
+			normal.colliders.push_back(w);
+		}
+		ClothSystem rest;
+		if (!rest.Initialize(sheet, normal, error)) return Failed(error);
+		if (!rest.SolveStatic(settle, r.stats, error, 0.01, 10, false, 100)) return Failed(error);
+		system.x = rest.x;
+		system.v.assign(system.x.size(), 0.0);
+	}
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-6*Gravity;
+	// Short enough that the sliding layer stays over the lower one (0.1 m wide; it
+	// would otherwise overhang, droop and lose support).
+	const double T = 0.1, dt = 1.0/240;
+	const int steps = static_cast<int>(std::lround(T/dt));
+	auto meanVelocity = [&]() {
+		double s = 0, m = 0;
+		for (std::uint32_t k = n*n; k < system.Vertices(); ++k) { s += sheet.mass[k]*system.v[3*static_cast<std::size_t>(k)]; m += sheet.mass[k]; }
+		return s/m;
+	};
+	double vHalf = 0, smallest = std::numeric_limits<double>::infinity();
+	for (int k = 0; k < steps; ++k) {
+		if (!system.Step(dt, settings.scheme, newton, r.stats, error)) return Failed(error);
+		smallest = std::min(smallest, system.ContactGap(system.x, system.time));
+		if (k + 1 == steps/2) vHalf = meanVelocity();
+	}
+	const double vEnd = meanVelocity();
+	const double reference = gt - mu*gn;
+	r.ok = true;
+	if (reference <= 0) {
+		const double eps = contact.barrier.frictionVelocity, ratio = std::tan(angle)/mu;
+		const double creep = eps*(1 - std::sqrt(1 - ratio));
+		r.measured = vEnd;
+		r.reference = creep;
+		r.error = std::fabs(vEnd - creep)/eps;
+		r.detail = Format("upper layer sticks: creeps at %.6e m/s (smoothed law %.6e m/s, slip speed %.1e m/s); tan(angle)/mu = %.3f",
+			vEnd, creep, eps, ratio) + Format("; smallest gap %.2e m", smallest);
+	} else {
+		const double a = (vEnd - vHalf)/(T - dt*(steps/2));
+		r.measured = a;
+		r.reference = reference;
+		r.error = std::fabs(a - reference)/reference;
+		r.detail = Format("upper layer slides: acceleration %.6f m/s^2 (g(sin - mu cos) = %.6f); smallest gap %.2e m",
+			a, reference, smallest);
+	}
+	if (!(smallest > 0)) r.error = std::max(r.error, 1.0);
+	return r;
+}
+
+CaseResult RunSelfHairpin(const CaseSettings& settings, const ContactSettings& contact)
+{
+	// A strip folded over itself on a frictionless plane (static): the lower
+	// half on the plane, a loop, the upper half on the lower one.  Both ends are
+	// held, the upper one above the lower at the offset (plus half the barrier's
+	// reach): on frictionless supports the fold could otherwise roll along the
+	// strip at no cost (a free mode), which the held ends remove.
+	const Material& mat = settings.material;
+	const double B = mat.bendWarp, q = mat.density*Gravity;
+	if (!(B > 0)) return Failed("the hairpin needs bending rigidity");
+	const double lb = std::cbrt(B/q), L = 16*lb, width = 0.5*lb, xi = contact.thickness, dhat = contact.barrier.activation;
+	const int segments = 2*((settings.resolution + 1)/2);
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	spec.sizeU = L; spec.sizeV = width;
+	spec.verticesU = static_cast<std::uint32_t>(segments + 1); spec.verticesV = 3;
+	spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+	spec.origin = {{0, xi + 0.5*dhat, 0}};
+	ModelConfig config = SelfConfig(settings, contact);
+	config.gravity = {{0, -Gravity, 0}};
+	config.damping = false;
+	config.barrier.friction = 0;
+	config.barrier.selfFriction = 0;
+	Collider plane;
+	plane.type = Collider::Type::Plane; plane.a = {{0, 0, 0}}; plane.b = {{0, 1, 0}};
+	config.colliders.push_back(plane);
+	const std::uint32_t nu = spec.verticesU;
+	PinGroup ends;
+	for (std::uint32_t j = 0; j < 3; ++j) { ends.vertices.push_back(nu*j); ends.vertices.push_back(nu - 1 + nu*j); }
+	config.pins.push_back(ends);
+	Sheet sheet;
+	std::string error;
+	if (!BuildSheet(spec, mat, sheet, error)) return Failed(error);
+	// Initial shape: flat for a third, a semicircle of radius r0, then straight
+	// back down to the upper end held at x = 0, xi + dhat/2 above the lower end.
+	const double r0 = 1.5*lb, arc = Pi*r0, flat = L/3, y0 = xi + 0.5*dhat, yTop = y0 + xi + 0.5*dhat;
+	const double back = L - flat - arc;
+	for (std::uint32_t k = 0; k < sheet.Vertices(); ++k) {
+		const double s = sheet.materialU[k];
+		double x, y;
+		if (s <= flat) { x = s; y = y0; }
+		else if (s <= flat + arc) { const double a = (s - flat)/r0; x = flat + r0*std::sin(a); y = y0 + r0*(1 - std::cos(a)); }
+		else {
+			const double f = (s - flat - arc)/back; // 0 at the loop's top, 1 at the upper end
+			x = flat*(1 - f); y = (y0 + 2*r0)*(1 - f) + yTop*f;
+		}
+		sheet.initial[3*k] = x; sheet.initial[3*k + 1] = y;
+	}
+	ClothSystem system;
+	if (!system.Initialize(sheet, config, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-8*Gravity;
+	newton.maxIterations = 200;
+	CaseResult r;
+	r.resolution = segments;
+	if (!system.SolveStatic(newton, r.stats, error, 0.01, 12, true, 100)) return Failed(error);
+	// Loop height (the middle row's highest point above the plane) and the
+	// fold's reach (the loop's outermost x from the ends).
+	double top = 0, reachX = -std::numeric_limits<double>::infinity();
+	for (std::uint32_t i = 0; i < nu; ++i) {
+		const std::size_t k = 3*static_cast<std::size_t>(i + nu);
+		top = std::max(top, system.x[k + 1]);
+		reachX = std::max(reachX, system.x[k]);
+	}
+	r.ok = system.ContactGap(system.x, system.time) > 0;
+	if (!r.ok) r.failure = "the hairpin ends inside an offset";
+	r.measured = top;
+	r.secondary = reachX;
+	r.reference = lb;
+	r.detail = Format("loop height %.6e m, fold reach %.6e m (bending length %.4e m); smallest gap %.3e m", top, reachX, lb,
+		system.ContactGap(system.x, system.time));
+	return r;
+}
+
+CaseResult RunSelfFold(const CaseSettings& settings, const ContactSettings& contact, int scenario, double duration)
+{
+	// Exact no-intersection check of every accepted step, cloth against the
+	// colliders and against itself.  Scenario 0: a sheet dropped corner-first
+	// onto a sphere so that it folds over it; 1: a strip on a plane pushed into a
+	// fold by pins at its two ends moving toward each other.
+	const double xi = contact.thickness, dhat = contact.barrier.activation;
+	SheetSpec spec;
+	spec.triangulation = settings.triangulation; spec.bending = settings.bending;
+	ModelConfig config = SelfConfig(settings, contact);
+	config.gravity = {{0, -Gravity, 0}};
+	const std::uint32_t n = static_cast<std::uint32_t>(settings.resolution + 1);
+	if (scenario == 0) {
+		spec.sizeU = spec.sizeV = 0.6;
+		spec.verticesU = spec.verticesV = n;
+		const double t = 0.35, lu = std::sqrt(1 + t*t);
+		const V3 u{{1/lu, t/lu, 0}};
+		V3 w{{0, t, 1}};
+		const double d = w[0]*u[0] + w[1]*u[1] + w[2]*u[2];
+		w = {{w[0] - d*u[0], w[1] - d*u[1], w[2] - d*u[2]}};
+		const double lw = std::sqrt(w[0]*w[0] + w[1]*w[1] + w[2]*w[2]);
+		spec.axisU = u; spec.axisV = {{w[0]/lw, w[1]/lw, w[2]/lw}};
+		spec.origin = {{-0.1, 0.85, -0.1}};
+		Collider sphere;
+		sphere.type = Collider::Type::Sphere; sphere.a = {{0, 0.5, 0}}; sphere.radius = 0.3;
+		config.colliders.push_back(sphere);
+	} else {
+		spec.sizeU = 0.3; spec.sizeV = 0.06;
+		spec.verticesU = n; spec.verticesV = std::max<std::uint32_t>(3, n/5 + 1);
+		spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+		spec.origin = {{-0.15, xi + 0.5*dhat, -0.03}};
+		Collider plane;
+		plane.type = Collider::Type::Plane; plane.a = {{0, 0, 0}}; plane.b = {{0, 1, 0}};
+		config.colliders.push_back(plane);
+		PinGroup left, right;
+		for (std::uint32_t j = 0; j < spec.verticesV; ++j) { left.vertices.push_back(n*j); right.vertices.push_back(n - 1 + n*j); }
+		left.motion.type = right.motion.type = Motion::Type::Translate;
+		// The left end is carried up and over toward the right end (folding the
+		// strip onto itself, like folding a towel); the right end moves in a little.
+		left.motion.vector = {{0.22, 0.05, 0}}; right.motion.vector = {{-0.03, 0, 0}};
+		config.pins.push_back(left); config.pins.push_back(right);
+	}
+	ClothSystem system;
+	std::string error;
+	if (!Build(spec, config, system, error)) return Failed(error);
+	NewtonOptions newton = settings.newton;
+	newton.tolerance = 1e-3;
+	const double dt = 1.0/240;
+	const int steps = static_cast<int>(std::lround(duration/dt));
+	CaseResult r;
+	r.resolution = settings.resolution;
+	int violations = 0, selfSteps = 0;
+	double smallest = std::numeric_limits<double>::infinity();
+	std::string first;
+	for (int k = 0; k < steps; ++k) {
+		const std::vector<double> before = system.x;
+		const double t0 = system.time;
+		if (!system.Step(dt, settings.scheme, newton, r.stats, error)) return Failed(error);
+		std::string detail;
+		if (!system.PathIntersectionFree(before, system.x, t0, system.time, detail)) { ++violations; if (first.empty()) first = detail; }
+		const double gap = system.ContactGap(system.x, system.time);
+		if (!(gap > 0)) { ++violations; if (first.empty()) first = "gap " + std::to_string(gap); }
+		if (system.SelfContactPairs(system.x) > 0) ++selfSteps;
+		smallest = std::min(smallest, gap);
+	}
+	r.ok = true;
+	r.error = violations;
+	r.measured = smallest;
+	r.secondary = selfSteps;
+	r.detail = Format("%.0f violations in %.0f steps (%.0f with cloth-cloth pairs in reach); smallest gap %.3e m; ", violations, steps,
+		selfSteps, smallest) + Format("%.0f Newton iterations, %.0f halvings", r.stats.newtonIterations, r.stats.halvings) +
+		(first.empty() ? std::string() : "; first: " + first);
 	return r;
 }
 

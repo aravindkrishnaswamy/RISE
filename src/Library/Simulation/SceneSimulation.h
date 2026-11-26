@@ -34,7 +34,13 @@ struct SceneSimulationSpec {
 	std::filesystem::path cacheDir;        // absolute
 	std::vector<std::string> sceneInputs;  // scene elements the parameters read
 	std::vector<std::pair<std::string, std::string>> outputs; // declared (name, codec); empty for simulation_cache
+	//! M6: one-way couplings declared on this simulation, as authored:
+	//! "<accepted port> from <simulation>.<output> [via <adapter> [key=value ...]] [aux <member>.<port>]".
+	std::vector<std::string> portSources;
 };
+//! M6: the keyword of a co-stepping group (solverId empty, parameters: the
+//! group's chunk fields as a map, cacheDir: the group's own sidecar directory).
+extern const char* const kSimulationGroupKeyword;   // "simulation_group"
 
 enum class SceneSimulationState {
 	Missing,   // no cache
@@ -68,7 +74,23 @@ struct SceneSimulationStatus {
 	//! M5: the simulated_mesh_geometry elements bound to it by `source` (by
 	//! name; a live run drives the first), filled in by Job::DescribeSimulations.
 	std::vector<std::string> meshConsumers;
+	//! M5c: why a Stale simulation is stale, from the cache's job record
+	//! against this configuration: "parameters changed (<members>)" naming the
+	//! effective-parameter members that differ (a moved or resized collider
+	//! shows as cloth's `colliders`), "scene input changed
+	//! (<inputs>)", "upstream out of date", "solver version changed",
+	//! "configuration changed" (no job record to compare), or the prediction
+	//! error when the key is unknown.  Empty unless state is Stale.
+	std::string staleReason;
+	//! M5c: estimated wall time of a whole bake from the start, seconds:
+	//! costEstimate x the simulated span (startTime + interval x (framesTotal-1)).
+	//! 0 = unknown.  Approximate by construction; see the solver's estimate.
+	double wallEstimate = 0;
 };
+
+//! M5c: "≈ 5 h, 4.0 GB" (either part may be missing; "" when both are
+//! unknown).  What the simulations panel and `sim_list` show before a bake.
+std::string FormatSimulationEstimate(const SceneSimulationStatus& status);
 
 //! What the scene supplies: scene inputs for a simulation.  Implemented by
 //! the Job (SceneInputs.h).
@@ -138,6 +160,18 @@ void InspectSceneSimulation(const SceneSimulationPlan& plan, SceneSimulationStat
 //! completed with the schema's explicit defaults when the solver's schema
 //! asks for that (SimulationParameterSchema.h: fire).
 bool SceneSimulationParameters(const SceneSimulationSpec& spec, RISECBOR64::Value& parameters, std::string& error);
+
+class SimulationGroup;
+//! M6: the coupled run a scene declares for `spec` -- a simulation_group, or
+//! a simulation with port_source lines (its upstreams then stand in as cached
+//! members) -- built over the plans (Configure done, nothing started).
+//! Members whose plans are not configured, or upstreams not complete, refuse.
+bool BuildSceneGroup(const SceneSimulationSpec& spec, const std::vector<SceneSimulationPlan>& plans,
+	SimulationGroup& group, std::string& error);
+//! M6: the simulations a coupled spec runs live (a group's members; the
+//! downstream of port_source lines), and the group spec (if any) a simulation belongs to.
+std::vector<std::string> SceneGroupLiveMembers(const SceneSimulationSpec& spec);
+const SceneSimulationSpec* SceneGroupOf(const std::vector<SceneSimulationSpec>& specs, const std::string& simulation);
 
 } }
 #endif

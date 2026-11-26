@@ -131,6 +131,7 @@ constexpr int          SceneEditController::kRefineIdleMs;
 constexpr int          SceneEditController::kRefineWakeMs;
 constexpr int          SceneEditController::kScrubWatchdogMs;
 constexpr int          SceneEditController::kNumCategories;
+constexpr double       SceneEditController::kFrameSteppingPlaybackFps;
 
 // Process-global epoch counter — incremented on every controller
 // construction so each new controller starts at a unique mSceneEpoch
@@ -4187,6 +4188,19 @@ unsigned int SceneEditController::CategoryEntityCountLocked_( Category cat ) con
 		mJob.EnumerateGeometryNames( cb );
 		return cb.n;
 	}
+	case Category::Simulation: {
+		// Simulation M5c: the Job-side simulation table (the Medium shape).
+		struct Count : public IEnumCallback<const char*> {
+			unsigned int n = 0;
+			bool operator()( const char* const& name ) override {
+				if( name ) ++n;
+				return true;
+			}
+		};
+		Count cb;
+		mJob.EnumerateSimulationNames( cb );
+		return cb.n;
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -4272,6 +4286,12 @@ String SceneEditController::CategoryEntityNameLocked_( Category cat, unsigned in
 		if( idx >= cb.names.size() ) return String();
 		return cb.names[idx];
 	}
+	case Category::Simulation: {
+		CollectNamesCallback cb;
+		mJob.EnumerateSimulationNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
 	case Category::None:
 	default:
 		return String();
@@ -4317,6 +4337,10 @@ void SceneEditController::CategoryEntityNamesLocked_( Category cat, std::vector<
 	}
 	case Category::Geometry: {
 		CollectNamesCallback cb; mJob.EnumerateGeometryNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Simulation: {
+		CollectNamesCallback cb; mJob.EnumerateSimulationNames( cb ); out.swap( cb.names );
 		return;
 	}
 	case Category::Painter: {
@@ -7662,6 +7686,56 @@ std::string TrimAsciiSpace_( const std::string& s )
 	while( b < e && ( s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n' ) ) ++b;
 	while( e > b && ( s[e-1] == ' ' || s[e-1] == '\t' || s[e-1] == '\r' || s[e-1] == '\n' ) ) --e;
 	return s.substr( b, e - b );
+}
+}  // namespace
+
+namespace {
+// Simulation M5c: the Simulation category's property rows.  The generic
+// descriptor+CST surface (the same one Geometry uses) gives every
+// single-occurrence field of the producer chunk -- the solver's parameter
+// schema, so the panel is descriptor-driven -- and, like PainterIntrospection,
+// one EDITABLE row per occurrence of a REPEATABLE field (cloth's
+// `collider_object` / `follow_object` / `pin`), named `<role>[<i>]` and routed
+// back with that occurrence by SetPropertyInner_'s Simulation arm.  A reference
+// occurrence (ObjectReference fields) carries its referenceCategories and the
+// scene's objects as presets, so a shell shows its reference picker.
+std::vector<CameraProperty> InspectSimulationChunk_( const RISE::Cst::Document* doc, IJobPriv& job, const String& name )
+{
+	std::vector<CameraProperty> rows = CstIntrospection::Inspect( doc, job, name, "simulation", "Simulation chunk keyword" );
+	if( rows.empty() || !doc ) return rows;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, name.c_str(), nullptr, "simulation", false );
+	const RISE::Cst::NodeRef chunk = id != 0 ? RISE::Cst::DocResolveNodeId( *doc, id ) : nullptr;
+	const ChunkDescriptor* cd = chunk ? DescriptorForKeyword( String( chunk->role.c_str() ) ) : nullptr;
+	if( !cd ) return rows;
+	for( const ParameterDescriptor& p : cd->parameters ) {
+		if( !p.repeatable ) continue;   // the generic surface already emitted it
+		const int n = RISE::Cst::ParamOccurrenceCount( chunk, p.name );
+		std::vector<String> candidates;
+		if( p.kind == ValueKind::Reference && n > 0 )
+			for( ChunkCategory rc : p.referenceCategories )
+				for( const String& c : CstIntrospection::CandidateNamesForChunkCategory( job, rc ) )
+					candidates.push_back( c );
+		for( int i = 0; i < n; ++i ) {
+			CameraProperty row;
+			row.name = String( ( p.name + "[" + std::to_string( i ) + "]" ).c_str() );
+			row.kind = p.kind;
+			row.value = String( TrimAsciiSpace_( RISE::Cst::ParamValueAtOccurrence( chunk, p.name, i ) ).c_str() );
+			row.editable = true;
+			row.unitLabel = String( p.unitLabel.c_str() );
+			row.referenceCategories = p.referenceCategories;
+			row.presets = p.presets;
+			for( const String& c : candidates ) {
+				ParameterPreset pr;
+				pr.label = c.c_str();
+				pr.value = c.c_str();
+				row.presets.push_back( pr );
+			}
+			row.description = String( ( p.description + "  [Occurrence " + std::to_string( i ) +
+				" of the repeatable field `" + p.name + "`: editing this row rewrites that line only.]" ).c_str() );
+			rows.push_back( row );
+		}
+	}
+	return rows;
 }
 }  // namespace
 
@@ -11386,6 +11460,7 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
 	case Category::Painter:      outSuffix = "painter";         return true;   // matches every "*_painter" chunk keyword (endsWith), same convention as ClassifyCstEntityKind's "_material"/"_light"/"_medium" suffixes
 	case Category::Geometry:     outSuffix = "geometry";        return true;   // matches every "*_geometry" chunk keyword (endsWith) -- GUI redesign 2026-07-22
+	case Category::Simulation:   outSuffix = "simulation";      return true;   // `*_simulation` by suffix; `simulation_cache` through the registry arm of Cst::RoleMatchesKindConstraint -- Simulation M5c
 	case Category::Rasterizer:
 	case Category::Film:
 	case Category::None:
@@ -11487,6 +11562,7 @@ SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
 			case ChunkCategory::Light:        return Cat::Light;
 			case ChunkCategory::Animation:    return Cat::Animation;
 			case ChunkCategory::SceneVariant: return Cat::SceneVariant;
+			case ChunkCategory::Simulation:   return Cat::Simulation;  // Simulation M5c
 			default:                          return Cat::None;      // not a UI-addressable category
 			}
 		};
@@ -12857,6 +12933,13 @@ void SceneEditController::RefreshProperties()
 				"geometry", "Geometry chunk keyword" );
 			break;
 		}
+		case Category::Simulation: {
+			// Simulation M5c: descriptor+CST rows plus the repeatable-field
+			// occurrences (InspectSimulationChunk_).
+			if( selName.size() <= 1 ) break;
+			out = InspectSimulationChunk_( mJob.GetCstDocument(), mJob, selName );
+			break;
+		}
 		case Category::None:
 		default:
 			break;
@@ -12912,7 +12995,8 @@ void SceneEditController::RefreshProperties()
 		// SceneVariant: their empty primary snapshot drives the shells'
 		// explanatory "selecting activates..." message.
 		if( mSelectionCategory == Category::Painter
-		 || mSelectionCategory == Category::Geometry )
+		 || mSelectionCategory == Category::Geometry
+		 || mSelectionCategory == Category::Simulation )
 		{
 			primaryRows = byCat[ static_cast<int>( mSelectionCategory ) ];
 		}
@@ -13073,6 +13157,7 @@ inline RISE::SceneEditController::Category UiCategoryForChunkCategory( RISE::Chu
 	case RISE::ChunkCategory::Object:    return Cat::Object;
 	case RISE::ChunkCategory::Camera:    return Cat::Camera;
 	case RISE::ChunkCategory::Light:     return Cat::Light;
+	case RISE::ChunkCategory::Simulation: return Cat::Simulation;   // Simulation M5c: `source <simulation>.<output>`
 	default:                             return Cat::None;
 	}
 }
@@ -18515,6 +18600,20 @@ bool SceneEditController::RemoveEnvironment()
 	return true;
 }
 
+namespace {
+// Simulation M5c: a GUI edit (property panel, undo, redo) follows the edited
+// scene in a live simulation, as ApplyAgentParamEdit does for the agent path.
+// LiveSimulationResync restarts only runs whose configuration changed.  Called
+// after the edit's locks are released.
+void ResyncLiveSimulationsAfterEdit( SceneEditController& controller, bool applied )
+{
+	if( !applied || controller.LiveSimulationCount() == 0 ) return;
+	std::string liveError;
+	if( !controller.LiveSimulationResync( liveError ) )
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: %s", liveError.c_str() );
+}
+}  // namespace
+
 bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )
 {
 	const int idx = static_cast<int>( cat );
@@ -18535,6 +18634,7 @@ bool SceneEditController::SetPropertyForCategory( Category cat, const String& na
 	// callback sees coherent UI state and any re-entrant SetSelection it makes
 	// remains authoritative.
 	mEditor.DrainDirtyNotification();
+	ResyncLiveSimulationsAfterEdit( *this, ok );
 	return ok;
 }
 
@@ -19584,6 +19684,7 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		ok = SetPropertyInner_( mSelectionCategory, mSelectionName, name, valueStr );
 	}
 	mEditor.DrainDirtyNotification();
+	ResyncLiveSimulationsAfterEdit( *this, ok );
 	return ok;
 }
 
@@ -19610,6 +19711,7 @@ bool SceneEditController::Undo()
 		ok = UndoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	ResyncLiveSimulationsAfterEdit( *this, ok );
 	return ok;
 }
 
@@ -19623,6 +19725,7 @@ bool SceneEditController::Redo()
 		ok = RedoInner_();
 	}
 	mEditor.DrainDirtyNotification();
+	ResyncLiveSimulationsAfterEdit( *this, ok );
 	return ok;
 }
 
@@ -20439,6 +20542,40 @@ bool SceneEditController::SetPropertyInner_(
 		return r.applied;
 	}
 
+	case Category::Simulation: {
+		// Simulation M5c: the Geometry route (the generic agent CST param edit:
+		// park, prior value for undo/redo, dirty mark, re-derive).  The edit
+		// changes the simulation's key, so it reads stale; nothing bakes.
+		// `<role>[<i>]` rows (InspectSimulationChunk_) address one occurrence of
+		// a repeatable field, validated against the descriptor and the document
+		// first, as the Painter arm does.
+		if( targetName.size() <= 1 ) return false;
+		std::string role( name.c_str() );
+		int occ = 0;
+		const bool occAddressed = PainterIntrospection::IsOccurrenceRowName( name );
+		if( occAddressed ) {
+			if( !PainterIntrospection::ParseOccurrenceRowName( name, role, occ ) ) return false;
+			std::lock_guard<std::mutex> lk( mMutex );
+			const RISE::Cst::Document* doc = mJob.GetCstDocument();
+			if( !doc ) return false;
+			const RISE::Cst::NodeId id = ResolveSourceChunkId( *doc, Category::Simulation,
+				std::string( targetName.c_str() ), std::string(), mJob.GetActiveCameraName(), mJob.GetObjects() );
+			const RISE::Cst::NodeRef chunk = id != 0 ? RISE::Cst::DocResolveNodeId( *doc, id ) : nullptr;
+			const ChunkDescriptor* cd = chunk ? DescriptorForKeyword( String( chunk->role.c_str() ) ) : nullptr;
+			const ParameterDescriptor* pd = nullptr;
+			if( cd ) for( const ParameterDescriptor& p : cd->parameters ) if( p.name == role ) { pd = &p; break; }
+			if( !pd || !pd->repeatable || occ < 0 || occ >= RISE::Cst::ParamOccurrenceCount( chunk, role ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditController: simulation property edit of `%s`.`%s` refused -- not an occurrence of a "
+					"repeatable field of this chunk.", targetName.c_str(), name.c_str() );
+				return false;
+			}
+		}
+		const AgentCommitResult r = ApplyAgentParamEditInner_(
+			targetName, String( "simulation" ), String( role.c_str() ), valueStr, nullptr, occ, occAddressed );
+		return r.applied;
+	}
+
 	case Category::None:
 	default:
 		return false;
@@ -21160,14 +21297,15 @@ bool SceneEditController::ShowTimeNow_( const double t )	// PlaybackSeek
 	return ok;
 }
 
-bool SceneEditController::PlaybackPlayRange( const double start, const double end, const double fps, const bool loop )
+bool SceneEditController::PlaybackPlayRange( const double start, const double end, const double fps, const bool loop,
+	const double timeScale )
 {
 	if( mRenderOwnsScene.load( std::memory_order_acquire ) ||
 		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	double from = mEditor.LastSceneTime();
 	if( !( from >= start ) || from >= end - 0.5 / std::max( fps, 1e-3 ) ) from = start;
 	std::string error;
-	if( !mPlayback->Play( start, end, from, fps, loop, error ) ) {
+	if( !mPlayback->Play( start, end, from, fps, loop, error, timeScale ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::PlaybackPlay: %s", error.c_str() );
 		return false;
 	}
@@ -21180,12 +21318,30 @@ bool SceneEditController::PlaybackPlay( double fps, const bool loop )
 		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	double start = 0, end = 0;
 	unsigned int frames = 0;
+	bool simulationAssets = false;
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
 		if( !TimelineRangeLocked_( start, end, frames ) ) return false;
+		// Simulation assets: a declared simulation (baked or not), or any
+		// time-varying asset (a simulated mesh, a fire medium's sequence).
+		struct Any : public IEnumCallback<const char*> {
+			bool any = false;
+			bool operator()( const char* const& ) override { any = true; return false; }
+		} declared;
+		mJob.EnumerateSimulationNames( declared );
+		std::vector<Simulation::TimelineRange> ranges;
+		if( !declared.any ) mJob.DescribeTimeVaryingAssets( ranges, false );   // time maps only; no I/O
+		simulationAssets = declared.any || !ranges.empty();
 	}
-	if( !( fps > 0 ) ) fps = frames > 1 && end > start ? double( frames - 1 ) / ( end - start ) : 30.0;
-	return PlaybackPlayRange( start, end, fps, loop );
+	double timeScale = 1.0;
+	if( !( fps > 0 ) ) {
+		// M5c: the Play button's rule (see the header).  Simulation assets
+		// play in real time on the timeline grid; an ordinary animation
+		// steps one authored frame per 1/30 s, as the shells did before M5.
+		fps = frames > 1 && end > start ? double( frames - 1 ) / ( end - start ) : 30.0;
+		if( !simulationAssets && LiveSimulationCount() == 0 ) timeScale = kFrameSteppingPlaybackFps / fps;
+	}
+	return PlaybackPlayRange( start, end, fps, loop, timeScale );
 }
 
 bool SceneEditController::PlaybackPause()

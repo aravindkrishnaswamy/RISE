@@ -46,7 +46,36 @@ std::size_t BlockMatrix::Slot(std::uint32_t i, std::uint32_t j) const
 	const auto begin = column_.begin() + static_cast<std::ptrdiff_t>(rowStart_[i]);
 	const auto end = column_.begin() + static_cast<std::ptrdiff_t>(rowStart_[i+1]);
 	const auto it = std::lower_bound(begin, end, j);
-	return static_cast<std::size_t>(it - column_.begin());
+	if (it != end && *it == j) return static_cast<std::size_t>(it - column_.begin());
+	// The extension, sorted by (row, column).
+	std::size_t lo = 0, hi = extRow_.size();
+	while (lo < hi) {
+		const std::size_t mid = (lo + hi)/2;
+		if (extRow_[mid] < i || (extRow_[mid] == i && extColumn_[mid] < j)) lo = mid + 1; else hi = mid;
+	}
+	return column_.size() + lo;
+}
+
+void BlockMatrix::Extend(const std::vector<std::pair<std::uint32_t,std::uint32_t>>& pairs)
+{
+	std::vector<std::pair<std::uint32_t,std::uint32_t>> blocks;
+	blocks.reserve(2*pairs.size());
+	for (const auto& p : pairs) {
+		if (p.first == p.second) continue;
+		const auto begin = column_.begin() + static_cast<std::ptrdiff_t>(rowStart_[p.first]);
+		const auto end = column_.begin() + static_cast<std::ptrdiff_t>(rowStart_[p.first + 1]);
+		const auto it = std::lower_bound(begin, end, p.second);
+		if (it != end && *it == p.second) continue;
+		blocks.emplace_back(p.first, p.second);
+		blocks.emplace_back(p.second, p.first);
+	}
+	std::sort(blocks.begin(), blocks.end());
+	blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+	extRow_.resize(blocks.size());
+	extColumn_.resize(blocks.size());
+	for (std::size_t k = 0; k < blocks.size(); ++k) { extRow_[k] = blocks[k].first; extColumn_[k] = blocks[k].second; }
+	values_.resize(9*(column_.size() + blocks.size()));
+	std::fill(values_.begin() + static_cast<std::ptrdiff_t>(9*column_.size()), values_.end(), 0.0);
 }
 
 void BlockMatrix::Zero()
@@ -55,6 +84,20 @@ void BlockMatrix::Zero()
 }
 
 void BlockMatrix::Multiply(const std::vector<double>& x, std::vector<double>& y, ParallelPool* pool) const
+{
+	MultiplyPattern(x, y, pool);
+	const std::size_t base = column_.size();
+	for (std::size_t k = 0; k < extRow_.size(); ++k) {
+		const double* b = &values_[9*(base + k)];
+		const double* v = &x[3*static_cast<std::size_t>(extColumn_[k])];
+		double* out = &y[3*static_cast<std::size_t>(extRow_[k])];
+		out[0] += b[0]*v[0] + b[1]*v[1] + b[2]*v[2];
+		out[1] += b[3]*v[0] + b[4]*v[1] + b[5]*v[2];
+		out[2] += b[6]*v[0] + b[7]*v[1] + b[8]*v[2];
+	}
+}
+
+void BlockMatrix::MultiplyPattern(const std::vector<double>& x, std::vector<double>& y, ParallelPool* pool) const
 {
 	y.resize(3*static_cast<std::size_t>(n_));
 	constexpr std::size_t rows = 256;
@@ -76,7 +119,8 @@ void BlockMatrix::Multiply(const std::vector<double>& x, std::vector<double>& y,
 
 void BlockMatrix::AddScaled(const BlockMatrix& other, double s)
 {
-	for (std::size_t k = 0; k < values_.size(); ++k) values_[k] += s*other.values_[k];
+	const std::size_t count = 9*column_.size();
+	for (std::size_t k = 0; k < count; ++k) values_[k] += s*other.values_[k];
 }
 
 namespace {
@@ -228,10 +272,32 @@ bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, 
 	return ConjugateGradient(a, b, x, rtol, maxIterations, stats, precondition);
 }
 
+namespace {
+// PCG with fixed-chunk inner products and vector updates on `pool`.
+template <class Precondition>
+bool PooledConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
+	double rtol, int maxIterations, LinearSolveStats& stats, ParallelPool* pool, Precondition&& precondition);
+}
+
+bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
+	double rtol, int maxIterations, LinearSolveStats& stats, const BandedCholesky& factor, ParallelPool* pool)
+{
+	return PooledConjugateGradient(a, b, x, rtol, maxIterations, stats, pool,
+		[&](const std::vector<double>& r, std::vector<double>& z) { factor.Solve(r, z); });
+}
+
 bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
 	double rtol, int maxIterations, LinearSolveStats& stats, GridMultigrid& multigrid)
 {
-	ParallelPool* pool = multigrid.Pool();
+	return PooledConjugateGradient(a, b, x, rtol, maxIterations, stats, multigrid.Pool(),
+		[&](const std::vector<double>& r, std::vector<double>& z) { multigrid.Apply(r, z); });
+}
+
+namespace {
+template <class Precondition>
+bool PooledConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
+	double rtol, int maxIterations, LinearSolveStats& stats, ParallelPool* pool, Precondition&& precondition)
+{
 	const std::size_t dofs = 3*static_cast<std::size_t>(a.Blocks());
 	stats = LinearSolveStats{};
 	x.assign(dofs, 0.0);
@@ -240,7 +306,7 @@ bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, 
 	const double bnorm = std::sqrt(dot(b, b));
 	if (bnorm == 0) { stats.converged = true; return true; }
 	std::vector<double> r = b, z, p, ap;
-	multigrid.Apply(r, z);
+	precondition(r, z);
 	p = z;
 	double rz = dot(r, z);
 	if (!(rz > 0) || !std::isfinite(rz)) { stats.residual = 1; return false; }
@@ -263,7 +329,7 @@ bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, 
 		stats.iterations = it + 1;
 		stats.residual = rnorm/bnorm;
 		if (stats.residual <= rtol) { stats.converged = true; return true; }
-		multigrid.Apply(r, z);
+		precondition(r, z);
 		const double rzNew = dot(r, z);
 		if (!(rzNew > 0) || !std::isfinite(rzNew)) return false;
 		const double beta = rzNew/rz;
@@ -274,6 +340,7 @@ bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, 
 		});
 	}
 	return true;
+}
 }
 
 // ------------------------------------------------------------------ multigrid
@@ -602,7 +669,7 @@ void GridMultigrid::Cycle(std::size_t l)
 	std::fill(x.begin(), x.end(), 0.0);
 	LineSweep(f, a, 0, true);
 	LineSweep(f, a, 1, true);
-	a.Multiply(x, f.r, pool);
+	a.MultiplyPattern(x, f.r, pool); // the preconditioner is built on the pattern part only
 	Level& c = levels_[l+1];
 	constexpr std::size_t span = 256;
 	ParallelFor(pool, Chunks(static_cast<std::size_t>(c.nu)*c.nv, span), [&](std::size_t chunk) {

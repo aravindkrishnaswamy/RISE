@@ -138,6 +138,12 @@ M5 (bake manager, agent verbs, macOS UI) are built**; open within them: measured
 cloth self-collision evidence, simulation fields in the properties panel, the worker in the app bundle, the Windows
 mirror. M6 (coupling) in progress.
 
+2026-11-25: **M6 implemented** (in review): the co-stepping group host (staggered Jacobi / Gauss–Seidel, implicit
+sub-iteration with Aitken relaxation and step halving, group checkpoints), five port adapters, the `transform.v1`
+codec, the rigid-body solver `rigid.bodies`, two-way cloth ↔ rigid coupling with momentum balanced across the port
+(implicit: 5e-8 relative), one-way fire → cloth from a fire cache, `simulation_group` / `port_source` /
+`rigid_simulation` / `transform_source` scene syntax, group bakes as one job. [M6 results](SIMULATION_M6_RESULTS.md).
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.

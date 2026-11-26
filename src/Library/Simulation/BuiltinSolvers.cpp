@@ -6,6 +6,10 @@
 #include "SimulationParameterSchema.h"
 #include "Fire/FireSolver.h"
 #include "Fire/FireParameterSchema.h"
+#include "Rigid/RigidSolver.h"
+#include "Rigid/RigidParameterSchema.h"
+#include "SimulationPortAdapters.h"
+#include "Coupling/ClothRigidCoupling.h"
 #include "../Utilities/FireSequence.h"
 
 namespace RISE { namespace Simulation {
@@ -26,6 +30,15 @@ bool RegisterBuiltinSolvers( std::string& error )
 	e.clear();
 	if( !RegisterSolverSchema( Implementation::FireMethaneSolverId, &FireParameterSchema, e ) )
 		failures += ( failures.empty() ? "" : "; " ) + e;
+	// M6: the rigid-body solver and the port adapters.
+	e.clear();
+	if( !RegisterRigidSolver( e ) ) failures += ( failures.empty() ? "" : "; " ) + std::string( "rigid.bodies: " ) + e;
+	e.clear();
+	if( !RegisterSolverSchema( RigidSolverId, &RigidParameterSchema, e ) ) failures += ( failures.empty() ? "" : "; " ) + e;
+	e.clear();
+	if( !RegisterBuiltinPortAdapters( e ) ) failures += ( failures.empty() ? "" : "; " ) + std::string( "port adapters: " ) + e;
+	e.clear();
+	if( !RegisterClothRigidCouplingEvidence( e ) ) failures += ( failures.empty() ? "" : "; " ) + std::string( "coupling evidence: " ) + e;
 	if( failures.empty() ) return true;
 	error = failures;
 	return false;

@@ -4178,8 +4178,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_SceneVariant = 9,///< scene_variant overlays (Category::SceneVariant)
 		SceneEditCategory_Painter   = 10,  ///< Painters (union of the IPainter + IScalarPainter
 		                                   ///< managers; Category::Painter)
-		SceneEditCategory_Geometry  = 11   ///< Geometry (IGeometryManager; every "*_geometry" chunk;
+		SceneEditCategory_Geometry  = 11,  ///< Geometry (IGeometryManager; every "*_geometry" chunk;
 		                                   ///< Category::Geometry -- GUI redesign 2026-07-22)
+		SceneEditCategory_Simulation = 12  ///< Scene simulations (cloth_simulation / fire_simulation /
+		                                   ///< simulation_cache; Category::Simulation -- Simulation M5c)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -6152,6 +6154,28 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		char* errorBuf, unsigned int errorBufLen );
 	//! The trusted roots in force (environment, then added), joined by '\n'.
 	bool RISE_API_GetTrustedCacheRoots( char* buf, unsigned int bufLen );
+
+	// ---- Simulation M5c (docs/SIMULATION_M5C_RESULTS.md) ----
+
+	//! What GetSimulationDetails leaves out: the configuration's estimates and
+	//! why a stale cache is stale.  Same index and snapshot rules.
+	//! `outMemoryBytes`: the solver's declared peak (0 = unknown);
+	//! `outCostEstimate`: wall seconds per simulated second (0 = unknown);
+	//! `outWallSeconds`: a whole bake, approximate (0 = unknown);
+	//! `summaryBuf`: "≈ 5 h, 4.0 GB" (UTF-8; "" when both are unknown);
+	//! `staleReasonBuf`: "parameters changed", "scene input changed (pole)",
+	//! "upstream out of date", ... ("" unless the state is stale).
+	bool RISE_API_SceneEditController_GetSimulationEstimate(
+		SceneEditController* p, unsigned int index,
+		unsigned long long* outMemoryBytes, double* outCostEstimate, double* outWallSeconds,
+		char* summaryBuf, unsigned int summaryBufLen,
+		char* staleReasonBuf, unsigned int staleReasonBufLen );
+
+	//! The playback clock's time scale: scene seconds per wall second (1 =
+	//! real time).  PlaybackPlay(fps <= 0) steps an ordinary animation at 30
+	//! authored frames per wall second and plays simulation assets in real
+	//! time (SceneEditController::PlaybackPlay).
+	bool RISE_API_SceneEditController_GetPlaybackTimeScale( SceneEditController* p, double* outTimeScale );
 }
 
 #endif

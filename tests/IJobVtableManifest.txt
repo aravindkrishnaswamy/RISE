@@ -371,3 +371,4 @@ virtual void EnumerateSimulationNames(IEnumCallback<const char*>&)const { }
 virtual bool AddSimulatedMeshGeometryFromSimulation(const char*,const char*,const char*,const double,const double,const char*,const char*,const char*,const bool,const bool,const bool){ return false;}
 virtual bool SetSimulationSceneDirectory(const char*){ return false;}
 virtual bool AddFireMediumFromSimulation(const char*,const char*,const char*,const char*,const char*,const char*,const char*,const char*,const char*,const char*,const bool){ return false;}
+virtual bool SetObjectTransformSource(const char*,const char*){ return false;}

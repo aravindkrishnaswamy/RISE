@@ -610,6 +610,10 @@ static NSString *RISEM5String(const char *text) {
 @property (nonatomic, readwrite, copy) NSString *upstream;
 @property (nonatomic, readwrite, copy) NSString *inputs;
 @property (nonatomic, readwrite, copy) NSString *errorMessage;
+@property (nonatomic, readwrite) unsigned long long memoryEstimate;
+@property (nonatomic, readwrite) double wallEstimate;
+@property (nonatomic, readwrite, copy) NSString *estimateSummary;
+@property (nonatomic, readwrite, copy) NSString *staleReason;
 @end
 @implementation RISESimulationInfo
 @end
@@ -627,6 +631,7 @@ static NSString *RISEM5String(const char *text) {
 @property (nonatomic, readwrite) unsigned long long solverWaits;
 @property (nonatomic, readwrite) unsigned long long passesCompleted;
 @property (nonatomic, readwrite) double wallSeconds;
+@property (nonatomic, readwrite) double timeScale;
 @end
 @implementation RISEPlaybackStatus
 @end
@@ -2436,6 +2441,7 @@ static NSArray<RISEGraphNode *>* ConvertLaidOutGraphToRISE(const LaidOutGraphT& 
         case 9: return RISEViewportCategorySceneVariant;
         case 10: return RISEViewportCategoryPainter;
         case 11: return RISEViewportCategoryGeometry;   // GUI redesign 2026-07-22
+        case 12: return RISEViewportCategorySimulation; // Simulation M5c
         default: return RISEViewportCategoryNone;
     }
 }
@@ -3238,6 +3244,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         case 7:  *outCategory = RISEViewportCategoryMedium;   break;
         case 10: *outCategory = RISEViewportCategoryPainter;  break;
         case 11: *outCategory = RISEViewportCategoryGeometry; break;
+        case 12: *outCategory = RISEViewportCategorySimulation; break;   // Simulation M5c
         default: return NO;
     }
     *outName = n;
@@ -3266,6 +3273,7 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         case 7:  *outCategory = RISEViewportCategoryMedium;   break;
         case 10: *outCategory = RISEViewportCategoryPainter;  break;
         case 11: *outCategory = RISEViewportCategoryGeometry; break;
+        case 12: *outCategory = RISEViewportCategorySimulation; break;   // Simulation M5c
         default: return NO;
     }
     *outName = n;
@@ -3825,6 +3833,8 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     st.time = t; st.timeStart = t0; st.timeEnd = t1; st.fps = fps;
     st.framesShown = shown; st.framesDropped = dropped; st.solverWaits = waits;
     st.passesCompleted = passes; st.wallSeconds = wall;
+    double scale = 1;
+    st.timeScale = RISE_API_SceneEditController_GetPlaybackTimeScale(_controller, &scale) ? scale : 1;
     return st;
 }
 
@@ -3882,6 +3892,16 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
         info.startTime = startTime; info.interval = interval;
         info.cacheDirectory = RISEM5String(cache); info.upstream = RISEM5String(upstream);
         info.inputs = RISEM5String(inputs); info.errorMessage = RISEM5String(err);
+        // M5c: estimates and the stale reason (same snapshot rules; a busy
+        // scene leaves them empty for this read).
+        unsigned long long memory = 0;
+        double cost = 0, wall = 0;
+        char summary[256] = {0}, staleReason[1024] = {0};
+        if (RISE_API_SceneEditController_GetSimulationEstimate(_controller, i, &memory, &cost, &wall,
+                summary, sizeof(summary), staleReason, sizeof(staleReason))) {
+            info.memoryEstimate = memory; info.wallEstimate = wall;
+        }
+        info.estimateSummary = RISEM5String(summary); info.staleReason = RISEM5String(staleReason);
         [out addObject:info];
     }
     return out;
@@ -4030,6 +4050,14 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     const char *path = root.fileSystemRepresentation;
     const bool ok = path && RISE_API_AddTrustedCacheRoot(path, err, sizeof(err));
     if (!ok && error) *error = path ? RISEM5String(err) : @"invalid path";
+    return ok ? YES : NO;
+}
+
++ (BOOL)simulationWorkerPath:(NSString * _Nullable * _Nullable)path error:(NSString * _Nullable * _Nullable)error {
+    char buf[4096] = {0}, err[2048] = {0};
+    const bool ok = RISE_API_SimulationBake_GetWorkerPath(buf, sizeof(buf), err, sizeof(err));
+    if (path) *path = ok ? RISEM5String(buf) : nil;
+    if (!ok && error) *error = RISEM5String(err);
     return ok ? YES : NO;
 }
 

@@ -1622,6 +1622,15 @@
 		3AA13E45C4944989903A8DCC /* ClothValidation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 080CFE5F1EB444F687850703 /* ClothValidation.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		665BD52915384D5B9A9EEDB5 /* ClothSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		CD689C6F1C8A892B615EB9DB /* ClothParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */; };
+		05BD56654A89685B40C10C21 /* SimulationTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8261B676D6C19218F485FC1A /* SimulationTransform.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FF45436CBF301141A16F5F26 /* SimulationTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8261B676D6C19218F485FC1A /* SimulationTransform.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		061B9D96EEFCA7E9960429B0 /* SimulationTransform.h in Headers */ = {isa = PBXBuildFile; fileRef = DBE1B1952A835238CD53DD98 /* SimulationTransform.h */; };
+		B02D2CD533A8ABFD20CE070C /* RigidBody.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 27E9C64D3D916A7C852CD745 /* RigidBody.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		B281DF348CA5C1664A9F1FD1 /* RigidBody.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 27E9C64D3D916A7C852CD745 /* RigidBody.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		0AC2F19E7E87E8B27D93B245 /* RigidBody.h in Headers */ = {isa = PBXBuildFile; fileRef = 10E8741D245E7819B932D95E /* RigidBody.h */; };
+		E96EEE461D5941E067C2344C /* RigidSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63B4C7BECB4856B9C12745DF /* RigidSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		CE7402B538C539139AFED5F5 /* RigidSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63B4C7BECB4856B9C12745DF /* RigidSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		40202A656009F7B397512D30 /* RigidSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = D1F4012609D3C6BFC1CECE38 /* RigidSolver.h */; };
 		012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
 		C3B5E68EDB9D3F1D831285E3 /* SimulationField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */; };
 		4C7BE87A2418C74E4802CDA5 /* SimulatedMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */; };
@@ -2280,7 +2289,489 @@
 		F92134AB162D0550F2183283 /* ZSobolSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */; };
 		F990E718DD40B6888AC735AD /* VolumeAccessor_Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */; };
 		F9698A868636198289A3C0C3 /* VolumeAccessor_TriCubic.h in Headers */ = {isa = PBXBuildFile; fileRef = F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */; };
+		DA6878569C3F8BE388C1DE4B /* HeterogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */; };
+		698AFF269A4B05DAEB50CDB4 /* Animator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07EC069C428F0069C9E5 /* Animator.cpp */; };
+		BA350EA3E2044F72B2912669 /* ElementTimeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07EE069C428F0069C9E5 /* ElementTimeline.cpp */; };
+		33387EC2076DECADC1BE46B6 /* KeyframableHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F0069C428F0069C9E5 /* KeyframableHelper.cpp */; };
+		862E4BF262FC016392FC4732 /* KeyframableStrictParse.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5A1D000000000F1057201 /* KeyframableStrictParse.cpp */; };
+		17012ABC49116A62829DD870 /* Timeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F3069C428F0069C9E5 /* Timeline.cpp */; };
+		85564692BFF5B5297186FEDF /* CameraCommon.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F8069C428F0069C9E5 /* CameraCommon.cpp */; };
+		E5105327CEEAD0C90D479AE2 /* FisheyeCamera.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07FB069C428F0069C9E5 /* FisheyeCamera.cpp */; };
+		892287DC30502B803D3769DC /* OrthographicCamera.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07FE069C428F0069C9E5 /* OrthographicCamera.cpp */; };
+		A4686A7512BA751DE949975C /* PinholeCamera.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0800069C428F0069C9E5 /* PinholeCamera.cpp */; };
+		94EC2985B0DEEA42222263B8 /* ThinLensCamera.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0802069C428F0069C9E5 /* ThinLensCamera.cpp */; };
+		878A0B19B3314B3F3C7C7B7D /* BezierRootFinder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0809069C428F0069C9E5 /* BezierRootFinder.cpp */; };
+		E667C2D3B0D14AC243C4B4B3 /* CubicFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F080B069C428F0069C9E5 /* CubicFunction.cpp */; };
+		98EB96B978B576EBEAE776FA /* VCMPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */; };
+		36654FCA1A65DC779A4422F0 /* VCMRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1352F8FA5C40077A171 /* VCMRasterizerBase.cpp */; };
+		A73DA44B39108B5E1BC2CD43 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
+		B0CA8C733BC8BD103308E196 /* VCMSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */; };
+		75BF789422AA563EBB0B7F6D /* KleinBottleParametricFunctions.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F080D069C428F0069C9E5 /* KleinBottleParametricFunctions.cpp */; };
+		5D3E55C0DB5EC22AFA9F20BC /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
+		DD4C289E2814B373EADBE3ED /* LinearFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F080F069C428F0069C9E5 /* LinearFunction.cpp */; };
+		77A6D58ADFEFCD8246480D8E /* ParametricSurface.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0811069C428F0069C9E5 /* ParametricSurface.cpp */; };
+		ED623079958A2B053A35BA95 /* Polynomial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0813069C428F0069C9E5 /* Polynomial.cpp */; };
+		9D43578E1CBF28636CA31810 /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
+		247EA29EF47166EBB2C5381B /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
+		B73ADC0412836E27BCD01476 /* PolynomialGCD.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0815069C428F0069C9E5 /* PolynomialGCD.cpp */; };
+		7B5E5C96E2F2FBEBFD7DFEE6 /* QuadraticFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0816069C428F0069C9E5 /* QuadraticFunction.cpp */; };
+		AC31655C25F37E53CE873596 /* QuarticFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0818069C428F0069C9E5 /* QuarticFunction.cpp */; };
+		AD1C3C6E1892FA2F83ED7A53 /* Resultant.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F081A069C428F0069C9E5 /* Resultant.cpp */; };
+		D7E5B72051E4FF5889955411 /* BezierPatchGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F081E069C428F0069C9E5 /* BezierPatchGeometry.cpp */; };
+		F582A2EB6973C9B1A0975965 /* BezierTesselation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0820069C428F0069C9E5 /* BezierTesselation.cpp */; };
+		33E275CE697CC8553B10D943 /* BilinearPatchGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0823069C428F0069C9E5 /* BilinearPatchGeometry.cpp */; };
+		BB2F1872507D2980416FA793 /* SobolDirectionNumbers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C9A12F9000010030CB78 /* SobolDirectionNumbers.cpp */; };
+		B1A45DB10D7BFD68660D6514 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
+		8735CD60107CC32361C62255 /* BoxGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0825069C428F0069C9E5 /* BoxGeometry.cpp */; };
+		56AB517E59A3D3A48E9CC75C /* BoxUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0827069C428F0069C9E5 /* BoxUVGenerator.cpp */; };
+		FAB68FED7706E1363901C0F1 /* CircularDiskGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0829069C428F0069C9E5 /* CircularDiskGeometry.cpp */; };
+		56F94FAC5BD59AF0A91A3CA4 /* ClippedPlaneGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082B069C428F0069C9E5 /* ClippedPlaneGeometry.cpp */; };
+		FEAC2ABBAC7C453667AF5CE2 /* CylinderGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */; };
+		A27EB8F3C5F0413CC23FA1BB /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
+		2A52164482EA79FF04805A87 /* CylindricalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */; };
+		FAE56E7926AF5ACE13BBBA7F /* EllipsoidGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */; };
+		FFF9119DECC56EB4B2E523FF /* Geometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0833069C428F0069C9E5 /* Geometry.cpp */; };
+		1E5DC82EDD0244469D7CF02E /* GeometryUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0835069C428F0069C9E5 /* GeometryUtilities.cpp */; };
+		EB0F5838D177F84381F8946B /* InfinitePlaneGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */; };
+		681A8D47C9062DA1AACC318C /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
+		057C8B9534537AA82D2E37EE /* MeshSignalBake.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E021000000000000C0DE /* MeshSignalBake.cpp */; };
+		93D11075FDBD34E0BF3F4D7D /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
+		C219BE1E1FE63570C401D980 /* AgentSession.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E001000000000000C0DE /* AgentSession.cpp */; };
+		BD376938638CCD3A8A32A4EC /* InMemoryRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E021000000000000C0DE /* InMemoryRasterizerOutput.cpp */; };
+		76C85AC5A9CDA0B121BB8C85 /* AgentRpc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E031000000000000C0DE /* AgentRpc.cpp */; };
+		ECBB2FD8D804A3F11FACCAEF /* AgentMcpAdapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E081000000000000C0DE /* AgentMcpAdapter.cpp */; };
+		3A293916D62EF621109C29C2 /* AgentLoopbackHttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E091000000000000C0DE /* AgentLoopbackHttpServer.cpp */; };
+		580943B2DC9077DD2490F535 /* AgentChatCodecs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E061000000000000C0DE /* AgentChatCodecs.cpp */; };
+		3CFFC0794103FA540E865974 /* AgentChatLoop.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E071000000000000C0DE /* AgentChatLoop.cpp */; };
+		82E83FEBC81C54A9934DD98B /* AgentSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 39B7B954BBD5355963E8B2F2 /* AgentSimulation.cpp */; };
+		1416E266AE77D5893A711039 /* ChatTrajectory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0C1000000000000C0DE /* ChatTrajectory.cpp */; };
+		F47F07FC393D2B274411FC52 /* AgentEvalRunner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0D1000000000000C0DE /* AgentEvalRunner.cpp */; };
+		2E7FE6144D5957CA55D29491 /* TlsTransportMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E0E2000000000000C0DE /* TlsTransportMac.mm */; };
+		EB82433834C7DB08EBE21077 /* Base64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E041000000000000C0DE /* Base64.cpp */; };
+		212428ADD46FF93773C6508A /* Json.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E051000000000000C0DE /* Json.cpp */; };
+		D62D6103970CA2D819BC97D5 /* SchemaGen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A6E7E002000000000000C0DE /* SchemaGen.cpp */; };
+		CBF1AB13A0D38C46DED334FB /* SphereGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */; };
+		33BB2A6D2E9298ABA21F61B0 /* SphericalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */; };
+		5370E9761C3058C1FF024EBC /* TorusGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083D069C428F0069C9E5 /* TorusGeometry.cpp */; };
+		FBDC32B1EA97C48B75BCAB43 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
+		22028C54EEB2D0D9AACC64BC /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
+		35CFBEA8F3B2C1B9B6EF5579 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
+		CBA1EBED13B552EF149B57CF /* TargetFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F7 /* TargetFormat.cpp */; };
+		693273154777A851E62FBE44 /* ViewTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FC /* ViewTransform.cpp */; };
+		CBF1838F3F99F9E54175BBD8 /* FrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F2 /* FrameStore.cpp */; };
+		71914C6442F1C7C84E6DC7EF /* FrameEncoders.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F0 /* FrameEncoders.cpp */; };
+		C054E69C1BEE9D2114791E88 /* FrameSink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F0 /* FrameSink.cpp */; };
+		CD779428A88947179DD0C0DA /* FileEncoderObserver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F5 /* FileEncoderObserver.cpp */; };
+		936C0CD3780633E92C750DBB /* ViewportFrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F0 /* ViewportFrameStore.cpp */; };
+		43D4ADAB0E72164C6F16CFF1 /* TriangleMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083F069C428F0069C9E5 /* TriangleMeshGeometry.cpp */; };
+		B154E9F7CD70E19C2F8BC936 /* TriangleMeshGeometryIndexed.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0841069C428F0069C9E5 /* TriangleMeshGeometryIndexed.cpp */; };
+		CE7A4B1E1150920463CCD5C7 /* TriangleMeshLoader3DS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0845069C428F0069C9E5 /* TriangleMeshLoader3DS.cpp */; };
+		5C4888934C0F609E580D7727 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
+		122A83B8EE7274DB40F47EC9 /* HairFileLoader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1B001069C42900069C9E5 /* HairFileLoader.cpp */; };
+		0020F3A0B6D09BF4538F76B2 /* TriangleMeshLoaderPLY.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0849069C428F0069C9E5 /* TriangleMeshLoaderPLY.cpp */; };
+		124602C10762F4A808106E69 /* TriangleMeshLoaderPSurf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F084B069C428F0069C9E5 /* TriangleMeshLoaderPSurf.cpp */; };
+		3D9841860297AF394BD38074 /* TriangleMeshLoaderRAW.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F084D069C428F0069C9E5 /* TriangleMeshLoaderRAW.cpp */; };
+		10611B657BD27355211296F3 /* TriangleMeshLoaderRAW2.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F084F069C428F0069C9E5 /* TriangleMeshLoaderRAW2.cpp */; };
+		805448D857745EBD49D6254B /* RayBezierPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */; };
+		A5A0C7B31B632D4EBDDDEF19 /* RayBilinearPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */; };
+		7BC770065C67556518A21A5F /* RayBoxIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */; };
+		8AADBD64030CCEF19A871B87 /* RayCylinderIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A9069C428F0069C9E5 /* RayCylinderIntersection.cpp */; };
+		B0C7696DB5EC8F853138EDB2 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
+		1351053C173D8A2F4DADB89C /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
+		B1E652996AD3C7B414005BC4 /* RayPlaneIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08AC069C428F0069C9E5 /* RayPlaneIntersection.cpp */; };
+		BB981D808707908A2963D97E /* RayQuadricIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08AE069C428F0069C9E5 /* RayQuadricIntersection.cpp */; };
+		F4B95BDA6832AD6189DC2E80 /* RaySphereIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08AF069C428F0069C9E5 /* RaySphereIntersection.cpp */; };
+		698D3FFE4BC700F12F04D531 /* RayTorusIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B0069C428F0069C9E5 /* RayTorusIntersection.cpp */; };
+		C29D13F0A94BDF00806B5CB9 /* RayTriangleIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B1069C428F0069C9E5 /* RayTriangleIntersection.cpp */; };
+		EEAA45955C521052652711FA /* BSSRDFSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */; };
+		11FCCF52AF7A497F1CF19FB0 /* LightBVH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54902F87F453009AF16D /* LightBVH.cpp */; };
+		281A8FA831B7ED306C11EB62 /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
+		72E4FD76C923B0D0D1B62C6F /* Job.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B3069C428F0069C9E5 /* Job.cpp */; };
+		8176EF01409FF15527A4EE5F /* DirectionalLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B7069C428F0069C9E5 /* DirectionalLight.cpp */; };
+		58D4B4FE7BEB593035240243 /* PointLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08B9069C428F0069C9E5 /* PointLight.cpp */; };
+		786C4DD81632AFA95749F2AD /* SpotLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BB069C428F0069C9E5 /* SpotLight.cpp */; };
+		9537889CD9F427CDEBC4D13F /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
+		5E7FFC8C3D8929244016F412 /* LightManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C6069C42900069C9E5 /* LightManager.cpp */; };
+		F0112ED02243CCD3ADB90F51 /* VCMIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1422F8FA60F0077A171 /* VCMIntegrator.cpp */; };
+		5DA72855B774400E632B0591 /* VCMRecurrence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */; };
+		62C554F0938C36613BE399CE /* ThreadLocalSplatBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */; };
+		0F72C95B8E3AF7EF739B737A /* AdaptiveTileSizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639582F9244AC0009D9AE /* AdaptiveTileSizer.cpp */; };
+		5D8FED2809ECE5365A48E8FE /* VCMLightVertexStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1452F8FA60F0077A171 /* VCMLightVertexStore.cpp */; };
+		577F500AEE73222D03C848AB /* VCMPathOps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1472F8FA60F0077A171 /* VCMPathOps.cpp */; };
+		83B409515D4A9364A53FF96C /* ObjectManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CA069C42900069C9E5 /* ObjectManager.cpp */; };
+		D1B65A1D9FE145DACA5322BB /* AshikminShirleyAnisotropicPhongBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CF069C42900069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp */; };
+		D34BBF5888A8C39D1E955C67 /* AshikminShirleyAnisotropicPhongSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08D2069C42900069C9E5 /* AshikminShirleyAnisotropicPhongSPF.cpp */; };
+		25717EBEB66516D87C871EFD /* BioSpecSkinSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08D6069C42900069C9E5 /* BioSpecSkinSPF.cpp */; };
+		64702C960B6BB5FE7E203DF4 /* BioSpecSkinSPFHelpers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08D8069C42900069C9E5 /* BioSpecSkinSPFHelpers.cpp */; };
+		CB1E63A77651C1B30ADEC075 /* CompositeSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08DA069C42900069C9E5 /* CompositeSPF.cpp */; };
+		240F83CF685FCB059EA706D5 /* CookTorranceBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08DC069C42900069C9E5 /* CookTorranceBRDF.cpp */; };
+		36620A3A8604BCAB63D0C381 /* CookTorranceSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08DF069C42900069C9E5 /* CookTorranceSPF.cpp */; };
+		B1A5196426ED7468093DAFED /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
+		172E08C7DCC2CE8A90A3BB28 /* DielectricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E2069C42900069C9E5 /* DielectricSPF.cpp */; };
+		69388C9EE9F057FFA9304690 /* RoughDielectricMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4D69797BD3A4CEBEE04A453F /* RoughDielectricMaterial.cpp */; };
+		31F8DEDDF9563C84D9DB4B01 /* RoughDielectricEnergy.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 85E2B2B3FC0BC493239F7BDA /* RoughDielectricEnergy.cpp */; };
+		63C24D5451AD74807CE0012F /* GenericHumanTissueSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E5069C42900069C9E5 /* GenericHumanTissueSPF.cpp */; };
+		7A36362345C002840062D93C /* IsotropicPhongBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08E7069C42900069C9E5 /* IsotropicPhongBRDF.cpp */; };
+		3B88B1F455D23DC65EEC08C2 /* IsotropicPhongSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08EA069C42900069C9E5 /* IsotropicPhongSPF.cpp */; };
+		99B299615CCECF40ED4689F6 /* LambertianBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08EC069C42900069C9E5 /* LambertianBRDF.cpp */; };
+		B3B478E62259BBE177045408 /* LambertianEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08EE069C42900069C9E5 /* LambertianEmitter.cpp */; };
+		7321D113106E993DA5350555 /* LambertianSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08F2069C42900069C9E5 /* LambertianSPF.cpp */; };
+		CF2D7747E415071483C8B82B /* OrenNayarBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08F5069C42900069C9E5 /* OrenNayarBRDF.cpp */; };
+		8CA49A09A981E0FCF2995540 /* OrenNayarSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08F8069C42900069C9E5 /* OrenNayarSPF.cpp */; };
+		C55FDC72F7184684342D95B9 /* PerfectReflectorSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08FB069C42900069C9E5 /* PerfectReflectorSPF.cpp */; };
+		409B7631192721D6A4E0D85A /* PerfectRefractorSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08FE069C42900069C9E5 /* PerfectRefractorSPF.cpp */; };
+		42A4BFCD8A67F80640C10C9A /* PhongEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0900069C42900069C9E5 /* PhongEmitter.cpp */; };
+		BB3348A5DBBB2A772737B1B3 /* PolishedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D28500010000000000000002 /* PolishedBRDF.cpp */; };
+		33BAFE63AE3958222362C66F /* PolishedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0906069C42900069C9E5 /* PolishedSPF.cpp */; };
+		AB367057D24469A884C8957A /* ScatteredRayContainer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0908069C42900069C9E5 /* ScatteredRayContainer.cpp */; };
+		FFD0C8A61258C5D43CF45065 /* SchlickBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0909069C42900069C9E5 /* SchlickBRDF.cpp */; };
+		F4F54970EB22E61D61240E6C /* SchlickSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F090C069C42900069C9E5 /* SchlickSPF.cpp */; };
+		76F0FF534612B8C2B24D780E /* TranslucentSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0911069C42900069C9E5 /* TranslucentSPF.cpp */; };
+		B26281CC5278294B9FBE447D /* WardAnisotropicEllipticalGaussianBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0913069C42900069C9E5 /* WardAnisotropicEllipticalGaussianBRDF.cpp */; };
+		DCF379520A6512B6CBA4367E /* SplatFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5642F6E447400546C97 /* SplatFilm.cpp */; };
+		78A03338363D0105E5449FD7 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
+		CE5F2F3973A173BC9F4693A9 /* WardAnisotropicEllipticalGaussianSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0916069C42900069C9E5 /* WardAnisotropicEllipticalGaussianSPF.cpp */; };
+		FD9561BA7B2760DF37E9C2A3 /* ThreadPool.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639532F9244920009D9AE /* ThreadPool.cpp */; };
+		979C4869811CCD12851644D9 /* CPUTopology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2863A012F9244920009D9AE /* CPUTopology.cpp */; };
+		A4B77566F45FA64A4552CF4C /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
+		51B96C6A6136B017C0769AE6 /* WardIsotropicGaussianBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0918069C42900069C9E5 /* WardIsotropicGaussianBRDF.cpp */; };
+		A6DC3ABE758F1EBD64858E44 /* WardIsotropicGaussianSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091B069C42900069C9E5 /* WardIsotropicGaussianSPF.cpp */; };
+		AD2004D0D0EF19D3DCB1AB6A /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
+		838B8D88D495DE30DCF31D73 /* ReliefModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0E2F9B000100620002 /* ReliefModifier.cpp */; };
+		8BA2B43EA68D33ACE8999457 /* ModifierStack.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B5CAA19DB9ED7D86DCF98AB /* ModifierStack.cpp */; };
+		57BBD1413D5698B90B4A6AD5 /* NormalMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F001069C42900069C9E5 /* NormalMap.cpp */; };
+		F466C2DE3DBC5EF4F5533F0C /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
+		55942EB61949C8B46D5B3E64 /* PerlinNoise1D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0926069C42900069C9E5 /* PerlinNoise1D.cpp */; };
+		8AA46AA3612E5C4EB2F5CD53 /* PerlinNoise2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0927069C42900069C9E5 /* PerlinNoise2D.cpp */; };
+		39EB408E3350CF7BEC746C7F /* PerlinNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0928069C42900069C9E5 /* PerlinNoise3D.cpp */; };
+		55ED3DF4BBD430F555DD93DB /* CSGObject.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092B069C42900069C9E5 /* CSGObject.cpp */; };
+		E7ACE373C238B4022576700D /* Object.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092D069C42900069C9E5 /* Object.cpp */; };
+		EB6EA933E7EF4CF0FF2AA0BB /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
+		3CD7284B154C5DE888603E84 /* Options.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0931069C42900069C9E5 /* Options.cpp */; };
+		79FFB9302F38870C3F877E48 /* BlackBodyPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0934069C42900069C9E5 /* BlackBodyPainter.cpp */; };
+		4DFB536BD30072D58472609C /* EnvironmentSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */; };
+		459711F97D5A3EDC2A596FAB /* CheckerPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0937069C42900069C9E5 /* CheckerPainter.cpp */; };
+		11DFF805843FE7B83487882C /* IridescentPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F093A069C42900069C9E5 /* IridescentPainter.cpp */; };
+		D501A30D13BDC326074F7748 /* LinesPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F093C069C42900069C9E5 /* LinesPainter.cpp */; };
+		C9BC7C526C4D59298944C232 /* MandelbrotPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F093E069C42900069C9E5 /* MandelbrotPainter.cpp */; };
+		B2B09FFA3F4F9AC7E553C9D2 /* Painter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0940069C42900069C9E5 /* Painter.cpp */; };
+		8868B00A59774AEE9A8F565F /* Perlin2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */; };
+		F5B5CE6C9C7EFD0ACA02B069 /* ControlledSmoothness2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */; };
+		B5DA323173034EE416C40BD0 /* CompositeFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */; };
+		158CB9E153A7391233008F91 /* PolynomialFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000007 /* PolynomialFunction2DPainter.cpp */; };
+		F8CB364279D94978FD2CCCF9 /* GerstnerWavePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000B /* GerstnerWavePainter.cpp */; };
+		B97F9335EEEDCD3962F8A86A /* ExpressionPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EE990000000000000000001B /* ExpressionPainter.cpp */; };
+		DEB1E871E02BF0AFEC65230F /* ExpressionOslBuiltins.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000012 /* ExpressionOslBuiltins.cpp */; };
+		6976E13E03C7BA4B6D31002F /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
+		47B8BA2698447357D9DE163F /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
+		41958140794898B5E69667B9 /* StochasticTilePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9167DAB1BC1F2861A91E8E92 /* StochasticTilePainter.cpp */; };
+		7D67C6BA5A1F2B64804FADC1 /* ScatterPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 95A25391E59451A35B5168AB /* ScatterPainter.cpp */; };
+		B3DD769205407425C3CD7D72 /* Perlin3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */; };
+		B86975AAF1DD4D956A5F8738 /* SpectralColorPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */; };
+		C48673EB18F9F3C0B5E494F9 /* TexturePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0948069C42900069C9E5 /* TexturePainter.cpp */; };
+		B61E7B91FA79FBBEE79ADA26 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
+		95471AAC473CC12110DA915E /* Voronoi2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */; };
+		F224C4ECFCB8E5B4B63F63AA /* Voronoi3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */; };
+		1D2F21DB244663CF9A8FC6F0 /* SubSurfaceScatteringBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5882F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp */; };
+		5392F778A6D9E9C74C2C543F /* SubSurfaceScatteringSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D58B2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp */; };
+		103D69B00933F10A35095C39 /* AsciiCommandParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0950069C42900069C9E5 /* AsciiCommandParser.cpp */; };
+		4D998BBE4A47863F520F34BA /* ChunkParserRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0952069C42900069CFFF /* ChunkParserRegistry.cpp */; };
+		CCEF7AE722C847B5119AA517 /* AsciiScriptParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0954069C42900069C9E5 /* AsciiScriptParser.cpp */; };
+		9DD7100EEC2A7D6FEB3ADA00 /* SceneGrammar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000200000000000000A1 /* SceneGrammar.cpp */; };
+		9CF1DD1091E85F2137DC7D8F /* CompletionContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000400000000000000A1 /* CompletionContext.cpp */; };
+		2FAA8F4F2159B899D7AA687E /* NameIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000600000000000000A1 /* NameIndex.cpp */; };
+		79F00B33F2AEA1C724760B3E /* SuggestionEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000800000000000000A1 /* SuggestionEngine.cpp */; };
+		3A55A39A5F3A273FE2F50ABF /* EditHistory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000300000000000000A1 /* EditHistory.cpp */; };
+		5B2DB8EA630452E4BC4E3263 /* CancellableProgressCallback.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000500000000000000A1 /* CancellableProgressCallback.cpp */; };
+		B9138345EC5C3DF3EFBC8027 /* SceneEditor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000700000000000000A1 /* SceneEditor.cpp */; };
+		A9C40D1C4928ACADEC68143E /* SceneEditController.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000900000000000000A1 /* SceneEditController.cpp */; };
+		3A7D47DC7976F91289E0C83F /* LiveSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3C7236B52949B50119FCE30 /* LiveSimulation.cpp */; };
+		3D0D39F307CFAF67E3F6705F /* CameraIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001300000000000000A1 /* CameraIntrospection.cpp */; };
+		EE6CB631D4291580663AB22D /* ObjectIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001500000000000000A1 /* ObjectIntrospection.cpp */; };
+		1FEFB63D1406ACFD3C777CAC /* LightIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001700000000000000A1 /* LightIntrospection.cpp */; };
+		5F3D90A450B754E59590A7B0 /* RasterizerIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */; };
+		6C3111B5208D0591165048D0 /* ChunkDescriptorRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */; };
+		6B375C29724AB0CE5028F5BF /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
+		392931423EB38372A1E82814 /* DirtyTracker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F402 /* DirtyTracker.cpp */; };
+		C5F086F951C6547BBA6F81FA /* SaveEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F502 /* SaveEngine.cpp */; };
+		AA08CB394CFA7D83D7AC00A0 /* FilmIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002300000000000000A1 /* FilmIntrospection.cpp */; };
+		E9E259FCBB998B8F2100ABCC /* MaterialIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE006100000000000000A1 /* MaterialIntrospection.cpp */; };
+		66ACF5B9513AFEF343B84080 /* MediaIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE006300000000000000A1 /* MediaIntrospection.cpp */; };
+		90DB363DC7E354BE3C47DA81 /* CstIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000F702 /* CstIntrospection.cpp */; };
+		67763E265C4C63A60E10108F /* PainterIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FA02 /* PainterIntrospection.cpp */; };
+		3C4770519EB4C999B8C3BA1A /* ReferenceGraph.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FC02 /* ReferenceGraph.cpp */; };
+		1295112527E8B21D07696B33 /* ConnectionLegality.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC000A000000000000FC02 /* ConnectionLegality.cpp */; };
+		5E9DB8A58FBEFF214D4561BB /* OwnershipClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC000B000000000000FC02 /* OwnershipClosure.cpp */; };
+		ED7259704EABBE07C72B4683 /* GraphLayout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FD02 /* GraphLayout.cpp */; };
+		7DF2CF6B17B4FEF2AEC7C701 /* GraphLayoutSidecar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0009000000000000FE02 /* GraphLayoutSidecar.cpp */; };
+		6062AD266CE18663883BEA2E /* PainterPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FB02 /* PainterPreview.cpp */; };
+		DCEC5A6C774502991AF530E5 /* MaterialPreview.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0007000000000000FC02 /* MaterialPreview.cpp */; };
+		67BF944DBBC5EC2F0DD488B2 /* EntityTemplates.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0008000000000000F802 /* EntityTemplates.cpp */; };
+		3D37BA5818BF01EA8D8C5830 /* DisplayTransformWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE003200000000000000A1 /* DisplayTransformWriter.cpp */; };
+		5D1BB62C6BBD7B8FBA1F1927 /* InteractivePelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001100000000000000A1 /* InteractivePelRasterizer.cpp */; };
+		965A988973F236D54AC79026 /* BurleyNormalizedDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */; };
+		14E3F585741BC4607830D72C /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
+		A53ADBDDC7482E33A0A97CE2 /* CausticPelPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F095C069C42900069C9E5 /* CausticPelPhotonMap.cpp */; };
+		BA049E65E128B6E81D31F3F3 /* CausticPelPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F095E069C42900069C9E5 /* CausticPelPhotonTracer.cpp */; };
+		5C1D925750371F8AD23210AF /* CausticSpectralPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0960069C42900069C9E5 /* CausticSpectralPhotonMap.cpp */; };
+		BABB2CBB7B24B3CC8E1B6271 /* CausticSpectralPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0962069C42900069C9E5 /* CausticSpectralPhotonTracer.cpp */; };
+		16979394AC53985C41AD2A33 /* GlobalPelPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0964069C42900069C9E5 /* GlobalPelPhotonMap.cpp */; };
+		BCB4544FC1F1E678C89E8C56 /* GlobalPelPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0966069C42900069C9E5 /* GlobalPelPhotonTracer.cpp */; };
+		28A31BC255D01ECC46623869 /* GlobalSpectralPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0968069C42900069C9E5 /* GlobalSpectralPhotonMap.cpp */; };
+		218C04F5A9B1A86A4363FFB3 /* GlobalSpectralPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F096A069C42900069C9E5 /* GlobalSpectralPhotonTracer.cpp */; };
+		5FD34B0610EE814CBF9464F9 /* IrradianceCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F096C069C42900069C9E5 /* IrradianceCache.cpp */; };
+		1186F89DB0F84F9D80294CBD /* ShadowPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */; };
+		3DCC0EA47E7C81C66BE20038 /* BDPTIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */; };
+		7DAB5CA147F860BB00B57A5A /* HomogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */; };
+		DB0FEF3BAE904ED0CA18072C /* HenyeyGreensteinPhaseFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */; };
+		87D61CAB8BCCF567BCADEF11 /* ShadowPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */; };
+		5EA6B6E57D78835FAEBCA1B7 /* TranslucentPelPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0976069C42900069C9E5 /* TranslucentPelPhotonMap.cpp */; };
+		A857D47BBD317B77FBC98036 /* CameraUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5792F6E450F00546C97 /* CameraUtilities.cpp */; };
+		9930CAFD8C79EB125AF01571 /* TranslucentPelPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0978069C42900069C9E5 /* TranslucentPelPhotonTracer.cpp */; };
+		34522621D179358B44A2EBA3 /* HDRReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F097E069C42900069C9E5 /* HDRReader.cpp */; };
+		878B62D1AE35EFDF1761497E /* HDRWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0980069C42900069C9E5 /* HDRWriter.cpp */; };
+		7F03CBC344A3374EE8649BFD /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
+		7E3204CA4A6A7B1BD2665992 /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
+		F587C21975FAD51CDE032CB5 /* HairBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */; };
+		E68C3620FB4C8924B5999FD3 /* CoatedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3881A80ADDAB3CB09D212B5C /* CoatedBRDF.cpp */; };
+		B8393566C0A0851B54CE40C6 /* CoatedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FA0C7E59289723E64496B54 /* CoatedSPF.cpp */; };
+		1918770797694F4D9B2C6310 /* HairMedullaProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */; };
+		AA99242DDEFAF1FA41C20BBA /* HairMedullaProfile_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */; };
+		0EFF3BDBF3B48AC18E4063C7 /* HairGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7111B3D5F8092A6C411 /* HairGenerator.cpp */; };
+		146D1038A47C6D100B19D39A /* HairGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7011B3D5F8092A6C401 /* HairGeometry.cpp */; };
+		0FAB1A5F1504DA1F61E7A251 /* SheenBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */; };
+		41D8752EE4C3BA563D49C524 /* SheenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */; };
+		3BBB15498AA370770C43146C /* SheenBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
+		8BE4AE7AC92584030F28A8B7 /* SheenSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
+		1DF7C28FC18377BFD045CA30 /* SheenMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
+		4A2ECD41451ABDB29F6B9E1B /* SheenDirectionalAlbedo.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D658195E349F42002A9DA02B /* SheenDirectionalAlbedo.cpp */; };
+		6849EB87E85D0CB2DC36517D /* SheenDirectionalAlbedo_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BD50C716CDA4FBD04FA07982 /* SheenDirectionalAlbedo_LUTData.cpp */; };
+		23239355FAB9488F026D25B7 /* SchlickDirectionalAlbedo_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D31031000000000000000002 /* SchlickDirectionalAlbedo_LUTData.cpp */; };
+		201FB89F9F79326E25A98C8F /* FabricBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38C7FB6228D73FD8C1B140 /* FabricBRDF.cpp */; };
+		6684A3A7DED3AF40FD177A72 /* FabricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E82B2F18F0509545F3643593 /* FabricSPF.cpp */; };
+		BFE368CD8E8850970079E70A /* WeaveBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000004 /* WeaveBRDF.cpp */; };
+		A8F982540C1D828377BBD74E /* WeaveSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000006 /* WeaveSPF.cpp */; };
+		30652117A224F3B49887080E /* JPEGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */; };
+		14A2A6022B6584204A92F2D9 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
+		F41E3B644A0E884BD360FAA1 /* cgltf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF04069C42900069C9E5 /* cgltf.cpp */; };
+		37A66232949BFC3C4C13BFFA /* PNGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0983069C42900069C9E5 /* PNGReader.cpp */; };
+		9454875E2AF0900269D6E001 /* PNGWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0985069C42900069C9E5 /* PNGWriter.cpp */; };
+		395C58E3DAD6D7402862BC26 /* PPMWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0987069C42900069C9E5 /* PPMWriter.cpp */; };
+		29362134E11D87B86E02DB02 /* RGBEAWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F098B069C42900069C9E5 /* RGBEAWriter.cpp */; };
+		481BDA648904312A56254D44 /* TGAReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F098D069C42900069C9E5 /* TGAReader.cpp */; };
+		EC7DB7754EBFBD10AAAF45F8 /* TGAWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F098F069C42900069C9E5 /* TGAWriter.cpp */; };
+		22AC5B310E96B31A3853476D /* TIFFReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0992069C42900069C9E5 /* TIFFReader.cpp */; };
+		FFFBD60119FDD5201894924C /* TIFFWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0994069C42900069C9E5 /* TIFFWriter.cpp */; };
+		56425D1FC4C56B847200A53B /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
+		2424AF939A1E4089C4DB529A /* NullBoundaryMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */; };
+		16A76A6D3C373B0318916EDC /* ContinuationClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B8C1D0027E29000100000001 /* ContinuationClosure.cpp */; };
+		4B6CE9824A059B61C33AAF3F /* FileRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0999069C42900069C9E5 /* FileRasterizerOutput.cpp */; };
+		AFCC236EBE664CC1206B6EBE /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
+		B9CC8B19F7989A382C8CDABE /* LuminaryManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F099C069C42900069C9E5 /* LuminaryManager.cpp */; };
+		92FDA813F52AD84C80CA8BAF /* PixelBasedPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */; };
+		E72BA6C0BE515ED87E8B3EF1 /* PixelBasedRasterizerHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */; };
+		F2775EB051CAE780000A0E51 /* TimeIndexedMotionBlur.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D46500000000000000000001 /* TimeIndexedMotionBlur.cpp */; };
+		DC2DBCF2785C954003EEC970 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */; };
+		4CAC4CD3BA4824193E92A0D9 /* Rasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A9069C42900069C9E5 /* Rasterizer.cpp */; };
+		FE9AB10B5B4636DC8FC80368 /* RayCaster.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09AB069C42900069C9E5 /* RayCaster.cpp */; };
+		DB7FAAA86B58910FD2279953 /* RISE_API.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09B0069C42900069C9E5 /* RISE_API.cpp */; };
+		83E5C405D5A3A790D6164BEA /* JitteredSampling1D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09B8069C42900069C9E5 /* JitteredSampling1D.cpp */; };
+		069E0DFA6BD0206423840D83 /* MultiJitteredSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09BD069C42900069C9E5 /* MultiJitteredSampling2D.cpp */; };
+		2C3AAAED426E204055AD6D30 /* NRooksSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09BF069C42900069C9E5 /* NRooksSampling2D.cpp */; };
+		DDFB19359E25EF9C4BE67000 /* PoissonDiskSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09C2069C42900069C9E5 /* PoissonDiskSampling2D.cpp */; };
+		FE9D1C6BC425AE0F33D2F15B /* RandomSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09C5069C42900069C9E5 /* RandomSampling2D.cpp */; };
+		B2EAE64DBC9B197A909E534B /* SincPixelFilter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09C9069C42900069C9E5 /* SincPixelFilter.cpp */; };
+		08A23C70E276F98D0D33566F /* DonnerJensenSkinDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */; };
+		B88D99B66E2E37BC8BBAD364 /* StratifiedSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09CB069C42900069C9E5 /* StratifiedSampling2D.cpp */; };
+		58D4A4CE97CEFFC42D6D6659 /* UniformSampling1D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09CE069C42900069C9E5 /* UniformSampling1D.cpp */; };
+		9172E6F6337C6DEA6EDFF9CF /* UniformSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09D0069C42900069C9E5 /* UniformSampling2D.cpp */; };
+		5E609A0AC9C94AFCAFF6DFE9 /* Scene.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09D3069C42900069C9E5 /* Scene.cpp */; };
+		40382BB36160BF1C2CF277C0 /* DirectVolumeRenderingShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09D6069C42900069C9E5 /* DirectVolumeRenderingShader.cpp */; };
+		62259265EE5376401224A9C4 /* BDPTPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5E52F716C5000546C97 /* BDPTPelRasterizer.cpp */; };
+		75DDAE75C3456145F6C877EA /* Color.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09EA069C42900069C9E5 /* Color.cpp */; };
+		126C39A8500B83C2D3A82D2B /* ColorUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09EE069C42900069C9E5 /* ColorUtils.cpp */; };
+		A7D0DE0CBFA47BBEDEC28593 /* RGBToSpectrumTable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */; };
+		4CF04B4D529426EEAB838E05 /* RGBToSpectrumTable_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2BAFED100000000000000A1 /* RGBToSpectrumTable_LUTData.cpp */; };
+		B498A21A2BA7CCFB33D2B7BD /* RGBSpectra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */; };
+		53DFD8BF8A352766943A232C /* HosekWilkieSkyModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A041069C42900069C9E5 /* HosekWilkieSkyModel.cpp */; };
+		04E79DFEF60F165FA4173E8D /* HosekWilkieSpectralRadianceMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A045069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.cpp */; };
+		C3F60B36F47669467C7544A7 /* ClientSocketCommunicator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09F8069C42900069C9E5 /* ClientSocketCommunicator.cpp */; };
+		EFF368E57C20E267FD2E8B79 /* ServerSocketCommunicator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09FB069C42900069C9E5 /* ServerSocketCommunicator.cpp */; };
+		194B0A923BF90AA8A5C4590A /* SocketCommunications.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09FD069C42900069C9E5 /* SocketCommunications.cpp */; };
+		9571FB67AA29237166CC5B51 /* SocketCommunicator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09FF069C42900069C9E5 /* SocketCommunicator.cpp */; };
+		7F2F339B36B01A0FB1D0C0B7 /* DiskBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A03069C42900069C9E5 /* DiskBuffer.cpp */; };
+		45471B3D41CACEE2877FBD6B /* DiskFileReadBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A05069C42900069C9E5 /* DiskFileReadBuffer.cpp */; };
+		299C0FD245D2BC041A711CD9 /* DiskFileWriteBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */; };
+		3E3A459DF950E6B54A4F355B /* RenderParallelScope.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */; };
+		85D3BA73D8BDB46CF59ED13D /* OptimalMISAccumulator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */; };
+		D2FCA36969FD0A50AE0AB147 /* MLTRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5832F6EA5CF00546C97 /* MLTRasterizer.cpp */; };
+		898C7665FFB4A7C73E70D624 /* GeometricUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */; };
+		F4D8F88782B03FE040B3646F /* CurlNoise3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0CF2F8E96280077A171 /* CurlNoise3DPainter.cpp */; };
+		D69FF5EA6CE0D0519FCB523F /* Worley3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0E12F8E96280077A171 /* Worley3DPainter.cpp */; };
+		7F2C6835F92EDB5B47304940 /* Wavelet3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DF2F8E96280077A171 /* Wavelet3DPainter.cpp */; };
+		BD53C05C7080031C31FEDCEB /* PreviewScheduler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639622F9245040009D9AE /* PreviewScheduler.cpp */; };
+		13D0B486E443C022FBDC1040 /* PerlinWorley3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D52F8E96280077A171 /* PerlinWorley3DPainter.cpp */; };
+		A6816C63DA046E732C61151A /* DomainWarp3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D12F8E96280077A171 /* DomainWarp3DPainter.cpp */; };
+		592C3023394EA95CEF212F69 /* Simplex3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DB2F8E96280077A171 /* Simplex3DPainter.cpp */; };
+		6D7477753C64ED70B46F7676 /* Turbulence3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DD2F8E96280077A171 /* Turbulence3DPainter.cpp */; };
+		9BF0E52A07EA074BC37B7786 /* SDF3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D92F8E96280077A171 /* SDF3DPainter.cpp */; };
+		BB349C6AD93A547908A28780 /* Gabor3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D32F8E96280077A171 /* Gabor3DPainter.cpp */; };
+		910AE9A36BFE1AB5BFDDE9EA /* ReactionDiffusion3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D72F8E96280077A171 /* ReactionDiffusion3DPainter.cpp */; };
+		476C1A0C9E4596C43066EE82 /* Log.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A12069C42900069C9E5 /* Log.cpp */; };
+		5857E09822CD52F4445E49F9 /* MemoryTracker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A15069C42900069C9E5 /* MemoryTracker.cpp */; };
+		065054950467CD40A2690F70 /* StreamPrinter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A17069C42900069C9E5 /* StreamPrinter.cpp */; };
+		879A3BEF7B8768AB1CE82401 /* Math3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A1E069C42900069C9E5 /* Math3D.cpp */; };
+		BF051EE880DE24DC15A194E9 /* MemoryBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A29069C42900069C9E5 /* MemoryBuffer.cpp */; };
+		C8EB801F45C7B805528C8C43 /* MersenneTwister.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2B069C42900069C9E5 /* MersenneTwister.cpp */; };
+		05332A7A64C2AABFA9480713 /* Optics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2E069C42900069C9E5 /* Optics.cpp */; };
+		E7EC723C6CE01D62776C2804 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
+		F83A2CA1C44E63EEA7F65A1B /* RISECBOR64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC000100000009 /* RISECBOR64.cpp */; };
+		ACFA4665D0A43AED5369EC5A /* FireOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000B /* FireOptics.cpp */; };
+		DA5AEABB3CEA2B62F4FE4D80 /* FireSimulationRecords.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD000100000009 /* FireSimulationRecords.cpp */; };
+		3821FB7EB0178870CE495821 /* FireProductionTables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF000100000009 /* FireProductionTables.cpp */; };
+		840F6D9D4238CE4DCFAFF883 /* FireProductionComputeMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000C /* FireProductionComputeMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc"; }; };
+		B823CCA92963B7B5BD68EBBE /* FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		8F97FF2CACFE3D6E67C460DF /* FireProductionProjection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000007 /* FireProductionProjection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		10BCC45A757615DF7A3B79AA /* FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000009 /* FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		E257956F661FE86EF90D47BB /* FireProductionTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC92000131FF000100000007 /* FireProductionTransport.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		B4350BD0208E73EA3EFC639D /* FireProductionSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FE86000131FF000100000007 /* FireProductionSource.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		263B45282E9E296D5A9B7E85 /* FireProductionForce.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000007 /* FireProductionForce.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		0ADDAE0219F59BC7738C404E /* FireProductionForceMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FD93000131FF000100000009 /* FireProductionForceMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		989D65F19A302E69464C9C35 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; settings = {COMPILER_FLAGS = "-fobjc-arc -fno-fast-math -ffp-contract=off"; }; };
+		38B8EBEA7B6F6C12A0FF3139 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
+		015EEBC2869A71EEC8078078 /* SimulationGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EB49B68CA6F35537A93E1473 /* SimulationGrid.cpp */; };
+		56A0F84260C1C96B2FF5A0E8 /* SimulationCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 718533EB6DF55EBA8A053630 /* SimulationCache.cpp */; };
+		1D159EB2BED54E7879F4D898 /* FireRunCheckpoint.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 78EBA9DD70DDA5157074DD46 /* FireRunCheckpoint.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		EB363B99D8182915FA67D431 /* FireRunFrames.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7D4B26CB11ED8357134BC04 /* FireRunFrames.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		281F924C2A9FD5231AD2EF9E /* FireRunDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5A5C30D5617B8A2B21FFD034 /* FireRunDriver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		D9099A356A92E6622F1B9D14 /* FireRun.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 027EAD51B3C9501735854804 /* FireRun.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		EDB1CC540DE7EC57AEA7C10E /* FireSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CCDE488FC2FA9E6DF33F7164 /* FireSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		44583F1F84811061DD2CAFAF /* FireParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9F11B76CF47DD08218E498E8 /* FireParameterSchema.cpp */; };
+		2317A37943195D41846A84E4 /* ClothMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 42A7A691CF6A4F369E402CC0 /* ClothMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		5CF655A5501AA59F7EFD0ACF /* ClothLinearAlgebra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2B754059DD174CF8A9B0AA0D /* ClothLinearAlgebra.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		7B353CC14DCDBBD08A01CB6B /* ClothModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BEED23719B8C435794DE9CE8 /* ClothModel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		A1D88EA9C505A77D325DCADD /* ClothParallel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EC626313E18A4AA09D55F1BA /* ClothParallel.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		74CA94F57900CCE8B810AA84 /* ClothContact.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D75B66128442493A9FC176CA /* ClothContact.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		36B1112386E9117D90743EE9 /* ClothValidation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 080CFE5F1EB444F687850703 /* ClothValidation.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		A7F81EC74DC86974C94FA099 /* ClothSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		682A8981CA936BD228591954 /* ClothParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */; };
+		677F03748C8C552996EFEE24 /* RigidParameterSchema.h in Headers */ = {isa = PBXBuildFile; fileRef = 832044D99E8A4FA847A6B98F /* RigidParameterSchema.h */; };
+		4DF145F3D2082F9FD8B5B42D /* RigidParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 668AD3BF2FD0624FE86E964E /* RigidParameterSchema.cpp */; };
+		CD04ACF0113740D4556B8E79 /* RigidParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 668AD3BF2FD0624FE86E964E /* RigidParameterSchema.cpp */; };
+		D210D0E088C9DFC42E408452 /* RigidParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 668AD3BF2FD0624FE86E964E /* RigidParameterSchema.cpp */; };
+		A950F50E9C10A848ADAD674D /* ClothRigidCoupling.h in Headers */ = {isa = PBXBuildFile; fileRef = 79ECB4B5BC154545940929B4 /* ClothRigidCoupling.h */; };
+		76AA5F62A7564050E5D6B36A /* ClothRigidCoupling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C354F91A2190C48AB299F744 /* ClothRigidCoupling.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		B7539563D6A300C322A07F60 /* ClothRigidCoupling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C354F91A2190C48AB299F744 /* ClothRigidCoupling.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		44355C7692280D0F14E4F2CB /* ClothRigidCoupling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C354F91A2190C48AB299F744 /* ClothRigidCoupling.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		05A1D77FFEC9C26489B3FB02 /* SimulationPortAdapters.h in Headers */ = {isa = PBXBuildFile; fileRef = 07D61E22E6A069DB35C3094D /* SimulationPortAdapters.h */; };
+		B21B0AD18679A19A27C13199 /* SimulationPortAdapters.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E0576CE467E6D3210A0506CF /* SimulationPortAdapters.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		D8F87C76DCA77A760865CA26 /* SimulationPortAdapters.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E0576CE467E6D3210A0506CF /* SimulationPortAdapters.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		59184F31E012743F1F110C89 /* SimulationPortAdapters.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E0576CE467E6D3210A0506CF /* SimulationPortAdapters.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		4649C7693BAD09F6CD9FB51F /* SimulationGroup.h in Headers */ = {isa = PBXBuildFile; fileRef = 84BF0408F6E6441E00DDA6F2 /* SimulationGroup.h */; };
+		760F05E9535895130BC12EA0 /* SimulationGroup.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4DAA5236E77F7191EAC5B81F /* SimulationGroup.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		C9A21AA635EB6539C26F3847 /* SimulationGroup.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4DAA5236E77F7191EAC5B81F /* SimulationGroup.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		9B5C23DD5F420AEC9FF0E2AD /* SimulationGroup.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4DAA5236E77F7191EAC5B81F /* SimulationGroup.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		544BBFE7714437F89AE1BE09 /* SimulationTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8261B676D6C19218F485FC1A /* SimulationTransform.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		C77ADDC01ED4C53A14F8EE08 /* RigidBody.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 27E9C64D3D916A7C852CD745 /* RigidBody.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		48D7B398B418453D648D01E9 /* RigidSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 63B4C7BECB4856B9C12745DF /* RigidSolver.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		E59A98624FF38C625E0DCAF6 /* SimulationMesh.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38F79FD677632DAA39E397 /* SimulationMesh.cpp */; };
+		483E9D348D1EF0D54B6CB2E1 /* SimulationField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6D0EFA008CF3C62D2BED1C2D /* SimulationField.cpp */; };
+		B4E7D3166F36CA36FB153969 /* SimulatedMeshGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 529BD6FD5D165A2ACB988F78 /* SimulatedMeshGeometry.cpp */; };
+		B95CAE83E2D8B5C5FC81925D /* SimulatedMeshSource.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C9E15AA18EF7D93992727F9B /* SimulatedMeshSource.cpp */; };
+		6EE65548CCC18F0DD719DB4D /* BuiltinSolvers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1286D33CD6909D4585E48B7F /* BuiltinSolvers.cpp */; };
+		133921C0CE2E7BC083B3BE06 /* SceneSimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 81DA346FD8DB9F547489E960 /* SceneSimulationWorker.cpp */; };
+		680835874F291AF1DCB29169 /* SimulationBakeManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0B18A20D0C3EAE3685B0A8FB /* SimulationBakeManager.cpp */; };
+		C817345B85073ADBDF7D2414 /* SimulationProcess.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EAF2275A488D08CE1A09D69B /* SimulationProcess.cpp */; };
+		CA2D3E5E87465B2C3000229E /* SceneInputs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7384F8612BEC08ADC4FD7560 /* SceneInputs.cpp */; };
+		A2FF31879C44C1CA0B294BDF /* SceneSimulation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE7CFA95289F2E61B7CF1A50 /* SceneSimulation.cpp */; };
+		1590040A4660D349A89E1392 /* SimulationParameterSchema.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 841A3F0989F9D29FD66D48C7 /* SimulationParameterSchema.cpp */; };
+		157A4FC0CB52D745927888D6 /* SimulationTimeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F552CC5023D8319AEA1181F7 /* SimulationTimeline.cpp */; };
+		D689D626D5A8B7396A49A0BA /* SimulationSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9A16AB8B956F4DCDC5451F6B /* SimulationSolver.cpp */; };
+		D3E99C016746D0010D8473B1 /* SimulationHost.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0124CC05BC6837146CA0D81D /* SimulationHost.cpp */; };
+		EA44E4F078036E59E92746A9 /* SimulationWorker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CA63189BA0E0E27FABCD67DE /* SimulationWorker.cpp */; };
+		97F8A41C4042CED41BDD4265 /* FireSequenceCache.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AB447AD2CE1A50C5AA8D15FA /* FireSequenceCache.cpp */; };
+		80591E499F7CB4D5E16C6F16 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; settings = {COMPILER_FLAGS = "-O3 -ffast-math -fno-finite-math-only -funroll-loops -ffp-contract=fast -fno-lto"; }; };
+		C066B89F7B148DC3FEFC8E2F /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
+		F2D4FEA9C00DCA9FBC3C783C /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
+		A6FEBD02238A3390897A434C /* ProbabilityDensityFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A35069C42900069C9E5 /* ProbabilityDensityFunction.cpp */; };
+		D187C6E738DE06BF16550692 /* ProceduralNoiseCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2ADD0000000000000000002 /* ProceduralNoiseCore.cpp */; };
+		B7D090D0915A3561D336749F /* OslNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 05C1A0000000000000000002 /* OslNoise.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		243BC692987593166BADEC8F /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
+		80879745F61382BE42B85777 /* RTime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3C069C42900069C9E5 /* RTime.cpp */; };
+		C21DA7083B84A88D403BF77D /* ThreadsPTHREADs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A43069C42900069C9E5 /* ThreadsPTHREADs.cpp */; };
+		505CE124F4C36D1BB2E37C15 /* Transformable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A45069C42900069C9E5 /* Transformable.cpp */; };
+		BBF5CA765B7025ACDD5DFBFF /* LightSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5742F6E44DE00546C97 /* LightSampler.cpp */; };
+		F3CDD54713DE55BFBBAD9461 /* StandardShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F298C65107B14247007CDF08 /* StandardShader.cpp */; };
+		FFBC7D2766ECB16D087A5D6D /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
+		A96F3FE3EF6679FA19D49DC5 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
+		E170882E4DBEF17BD817D9F4 /* AdvancedShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341B07ECCBB200C0B600 /* AdvancedShader.cpp */; };
+		397A8E991DB1CAF552AB711D /* MultipoleDiffusion.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */; };
+		B503644E4E1B5CAC024EA862 /* AdaptiveDetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342607ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp */; };
+		D1D609EB24CF1E04E6F0D787 /* CircularDiskDetector.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342807ECCC2F00C0B600 /* CircularDiskDetector.cpp */; };
+		A5BB5FB171F917EB18A3688F /* PathTracingPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */; };
+		71A23383CC4291DF3ACB57B6 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
+		6F697EBB939E0A5BD717EB32 /* PathTracingSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */; };
+		F58343367D6AF4F34CF670C1 /* DetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342A07ECCC2F00C0B600 /* DetectorSphere.cpp */; };
+		D1C1F03CA531287B9A430053 /* IsotropicRGBDetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342C07ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp */; };
+		19D1BF3C611D4C215159E10D /* ReactionDiffusion3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1092F8E96770077A171 /* ReactionDiffusion3D.cpp */; };
+		9AAA8AE3F4B99544C78F6EDA /* PerlinWorleyNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1072F8E96770077A171 /* PerlinWorleyNoise3D.cpp */; };
+		F2B028F1B1796C74745287C4 /* GaborNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1052F8E96770077A171 /* GaborNoise3D.cpp */; };
+		897308C59A0A0053322D76B2 /* CurlNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1012F8E96770077A171 /* CurlNoise3D.cpp */; };
+		3B73EB418075FBAD28CA7E73 /* DomainWarpNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1032F8E96770077A171 /* DomainWarpNoise3D.cpp */; };
+		4F2D9F090F5984AC2EC4CE95 /* SDFPrimitives3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10B2F8E96770077A171 /* SDFPrimitives3D.cpp */; };
+		F5D5B5464C8F0047B1B77295 /* TurbulenceNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10F2F8E96770077A171 /* TurbulenceNoise3D.cpp */; };
+		EA8202554539672D3DC45E56 /* SimplexNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10D2F8E96770077A171 /* SimplexNoise3D.cpp */; };
+		A560087FB3E5874E022415D6 /* WaveletNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1112F8E96770077A171 /* WaveletNoise3D.cpp */; };
+		56577E199DE991EB9C7A0D2C /* WorleyNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1132F8E96770077A171 /* WorleyNoise3D.cpp */; };
+		F5486A1FED16612E3B9CC114 /* DataDrivenBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277344F07ECCEDC00C0B600 /* DataDrivenBSDF.cpp */; };
+		882772D070FE284BF7EA4C6C /* DataDrivenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F325A0010000000000DD0001 /* DataDrivenSPF.cpp */; };
+		8938C7B67D579D3A5814FC01 /* TranslucentBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277345207ECCEDC00C0B600 /* TranslucentBSDF.cpp */; };
+		1891177EA367DE6EC890CB2C /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
+		2092B01E5A18ABA2A8C40E10 /* SSSContainment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E45A042FA0000100F1A45E /* SSSContainment.cpp */; };
+		DC2C1FF3E55E2DE73FBA0037 /* MediaPathLocator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277349D07ECD64300C0B600 /* MediaPathLocator.cpp */; };
+		AB1DFB8E65C0EDE413CC26C1 /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
+		D2710335D6806AA65377D4F6 /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
+		4A37CD202E986315BF41C759 /* CausticPelPhotonMapShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3209C4D2A20048A09D /* CausticPelPhotonMapShaderOp.cpp */; };
+		1B2B01CEA8A36777A30D3300 /* CausticSpectralPhotonMapShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3409C4D2A20048A09D /* CausticSpectralPhotonMapShaderOp.cpp */; };
+		CFE28C125BFDD03DD0EC6D0D /* DirectLightingShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3609C4D2A20048A09D /* DirectLightingShaderOp.cpp */; };
+		D5D0461FB7F2A4AB916C3381 /* DistributionTracingShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3809C4D2A20048A09D /* DistributionTracingShaderOp.cpp */; };
+		C1DB88BD366CAD1038AB8F3A /* EmissionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3A09C4D2A20048A09D /* EmissionShaderOp.cpp */; };
+		222304DA3E04C72942DD5F2B /* FinalGatherShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3C09C4D2A20048A09D /* FinalGatherShaderOp.cpp */; };
+		E86DA6CD6CEFBBC584E694BA /* BDPTRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5DB2F716BAA00546C97 /* BDPTRasterizerBase.cpp */; };
+		F4F3C699DF0C29AC8682E056 /* BDPTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5DD2F716BAA00546C97 /* BDPTSpectralRasterizer.cpp */; };
+		07B136EEA341CE9947BB187D /* GlobalPelPhotonMapShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3E09C4D2A20048A09D /* GlobalPelPhotonMapShaderOp.cpp */; };
+		F90F78E8E61060F17D187D7F /* GlobalSpectralPhotonMapShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA4009C4D2A20048A09D /* GlobalSpectralPhotonMapShaderOp.cpp */; };
+		003B228875A929AD5E3BF57C /* PathTracingShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA4209C4D2A20048A09D /* PathTracingShaderOp.cpp */; };
+		C841C8755A97338526AB7C26 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
+		A9B0303E8A88A8DE587D2EB1 /* ReflectionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA4409C4D2A20048A09D /* ReflectionShaderOp.cpp */; };
+		F13C94F1084CA875F45BF7B2 /* RefractionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA4609C4D2A20048A09D /* RefractionShaderOp.cpp */; };
+		B460AD6A6F740DDF5F216F09 /* ShadowPhotonMapShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA4809C4D2A20048A09D /* ShadowPhotonMapShaderOp.cpp */; };
+		A9E2E2BFE828F7CDDCB2BFB8 /* PointSetOctree.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA4C09C4D2A20048A09D /* PointSetOctree.cpp */; };
+		09337F7DFAECA814687C657A /* SubSurfaceScatteringShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA4F09C4D2A20048A09D /* SubSurfaceScatteringShaderOp.cpp */; };
+		676F110C4EEDA1F3FAF84734 /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
+		DBDA9380740D997F2603D004 /* TranslucentPelPhotonMapShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA5109C4D2A20048A09D /* TranslucentPelPhotonMapShaderOp.cpp */; };
+		DC480DA31AA2996C49E7936C /* TransparencyShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA5309C4D2A20048A09D /* TransparencyShaderOp.cpp */; };
+		2F0F53F143FF92319CBF9FF1 /* AlphaTestShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */; };
+		4BF3E850FD50E9C9CAADF97D /* CPU_Count.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32ED0A0FBB1D00E99FBE /* CPU_Count.cpp */; };
+		2527C58C05FACA27989FEFBF /* EXRReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32F20A0FBBAA00E99FBE /* EXRReader.cpp */; };
+		97F2D70AB2C44D5780047B13 /* EXRWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32F40A0FBBAA00E99FBE /* EXRWriter.cpp */; };
+		79DEEC0B380DD014E5BBDA12 /* PSSMLTSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D57E2F6EA5B300546C97 /* PSSMLTSampler.cpp */; };
+		BC46AB19DA843293FF30C99E /* Profiling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F95D435F04092BE4C62DA966 /* Profiling.cpp */; };
+		C1CAB46A06EBA783D923E4C8 /* rise_sim.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28E4B5C935CC7BE58C8FA1C /* rise_sim.cpp */; };
+		D459E760CE21BCF008392251 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
+		6FB093ADF87B9C6B0391FFA6 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6E7E0F0000000000000C0DE /* Foundation.framework */; };
+		2F800D18C34684F043CE132A /* rise-sim in Embed rise-sim worker */ = {isa = PBXBuildFile; fileRef = 5B8F031C09650C3263F1CE4D /* rise-sim */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		7CB3044E221441CC11320EE6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 08FB7793FE84155DC02AAC07 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C3D97155B866756813B3CBAD;
+			remoteInfo = "rise-sim";
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
 		8DD76F690486A84900D96B5E /* CopyFiles */ = {
@@ -2291,6 +2782,17 @@
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 1;
+		};
+		8E0D70B2288776768A15DA70 /* Embed rise-sim worker */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				2F800D18C34684F043CE132A /* rise-sim in Embed rise-sim worker */,
+			);
+			name = "Embed rise-sim worker";
+			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
 
@@ -3138,6 +3640,20 @@
 		080CFE5F1EB444F687850703 /* ClothValidation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothValidation.cpp; sourceTree = "<group>"; };
 		A3D12F767CB448FBA1E05865 /* ClothSolver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothSolver.cpp; sourceTree = "<group>"; };
 		6BB096A3FC98774CF19990A7 /* ClothParameterSchema.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothParameterSchema.cpp; sourceTree = "<group>"; };
+		832044D99E8A4FA847A6B98F /* RigidParameterSchema.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RigidParameterSchema.h; sourceTree = "<group>"; };
+		668AD3BF2FD0624FE86E964E /* RigidParameterSchema.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RigidParameterSchema.cpp; sourceTree = "<group>"; };
+		79ECB4B5BC154545940929B4 /* ClothRigidCoupling.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothRigidCoupling.h; sourceTree = "<group>"; };
+		C354F91A2190C48AB299F744 /* ClothRigidCoupling.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ClothRigidCoupling.cpp; sourceTree = "<group>"; };
+		07D61E22E6A069DB35C3094D /* SimulationPortAdapters.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationPortAdapters.h; sourceTree = "<group>"; };
+		E0576CE467E6D3210A0506CF /* SimulationPortAdapters.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationPortAdapters.cpp; sourceTree = "<group>"; };
+		84BF0408F6E6441E00DDA6F2 /* SimulationGroup.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationGroup.h; sourceTree = "<group>"; };
+		4DAA5236E77F7191EAC5B81F /* SimulationGroup.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationGroup.cpp; sourceTree = "<group>"; };
+		8261B676D6C19218F485FC1A /* SimulationTransform.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SimulationTransform.cpp; sourceTree = "<group>"; };
+		DBE1B1952A835238CD53DD98 /* SimulationTransform.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SimulationTransform.h; sourceTree = "<group>"; };
+		27E9C64D3D916A7C852CD745 /* RigidBody.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RigidBody.cpp; sourceTree = "<group>"; };
+		10E8741D245E7819B932D95E /* RigidBody.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RigidBody.h; sourceTree = "<group>"; };
+		63B4C7BECB4856B9C12745DF /* RigidSolver.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RigidSolver.cpp; sourceTree = "<group>"; };
+		D1F4012609D3C6BFC1CECE38 /* RigidSolver.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RigidSolver.h; sourceTree = "<group>"; };
 		096BADAD2FEC436DB149BB53 /* ClothMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothMaterial.h; sourceTree = "<group>"; };
 		460DD8353B4647559E1A1CD8 /* ClothLinearAlgebra.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothLinearAlgebra.h; sourceTree = "<group>"; };
 		28159AF91A34494D83CC06CC /* ClothModel.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClothModel.h; sourceTree = "<group>"; };
@@ -3552,6 +4068,8 @@
 		F9DEBE7B82A18DD3C46224C5 /* ZSobolSampler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ZSobolSampler.h; sourceTree = "<group>"; };
 		F940B2B2310EB5AAF01277C5 /* VolumeAccessor_Painter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VolumeAccessor_Painter.h; sourceTree = "<group>"; };
 		F9EAA67E50B22F06285E9D35 /* VolumeAccessor_TriCubic.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VolumeAccessor_TriCubic.h; sourceTree = "<group>"; };
+		F28E4B5C935CC7BE58C8FA1C /* rise_sim.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = rise_sim.cpp; path = ../../../tools/rise_sim.cpp; sourceTree = SOURCE_ROOT; };
+		5B8F031C09650C3263F1CE4D /* rise-sim */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "rise-sim"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -3590,6 +4108,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B5B1B527448AB78E2D54DE9F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D459E760CE21BCF008392251 /* Metal.framework in Frameworks */,
+				6FB093ADF87B9C6B0391FFA6 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -3620,6 +4147,7 @@
 			children = (
 				F2C0D3032F8E100100A1B2C3 /* CliOptions.h */,
 				6DBFAA8109C4D2CD0048A09D /* commandconsole.cpp */,
+				F28E4B5C935CC7BE58C8FA1C /* rise_sim.cpp */,
 				F27F07E8069C428F0069C9E5 /* Library */,
 			);
 			name = Source;
@@ -3630,6 +4158,7 @@
 			children = (
 				8DD76F6C0486A84900D96B5E /* rise */,
 				F24B71C62F52A211008304C4 /* RISE-GUI.app */,
+				5B8F031C09650C3263F1CE4D /* rise-sim */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -4760,8 +5289,38 @@
 				8286AD6E16E9B797C6DCF594 /* SimulationWorker.h */,
 				ECE84DFC099F5B30B32509C1 /* Fire */,
 				46EBEDC9C40441B4BC931DF3 /* Cloth */,
+				7BADC61BEC63E9B2B422EDA5 /* Coupling */,
+				4DAA5236E77F7191EAC5B81F /* SimulationGroup.cpp */,
+				84BF0408F6E6441E00DDA6F2 /* SimulationGroup.h */,
+				E0576CE467E6D3210A0506CF /* SimulationPortAdapters.cpp */,
+				07D61E22E6A069DB35C3094D /* SimulationPortAdapters.h */,
+				8FC2C09EF4943E2062715492 /* Rigid */,
+				8261B676D6C19218F485FC1A /* SimulationTransform.cpp */,
+				DBE1B1952A835238CD53DD98 /* SimulationTransform.h */,
 			);
 			path = Simulation;
+			sourceTree = "<group>";
+		};
+		8FC2C09EF4943E2062715492 /* Rigid */ = {
+			isa = PBXGroup;
+			children = (
+				27E9C64D3D916A7C852CD745 /* RigidBody.cpp */,
+				10E8741D245E7819B932D95E /* RigidBody.h */,
+				63B4C7BECB4856B9C12745DF /* RigidSolver.cpp */,
+				D1F4012609D3C6BFC1CECE38 /* RigidSolver.h */,
+				668AD3BF2FD0624FE86E964E /* RigidParameterSchema.cpp */,
+				832044D99E8A4FA847A6B98F /* RigidParameterSchema.h */,
+			);
+			path = Rigid;
+			sourceTree = "<group>";
+		};
+		7BADC61BEC63E9B2B422EDA5 /* Coupling */ = {
+			isa = PBXGroup;
+			children = (
+				C354F91A2190C48AB299F744 /* ClothRigidCoupling.cpp */,
+				79ECB4B5BC154545940929B4 /* ClothRigidCoupling.h */,
+			);
+			path = Coupling;
 			sourceTree = "<group>";
 		};
 		ECE84DFC099F5B30B32509C1 /* Fire */ = {
@@ -5864,6 +6423,13 @@
 				7D95D4A516894A74A5F73EE7 /* ClothValidation.h in Headers */,
 				2C2EF647EC484AE5AF0ECADC /* ClothSolver.h in Headers */,
 				EE1B4111D69FF3B165AA9FD4 /* ClothParameterSchema.h in Headers */,
+				677F03748C8C552996EFEE24 /* RigidParameterSchema.h in Headers */,
+				A950F50E9C10A848ADAD674D /* ClothRigidCoupling.h in Headers */,
+				05A1D77FFEC9C26489B3FB02 /* SimulationPortAdapters.h in Headers */,
+				4649C7693BAD09F6CD9FB51F /* SimulationGroup.h in Headers */,
+				061B9D96EEFCA7E9960429B0 /* SimulationTransform.h in Headers */,
+				0AC2F19E7E87E8B27D93B245 /* RigidBody.h in Headers */,
+				40202A656009F7B397512D30 /* RigidSolver.h in Headers */,
 				5B9F1C8B21CFE464328ED16B /* FireProductionAcceptedStageBudget.h in Headers */,
 				C654CF3797B4DBCEAE578EB6 /* FireProductionAcceptedFuelBudget.h in Headers */,
 				F206DE6B562759DB532CA0CA /* FireProductionOnsetEvidence.h in Headers */,
@@ -6063,10 +6629,12 @@
 				F24B71C32F52A211008304C4 /* Frameworks */,
 				F24B71C42F52A211008304C4 /* Resources */,
 				633BF6768D9F4BCE9AE2F46B /* Build simulation cache importer */,
+				8E0D70B2288776768A15DA70 /* Embed rise-sim worker */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A4F2FE8FD22D8C0AAE9BD69C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				F24B71C72F52A211008304C4 /* RISE-GUI */,
@@ -6077,6 +6645,23 @@
 			productName = "RISE-GUI";
 			productReference = F24B71C62F52A211008304C4 /* RISE-GUI.app */;
 			productType = "com.apple.product-type.application";
+		};
+		C3D97155B866756813B3CBAD /* rise-sim */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 02882B5B56131EC468D4BD60 /* Build configuration list for PBXNativeTarget "rise-sim" */;
+			buildPhases = (
+				FE774CFD5ED7AB77EC210387 /* Generate Renderer Build Identity */,
+				42640659B1F2BC16B18E0CE1 /* Sources */,
+				B5B1B527448AB78E2D54DE9F /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "rise-sim";
+			productName = "rise-sim";
+			productReference = 5B8F031C09650C3263F1CE4D /* rise-sim */;
+			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
 
@@ -6107,6 +6692,7 @@
 			targets = (
 				8DD76F620486A84900D96B5E /* rise */,
 				F24B71C52F52A211008304C4 /* RISE-GUI */,
+				C3D97155B866756813B3CBAD /* rise-sim */,
 			);
 		};
 /* End PBXProject section */
@@ -6152,6 +6738,23 @@
 			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
 		};
 		B1D000020000000000000002 /* Generate Renderer Build Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../tools/generate_renderer_build_identity_header.py",
+			);
+			name = "Generate Renderer Build Identity";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/RendererBuildIdentity.generated.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
+		};
+		FE774CFD5ED7AB77EC210387 /* Generate Renderer Build Identity */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -6541,6 +7144,13 @@
 				3AA13E45C4944989903A8DCC /* ClothValidation.cpp in Sources */,
 				665BD52915384D5B9A9EEDB5 /* ClothSolver.cpp in Sources */,
 				CD689C6F1C8A892B615EB9DB /* ClothParameterSchema.cpp in Sources */,
+				D210D0E088C9DFC42E408452 /* RigidParameterSchema.cpp in Sources */,
+				44355C7692280D0F14E4F2CB /* ClothRigidCoupling.cpp in Sources */,
+				59184F31E012743F1F110C89 /* SimulationPortAdapters.cpp in Sources */,
+				9B5C23DD5F420AEC9FF0E2AD /* SimulationGroup.cpp in Sources */,
+				05BD56654A89685B40C10C21 /* SimulationTransform.cpp in Sources */,
+				B02D2CD533A8ABFD20CE070C /* RigidBody.cpp in Sources */,
+				E96EEE461D5941E067C2344C /* RigidSolver.cpp in Sources */,
 				012138D964ABEF2E3DC8E54F /* SimulationMesh.cpp in Sources */,
 				C3B5E68EDB9D3F1D831285E3 /* SimulationField.cpp in Sources */,
 				4C7BE87A2418C74E4802CDA5 /* SimulatedMeshGeometry.cpp in Sources */,
@@ -7567,6 +8177,13 @@
 				E5DC38BDDC2D486EAB929B7E /* ClothValidation.cpp in Sources */,
 				4C768A85B1F54191BFF6FAB0 /* ClothSolver.cpp in Sources */,
 				7BE0274C865C13B99425C58D /* ClothParameterSchema.cpp in Sources */,
+				CD04ACF0113740D4556B8E79 /* RigidParameterSchema.cpp in Sources */,
+				B7539563D6A300C322A07F60 /* ClothRigidCoupling.cpp in Sources */,
+				D8F87C76DCA77A760865CA26 /* SimulationPortAdapters.cpp in Sources */,
+				C9A21AA635EB6539C26F3847 /* SimulationGroup.cpp in Sources */,
+				FF45436CBF301141A16F5F26 /* SimulationTransform.cpp in Sources */,
+				B281DF348CA5C1664A9F1FD1 /* RigidBody.cpp in Sources */,
+				CE7402B538C539139AFED5F5 /* RigidSolver.cpp in Sources */,
 				6348573A914F130527A8F234 /* SimulationMesh.cpp in Sources */,
 				0BE279A6842CCAC21A214D8B /* SimulationField.cpp in Sources */,
 				8401AA321BFFDAF10F7E3003 /* SimulatedMeshGeometry.cpp in Sources */,
@@ -7649,7 +8266,479 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		42640659B1F2BC16B18E0CE1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DA6878569C3F8BE388C1DE4B /* HeterogeneousMedium.cpp in Sources */,
+				698AFF269A4B05DAEB50CDB4 /* Animator.cpp in Sources */,
+				BA350EA3E2044F72B2912669 /* ElementTimeline.cpp in Sources */,
+				33387EC2076DECADC1BE46B6 /* KeyframableHelper.cpp in Sources */,
+				862E4BF262FC016392FC4732 /* KeyframableStrictParse.cpp in Sources */,
+				17012ABC49116A62829DD870 /* Timeline.cpp in Sources */,
+				85564692BFF5B5297186FEDF /* CameraCommon.cpp in Sources */,
+				E5105327CEEAD0C90D479AE2 /* FisheyeCamera.cpp in Sources */,
+				892287DC30502B803D3769DC /* OrthographicCamera.cpp in Sources */,
+				A4686A7512BA751DE949975C /* PinholeCamera.cpp in Sources */,
+				94EC2985B0DEEA42222263B8 /* ThinLensCamera.cpp in Sources */,
+				878A0B19B3314B3F3C7C7B7D /* BezierRootFinder.cpp in Sources */,
+				E667C2D3B0D14AC243C4B4B3 /* CubicFunction.cpp in Sources */,
+				98EB96B978B576EBEAE776FA /* VCMPelRasterizer.cpp in Sources */,
+				36654FCA1A65DC779A4422F0 /* VCMRasterizerBase.cpp in Sources */,
+				A73DA44B39108B5E1BC2CD43 /* BidirectionalRasterizerBase.cpp in Sources */,
+				B0CA8C733BC8BD103308E196 /* VCMSpectralRasterizer.cpp in Sources */,
+				75BF789422AA563EBB0B7F6D /* KleinBottleParametricFunctions.cpp in Sources */,
+				5D3E55C0DB5EC22AFA9F20BC /* RandomWalkSSS.cpp in Sources */,
+				DD4C289E2814B373EADBE3ED /* LinearFunction.cpp in Sources */,
+				77A6D58ADFEFCD8246480D8E /* ParametricSurface.cpp in Sources */,
+				ED623079958A2B053A35BA95 /* Polynomial.cpp in Sources */,
+				9D43578E1CBF28636CA31810 /* MajorantGrid.cpp in Sources */,
+				247EA29EF47166EBB2C5381B /* PathTracingIntegrator.cpp in Sources */,
+				B73ADC0412836E27BCD01476 /* PolynomialGCD.cpp in Sources */,
+				7B5E5C96E2F2FBEBFD7DFEE6 /* QuadraticFunction.cpp in Sources */,
+				AC31655C25F37E53CE873596 /* QuarticFunction.cpp in Sources */,
+				AD1C3C6E1892FA2F83ED7A53 /* Resultant.cpp in Sources */,
+				D7E5B72051E4FF5889955411 /* BezierPatchGeometry.cpp in Sources */,
+				F582A2EB6973C9B1A0975965 /* BezierTesselation.cpp in Sources */,
+				33E275CE697CC8553B10D943 /* BilinearPatchGeometry.cpp in Sources */,
+				BB2F1872507D2980416FA793 /* SobolDirectionNumbers.cpp in Sources */,
+				B1A45DB10D7BFD68660D6514 /* SobolSampling2D.cpp in Sources */,
+				8735CD60107CC32361C62255 /* BoxGeometry.cpp in Sources */,
+				56AB517E59A3D3A48E9CC75C /* BoxUVGenerator.cpp in Sources */,
+				FAB68FED7706E1363901C0F1 /* CircularDiskGeometry.cpp in Sources */,
+				56F94FAC5BD59AF0A91A3CA4 /* ClippedPlaneGeometry.cpp in Sources */,
+				FEAC2ABBAC7C453667AF5CE2 /* CylinderGeometry.cpp in Sources */,
+				A27EB8F3C5F0413CC23FA1BB /* DisplacedGeometry.cpp in Sources */,
+				2A52164482EA79FF04805A87 /* CylindricalUVGenerator.cpp in Sources */,
+				FAE56E7926AF5ACE13BBBA7F /* EllipsoidGeometry.cpp in Sources */,
+				FFF9119DECC56EB4B2E523FF /* Geometry.cpp in Sources */,
+				1E5DC82EDD0244469D7CF02E /* GeometryUtilities.cpp in Sources */,
+				EB0F5838D177F84381F8946B /* InfinitePlaneGeometry.cpp in Sources */,
+				681A8D47C9062DA1AACC318C /* SDFGeometry.cpp in Sources */,
+				057C8B9534537AA82D2E37EE /* MeshSignalBake.cpp in Sources */,
+				93D11075FDBD34E0BF3F4D7D /* Cst.cpp in Sources */,
+				C219BE1E1FE63570C401D980 /* AgentSession.cpp in Sources */,
+				BD376938638CCD3A8A32A4EC /* InMemoryRasterizerOutput.cpp in Sources */,
+				76C85AC5A9CDA0B121BB8C85 /* AgentRpc.cpp in Sources */,
+				ECBB2FD8D804A3F11FACCAEF /* AgentMcpAdapter.cpp in Sources */,
+				3A293916D62EF621109C29C2 /* AgentLoopbackHttpServer.cpp in Sources */,
+				580943B2DC9077DD2490F535 /* AgentChatCodecs.cpp in Sources */,
+				3CFFC0794103FA540E865974 /* AgentChatLoop.cpp in Sources */,
+				82E83FEBC81C54A9934DD98B /* AgentSimulation.cpp in Sources */,
+				1416E266AE77D5893A711039 /* ChatTrajectory.cpp in Sources */,
+				F47F07FC393D2B274411FC52 /* AgentEvalRunner.cpp in Sources */,
+				2E7FE6144D5957CA55D29491 /* TlsTransportMac.mm in Sources */,
+				EB82433834C7DB08EBE21077 /* Base64.cpp in Sources */,
+				212428ADD46FF93773C6508A /* Json.cpp in Sources */,
+				D62D6103970CA2D819BC97D5 /* SchemaGen.cpp in Sources */,
+				CBF1AB13A0D38C46DED334FB /* SphereGeometry.cpp in Sources */,
+				33BB2A6D2E9298ABA21F61B0 /* SphericalUVGenerator.cpp in Sources */,
+				5370E9761C3058C1FF024EBC /* TorusGeometry.cpp in Sources */,
+				FBDC32B1EA97C48B75BCAB43 /* AOVBuffers.cpp in Sources */,
+				22028C54EEB2D0D9AACC64BC /* OIDNDenoiser.cpp in Sources */,
+				35CFBEA8F3B2C1B9B6EF5579 /* FrameStoreColorSpace.cpp in Sources */,
+				CBA1EBED13B552EF149B57CF /* TargetFormat.cpp in Sources */,
+				693273154777A851E62FBE44 /* ViewTransform.cpp in Sources */,
+				CBF1838F3F99F9E54175BBD8 /* FrameStore.cpp in Sources */,
+				71914C6442F1C7C84E6DC7EF /* FrameEncoders.cpp in Sources */,
+				C054E69C1BEE9D2114791E88 /* FrameSink.cpp in Sources */,
+				CD779428A88947179DD0C0DA /* FileEncoderObserver.cpp in Sources */,
+				936C0CD3780633E92C750DBB /* ViewportFrameStore.cpp in Sources */,
+				43D4ADAB0E72164C6F16CFF1 /* TriangleMeshGeometry.cpp in Sources */,
+				B154E9F7CD70E19C2F8BC936 /* TriangleMeshGeometryIndexed.cpp in Sources */,
+				CE7A4B1E1150920463CCD5C7 /* TriangleMeshLoader3DS.cpp in Sources */,
+				5C4888934C0F609E580D7727 /* GLTFSceneImporter.cpp in Sources */,
+				122A83B8EE7274DB40F47EC9 /* HairFileLoader.cpp in Sources */,
+				0020F3A0B6D09BF4538F76B2 /* TriangleMeshLoaderPLY.cpp in Sources */,
+				124602C10762F4A808106E69 /* TriangleMeshLoaderPSurf.cpp in Sources */,
+				3D9841860297AF394BD38074 /* TriangleMeshLoaderRAW.cpp in Sources */,
+				10611B657BD27355211296F3 /* TriangleMeshLoaderRAW2.cpp in Sources */,
+				805448D857745EBD49D6254B /* RayBezierPatchIntersection.cpp in Sources */,
+				A5A0C7B31B632D4EBDDDEF19 /* RayBilinearPatchIntersection.cpp in Sources */,
+				7BC770065C67556518A21A5F /* RayBoxIntersection.cpp in Sources */,
+				8AADBD64030CCEF19A871B87 /* RayCylinderIntersection.cpp in Sources */,
+				B0C7696DB5EC8F853138EDB2 /* ManifoldSolver.cpp in Sources */,
+				1351053C173D8A2F4DADB89C /* SMSPhotonMap.cpp in Sources */,
+				B1E652996AD3C7B414005BC4 /* RayPlaneIntersection.cpp in Sources */,
+				BB981D808707908A2963D97E /* RayQuadricIntersection.cpp in Sources */,
+				F4B95BDA6832AD6189DC2E80 /* RaySphereIntersection.cpp in Sources */,
+				698D3FFE4BC700F12F04D531 /* RayTorusIntersection.cpp in Sources */,
+				C29D13F0A94BDF00806B5CB9 /* RayTriangleIntersection.cpp in Sources */,
+				EEAA45955C521052652711FA /* BSSRDFSampling.cpp in Sources */,
+				11FCCF52AF7A497F1CF19FB0 /* LightBVH.cpp in Sources */,
+				281A8FA831B7ED306C11EB62 /* MLTSpectralRasterizer.cpp in Sources */,
+				72E4FD76C923B0D0D1B62C6F /* Job.cpp in Sources */,
+				8176EF01409FF15527A4EE5F /* DirectionalLight.cpp in Sources */,
+				58D4B4FE7BEB593035240243 /* PointLight.cpp in Sources */,
+				786C4DD81632AFA95749F2AD /* SpotLight.cpp in Sources */,
+				9537889CD9F427CDEBC4D13F /* PathGuidingField.cpp in Sources */,
+				5E7FFC8C3D8929244016F412 /* LightManager.cpp in Sources */,
+				F0112ED02243CCD3ADB90F51 /* VCMIntegrator.cpp in Sources */,
+				5DA72855B774400E632B0591 /* VCMRecurrence.cpp in Sources */,
+				62C554F0938C36613BE399CE /* ThreadLocalSplatBuffer.cpp in Sources */,
+				0F72C95B8E3AF7EF739B737A /* AdaptiveTileSizer.cpp in Sources */,
+				5D8FED2809ECE5365A48E8FE /* VCMLightVertexStore.cpp in Sources */,
+				577F500AEE73222D03C848AB /* VCMPathOps.cpp in Sources */,
+				83B409515D4A9364A53FF96C /* ObjectManager.cpp in Sources */,
+				D1B65A1D9FE145DACA5322BB /* AshikminShirleyAnisotropicPhongBRDF.cpp in Sources */,
+				D34BBF5888A8C39D1E955C67 /* AshikminShirleyAnisotropicPhongSPF.cpp in Sources */,
+				25717EBEB66516D87C871EFD /* BioSpecSkinSPF.cpp in Sources */,
+				64702C960B6BB5FE7E203DF4 /* BioSpecSkinSPFHelpers.cpp in Sources */,
+				CB1E63A77651C1B30ADEC075 /* CompositeSPF.cpp in Sources */,
+				240F83CF685FCB059EA706D5 /* CookTorranceBRDF.cpp in Sources */,
+				36620A3A8604BCAB63D0C381 /* CookTorranceSPF.cpp in Sources */,
+				B1A5196426ED7468093DAFED /* FilteredFilm.cpp in Sources */,
+				172E08C7DCC2CE8A90A3BB28 /* DielectricSPF.cpp in Sources */,
+				69388C9EE9F057FFA9304690 /* RoughDielectricMaterial.cpp in Sources */,
+				31F8DEDDF9563C84D9DB4B01 /* RoughDielectricEnergy.cpp in Sources */,
+				63C24D5451AD74807CE0012F /* GenericHumanTissueSPF.cpp in Sources */,
+				7A36362345C002840062D93C /* IsotropicPhongBRDF.cpp in Sources */,
+				3B88B1F455D23DC65EEC08C2 /* IsotropicPhongSPF.cpp in Sources */,
+				99B299615CCECF40ED4689F6 /* LambertianBRDF.cpp in Sources */,
+				B3B478E62259BBE177045408 /* LambertianEmitter.cpp in Sources */,
+				7321D113106E993DA5350555 /* LambertianSPF.cpp in Sources */,
+				CF2D7747E415071483C8B82B /* OrenNayarBRDF.cpp in Sources */,
+				8CA49A09A981E0FCF2995540 /* OrenNayarSPF.cpp in Sources */,
+				C55FDC72F7184684342D95B9 /* PerfectReflectorSPF.cpp in Sources */,
+				409B7631192721D6A4E0D85A /* PerfectRefractorSPF.cpp in Sources */,
+				42A4BFCD8A67F80640C10C9A /* PhongEmitter.cpp in Sources */,
+				BB3348A5DBBB2A772737B1B3 /* PolishedBRDF.cpp in Sources */,
+				33BAFE63AE3958222362C66F /* PolishedSPF.cpp in Sources */,
+				AB367057D24469A884C8957A /* ScatteredRayContainer.cpp in Sources */,
+				FFD0C8A61258C5D43CF45065 /* SchlickBRDF.cpp in Sources */,
+				F4F54970EB22E61D61240E6C /* SchlickSPF.cpp in Sources */,
+				76F0FF534612B8C2B24D780E /* TranslucentSPF.cpp in Sources */,
+				B26281CC5278294B9FBE447D /* WardAnisotropicEllipticalGaussianBRDF.cpp in Sources */,
+				DCF379520A6512B6CBA4367E /* SplatFilm.cpp in Sources */,
+				78A03338363D0105E5449FD7 /* Film.cpp in Sources */,
+				CE5F2F3973A173BC9F4693A9 /* WardAnisotropicEllipticalGaussianSPF.cpp in Sources */,
+				FD9561BA7B2760DF37E9C2A3 /* ThreadPool.cpp in Sources */,
+				979C4869811CCD12851644D9 /* CPUTopology.cpp in Sources */,
+				A4B77566F45FA64A4552CF4C /* RenderETAEstimator.cpp in Sources */,
+				51B96C6A6136B017C0769AE6 /* WardIsotropicGaussianBRDF.cpp in Sources */,
+				A6DC3ABE758F1EBD64858E44 /* WardIsotropicGaussianSPF.cpp in Sources */,
+				AD2004D0D0EF19D3DCB1AB6A /* GlintModifier.cpp in Sources */,
+				838B8D88D495DE30DCF31D73 /* ReliefModifier.cpp in Sources */,
+				8BA2B43EA68D33ACE8999457 /* ModifierStack.cpp in Sources */,
+				57BBD1413D5698B90B4A6AD5 /* NormalMap.cpp in Sources */,
+				F466C2DE3DBC5EF4F5533F0C /* InterpolatedNoise.cpp in Sources */,
+				55942EB61949C8B46D5B3E64 /* PerlinNoise1D.cpp in Sources */,
+				8AA46AA3612E5C4EB2F5CD53 /* PerlinNoise2D.cpp in Sources */,
+				39EB408E3350CF7BEC746C7F /* PerlinNoise3D.cpp in Sources */,
+				55ED3DF4BBD430F555DD93DB /* CSGObject.cpp in Sources */,
+				E7ACE373C238B4022576700D /* Object.cpp in Sources */,
+				EB6EA933E7EF4CF0FF2AA0BB /* SnapshotLeafClone.cpp in Sources */,
+				3CD7284B154C5DE888603E84 /* Options.cpp in Sources */,
+				79FFB9302F38870C3F877E48 /* BlackBodyPainter.cpp in Sources */,
+				4DFB536BD30072D58472609C /* EnvironmentSampler.cpp in Sources */,
+				459711F97D5A3EDC2A596FAB /* CheckerPainter.cpp in Sources */,
+				11DFF805843FE7B83487882C /* IridescentPainter.cpp in Sources */,
+				D501A30D13BDC326074F7748 /* LinesPainter.cpp in Sources */,
+				C9BC7C526C4D59298944C232 /* MandelbrotPainter.cpp in Sources */,
+				B2B09FFA3F4F9AC7E553C9D2 /* Painter.cpp in Sources */,
+				8868B00A59774AEE9A8F565F /* Perlin2DPainter.cpp in Sources */,
+				F5B5CE6C9C7EFD0ACA02B069 /* ControlledSmoothness2DPainter.cpp in Sources */,
+				B5DA323173034EE416C40BD0 /* CompositeFunction2DPainter.cpp in Sources */,
+				158CB9E153A7391233008F91 /* PolynomialFunction2DPainter.cpp in Sources */,
+				F8CB364279D94978FD2CCCF9 /* GerstnerWavePainter.cpp in Sources */,
+				B97F9335EEEDCD3962F8A86A /* ExpressionPainter.cpp in Sources */,
+				DEB1E871E02BF0AFEC65230F /* ExpressionOslBuiltins.cpp in Sources */,
+				6976E13E03C7BA4B6D31002F /* RampPainter.cpp in Sources */,
+				47B8BA2698447357D9DE163F /* MappingPainter.cpp in Sources */,
+				41958140794898B5E69667B9 /* StochasticTilePainter.cpp in Sources */,
+				7D67C6BA5A1F2B64804FADC1 /* ScatterPainter.cpp in Sources */,
+				B3DD769205407425C3CD7D72 /* Perlin3DPainter.cpp in Sources */,
+				B86975AAF1DD4D956A5F8738 /* SpectralColorPainter.cpp in Sources */,
+				C48673EB18F9F3C0B5E494F9 /* TexturePainter.cpp in Sources */,
+				B61E7B91FA79FBBEE79ADA26 /* CompositeEmitter.cpp in Sources */,
+				95471AAC473CC12110DA915E /* Voronoi2DPainter.cpp in Sources */,
+				F224C4ECFCB8E5B4B63F63AA /* Voronoi3DPainter.cpp in Sources */,
+				1D2F21DB244663CF9A8FC6F0 /* SubSurfaceScatteringBSDF.cpp in Sources */,
+				5392F778A6D9E9C74C2C543F /* SubSurfaceScatteringSPF.cpp in Sources */,
+				103D69B00933F10A35095C39 /* AsciiCommandParser.cpp in Sources */,
+				4D998BBE4A47863F520F34BA /* ChunkParserRegistry.cpp in Sources */,
+				CCEF7AE722C847B5119AA517 /* AsciiScriptParser.cpp in Sources */,
+				9DD7100EEC2A7D6FEB3ADA00 /* SceneGrammar.cpp in Sources */,
+				9CF1DD1091E85F2137DC7D8F /* CompletionContext.cpp in Sources */,
+				2FAA8F4F2159B899D7AA687E /* NameIndex.cpp in Sources */,
+				79F00B33F2AEA1C724760B3E /* SuggestionEngine.cpp in Sources */,
+				3A55A39A5F3A273FE2F50ABF /* EditHistory.cpp in Sources */,
+				5B2DB8EA630452E4BC4E3263 /* CancellableProgressCallback.cpp in Sources */,
+				B9138345EC5C3DF3EFBC8027 /* SceneEditor.cpp in Sources */,
+				A9C40D1C4928ACADEC68143E /* SceneEditController.cpp in Sources */,
+				3A7D47DC7976F91289E0C83F /* LiveSimulation.cpp in Sources */,
+				3D0D39F307CFAF67E3F6705F /* CameraIntrospection.cpp in Sources */,
+				EE6CB631D4291580663AB22D /* ObjectIntrospection.cpp in Sources */,
+				1FEFB63D1406ACFD3C777CAC /* LightIntrospection.cpp in Sources */,
+				5F3D90A450B754E59590A7B0 /* RasterizerIntrospection.cpp in Sources */,
+				6C3111B5208D0591165048D0 /* ChunkDescriptorRegistry.cpp in Sources */,
+				6B375C29724AB0CE5028F5BF /* TransformSnapshot.cpp in Sources */,
+				392931423EB38372A1E82814 /* DirtyTracker.cpp in Sources */,
+				C5F086F951C6547BBA6F81FA /* SaveEngine.cpp in Sources */,
+				AA08CB394CFA7D83D7AC00A0 /* FilmIntrospection.cpp in Sources */,
+				E9E259FCBB998B8F2100ABCC /* MaterialIntrospection.cpp in Sources */,
+				66ACF5B9513AFEF343B84080 /* MediaIntrospection.cpp in Sources */,
+				90DB363DC7E354BE3C47DA81 /* CstIntrospection.cpp in Sources */,
+				67763E265C4C63A60E10108F /* PainterIntrospection.cpp in Sources */,
+				3C4770519EB4C999B8C3BA1A /* ReferenceGraph.cpp in Sources */,
+				1295112527E8B21D07696B33 /* ConnectionLegality.cpp in Sources */,
+				5E9DB8A58FBEFF214D4561BB /* OwnershipClosure.cpp in Sources */,
+				ED7259704EABBE07C72B4683 /* GraphLayout.cpp in Sources */,
+				7DF2CF6B17B4FEF2AEC7C701 /* GraphLayoutSidecar.cpp in Sources */,
+				6062AD266CE18663883BEA2E /* PainterPreview.cpp in Sources */,
+				DCEC5A6C774502991AF530E5 /* MaterialPreview.cpp in Sources */,
+				67BF944DBBC5EC2F0DD488B2 /* EntityTemplates.cpp in Sources */,
+				3D37BA5818BF01EA8D8C5830 /* DisplayTransformWriter.cpp in Sources */,
+				5D1BB62C6BBD7B8FBA1F1927 /* InteractivePelRasterizer.cpp in Sources */,
+				965A988973F236D54AC79026 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
+				14E3F585741BC4607830D72C /* pch.cpp in Sources */,
+				A53ADBDDC7482E33A0A97CE2 /* CausticPelPhotonMap.cpp in Sources */,
+				BA049E65E128B6E81D31F3F3 /* CausticPelPhotonTracer.cpp in Sources */,
+				5C1D925750371F8AD23210AF /* CausticSpectralPhotonMap.cpp in Sources */,
+				BABB2CBB7B24B3CC8E1B6271 /* CausticSpectralPhotonTracer.cpp in Sources */,
+				16979394AC53985C41AD2A33 /* GlobalPelPhotonMap.cpp in Sources */,
+				BCB4544FC1F1E678C89E8C56 /* GlobalPelPhotonTracer.cpp in Sources */,
+				28A31BC255D01ECC46623869 /* GlobalSpectralPhotonMap.cpp in Sources */,
+				218C04F5A9B1A86A4363FFB3 /* GlobalSpectralPhotonTracer.cpp in Sources */,
+				5FD34B0610EE814CBF9464F9 /* IrradianceCache.cpp in Sources */,
+				1186F89DB0F84F9D80294CBD /* ShadowPhotonMap.cpp in Sources */,
+				3DCC0EA47E7C81C66BE20038 /* BDPTIntegrator.cpp in Sources */,
+				7DAB5CA147F860BB00B57A5A /* HomogeneousMedium.cpp in Sources */,
+				DB0FEF3BAE904ED0CA18072C /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
+				87D61CAB8BCCF567BCADEF11 /* ShadowPhotonTracer.cpp in Sources */,
+				5EA6B6E57D78835FAEBCA1B7 /* TranslucentPelPhotonMap.cpp in Sources */,
+				A857D47BBD317B77FBC98036 /* CameraUtilities.cpp in Sources */,
+				9930CAFD8C79EB125AF01571 /* TranslucentPelPhotonTracer.cpp in Sources */,
+				34522621D179358B44A2EBA3 /* HDRReader.cpp in Sources */,
+				878B62D1AE35EFDF1761497E /* HDRWriter.cpp in Sources */,
+				7F03CBC344A3374EE8649BFD /* GGXBRDF.cpp in Sources */,
+				7E3204CA4A6A7B1BD2665992 /* GGXSPF.cpp in Sources */,
+				F587C21975FAD51CDE032CB5 /* HairBSDF.cpp in Sources */,
+				E68C3620FB4C8924B5999FD3 /* CoatedBRDF.cpp in Sources */,
+				B8393566C0A0851B54CE40C6 /* CoatedSPF.cpp in Sources */,
+				1918770797694F4D9B2C6310 /* HairMedullaProfile.cpp in Sources */,
+				AA99242DDEFAF1FA41C20BBA /* HairMedullaProfile_LUTData.cpp in Sources */,
+				0EFF3BDBF3B48AC18E4063C7 /* HairGenerator.cpp in Sources */,
+				146D1038A47C6D100B19D39A /* HairGeometry.cpp in Sources */,
+				0FAB1A5F1504DA1F61E7A251 /* SheenBRDF.cpp in Sources */,
+				41D8752EE4C3BA563D49C524 /* SheenSPF.cpp in Sources */,
+				3BBB15498AA370770C43146C /* SheenBRDF.h in Sources */,
+				8BE4AE7AC92584030F28A8B7 /* SheenSPF.h in Sources */,
+				1DF7C28FC18377BFD045CA30 /* SheenMaterial.h in Sources */,
+				4A2ECD41451ABDB29F6B9E1B /* SheenDirectionalAlbedo.cpp in Sources */,
+				6849EB87E85D0CB2DC36517D /* SheenDirectionalAlbedo_LUTData.cpp in Sources */,
+				23239355FAB9488F026D25B7 /* SchlickDirectionalAlbedo_LUTData.cpp in Sources */,
+				201FB89F9F79326E25A98C8F /* FabricBRDF.cpp in Sources */,
+				6684A3A7DED3AF40FD177A72 /* FabricSPF.cpp in Sources */,
+				BFE368CD8E8850970079E70A /* WeaveBRDF.cpp in Sources */,
+				A8F982540C1D828377BBD74E /* WeaveSPF.cpp in Sources */,
+				30652117A224F3B49887080E /* JPEGReader.cpp in Sources */,
+				14A2A6022B6584204A92F2D9 /* stb_image.cpp in Sources */,
+				F41E3B644A0E884BD360FAA1 /* cgltf.cpp in Sources */,
+				37A66232949BFC3C4C13BFFA /* PNGReader.cpp in Sources */,
+				9454875E2AF0900269D6E001 /* PNGWriter.cpp in Sources */,
+				395C58E3DAD6D7402862BC26 /* PPMWriter.cpp in Sources */,
+				29362134E11D87B86E02DB02 /* RGBEAWriter.cpp in Sources */,
+				481BDA648904312A56254D44 /* TGAReader.cpp in Sources */,
+				EC7DB7754EBFBD10AAAF45F8 /* TGAWriter.cpp in Sources */,
+				22AC5B310E96B31A3853476D /* TIFFReader.cpp in Sources */,
+				FFFBD60119FDD5201894924C /* TIFFWriter.cpp in Sources */,
+				56425D1FC4C56B847200A53B /* IMaterial.cpp in Sources */,
+				2424AF939A1E4089C4DB529A /* NullBoundaryMaterial.cpp in Sources */,
+				16A76A6D3C373B0318916EDC /* ContinuationClosure.cpp in Sources */,
+				4B6CE9824A059B61C33AAF3F /* FileRasterizerOutput.cpp in Sources */,
+				AFCC236EBE664CC1206B6EBE /* MediumTransport.cpp in Sources */,
+				B9CC8B19F7989A382C8CDABE /* LuminaryManager.cpp in Sources */,
+				92FDA813F52AD84C80CA8BAF /* PixelBasedPelRasterizer.cpp in Sources */,
+				E72BA6C0BE515ED87E8B3EF1 /* PixelBasedRasterizerHelper.cpp in Sources */,
+				F2775EB051CAE780000A0E51 /* TimeIndexedMotionBlur.cpp in Sources */,
+				DC2DBCF2785C954003EEC970 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,
+				4CAC4CD3BA4824193E92A0D9 /* Rasterizer.cpp in Sources */,
+				FE9AB10B5B4636DC8FC80368 /* RayCaster.cpp in Sources */,
+				DB7FAAA86B58910FD2279953 /* RISE_API.cpp in Sources */,
+				83E5C405D5A3A790D6164BEA /* JitteredSampling1D.cpp in Sources */,
+				069E0DFA6BD0206423840D83 /* MultiJitteredSampling2D.cpp in Sources */,
+				2C3AAAED426E204055AD6D30 /* NRooksSampling2D.cpp in Sources */,
+				DDFB19359E25EF9C4BE67000 /* PoissonDiskSampling2D.cpp in Sources */,
+				FE9D1C6BC425AE0F33D2F15B /* RandomSampling2D.cpp in Sources */,
+				B2EAE64DBC9B197A909E534B /* SincPixelFilter.cpp in Sources */,
+				08A23C70E276F98D0D33566F /* DonnerJensenSkinDiffusionProfile.cpp in Sources */,
+				B88D99B66E2E37BC8BBAD364 /* StratifiedSampling2D.cpp in Sources */,
+				58D4A4CE97CEFFC42D6D6659 /* UniformSampling1D.cpp in Sources */,
+				9172E6F6337C6DEA6EDFF9CF /* UniformSampling2D.cpp in Sources */,
+				5E609A0AC9C94AFCAFF6DFE9 /* Scene.cpp in Sources */,
+				40382BB36160BF1C2CF277C0 /* DirectVolumeRenderingShader.cpp in Sources */,
+				62259265EE5376401224A9C4 /* BDPTPelRasterizer.cpp in Sources */,
+				75DDAE75C3456145F6C877EA /* Color.cpp in Sources */,
+				126C39A8500B83C2D3A82D2B /* ColorUtils.cpp in Sources */,
+				A7D0DE0CBFA47BBEDEC28593 /* RGBToSpectrumTable.cpp in Sources */,
+				4CF04B4D529426EEAB838E05 /* RGBToSpectrumTable_LUTData.cpp in Sources */,
+				B498A21A2BA7CCFB33D2B7BD /* RGBSpectra.cpp in Sources */,
+				53DFD8BF8A352766943A232C /* HosekWilkieSkyModel.cpp in Sources */,
+				04E79DFEF60F165FA4173E8D /* HosekWilkieSpectralRadianceMap.cpp in Sources */,
+				C3F60B36F47669467C7544A7 /* ClientSocketCommunicator.cpp in Sources */,
+				EFF368E57C20E267FD2E8B79 /* ServerSocketCommunicator.cpp in Sources */,
+				194B0A923BF90AA8A5C4590A /* SocketCommunications.cpp in Sources */,
+				9571FB67AA29237166CC5B51 /* SocketCommunicator.cpp in Sources */,
+				7F2F339B36B01A0FB1D0C0B7 /* DiskBuffer.cpp in Sources */,
+				45471B3D41CACEE2877FBD6B /* DiskFileReadBuffer.cpp in Sources */,
+				299C0FD245D2BC041A711CD9 /* DiskFileWriteBuffer.cpp in Sources */,
+				3E3A459DF950E6B54A4F355B /* RenderParallelScope.cpp in Sources */,
+				85D3BA73D8BDB46CF59ED13D /* OptimalMISAccumulator.cpp in Sources */,
+				D2FCA36969FD0A50AE0AB147 /* MLTRasterizer.cpp in Sources */,
+				898C7665FFB4A7C73E70D624 /* GeometricUtilities.cpp in Sources */,
+				F4D8F88782B03FE040B3646F /* CurlNoise3DPainter.cpp in Sources */,
+				D69FF5EA6CE0D0519FCB523F /* Worley3DPainter.cpp in Sources */,
+				7F2C6835F92EDB5B47304940 /* Wavelet3DPainter.cpp in Sources */,
+				BD53C05C7080031C31FEDCEB /* PreviewScheduler.cpp in Sources */,
+				13D0B486E443C022FBDC1040 /* PerlinWorley3DPainter.cpp in Sources */,
+				A6816C63DA046E732C61151A /* DomainWarp3DPainter.cpp in Sources */,
+				592C3023394EA95CEF212F69 /* Simplex3DPainter.cpp in Sources */,
+				6D7477753C64ED70B46F7676 /* Turbulence3DPainter.cpp in Sources */,
+				9BF0E52A07EA074BC37B7786 /* SDF3DPainter.cpp in Sources */,
+				BB349C6AD93A547908A28780 /* Gabor3DPainter.cpp in Sources */,
+				910AE9A36BFE1AB5BFDDE9EA /* ReactionDiffusion3DPainter.cpp in Sources */,
+				476C1A0C9E4596C43066EE82 /* Log.cpp in Sources */,
+				5857E09822CD52F4445E49F9 /* MemoryTracker.cpp in Sources */,
+				065054950467CD40A2690F70 /* StreamPrinter.cpp in Sources */,
+				879A3BEF7B8768AB1CE82401 /* Math3D.cpp in Sources */,
+				BF051EE880DE24DC15A194E9 /* MemoryBuffer.cpp in Sources */,
+				C8EB801F45C7B805528C8C43 /* MersenneTwister.cpp in Sources */,
+				05332A7A64C2AABFA9480713 /* Optics.cpp in Sources */,
+				E7EC723C6CE01D62776C2804 /* PlanckRadiance.cpp in Sources */,
+				F83A2CA1C44E63EEA7F65A1B /* RISECBOR64.cpp in Sources */,
+				ACFA4665D0A43AED5369EC5A /* FireOptics.cpp in Sources */,
+				DA5AEABB3CEA2B62F4FE4D80 /* FireSimulationRecords.cpp in Sources */,
+				3821FB7EB0178870CE495821 /* FireProductionTables.cpp in Sources */,
+				840F6D9D4238CE4DCFAFF883 /* FireProductionComputeMac.mm in Sources */,
+				B823CCA92963B7B5BD68EBBE /* FireProductionAdvection.cpp in Sources */,
+				8F97FF2CACFE3D6E67C460DF /* FireProductionProjection.cpp in Sources */,
+				10BCC45A757615DF7A3B79AA /* FireProductionProjectionMac.mm in Sources */,
+				E257956F661FE86EF90D47BB /* FireProductionTransport.cpp in Sources */,
+				B4350BD0208E73EA3EFC639D /* FireProductionSource.cpp in Sources */,
+				263B45282E9E296D5A9B7E85 /* FireProductionForce.cpp in Sources */,
+				0ADDAE0219F59BC7738C404E /* FireProductionForceMac.mm in Sources */,
+				989D65F19A302E69464C9C35 /* FireProductionAdvectionMac.mm in Sources */,
+				38B8EBEA7B6F6C12A0FF3139 /* FireSequence.cpp in Sources */,
+				015EEBC2869A71EEC8078078 /* SimulationGrid.cpp in Sources */,
+				56A0F84260C1C96B2FF5A0E8 /* SimulationCache.cpp in Sources */,
+				1D159EB2BED54E7879F4D898 /* FireRunCheckpoint.cpp in Sources */,
+				EB363B99D8182915FA67D431 /* FireRunFrames.cpp in Sources */,
+				281F924C2A9FD5231AD2EF9E /* FireRunDriver.cpp in Sources */,
+				D9099A356A92E6622F1B9D14 /* FireRun.cpp in Sources */,
+				EDB1CC540DE7EC57AEA7C10E /* FireSolver.cpp in Sources */,
+				44583F1F84811061DD2CAFAF /* FireParameterSchema.cpp in Sources */,
+				2317A37943195D41846A84E4 /* ClothMaterial.cpp in Sources */,
+				5CF655A5501AA59F7EFD0ACF /* ClothLinearAlgebra.cpp in Sources */,
+				7B353CC14DCDBBD08A01CB6B /* ClothModel.cpp in Sources */,
+				A1D88EA9C505A77D325DCADD /* ClothParallel.cpp in Sources */,
+				74CA94F57900CCE8B810AA84 /* ClothContact.cpp in Sources */,
+				36B1112386E9117D90743EE9 /* ClothValidation.cpp in Sources */,
+				A7F81EC74DC86974C94FA099 /* ClothSolver.cpp in Sources */,
+				682A8981CA936BD228591954 /* ClothParameterSchema.cpp in Sources */,
+				4DF145F3D2082F9FD8B5B42D /* RigidParameterSchema.cpp in Sources */,
+				76AA5F62A7564050E5D6B36A /* ClothRigidCoupling.cpp in Sources */,
+				B21B0AD18679A19A27C13199 /* SimulationPortAdapters.cpp in Sources */,
+				760F05E9535895130BC12EA0 /* SimulationGroup.cpp in Sources */,
+				544BBFE7714437F89AE1BE09 /* SimulationTransform.cpp in Sources */,
+				C77ADDC01ED4C53A14F8EE08 /* RigidBody.cpp in Sources */,
+				48D7B398B418453D648D01E9 /* RigidSolver.cpp in Sources */,
+				E59A98624FF38C625E0DCAF6 /* SimulationMesh.cpp in Sources */,
+				483E9D348D1EF0D54B6CB2E1 /* SimulationField.cpp in Sources */,
+				B4E7D3166F36CA36FB153969 /* SimulatedMeshGeometry.cpp in Sources */,
+				B95CAE83E2D8B5C5FC81925D /* SimulatedMeshSource.cpp in Sources */,
+				6EE65548CCC18F0DD719DB4D /* BuiltinSolvers.cpp in Sources */,
+				133921C0CE2E7BC083B3BE06 /* SceneSimulationWorker.cpp in Sources */,
+				680835874F291AF1DCB29169 /* SimulationBakeManager.cpp in Sources */,
+				C817345B85073ADBDF7D2414 /* SimulationProcess.cpp in Sources */,
+				CA2D3E5E87465B2C3000229E /* SceneInputs.cpp in Sources */,
+				A2FF31879C44C1CA0B294BDF /* SceneSimulation.cpp in Sources */,
+				1590040A4660D349A89E1392 /* SimulationParameterSchema.cpp in Sources */,
+				157A4FC0CB52D745927888D6 /* SimulationTimeline.cpp in Sources */,
+				D689D626D5A8B7396A49A0BA /* SimulationSolver.cpp in Sources */,
+				D3E99C016746D0010D8473B1 /* SimulationHost.cpp in Sources */,
+				EA44E4F078036E59E92746A9 /* SimulationWorker.cpp in Sources */,
+				97F8A41C4042CED41BDD4265 /* FireSequenceCache.cpp in Sources */,
+				80591E499F7CB4D5E16C6F16 /* FireCase.cpp in Sources */,
+				C066B89F7B148DC3FEFC8E2F /* GaussLegendreQuadrature.cpp in Sources */,
+				F2D4FEA9C00DCA9FBC3C783C /* OrthonormalBasis3D.cpp in Sources */,
+				A6FEBD02238A3390897A434C /* ProbabilityDensityFunction.cpp in Sources */,
+				D187C6E738DE06BF16550692 /* ProceduralNoiseCore.cpp in Sources */,
+				B7D090D0915A3561D336749F /* OslNoise.cpp in Sources */,
+				243BC692987593166BADEC8F /* Reference.cpp in Sources */,
+				80879745F61382BE42B85777 /* RTime.cpp in Sources */,
+				C21DA7083B84A88D403BF77D /* ThreadsPTHREADs.cpp in Sources */,
+				505CE124F4C36D1BB2E37C15 /* Transformable.cpp in Sources */,
+				BBF5CA765B7025ACDD5DFBFF /* LightSampler.cpp in Sources */,
+				F3CDD54713DE55BFBBAD9461 /* StandardShader.cpp in Sources */,
+				FFBC7D2766ECB16D087A5D6D /* Primes.cpp in Sources */,
+				A96F3FE3EF6679FA19D49DC5 /* HaltonPointsSampling2D.cpp in Sources */,
+				E170882E4DBEF17BD817D9F4 /* AdvancedShader.cpp in Sources */,
+				397A8E991DB1CAF552AB711D /* MultipoleDiffusion.cpp in Sources */,
+				B503644E4E1B5CAC024EA862 /* AdaptiveDetectorSphere.cpp in Sources */,
+				D1D609EB24CF1E04E6F0D787 /* CircularDiskDetector.cpp in Sources */,
+				A5BB5FB171F917EB18A3688F /* PathTracingPelRasterizer.cpp in Sources */,
+				71A23383CC4291DF3ACB57B6 /* AutoRasterizer.cpp in Sources */,
+				6F697EBB939E0A5BD717EB32 /* PathTracingSpectralRasterizer.cpp in Sources */,
+				F58343367D6AF4F34CF670C1 /* DetectorSphere.cpp in Sources */,
+				D1C1F03CA531287B9A430053 /* IsotropicRGBDetectorSphere.cpp in Sources */,
+				19D1BF3C611D4C215159E10D /* ReactionDiffusion3D.cpp in Sources */,
+				9AAA8AE3F4B99544C78F6EDA /* PerlinWorleyNoise3D.cpp in Sources */,
+				F2B028F1B1796C74745287C4 /* GaborNoise3D.cpp in Sources */,
+				897308C59A0A0053322D76B2 /* CurlNoise3D.cpp in Sources */,
+				3B73EB418075FBAD28CA7E73 /* DomainWarpNoise3D.cpp in Sources */,
+				4F2D9F090F5984AC2EC4CE95 /* SDFPrimitives3D.cpp in Sources */,
+				F5D5B5464C8F0047B1B77295 /* TurbulenceNoise3D.cpp in Sources */,
+				EA8202554539672D3DC45E56 /* SimplexNoise3D.cpp in Sources */,
+				A560087FB3E5874E022415D6 /* WaveletNoise3D.cpp in Sources */,
+				56577E199DE991EB9C7A0D2C /* WorleyNoise3D.cpp in Sources */,
+				F5486A1FED16612E3B9CC114 /* DataDrivenBSDF.cpp in Sources */,
+				882772D070FE284BF7EA4C6C /* DataDrivenSPF.cpp in Sources */,
+				8938C7B67D579D3A5814FC01 /* TranslucentBSDF.cpp in Sources */,
+				1891177EA367DE6EC890CB2C /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
+				2092B01E5A18ABA2A8C40E10 /* SSSContainment.cpp in Sources */,
+				DC2C1FF3E55E2DE73FBA0037 /* MediaPathLocator.cpp in Sources */,
+				AB1DFB8E65C0EDE413CC26C1 /* AmbientOcclusionShaderOp.cpp in Sources */,
+				D2710335D6806AA65377D4F6 /* AreaLightShaderOp.cpp in Sources */,
+				4A37CD202E986315BF41C759 /* CausticPelPhotonMapShaderOp.cpp in Sources */,
+				1B2B01CEA8A36777A30D3300 /* CausticSpectralPhotonMapShaderOp.cpp in Sources */,
+				CFE28C125BFDD03DD0EC6D0D /* DirectLightingShaderOp.cpp in Sources */,
+				D5D0461FB7F2A4AB916C3381 /* DistributionTracingShaderOp.cpp in Sources */,
+				C1DB88BD366CAD1038AB8F3A /* EmissionShaderOp.cpp in Sources */,
+				222304DA3E04C72942DD5F2B /* FinalGatherShaderOp.cpp in Sources */,
+				E86DA6CD6CEFBBC584E694BA /* BDPTRasterizerBase.cpp in Sources */,
+				F4F3C699DF0C29AC8682E056 /* BDPTSpectralRasterizer.cpp in Sources */,
+				07B136EEA341CE9947BB187D /* GlobalPelPhotonMapShaderOp.cpp in Sources */,
+				F90F78E8E61060F17D187D7F /* GlobalSpectralPhotonMapShaderOp.cpp in Sources */,
+				003B228875A929AD5E3BF57C /* PathTracingShaderOp.cpp in Sources */,
+				C841C8755A97338526AB7C26 /* SMSShaderOp.cpp in Sources */,
+				A9B0303E8A88A8DE587D2EB1 /* ReflectionShaderOp.cpp in Sources */,
+				F13C94F1084CA875F45BF7B2 /* RefractionShaderOp.cpp in Sources */,
+				B460AD6A6F740DDF5F216F09 /* ShadowPhotonMapShaderOp.cpp in Sources */,
+				A9E2E2BFE828F7CDDCB2BFB8 /* PointSetOctree.cpp in Sources */,
+				09337F7DFAECA814687C657A /* SubSurfaceScatteringShaderOp.cpp in Sources */,
+				676F110C4EEDA1F3FAF84734 /* CompletePathGuide.cpp in Sources */,
+				DBDA9380740D997F2603D004 /* TranslucentPelPhotonMapShaderOp.cpp in Sources */,
+				DC480DA31AA2996C49E7936C /* TransparencyShaderOp.cpp in Sources */,
+				2F0F53F143FF92319CBF9FF1 /* AlphaTestShaderOp.cpp in Sources */,
+				4BF3E850FD50E9C9CAADF97D /* CPU_Count.cpp in Sources */,
+				2527C58C05FACA27989FEFBF /* EXRReader.cpp in Sources */,
+				97F2D70AB2C44D5780047B13 /* EXRWriter.cpp in Sources */,
+				79DEEC0B380DD014E5BBDA12 /* PSSMLTSampler.cpp in Sources */,
+				BC46AB19DA843293FF30C99E /* Profiling.cpp in Sources */,
+				C1CAB46A06EBA783D923E4C8 /* rise_sim.cpp in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A4F2FE8FD22D8C0AAE9BD69C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C3D97155B866756813B3CBAD /* rise-sim */;
+			targetProxy = 7CB3044E221441CC11320EE6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		6DBFAA1909C4D18F0048A09D /* Development */ = {
@@ -8607,6 +9696,355 @@
 			};
 			name = Opto;
 		};
+		92E112D5E66F83B2AA550E13 /* Development */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = off;
+				RISE_OPTIMIZATION_MODE = disabled;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				DEPLOYMENT_LOCATION = NO;
+				SKIP_INSTALL = YES;
+				RISE_OPENVDB_PREFIX = /opt/homebrew/opt/openvdb;
+				RISE_TBB_PREFIX = /opt/homebrew/opt/tbb;
+				RISE_BLOSC_PREFIX = /opt/homebrew/opt/c-blosc;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUGGING_SYMBOLS = YES;
+				FRAMEWORK_SEARCH_PATHS = "";
+				GCC_ALTIVEC_EXTENSIONS = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_ENABLE_TRIGRAPHS = NO;
+				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
+				GCC_MODEL_CPU = G4;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PRECOMPILE_PREFIX_HEADER = YES;
+				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
+				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
+				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
+				GCC_WARN_UNKNOWN_PRAGMAS = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"$(RISE_OPENVDB_PREFIX)/lib",
+					"$(RISE_TBB_PREFIX)/lib",
+					"$(RISE_BLOSC_PREFIX)/lib",
+				);
+				OPTIMIZATION_CFLAGS = "-O0";
+				OTHER_CPLUSPLUSFLAGS = (
+					"-fno-finite-math-only",
+					"-DCOLORSPACE_RGB",
+					"-DMERSENNE53",
+					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
+					"-DRISE_ENABLE_OPENVDB",
+					"-isystem",
+					"$(RISE_OPENVDB_PREFIX)/include",
+				);
+				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+					"-lopenvdb",
+					"-ltbb",
+					"-lblosc",
+				);
+				PRODUCT_NAME = "rise-sim";
+				WARNING_CFLAGS = (
+					"-Wmost",
+					"-Wno-four-char-constants",
+					"-Wno-unknown-pragmas",
+				);
+				ZERO_LINK = YES;
+			};
+			name = Development;
+		};
+		EB98243365081DAB4F66EE19 /* Deployment */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				DEPLOYMENT_LOCATION = NO;
+				SKIP_INSTALL = YES;
+				RISE_OPENVDB_PREFIX = /opt/homebrew/opt/openvdb;
+				RISE_TBB_PREFIX = /opt/homebrew/opt/tbb;
+				RISE_BLOSC_PREFIX = /opt/homebrew/opt/c-blosc;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				COPY_PHASE_STRIP = YES;
+				DEAD_CODE_STRIPPING = YES;
+				FRAMEWORK_SEARCH_PATHS = "";
+				GCC_ALTIVEC_EXTENSIONS = YES;
+				GCC_ENABLE_TRIGRAPHS = NO;
+				GCC_GENERATE_DEBUGGING_SYMBOLS = NO;
+				GCC_MODEL_CPU = G4;
+				GCC_OPTIMIZATION_LEVEL = 3;
+				GCC_PRECOMPILE_PREFIX_HEADER = YES;
+				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
+				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
+				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
+				GCC_WARN_UNKNOWN_PRAGMAS = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"$(RISE_OPENVDB_PREFIX)/lib",
+					"$(RISE_TBB_PREFIX)/lib",
+					"$(RISE_BLOSC_PREFIX)/lib",
+				);
+				LLVM_LTO = YES_THIN;
+				OTHER_CPLUSPLUSFLAGS = (
+					"-fno-finite-math-only",
+					"-DCOLORSPACE_RGB",
+					"-DMERSENNE53",
+					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
+					"-DRISE_ENABLE_OPENVDB",
+					"-isystem",
+					"$(RISE_OPENVDB_PREFIX)/include",
+				);
+				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+					"-lopenvdb",
+					"-ltbb",
+					"-lblosc",
+				);
+				PRODUCT_NAME = "rise-sim";
+				WARNING_CFLAGS = (
+					"-Wmost",
+					"-Wno-four-char-constants",
+					"-Wno-unknown-pragmas",
+				);
+				ZERO_LINK = NO;
+			};
+			name = Deployment;
+		};
+		DAE6EDCC81967DD0F11CBEF9 /* Opto */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = fast;
+				RISE_LTO_MODE = full;
+				RISE_OPTIMIZATION_MODE = O3;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				DEPLOYMENT_LOCATION = NO;
+				SKIP_INSTALL = YES;
+				RISE_OPENVDB_PREFIX = /opt/homebrew/opt/openvdb;
+				RISE_TBB_PREFIX = /opt/homebrew/opt/tbb;
+				RISE_BLOSC_PREFIX = /opt/homebrew/opt/c-blosc;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				COPY_PHASE_STRIP = YES;
+				DEAD_CODE_STRIPPING = YES;
+				FRAMEWORK_SEARCH_PATHS = "";
+				GCC_ALTIVEC_EXTENSIONS = YES;
+				GCC_ENABLE_TRIGRAPHS = NO;
+				GCC_GENERATE_DEBUGGING_SYMBOLS = NO;
+				GCC_MODEL_CPU = G4;
+				GCC_OPTIMIZATION_LEVEL = 3;
+				GCC_PRECOMPILE_PREFIX_HEADER = YES;
+				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
+				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
+				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
+				GCC_WARN_UNKNOWN_PRAGMAS = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"$(RISE_OPENVDB_PREFIX)/lib",
+					"$(RISE_TBB_PREFIX)/lib",
+					"$(RISE_BLOSC_PREFIX)/lib",
+				);
+				LLVM_LTO = YES;
+				OTHER_CPLUSPLUSFLAGS = (
+					"-ffast-math",
+					"-fno-finite-math-only",
+					"-DCOLORSPACE_RGB",
+					"-DMERSENNE53",
+					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
+					"-DRISE_ENABLE_OPENVDB",
+					"-isystem",
+					"$(RISE_OPENVDB_PREFIX)/include",
+				);
+				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+					"-lopenvdb",
+					"-ltbb",
+					"-lblosc",
+				);
+				PRODUCT_NAME = "rise-sim";
+				WARNING_CFLAGS = (
+					"-Wmost",
+					"-Wno-four-char-constants",
+					"-Wno-unknown-pragmas",
+				);
+				ZERO_LINK = NO;
+			};
+			name = Opto;
+		};
+		E5834C4A187B573DCDB87DA5 /* Default */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				DEPLOYMENT_LOCATION = NO;
+				SKIP_INSTALL = YES;
+				RISE_OPENVDB_PREFIX = /opt/homebrew/opt/openvdb;
+				RISE_TBB_PREFIX = /opt/homebrew/opt/tbb;
+				RISE_BLOSC_PREFIX = /opt/homebrew/opt/c-blosc;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				DEAD_CODE_STRIPPING = YES;
+				FRAMEWORK_SEARCH_PATHS = "";
+				GCC_ALTIVEC_EXTENSIONS = YES;
+				GCC_ENABLE_TRIGRAPHS = NO;
+				GCC_GENERATE_DEBUGGING_SYMBOLS = NO;
+				GCC_MODEL_CPU = G4;
+				GCC_OPTIMIZATION_LEVEL = 3;
+				GCC_PRECOMPILE_PREFIX_HEADER = YES;
+				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
+				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
+				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
+				GCC_WARN_UNKNOWN_PRAGMAS = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../src/Library",
+					"$(SRCROOT)/../../../extlib/oidn/install/include",
+					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../../extlib/oidn/install/lib",
+					/opt/homebrew/lib,
+					"$(RISE_OPENVDB_PREFIX)/lib",
+					"$(RISE_TBB_PREFIX)/lib",
+					"$(RISE_BLOSC_PREFIX)/lib",
+				);
+				LLVM_LTO = YES_THIN;
+				OTHER_CPLUSPLUSFLAGS = (
+					"-fno-finite-math-only",
+					"-DCOLORSPACE_RGB",
+					"-DMERSENNE53",
+					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
+					"-DRISE_ENABLE_OPENVDB",
+					"-isystem",
+					"$(RISE_OPENVDB_PREFIX)/include",
+				);
+				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+					"-lopenvdb",
+					"-ltbb",
+					"-lblosc",
+				);
+				PRODUCT_NAME = "rise-sim";
+				WARNING_CFLAGS = (
+					"-Wmost",
+					"-Wno-four-char-constants",
+					"-Wno-unknown-pragmas",
+				);
+			};
+			name = Default;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -8639,6 +10077,17 @@
 				F24B71D02F52A212008304C4 /* Deployment */,
 				F24B71D52F52A212008304C4 /* Opto */,
 				F24B71D12F52A212008304C4 /* Default */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Default;
+		};
+		02882B5B56131EC468D4BD60 /* Build configuration list for PBXNativeTarget "rise-sim" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				92E112D5E66F83B2AA550E13 /* Development */,
+				EB98243365081DAB4F66EE19 /* Deployment */,
+				DAE6EDCC81967DD0F11CBEF9 /* Opto */,
+				E5834C4A187B573DCDB87DA5 /* Default */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Default;

@@ -393,16 +393,19 @@ PlaybackStatus PlaybackClock::GetStatus() const
 }
 
 bool PlaybackClock::Play( const double start, const double end, const double from, const double fps,
-	const bool loop, std::string& error )
+	const bool loop, std::string& error, const double timeScale )
 {
 	if( !std::isfinite( start ) || !std::isfinite( end ) || !std::isfinite( from ) || end < start )
 		return Fail( error, "playback range is invalid" );
 	if( !std::isfinite( fps ) || !( fps > 0.0 ) || fps > 1000.0 ) return Fail( error, "playback rate must be in (0, 1000] fps" );
+	if( !std::isfinite( timeScale ) || !( timeScale > 0.0 ) || timeScale > 1000.0 || fps * timeScale > 1000.0 )
+		return Fail( error, "playback time scale must be in (0, 1000] and show at most 1000 frames per second" );
 	{
 		std::lock_guard<std::mutex> lock( m_mutex );
 		if( m_quit ) return Fail( error, "playback is shut down" );
 		if( m_playing ) {
 			m_status.start = start; m_status.end = end; m_status.fps = fps; m_status.loop = loop;
+			m_status.timeScale = timeScale;
 			return true;
 		}
 	}
@@ -418,6 +421,7 @@ bool PlaybackClock::Play( const double start, const double end, const double fro
 		m_status = PlaybackStatus();
 		m_status.playing = true;
 		m_status.start = start; m_status.end = end; m_status.fps = fps; m_status.loop = loop;
+		m_status.timeScale = timeScale;
 		m_status.time = from;
 		m_clock = std::min( std::max( from, start ), end );
 		m_lastFrame = -1;
@@ -502,7 +506,7 @@ void PlaybackClock::Loop()
 		if( m_quit ) break;
 		const clock::time_point now = clock::now();
 		if( m_resync ) { m_lastTick = now; m_resync = false; }
-		m_clock += std::chrono::duration<double>( now - m_lastTick ).count();
+		m_clock += std::chrono::duration<double>( now - m_lastTick ).count() * m_status.timeScale;
 		m_lastTick = now;
 		const double fps = m_status.fps;
 
@@ -586,7 +590,7 @@ void PlaybackClock::Loop()
 			continue;
 		}
 		// Tick a few times per frame so a finished pass is noticed promptly.
-		const double tick = std::min( std::max( 0.25 / fps, 0.002 ), 0.02 );
+		const double tick = std::min( std::max( 0.25 / ( fps * m_status.timeScale ), 0.002 ), 0.02 );
 		m_cv.wait_until( lk, now + std::chrono::duration_cast<clock::duration>( std::chrono::duration<double>( tick ) ) );
 	}
 }

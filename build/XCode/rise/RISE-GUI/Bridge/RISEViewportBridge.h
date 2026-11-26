@@ -342,6 +342,12 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @property (nonatomic, readonly, copy) NSString *upstream;       ///< comma-separated
 @property (nonatomic, readonly, copy) NSString *inputs;         ///< comma-separated
 @property (nonatomic, readonly, copy) NSString *errorMessage;
+/// M5c (GetSimulationEstimate): the solver's estimates, 0 / "" when unknown,
+/// and why a stale cache is stale ("" unless stale).
+@property (nonatomic, readonly) unsigned long long memoryEstimate;   ///< peak bytes
+@property (nonatomic, readonly) double wallEstimate;                 ///< seconds, a whole bake
+@property (nonatomic, readonly, copy) NSString *estimateSummary;     ///< "≈ 5 h, 4.0 GB"
+@property (nonatomic, readonly, copy) NSString *staleReason;
 @end
 
 /// The library playback clock (GetPlaybackStatus).
@@ -358,6 +364,9 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @property (nonatomic, readonly) unsigned long long solverWaits;
 @property (nonatomic, readonly) unsigned long long passesCompleted;
 @property (nonatomic, readonly) double wallSeconds;
+/// M5c: scene seconds per wall second (1 = real time; an ordinary animation
+/// steps 30 authored frames per wall second).
+@property (nonatomic, readonly) double timeScale;
 @end
 
 /// One bake job of this document (GetSimulationBakeJob; the library bake
@@ -1115,6 +1124,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
     RISEViewportCategoryPainter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
     RISEViewportCategoryGeometry   = 11,  ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
+    RISEViewportCategorySimulation = 12,  ///< Scene simulations (cloth/fire/cache producers -- Simulation M5c)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -2242,6 +2252,10 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
              suggestedRoot:(NSString * _Nullable * _Nullable)suggestedRoot
                      error:(NSString * _Nullable * _Nullable)error;
 + (NSArray<NSString *> *)trustedCacheRoots;
+/// M5c: the rise-sim worker the bake manager would run (its search: an
+/// override, RISE_SIM_WORKER, then beside the app -- Contents/MacOS/rise-sim
+/// in the bundle -- then PATH).  NO with the reason when none is found.
++ (BOOL)simulationWorkerPath:(NSString * _Nullable * _Nullable)path error:(NSString * _Nullable * _Nullable)error;
 
 @end
 

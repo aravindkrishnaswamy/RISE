@@ -10,6 +10,10 @@ One design decision did not survive validation: discrete-shell hinge bending on 
 structured triangulation (§3), so the shipped bending energy is a line-based discretisation on the same mesh. The
 hinge model stays selectable and publishes `preview`.
 
+**Third pass (m3a.4, 2026-11-25).** Moving mesh colliders no longer fail Newton (root cause: a jump in the
+edge–edge barrier energy; plus a checked kinematic continuation with pinch diagnostics), and self-collision
+converges and earns `predictive` from four new cases (§10).
+
 **Second pass (m3a.2, same day).** (a) Speed: a geometric multigrid preconditioner with line smoothing replaces
 symmetric Gauss–Seidel in CG, assembly and the solver run on a deterministic thread pool (results identical for
 any thread count), and Newton reuses the accepted trial's gradient and Hessian; 51 × 51 interactive now runs at
@@ -112,8 +116,10 @@ friction, analytic shapes only. Always `preview`.
   edge–edge pieces; each piece's squared distance is the minimum over closest-point parameters of a function
   bilinear in positions and parameters, so its Hessian is the Schur complement of the joint Hessian (exact inside
   the piece; finite differences agree to 5e-9). Hessians: exact on the exact-Hessian try, projected to PSD per pair
-  (Jacobi) otherwise. Self-contact pairs add only their diagonal blocks (the matrix pattern is fixed); their
-  gradient is exact.
+  (Jacobi) otherwise. Edge–edge pairs are multiplied by IPC's mollifier (m3a.4, §10), and nearly parallel edges
+  switch to point–edge pieces only at round-off parallelism (m3a.3 switched at sin² = 1e-6, which made the barrier
+  energy jump). Cloth–cloth pairs add their full pair Hessian: off-diagonal blocks outside the element pattern go to
+  the matrix's per-iteration extension (§10).
 - Broad phase: a hash grid over the collider primitives (cell = max(mean collider edge, 2(ξ + d̂))), queried with
   each cloth primitive's box swept over the Newton step and inflated by ξ + d̂; self pairs use a grid over the cloth.
   One candidate list per Newton iteration serves the CCD, the line search and the next gradient; it is sorted, so
@@ -125,16 +131,19 @@ friction, analytic shapes only. Always `preview`.
 - Friction: smoothed Coulomb, lagged per step (Li et al. 2020 §5): at the step's start each active pair freezes its
   normal force `λ = κ w |b′(z)|`, its closest-point weights and a tangent basis T; the dissipative potential
   `(μλ/c) F0(|Tᵀ v_rel|)` with `v = c (x − x̃)` the integrator's own velocity (BDF2 or backward Euler),
-  `F0′ = f1`, `f1(y) = 2y/ε − y²/ε²` below the slip speed `ε = friction_velocity`, 1 above. One coefficient
-  (`friction`, static = kinetic, default 0.3: a representative cloth-on-solid value, not measured). Sticking under
+  `F0′ = f1`, `f1(y) = 2y/ε − y²/ε²` below the slip speed `ε = friction_velocity`, 1 above. Coefficients
+  (static = kinetic, default 0.3, representative, not measured): `friction` against colliders, `self_friction`
+  between cloth layers (m3a.4). Sticking under
   smoothed friction is a creep at `v = ε (1 − √(1 − tan α/μ))`, which the incline case confirms to 1.2e-6 of ε.
 - Mesh colliders: inline arrays or a `mesh.v1` scene input (`ISceneInputs::Sample` at time 0, its identity in the
-  effective parameters), moved rigidly (`fixed`, `translate`, `rotate`, `oscillate`); within a step they sit at the
-  step's end. A step starts from `x_n` with the vertices that a moving collider could reach during the step carried
-  rigidly with it (region: three times its travel, twice the reach and twice the longest cloth edge around it), so
-  the start is feasible; then the predictor and Newton as above.
-- Not supported: implicit midpoint with barrier contact (refused; `x_{n+1} = 2y − x_n` is not CCD-bounded), pins
-  driven into a collider (the step fails), deforming (non-rigid) colliders.
+  effective parameters), moved rigidly (`fixed`, `translate`, `rotate`, `oscillate`, scene transform). With moving
+  pins or mesh colliders a step runs the kinematic continuation of §10 (m3a.4; it replaces m3a.3's unchecked
+  "carry"): the prescribed motions advance in CCD-bounded stages along their true paths, the cloth relaxes after
+  each, and the step's Newton solve runs with the colliders at the step's end.
+- Not supported: implicit midpoint with barrier contact (refused; `x_{n+1} = 2y − x_n` is not CCD-bounded).
+  Prescribed motion that leaves the cloth no room (pinched between a collider and a pin, or two colliders) fails
+  with a diagnostic naming both and the time. Deforming colliders: followed as their t = 0 geometry moved rigidly,
+  detected and stated (§10).
 
 **Pins.** Dirichlet vertices (corner, edge or boundary sets, `depth` rows deep), fixed or following a rigid motion
 (translate, rotate about an axis, oscillate); positions and velocities are set analytically at each step's end time.
@@ -199,7 +208,7 @@ byte-identical frames (`ClothSolverTest`). Contact runs on the caller.
 | Material coordinates as UVs in `mesh.v1` | Not published | `mesh.v1` has no UV field; the codec was not changed. u = i·hu, v = j·hv from the vertex index and the effective parameters |
 | Material records from Clyde et al. 2017 / Kawabata | Four representative records | No verified measured tables yet; each record says so |
 
-## 4. Validation (`bin/tests/ClothValidationTest`: fast tier 25–40 s with contact, depending on load; `--extended` 62 s adds the finer levels)
+## 4. Validation (`bin/tests/ClothValidationTest`: fast tier 54 s with contact, moving colliders and self-collision (m3a.4), depending on load; `--extended` 137 s adds the finer levels)
 
 Cotton record (`ρ = 0.15 kg/m²`, `E_w = 3000`, `E_f = 2000`, `G = 40 N/m`, `ν = 0.2`, `B_w = 2e-5`,
 `B_f = 1.2e-5 N·m`), alternating mesh, line bending, BDF2 with `2.5 n` steps per period (time and space errors both
@@ -304,8 +313,9 @@ Tolerances are 1.25 × the largest error observed over the four built-in records
 scaled by each record's own bending length, tension and period). The midpoint energy tolerance sits at the Newton
 tolerance and may need loosening on another platform.
 
-The solver **requests `predictive` only in bake mode, without air drag, and either without contact or with
-barrier contact and no self-collision**; interactive mode, penalty contact (`contact = penalty`), self-collision and
+The solver **requests `predictive` only in bake mode, without air drag, without motion sampled from the scene, and
+either without contact or with barrier contact** (m3a.4: self-collision included, with its own four cases, §10);
+interactive mode, penalty contact (`contact = penalty`), scene-transform motion, a detected deforming collider and
 drag request `preview`. The host then derives the label from the cases (`EffectiveFidelity`), so the hinge model
 (cantilever errors 0.75 and 0.62, plate 0.15), any material whose cases fail, and any contact configuration whose
 contact cases fail (for example a d̂ so large that the cylinder case exceeds its tolerance, or a material without
@@ -317,12 +327,16 @@ material) integrated by BDF2 or backward Euler in bake mode, with barrier contac
 against analytic shapes and static or rigidly moving mesh colliders, at contact parameters whose own cases pass.
 It certifies the model and its discretisation family on canonical problems (exact force balance, an analytic
 drape, analytic friction, an intersection-free tumble, no energy gain); it does not bound the error of a given
-bake, and it does not cover self-collision, air drag, imported irregular meshes, measured fabric behaviour or
-deforming colliders.
+bake, and it does not cover air drag, imported irregular meshes, measured fabric behaviour or deforming colliders.
+With self-collision it also covers cloth–cloth barrier contact with lagged smoothed friction between layers
+(`self_friction`): the layers' force balance, the friction law between layers and an intersection-free fold, at
+contact parameters whose own cases pass; not the shape of a self-contact fold (no analytic reference, §10).
 
 ## 6. Solver, parameters, outputs and ports
 
-`cloth.shell`, version `m3a.2` (was `m3a.1`: results for existing parameters changed, because the linear solver,
+`cloth.shell`, version `m3a.4` (m3a.3: mesh.v2 output; m3a.4: results with mesh colliders, with moving pins and
+barrier contact, and with self-collision changed, §10; runs without contact or with analytic shapes and static pins
+give byte-identical frames). Was `m3a.2` (from `m3a.1`: results for existing parameters changed, because the linear solver,
 the assembly order and bake-mode contact changed). Parameters (canonical CBOR/JSON map; unknown keys refused; every value written back
 into the effective parameters; `pace_ms` is not keyed):
 
@@ -347,7 +361,8 @@ into the effective parameters; `pace_ms` is not keyed):
 | `contact_stiffness` | 1e5 N/m³ | penalty per unit vertex area per unit depth |
 | `barrier_stiffness`, `contact_activation` | 1e5 N/m³, 1 mm | barrier κ and d̂ |
 | `friction`, `friction_velocity` | 0.3, 1 mm/s | Coulomb coefficient (static = kinetic; representative, not measured) and slip speed ε (barrier only) |
-| `self_collision` | false | cloth–cloth barrier contact (`preview`) |
+| `self_collision` | false | cloth–cloth barrier contact (validated in m3a.4, §10) |
+| `self_friction` | 0.3 | Coulomb coefficient between cloth layers (smoothed like `friction`) |
 | `threads` | min(4, cores) | not keyed: results do not depend on it |
 | `pressure` | 0 Pa | on the front face |
 | `drag_coefficient`, `air_density` | 0, 1.2 kg/m³ | quadratic normal drag (off by default) |
@@ -464,11 +479,12 @@ thread).
 - Barrier contact: colliders are analytic shapes or rigidly moving meshes; a mesh scene input is sampled once (time
   0), so colliders cannot yet follow animated scene objects, and pins cannot follow scene transforms. Analytic
   shapes are tested at the vertices only (a sharp box edge can pass between cloth vertices; use a mesh collider for
-  sharp geometry). Edge–edge distances of nearly parallel edges switch to point–edge pieces without IPC's mollifier,
-  so the barrier is not C² there. Friction is lagged once per step (no fixed-point friction iterations) and has one
-  coefficient. Implicit midpoint is refused with barrier contact. A pin driven into a collider fails the step.
-- Self-collision (`self_collision`) works on the same machinery but adds only diagonal Hessian blocks (slower Newton
-  in folds) and has no validation case: `preview`.
+  sharp geometry). The edge–edge mollifier makes the barrier C¹ (not C²) where it switches on. Friction is lagged once
+  per step (no fixed-point friction iterations). Implicit midpoint is refused with barrier contact. Infeasible
+  prescribed motion fails with a pinch diagnostic (§10).
+- Self-collision: no analytic reference for a self-contact fold (self-convergence only); the layered contact's
+  effective friction is within ~0.5% of `self_friction` at 6 × 6 (falls with refinement); broad phase and checks
+  cost ~2.5× the free drape even with no cloth–cloth contact (§10).
 - The barrier's resting gap depends on the contact pressure (`z ≈ d̂ − √(p d̂/(3κ))`), an O(√d̂) modelling error of
   shapes in contact (contact case ii); reduce `contact_activation` for tighter contact.
 - No Poisson coupling in bending (D12 = 0). Rows and columns also stiffen in-plane bending of yarn lines (small).
@@ -519,3 +535,146 @@ From m3a.1:
    physical records. Cloth keeps name and source in the key.
 9. **Progress end time.** `IProgress::Report` end time is `count × interval` in the reference solvers and cloth, while the
    last output is at `(count − 1) × interval`; `rise-sim status` therefore shows `1 / 1.0333`.
+
+## 10. Third pass (m3a.4): moving colliders and self-collision
+
+### 10.1 Moving mesh colliders: diagnosis
+
+Reproduction: the M4 scene with the ball's keyframes made lateral (0 → 0.3 m in x over 2 s, `collider_object`, 25 × 25,
+default 8 substeps) failed at t = 0.33 s ("did not reach its tolerance", 5.08 m/s²). The same failure with an inline
+mesh: a 24 × 24 UV sphere (as `sphere_geometry` tessellates it: welded poles, duplicated seam), r 0.25 m, translating
+at 0.15 m/s under a sheet pinned at u0v0/u1v0 (5.2 m/s² at t = 0.325 s). An icosphere at 0.3–2 m/s, or the UV sphere
+static, baked. Per-iteration trace of the failing step (h = 1/240 s, then four halvings, all failing alike):
+
+- residual 1.1e4 → 156 m/s² in 9 iterations, then a 2-cycle: 11.6 / 23.8 m/s² on vertices (7, 12)/(8, 12) for 40
+  iterations; Φ constant to 10 digits (0.0808886999); directional slope −2.7e-8; accepted line-search steps 2⁻¹⁹ … 2⁻²⁸;
+- CCD did not limit (bound 1); 590 of 6,291 candidate pairs active, smallest gap 0.23 mm (no infeasible start);
+- exact Hessian accepted (no projection, no gradient fallback) in the stalled iterations.
+
+A descent direction along which the energy does not decrease at any step size is a discontinuity, not conditioning,
+stiffness, friction lag or the carry predictor. The cause: `EdgeEdge` switched from the interior piece to point–edge
+pieces at sin² = 1e-6, which overestimates the distance by up to L·sin/2 (2e-5 m here) and makes the barrier energy jump
+when a cloth edge crosses parallel to a collider edge — which the UV sphere's latitude rings and meridians do all the
+time against a structured sheet sliding over them. Confirmed by ablation: with only the threshold lowered to 1e-14 the
+same 2 s bake completes (3,056 Newton iterations, 1 halving). A remaining single halving (t = 0.183 s) is a membrane
+compression mode at the free edge (projected Hessian, linear convergence) that the halved step's larger inertia cures:
+the designed fallback.
+
+### 10.2 Moving mesh colliders: the fix
+
+- **Edge–edge mollifier** (IPC, Li et al. 2020 §4.3): `κ w m(c) b(z)`, c = |ea × eb|², `m = (2 − c/ε)c/ε` below
+  ε = 1e-3 |ea₀|²|eb₀|² (rest lengths), with its exact gradient and Hessian (product rule); the parallel switch moves
+  to round-off (1e-14). Lagged friction uses `λ = κ w m |b′|`. Energy along a pair turning through the old threshold
+  now changes by at most 0.56% between neighbouring samples and the gradient matches finite differences to 3.6e-8.
+- **Kinematic continuation** (moving pins or mesh colliders with barrier contact; replaces m3a.3's carry, whose jump
+  was only checked against static things): from x_n with the colliders at t_n, the prescribed motions advance in
+  stages. Each stage moves the colliders, the moving pins and the free vertices within reach + 2 × travel of a moving
+  collider (carried rigidly with it) along their **true paths** (rotations on arcs), as far as conservative
+  advancement over every candidate pair allows (gap kept above 0.1 of its value; Lipschitz constant from each point's
+  speed bound; pairs moving rigidly together skipped); the cloth then relaxes against that stage (≤ 12 Newton
+  iterations). When the last stage reaches t_{n+1} the predictor and the step's Newton solve follow as before (colliders
+  at the end pose). Every configuration is joined to the previous one by a checked path, so the step is
+  intersection-free whatever the colliders do. Scene-transform motions are followed within a stage as their samples at
+  four sub-steps, rigidly interpolated (`SampledTrack`, continuous across stages; the track itself is sampled from
+  keyframes), and `Place` samples a scene track once per mesh instead of per vertex (the lateral M4 scene went from
+  143 s to 15.8 s).
+- **Infeasible motion** (three stages with < 1e-3 of the step's progress, then a full Newton solve, and still no room):
+  the step fails, without halving, with "cloth contact: the prescribed motion is infeasible at t = … s: the cloth at
+  vertex … is pinched between mesh collider 0 and pin group 0 (at vertex …) (no room for the contact offset,
+  contact_thickness …)", naming the colliders, pins or the cloth itself from the blocking pair and the contacts of its
+  cloth vertices.
+- **Halving**: unchanged policy (up to four levels), now logged: `StepStats::lastHalving` keeps the failure and the step
+  (time, h, depth); pinch failures are not retried.
+- Considered and not adopted, because the evidence did not support them: adaptive κ (κ is a physical parameter here,
+  per unit area, bound into the evidence; the failure was not conditioning), fixed-point friction iterations (friction
+  was not involved), a different Newton fallback (the direction was a valid descent direction).
+
+Regression (ClothValidationTest "Moving colliders", fast tier; every accepted step checked exactly, the cloth's straight
+path against the colliders moving on their chords, and the end gap):
+
+| Case | Steps | Violations | Smallest gap | Newton/step | Halvings | Stages | Time |
+|---|---|---|---|---|---|---|---|
+| lateral UV ball, 25 × 25, 8 substeps, 0.5 s (`--extended` 2 s) | 120 | 0 | 7.9e-5 m | 9.9 | 1 | 141 | 4.1 s |
+| cube 0.3 m rotating at 20 rad/s (corners 4.2 m/s), 15 × 15, 0.5 s | 120 | 0 | 3.0e-5 m | 13.5 | 0 | 222 | 1.8 s |
+| sheet 0.5 mm above the offset on the ball at t = 0, ball moving off | 120 | 0 | 4.1e-5 m | 10.3 | 0 | 155 | 3.0 s |
+| ball rising into a pinned edge | fails at t = 0.160 s: "pinched between mesh collider 0 and pin group 0" | | | | | | 0.4 s |
+| ball onto a sheet lying on a plane | fails at t = 0.1015 s: "pinched between analytic collider 0 and mesh collider 0" | | | | | | 1.1 s |
+
+`ClothSolverTest` bakes the lateral ball through the contract (25 × 25, 16 frames, 8 substeps, predictive), checks the
+pinch error through `Advance`, and stop/resume byte identity with moving pins, a rising mesh and self-collision. The M4
+lateral scene bakes all 61 frames (15.8 s).
+
+### 10.3 Self-collision: design
+
+- **Extensible pattern.** `BlockMatrix` keeps its fixed element pattern plus an *extension*: off-diagonal blocks
+  outside the pattern, rebuilt (sorted, deterministic) whenever a Hessian is evaluated, from the cloth–cloth candidate
+  pairs and cloth–cloth friction records of that Newton segment. Pair Hessians (projected per pair on the projected
+  try) are scattered in full. Products include the extension (pattern rows in parallel, then the extension in slot
+  order on the caller: thread-count independent). Without self-collision the extension is empty and every operation is
+  the m3a.3 one.
+- **Preconditioner: contact couplings dropped from it** (the multigrid smoother, residuals inside the cycle and Galerkin
+  coarse operators, and the banded factor, all see the pattern part, which keeps the pairs' diagonal blocks). Reason:
+  for a PSD pair Hessian H with block diagonal D, H ≤ k D (k = number of free points, ≤ 4), so dropping the couplings
+  changes the preconditioned spectrum by a bounded factor, the cycle stays symmetric positive definite, and the
+  precomputed Galerkin term lists stay valid. A matrix with an extension in the direct regime runs CG preconditioned by
+  the pattern's banded factor.
+- Cloth–cloth point–triangle and edge–edge barriers (mollified) with the offset, the same CCD in the line search, and
+  lagged smoothed friction between layers with its own coefficient `self_friction`.
+- **Before / after.** Sheet dropped corner-first onto a sphere (0.6 m, 31 × 31, 2 s, BDF2, 4 threads): m3a.3 failed at
+  t = 1.07 s ("did not reach its tolerance", 42 halvings, 19.1 Newton/step); m3a.4 completes, 4.4 Newton/step, 0
+  halvings, 13.7 CG/Newton, 15.8 s. Ablation (m3a.4 with the couplings dropped from the matrix as in m3a.3) fails at
+  the same step: the couplings are what makes Newton converge.
+
+Non-contact problems (pinned sheet, no contact; old = m3a.3 sources, new = this tree; two runs each, load 4–6):
+
+| Mesh | Threads | Newton | CG / Newton | Old wall | New wall | Final state |
+|---|---|---|---|---|---|---|
+| 51 × 51, 4 s | 1 | 4,221 | 8.15 | 30.8–31.1 s | 30.8–31.5 s | identical bits |
+| 51 × 51, 4 s | 4 | 4,221 | 8.15 | 14.2–14.6 s | 14.3–14.4 s | identical bits |
+| 101 × 101, 1 s | 1 | 1,547 | 9.08 | 52.0–55.8 s | 52.4–54.6 s | identical bits |
+| 101 × 101, 1 s | 4 | 1,547 | 9.08 | 18.5–18.7 s | 18.7–18.8 s | identical bits |
+
+The drape demonstration (51 × 51, sphere, 4 s) is byte-identical too (hash of the final state), 18.0 vs 18.2 s.
+
+**Cost of self-collision on the drape demo** (51 × 51, 4 threads): 46.0–46.1 s with `self_collision` against
+18.2 s without (2.5×), the same frames (the drape makes no cloth–cloth contact): the cloth–cloth broad phase, CCD and
+extension bookkeeping on the caller thread. On the corner drop, where layers do touch, 15.8 s for 2 s at 31 × 31.
+
+### 10.4 Self-collision: validation (ClothValidationTest "Self-collision")
+
+| # | Case | Reference / check | Result |
+|---|---|---|---|
+| vi | Two aligned layers (0.1 m, 10 × 10 cells) on a frictionless plane, static (frictionless walls, horizontal forces only, remove the free sliding) | Plane carries both weights, lower layer the upper's; gap between layers above the offset in (0, d̂) | balance 4e-12, 7e-12, 6e-11, 2e-13 at d̂ = 1, 0.5, 0.25, 0.125 mm (tolerance 1e-8); gap/d̂ 0.982, 0.976, 0.965, 0.951: tends to the offset at order 1.009, 1.016, 1.021 in d̂ |
+| vii | Upper layer (6 × 6) on a pinned layer, gravity tilted, `self_friction` 0.3, 0.1 s | Below atan μ: creep `ε(1 − √(1 − tan α/μ))`; above: g (sin α − μ cos α) | sticks at 0.25, 0.5, 0.9 atan μ (creep 1.31e-4, 2.93e-4, 7.38e-4 m/s < ε; errors 8.4e-4, 7.8e-3, 6.2e-2 of ε); slides at +0.05, +0.2, +0.4 rad (accelerations within 0.30%, 0.25%, 2.0%; the last overhangs the lower layer) |
+| viii | Hairpin: strip of 16 bending lengths folded on itself on a frictionless plane, ends held (else the fold rolls freely), ξ 0.2 mm, static | Self-convergence (no analytic reference: the rigid-contact folded heavy elastica imposes κ = 0 at both lift-off points, θ = π and the layers' height at the upper one, one condition more than shooting a single free segment has unknowns; the contact sets of both layers near the fold are part of the solution) | loop height 23.94, 22.53, 22.12 (`--extended`: 22.03) mm at 48/96/192/384 segments, d̂ 0.2 mm: orders 1.78 then 2.20 (fold reach 1.42, 3.12); d̂ 0.4, 0.2, 0.1 mm at 96 (`--extended`): 22.70, 22.53, 22.45 mm, order 1.06 (the barrier's gap) |
+| ix | No intersection, cloth–cloth included, every accepted step exact: strip folded onto itself by moving pins (16 × 4, 1.2 s; `--extended` 31 × 7) and a 0.6 m sheet dropped corner-first onto a sphere (21 × 21, 1 s; `--extended` 31 × 31, 2 s) | 0 violations | 0 in 288 steps (173 with cloth–cloth pairs in reach); 0 in 240 (31 × 31, 2 s: 0 in 480, 119 with cloth–cloth pairs) |
+
+Evidence (computed at Configure for runs with self-collision, about 0.7 s, memoised):
+
+| Id | Check | Tolerance | Largest over the 4 records × BE/BDF2 |
+|---|---|---|---|
+| `self-stack-n6` | (vi) at 6 × 6, configured d̂ | 1e-8 | 2.7e-12 |
+| `self-stick` | (vii) at half the self-friction angle, / ε | 1.6e-2 | 1.24e-2 |
+| `self-slide` | (vii) 0.2 rad past it, relative | 4.8e-3 | 3.8e-3 |
+| `self-fold` | (ix) pins fold, 11 × 3, 1.2 s: violations | 0.5 | 0 (67–157 steps with cloth–cloth pairs) |
+
+**Label rule (m3a.4).** Self-collision no longer forces `preview`: a bake-mode barrier run with self-collision requests
+`predictive`, and the host derives the label from the contact and self-collision cases (e.g. `self_friction = 0`
+fails `self-stick` and publishes `preview`). What `predictive` then covers is in §5.
+
+### 10.5 Deforming colliders
+
+Out of scope; chosen behaviour: **documented approximation, made explicit**. A mesh collider from a scene input is its
+geometry at t = 0 moved rigidly by its motion. Configure samples the input again at 1/3, 2/3 and 3/3 of the run; if
+the geometry departs from the rigidly moved t = 0 geometry by more than 1e-5 m (or its topology changes), the
+description gets a note ("mesh collider … deforms during the run … the solver follows its t = 0 geometry moved
+rigidly, an approximation (preview)") and the run is `preview` (`ClothSolverTest`, a growing cube).
+
+### 10.6 Not verified, gaps
+
+- Track (scene-transform) path bounds within a stage are estimated (16 chords × 1.5 on the interpolated samples), not
+  proven; scene-transform runs are `preview` anyway.
+- Fixed-point friction iterations, adaptive κ and an IPC-style κ schedule are not implemented (§10.2).
+- Contract gaps (not changed, v1 frozen): no way to declare that an approximation (rigid collider for deforming geometry)
+  applies other than notes + label; `ISceneInputs` offers transforms at times but no path between them (the stage
+  interpolation stands in for it).

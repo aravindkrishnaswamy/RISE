@@ -221,6 +221,12 @@ namespace RISE
 					o.set( "endTime", Num( s.framesTotal ? s.startTime + static_cast<double>( s.framesTotal - 1 ) * s.interval : s.startTime ) );
 					o.set( "upstream", StringArray( s.upstream ) );
 					o.set( "inputs", StringArray( s.inputs ) );
+					// M5c: the estimates before a bake (0 = unknown; approximate) and why a cache is stale.
+					o.set( "memoryEstimate", Num( static_cast<double>( s.memoryEstimate ) ) );
+					o.set( "costEstimate", Num( s.costEstimate ) );
+					o.set( "wallEstimateSeconds", Num( s.wallEstimate ) );
+					o.set( "estimate", Str( Simulation::FormatSimulationEstimate( s ) ) );
+					if( !s.staleReason.empty() ) o.set( "staleReason", Str( s.staleReason ) );
 					if( !s.error.empty() ) o.set( "error", Str( s.error ) );
 					BakeJob latest;
 					if( !key.empty() && Bakes().LatestJob( key, s.name, latest ) ) o.set( "job", JobJson( latest ) );

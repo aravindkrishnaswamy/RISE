@@ -19,7 +19,7 @@ struct CacheChannel {
 	std::string name, units, representation;
 };
 struct CacheOutput {
-	std::string name, type; // native codecs: "grid.v1", "mesh.v1", "mesh.v2", "field.v1" (IsNativePayloadType)
+	std::string name, type; // native codecs: "grid.v1", "mesh.v1", "mesh.v2", "field.v1", "transform.v1" (IsNativePayloadType)
 	std::vector<CacheChannel> channels;
 };
 // What a fidelity label's evidence covers, machine-readable: condition names

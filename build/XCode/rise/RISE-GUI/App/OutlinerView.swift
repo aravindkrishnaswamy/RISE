@@ -70,6 +70,11 @@ private let kOutlinerCategories: [OutlinerCategoryDef] = [
     // singleton rows.  No dedicated Theme token yet -- catObject's hue is
     // the conceptual neighbour (geometry IS what objects instantiate).
     OutlinerCategoryDef(title: "Geometry",        category: .geometry,    tag: "GEO", tagColor: Theme.catObject),
+    // Simulations (M5c): cloth_simulation / fire_simulation /
+    // simulation_cache producers.  Selecting one shows its solver fields in
+    // the Inspector (the controller's Simulation category).  catAnimation:
+    // like animation, it is what makes the scene vary in time.
+    OutlinerCategoryDef(title: "Simulations",     category: .simulation,  tag: "SIM", tagColor: Theme.catAnimation),
     OutlinerCategoryDef(title: "Output Settings", category: .film,        tag: "FLM", tagColor: Theme.catFilm),
     OutlinerCategoryDef(title: "Animation",       category: .animation,   tag: "ANM", tagColor: Theme.catAnimation),
     OutlinerCategoryDef(title: "Variants",        category: .sceneVariant, tag: "VAR", tagColor: Theme.catVariant),

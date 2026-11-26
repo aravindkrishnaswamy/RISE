@@ -735,11 +735,19 @@ bool SimulationBakeManager::RequestBake(const BakeSceneSnapshot& scene, const Ba
 	{
 		Lock lock(mutex_);
 		AttachLocked_(scene, events);
+		// M6: a simulation_group bakes as one job (one worker running the group
+		// host); its members are never jobs of their own.
+		auto groupOf = [&](const std::string& n) -> const SceneSimulationStatus* {
+			for (const auto& g : scene.simulations)
+				if (g.keyword == kSimulationGroupKeyword && std::find(g.upstream.begin(), g.upstream.end(), n) != g.upstream.end()) return &g;
+			return nullptr;
+		};
+		auto bakeable = [&](const SceneSimulationStatus& x) { return !x.solverId.empty() || x.keyword == kSimulationGroupKeyword; };
 		// The requested set.
 		std::set<std::string> named;
 		if (request.all) {
 			for (const auto& s : scene.simulations)
-				if (!s.solverId.empty() && (!request.staleOnly || OutOfDate(s))) named.insert(s.name);
+				if (bakeable(s) && !groupOf(s.name) && (!request.staleOnly || OutOfDate(s))) named.insert(s.name);
 		} else {
 			for (const auto& n : request.simulations) {
 				const SceneSimulationStatus* s = Find(scene, n);
@@ -748,8 +756,9 @@ bool SimulationBakeManager::RequestBake(const BakeSceneSnapshot& scene, const Ba
 					for (const auto& x : scene.simulations) list += (list.empty() ? "" : ", ") + x.name;
 					return Fail(error, "the scene declares no simulation named `" + n + "` (it declares: " + list + ")");
 				}
-				if (s->solverId.empty()) return Fail(error, "`" + n + "` is a " + s->keyword + ": it has no solver to bake");
-				named.insert(n);
+				if (!bakeable(*s)) return Fail(error, "`" + n + "` is a " + s->keyword + ": it has no solver to bake");
+				const SceneSimulationStatus* g = groupOf(n);
+				named.insert(g ? g->name : n);
 			}
 			if (named.empty()) return Fail(error, "name a simulation to bake, or ask for all");
 		}
@@ -757,9 +766,19 @@ bool SimulationBakeManager::RequestBake(const BakeSceneSnapshot& scene, const Ba
 		std::set<std::string> wanted = named;
 		for (auto it = scene.simulations.rbegin(); it != scene.simulations.rend(); ++it) {
 			if (!wanted.count(it->name)) continue;
-			for (const auto& u : it->upstream) {
+			std::vector<std::string> ups = it->upstream;
+			if (it->keyword == kSimulationGroupKeyword) {   // M6: the members' own upstreams outside the group
+				ups.clear();
+				for (const auto& m : it->upstream)
+					if (const SceneSimulationStatus* ms = Find(scene, m))
+						for (const auto& u : ms->upstream)
+							if (std::find(it->upstream.begin(), it->upstream.end(), u) == it->upstream.end()) ups.push_back(u);
+			}
+			for (const auto& u0 : ups) {
+				const SceneSimulationStatus* g = groupOf(u0);
+				const std::string u = g ? g->name : u0;
 				const SceneSimulationStatus* up = Find(scene, u);
-				if (up && !up->solverId.empty() && (OutOfDate(*up) || Active_(key, u))) wanted.insert(u);
+				if (up && bakeable(*up) && (OutOfDate(*up) || Active_(key, u))) wanted.insert(u);
 			}
 		}
 		// Save rule (see the header).

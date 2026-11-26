@@ -24,6 +24,8 @@
 
 namespace RISE { namespace Simulation {
 
+struct SolverDescription;   // SimulationSolver.h (M5c: ParameterSchema::describeUnkeyed)
+
 enum class SchemaType {
 	Bool,     // TRUE / FALSE in a scene; CBOR boolean
 	Count,    // non-negative integer; CBOR unsigned
@@ -103,6 +105,12 @@ struct ParameterSchema {
 	std::function<bool(const RISECBOR64::Value& authored, RISECBOR64::Value& completed, std::string&)> completeParameters;
 	std::function<bool(const RISECBOR64::Value& completed, const RISECBOR64::Value* baked, RISECBOR64::Value& effective,
 		std::uint64_t& frames, std::string&)> predictEffectiveParameters;
+	//! M5c, additive: for a predicted (unconfigured) solver, the description
+	//! fields that are NOT keyed and that the prediction can still know from
+	//! the effective parameters -- the time support (cache startTime/interval)
+	//! and the Capabilities cost/memory estimates.  Null: left at their
+	//! defaults.  Never changes the key, the epoch or the outputs.
+	std::function<void(const RISECBOR64::Value& effective, SolverDescription& d)> describeUnkeyed;
 };
 
 //! A schema entry by name, or null.

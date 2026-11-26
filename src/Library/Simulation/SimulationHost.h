@@ -238,7 +238,7 @@ private:
 	std::string workerError_;
 };
 
-// ---------------------------------------------------------------- group host (interface only; M6)
+// ---------------------------------------------------------------- group host (interface; implemented in M6: SimulationGroup.h)
 
 // How a co-stepping group orders the port exchange inside one macro step.
 enum class ExchangeOrder {
@@ -252,6 +252,13 @@ struct GroupPolicy {
 	unsigned subIterations = 1;           // >1: implicit coupling, repeat the step after RestoreState
 	                                      // (every live member must report Capabilities::rollback)
 	double convergenceTolerance = 0;      // stop sub-iterating once port change is below this; 0 = fixed count
+	// M6, additive (contract Appendix C; the defaults reproduce the fields above alone):
+	double relaxation = 1;                // initial under-relaxation factor omega in (0, 1] of the served values
+	bool aitken = false;                  // Aitken's dynamic relaxation from the second iterate on
+	double absoluteTolerance = 0;         // converged when |r| <= convergenceTolerance |value| + absoluteTolerance
+	enum class NonConvergence { Fail, Halve };
+	NonConvergence onNonConvergence = NonConvergence::Fail; // after subIterations without convergence
+	double minimumMacroStep = 0;          // Halve: the floor (0 = macroStep / 64)
 };
 
 // Converts an offered port's payload into what an accepted port declares
@@ -267,6 +274,24 @@ public:
 	// result must be self-contained or reference only statics also offered.
 	virtual bool Convert(const PortDeclaration& offer, const PortDeclaration& accept, const Bytes& offered,
 		const StaticPayloadResolver& resolve, std::shared_ptr<const Bytes>& accepted, std::string& error) const = 0;
+	// M6, additive (contract Appendix C), defaults keep a plain Convert-only adapter working:
+	//! Name, version and canonical parameters as one digest; it enters the cache key of the
+	//! member fed through the adapter (empty: the registry id is used).
+	virtual std::string Identity() const { return std::string(); }
+	//! The label the adapter's output may carry: "predictive" only for an exact transfer whose
+	//! own evidence covers it (unit factor, relabel, rigid placement); a model is "preview".
+	virtual std::string Fidelity() const { return "preview"; }
+	//! One sentence: what the conversion is and what it does not cover.
+	virtual std::string Scope() const { return std::string(); }
+	//! Convert with the payloads of other offered ports the connection names
+	//! (PortConnection::auxiliary, in order; null when nothing was offered yet).
+	virtual bool ConvertWithAuxiliary(const PortDeclaration& offer, const PortDeclaration& accept, const Bytes& offered,
+		const std::vector<std::shared_ptr<const Bytes>>& auxiliary, const StaticPayloadResolver& resolve,
+		std::shared_ptr<const Bytes>& accepted, std::string& error) const
+	{
+		(void)auxiliary;
+		return Convert(offer, accept, offered, resolve, accepted, error);
+	}
 };
 // Process-wide, thread-safe adapter registry; a duplicate id is refused.
 bool RegisterPortAdapter(const std::string& id, std::shared_ptr<const IPortAdapter> adapter, std::string& error);
@@ -275,6 +300,10 @@ std::shared_ptr<const IPortAdapter> FindPortAdapter(const PortDeclaration& offer
 struct PortConnection {
 	std::string fromMember, fromPort;     // an offered port (or a cached member's output)
 	std::string toMember, toPort;         // an accepted port
+	// M6, additive (contract Appendix C):
+	std::string adapter;                  // registered adapter (factory) id; empty: none, or the first that Handles
+	RISECBOR64::Value adapterParameters = RISECBOR64::Value::MapValue({}); // the adapter's parameters
+	std::vector<std::pair<std::string,std::string>> auxiliary; // (member, offered port) the adapter also reads
 };
 
 // Runs solvers that are two-way coupled with a shared macro step. Every live

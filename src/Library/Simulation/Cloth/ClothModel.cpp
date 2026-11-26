@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <map>
 
@@ -291,6 +292,91 @@ V3 Motion::Advance(const V3& x, double t0, double t1) const
 	}
 	}
 	return x;
+}
+
+SampledTrack::SampledTrack(const TransformTrack& source, double t0, double t1, int pieces, const TransformTrack* start)
+{
+	pieces = std::max(1, pieces);
+	double r[9], c[3];
+	source.At(0.0, r, c);
+	for (int k = 0; k < 9; ++k) zero_[k] = r[k];
+	for (int k = 0; k < 3; ++k) zero_[9 + k] = c[k];
+	for (int i = 0; i <= pieces; ++i) {
+		const double t = i == pieces ? t1 : t0 + (t1 - t0)*i/pieces;
+		(i == 0 && start ? *start : source).At(t, r, c);
+		std::array<double,12> pose;
+		for (int k = 0; k < 9; ++k) pose[k] = r[k];
+		for (int k = 0; k < 3; ++k) pose[9 + k] = c[k];
+		times_.push_back(t);
+		poses_.push_back(pose);
+	}
+	for (int i = 0; i < pieces; ++i) {
+		// Q = R_{i+1} R_i^T as axis and angle.
+		const double* a = poses_[i].data();
+		const double* b = poses_[i + 1].data();
+		double q[9];
+		for (int m = 0; m < 3; ++m) for (int n = 0; n < 3; ++n)
+			q[3*m + n] = b[3*m]*a[3*n] + b[3*m + 1]*a[3*n + 1] + b[3*m + 2]*a[3*n + 2];
+		const double cosine = std::max(-1.0, std::min(1.0, 0.5*(q[0] + q[4] + q[8] - 1)));
+		V3 axis{{q[7] - q[5], q[2] - q[6], q[3] - q[1]}};
+		const double l = std::sqrt(Dot(axis, axis));
+		double angle = std::atan2(0.5*l, cosine);
+		if (l > 1e-300) axis = Mul(axis, 1/l);
+		else { axis = {{0, 0, 1}}; angle = 0; }
+		steps_.push_back({{axis[0], axis[1], axis[2], angle}});
+	}
+}
+
+void SampledTrack::At(double t, double rotation[9], double translation[3]) const
+{
+	if (t == 0 && (times_.empty() || times_.front() != 0)) {
+		for (int k = 0; k < 9; ++k) rotation[k] = zero_[k];
+		for (int k = 0; k < 3; ++k) translation[k] = zero_[9 + k];
+		return;
+	}
+	std::size_t i = 0;
+	while (i + 2 < times_.size() && t > times_[i + 1]) ++i;
+	const double span = times_[i + 1] - times_[i];
+	const double lambda = span > 0 ? (t - times_[i])/span : 0.0;
+	const double* a = poses_[i].data();
+	const double* b = poses_[i + 1].data();
+	const auto& st = steps_[i];
+	const double angle = lambda*st[3], cs = std::cos(angle), sn = std::sin(angle);
+	const double ux = st[0], uy = st[1], uz = st[2];
+	// Rodrigues: E = cos I + sin [u]x + (1 - cos) u u^T; R = E R_i.
+	const double e[9] = {cs + (1 - cs)*ux*ux, (1 - cs)*ux*uy - sn*uz, (1 - cs)*ux*uz + sn*uy,
+		(1 - cs)*uy*ux + sn*uz, cs + (1 - cs)*uy*uy, (1 - cs)*uy*uz - sn*ux,
+		(1 - cs)*uz*ux - sn*uy, (1 - cs)*uz*uy + sn*ux, cs + (1 - cs)*uz*uz};
+	for (int m = 0; m < 3; ++m) for (int n = 0; n < 3; ++n)
+		rotation[3*m + n] = e[3*m]*a[n] + e[3*m + 1]*a[3 + n] + e[3*m + 2]*a[6 + n];
+	for (int k = 0; k < 3; ++k) translation[k] = (1 - lambda)*a[9 + k] + lambda*b[9 + k];
+}
+
+double Motion::PathBound(const V3& x, double t0, double t1) const
+{
+	const double span = std::fabs(t1 - t0);
+	switch (type) {
+	case Type::Fixed: return 0;
+	case Type::Translate: return std::sqrt(Dot(vector, vector))*span;
+	case Type::Oscillate: return std::sqrt(Dot(vector, vector))*2*Pi*frequency*span;
+	case Type::Rotate: {
+		const V3 p = Sub(x, center);
+		const V3 perp = Sub(p, Mul(axis, Dot(axis, p)));
+		return std::fabs(rate)*std::sqrt(Dot(perp, perp))*span;
+	}
+	case Type::Track: {
+		if (!track) return 0;
+		double longest = 0;
+		V3 prev = x;
+		for (int k = 1; k <= 16; ++k) {
+			const V3 q = TrackMap(*track, x, t0, t0 + (t1 - t0)*k/16.0);
+			longest = std::max(longest, std::sqrt(Dot(Sub(q, prev), Sub(q, prev))));
+			prev = q;
+		}
+		return 1.5*16*longest;
+	}
+	}
+	return 0;
 }
 
 const char* ContactModelName(ContactModel c)
@@ -739,10 +825,20 @@ bool ClothSystem::Solve(const BlockMatrix& a, const std::vector<double>& b, std:
 		(options.solver == LinearSolver::Auto && directCost_ <= (preferDirect ? 5e9 : 2e7));
 	if (direct) {
 		if (!(reuse && factorValid_)) factorValid_ = factor_.Factor(a, order_);
-		if (factorValid_) {
+		if (factorValid_ && a.ExtensionBlocks() == 0) {
 			factor_.Solve(b, solution);
 			++stats.directSolves;
 			return true;
+		}
+		if (factorValid_) {
+			// Cloth-cloth couplings outside the band: CG on the whole matrix,
+			// preconditioned by the factor of its pattern part.
+			LinearSolveStats ls;
+			const bool ok = SolveConjugateGradient(a, b, solution, options.cgTolerance, options.cgIterations, ls, factor_, pool_.get());
+			++stats.directSolves;
+			stats.cgIterations += ls.iterations;
+			if (!ok && indefinite) *indefinite = true;
+			return ok || ls.iterations > 0;
 		}
 		if (indefinite) { *indefinite = true; solution.assign(b.size(), 0.0); return false; }
 	}
@@ -829,13 +925,14 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 		if (!haveH) { Evaluate(p, pos, nullptr, &h, !exactFirst); haveH = hFresh = true; }
 		++stats.newtonIterations;
 		for (std::size_t k = 0; k < dofs; ++k) rhs[k] = -g[k];
-		bool indefinite = false;
+		bool indefinite = false, projectedNow = !exactFirst, gradientNow = false;
 		Solve(h, rhs, dx, options, preferDirect, stats, &indefinite, !hFresh);
 		hFresh = false;
 		double slope = 0;
 		for (std::size_t k = 0; k < dofs; ++k) slope += g[k]*dx[k];
 		if (exactFirst && (indefinite || !(slope < 0) || !std::isfinite(slope))) {
 			++stats.projections;
+			projectedNow = true;
 			Evaluate(p, pos, nullptr, &h, true);
 			Solve(h, rhs, dx, options, preferDirect, stats, nullptr, false);
 			slope = 0;
@@ -843,6 +940,7 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 		}
 		if (!(slope < 0) || !std::isfinite(slope)) {
 			// Fall back to a diagonally scaled gradient step.
+			gradientNow = true;
 			slope = 0;
 			for (std::uint32_t q = 0; q < n; ++q) {
 				const double* b = h.Block(h.DiagonalSlot(q));
@@ -871,6 +969,9 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 			if (alpha < 1) ++stats.ccdLimited;
 			if (!(alpha > 0)) { error = "cloth contact: the collision detection allows no step"; return false; }
 		}
+		const double ccdAlpha = alpha;
+		double acceptedAlpha = 0;
+		int acceptedLs = -1;
 		bool accepted = false;
 		for (int ls = 0; ls < 30 && !accepted; ++ls, alpha *= 0.5) {
 			for (std::size_t k = 0; k < dofs; ++k) trial[k] = pos[k] + alpha*dx[k];
@@ -886,6 +987,7 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 				accepted = residual(gt) < res;
 			}
 			if (accepted) {
+				acceptedAlpha = alpha; acceptedLs = ls;
 				pos.swap(trial);
 				phi = phiTrial;
 				if (full) { g.swap(gt); haveH = wantH || lag; }
@@ -896,6 +998,25 @@ bool ClothSystem::Newton(const Potential& p, std::vector<double>& pos, const New
 					if (evalH) hFresh = true;
 				}
 			}
+		}
+		if (options.trace) {
+			NewtonTrace t;
+			t.time = time; t.h = p.traceH; t.iteration = it; t.residual = res; t.phi = phi; t.slope = slope;
+			t.ccdAlpha = ccdAlpha; t.alpha = accepted ? acceptedAlpha : 0; t.lineSearch = accepted ? acceptedLs : -1;
+			t.projected = projectedNow; t.gradientStep = gradientNow;
+			double worstR = -1;
+			for (std::uint32_t q = 0; q < n; ++q) {
+				if (fixed_[q]) continue;
+				const std::size_t k = 3*static_cast<std::size_t>(q);
+				const double r = std::sqrt(g[k]*g[k] + g[k+1]*g[k+1] + g[k+2]*g[k+2])/sheet_.mass[q];
+				if (r > worstR) { worstR = r; t.worst = q; }
+			}
+			if (p.contact) {
+				t.candidates = p.contact->candidates.size();
+				t.active = barrier_->ActivePairs(*p.contact, pos);
+				t.gap = barrier_->SmallestGap(*p.contact, pos);
+			}
+			options.trace(t);
 		}
 		if (!accepted) { error = "cloth Newton line search failed"; return false; }
 	}
@@ -940,6 +1061,7 @@ bool ClothSystem::StepOnce(double h, Scheme scheme, const NewtonOptions& options
 	const std::size_t dofs = x.size();
 	const double tNext = time + h;
 	Potential p;
+	p.traceH = h;
 	p.xRef = x;
 	ExternalForce(x, v, p.force);
 	const bool bdf2 = scheme == Scheme::BDF2 && havePrev;
@@ -1000,30 +1122,23 @@ bool ClothSystem::StepOnce(double h, Scheme scheme, const NewtonOptions& options
 		if (scheme == Scheme::ImplicitMidpoint) { error = "barrier contact does not support implicit midpoint"; return false; }
 		p.contact = std::make_shared<ContactFrame>();
 		ContactFrame& f = *p.contact;
-		barrier_->Place(tNext, f, time);
-		// A feasible start: x_n (pins at their targets), carried rigidly with the
-		// moving colliders wherever they could reach it during the step.  The jump
-		// from x_n is checked exactly against everything that does not move with
-		// it (pins and carried vertices against static colliders and the cloth).
-		std::vector<double> start = x;
-		bool jumped = barrier_->MovingColliders() && barrier_->Carry(x, time, tNext, start);
-		if (jumped) ++stats.carried;
-		for (std::uint32_t q = 0; q < sheet_.Vertices(); ++q)
-			if (fixed_[q]) { jumped = jumped || At(target, q) != At(x, q); Put(start, q, At(target, q)); }
-		std::string crossing;
-		if (jumped && !barrier_->IntersectionFree(f, x, start, crossing, true)) {
-			error = "cloth contact: a pin or a collider-carried region passes through something (" + crossing + ")";
-			return false;
+		if (Kinematic()) {
+			if (!KinematicStages(p, tNext, guess, options, stats, error)) return false;
+		} else {
+			// Nothing prescribed moves: start from x_n, then the predictor x_n + h v_n
+			// as far as the collision detection allows.
+			barrier_->Place(tNext, f, time);
+			std::vector<double> start = x;
+			for (std::uint32_t q = 0; q < sheet_.Vertices(); ++q) if (fixed_[q]) Put(start, q, At(target, q));
+			barrier_->Candidates(f, start, nullptr);
+			if (!(barrier_->SmallestGap(f, start) > 0)) { error = "cloth contact: the step starts inside a collider's offset"; return false; }
+			barrier_->LagFriction(f, start, p.dampingScale, p.xTilde);
+			std::vector<double> d(dofs);
+			for (std::size_t k = 0; k < dofs; ++k) d[k] = guess[k] - start[k];
+			barrier_->Candidates(f, start, &d);
+			const double alpha = barrier_->MaxStep(f, start, d);
+			for (std::size_t k = 0; k < dofs; ++k) guess[k] = start[k] + alpha*d[k];
 		}
-		barrier_->Candidates(f, start, nullptr);
-		if (!(barrier_->SmallestGap(f, start) > 0)) { error = "cloth contact: the step starts inside a collider's offset"; return false; }
-		barrier_->LagFriction(f, start, p.dampingScale, p.xTilde);
-		// The predictor x_n + h v_n, as far as the collision detection allows.
-		std::vector<double> d(dofs);
-		for (std::size_t k = 0; k < dofs; ++k) d[k] = guess[k] - start[k];
-		barrier_->Candidates(f, start, &d);
-		const double alpha = barrier_->MaxStep(f, start, d);
-		for (std::size_t k = 0; k < dofs; ++k) guess[k] = start[k] + alpha*d[k];
 	}
 	if (!Newton(p, guess, options, false, stats, error)) return false;
 	std::vector<double> xNew(dofs), vNew(dofs);
@@ -1041,10 +1156,199 @@ bool ClothSystem::StepOnce(double h, Scheme scheme, const NewtonOptions& options
 		Put(xNew, q, At(target, q));
 		Put(vNew, q, At(targetV, q));
 	}
+	if (stepObserver && p.contact) stepObserver(*p.contact, xNew, h);   // M6 coupling hook (never changes results)
 	xPrev.swap(x); vPrev.swap(v);
 	x.swap(xNew); v.swap(vNew);
 	hPrev = h; havePrev = true; time = tNext;
 	return true;
+}
+
+bool ClothSystem::Kinematic() const
+{
+	if (!barrier_) return false;
+	if (barrier_->MovingColliders()) return true;
+	for (const auto& g : config_.pins) if (!g.vertices.empty() && g.motion.Moving()) return true;
+	return false;
+}
+
+// Barrier contact with moving pins or mesh colliders: kinematic continuation.
+// The prescribed motions advance from the step's start in stages; each stage
+// moves the colliders, the pins and the cloth vertices carried by a moving
+// collider along their true (rigid) paths as far as conservative advancement
+// over every candidate pair allows (BarrierContact::KinematicStep, gap kept
+// above 0.1 of its value), and the cloth then relaxes against the kinematics
+// of that stage by a Newton solve on the step's own incremental potential.  The
+// last stage reaches the step's end; the step's Newton solve follows (with the
+// colliders at the end pose, as before).  Every configuration on the way is
+// connected to the previous one by a path checked against everything, so the
+// step is intersection-free whatever the colliders do.  Prescribed motions that
+// leave no room for the cloth's contact offset stall the stages: the step then
+// fails with a diagnostic naming the cause and the time (not retried by halving).
+bool ClothSystem::KinematicStages(Potential& p, double tNext, std::vector<double>& guess, const NewtonOptions& options,
+	StepStats& stats, std::string& error)
+{
+	const std::uint32_t n = sheet_.Vertices();
+	const std::size_t dofs = x.size();
+	ContactFrame& f = *p.contact;
+	// The colliders' velocity over the step (for friction): the chord from t_n to t_{n+1}.
+	barrier_->Place(tNext, f, time);
+	{
+		std::vector<const Motion*> mesh(barrier_->Meshes(), nullptr);
+		for (std::size_t m = 0; m < mesh.size(); ++m) mesh[m] = &barrier_->MeshMotion(static_cast<std::uint32_t>(m));
+		barrier_->PlaceStage(time, f, mesh);
+	}
+	std::vector<double> cur = x;
+	barrier_->Candidates(f, cur, nullptr);
+	if (!(barrier_->SmallestGap(f, cur) > 0)) { error = "cloth contact: the step starts inside a collider's offset"; return false; }
+	barrier_->LagFriction(f, cur, p.dampingScale, p.xTilde);
+	const double reach = barrier_->Thickness() + barrier_->Settings().activation;
+	NewtonOptions relax = options;
+	relax.requireConvergence = false;
+	relax.maxIterations = std::min(options.maxIterations, 12);
+	KinematicStage stage;
+	stage.follow.assign(n, nullptr);
+	const std::size_t meshes = barrier_->Meshes();
+	stage.mesh.assign(meshes, nullptr);
+	// Per stage, scene-transform motions are followed as their samples at four
+	// sub-steps, rigidly interpolated (SampledTrack); the others as they are.
+	std::vector<Motion> meshLocal(meshes), pinLocal(config_.pins.size());
+	auto local = [&](const Motion& m, Motion& out, double t0, double t1) -> const Motion* {
+		if (!m.Moving()) return nullptr;
+		if (m.type != Motion::Type::Track || !m.track) return &m;
+		const std::shared_ptr<const TransformTrack> previous = out.track; // the last stage's path, continued without a jump
+		out = m;
+		out.track = std::make_shared<SampledTrack>(*m.track, t0, t1, 4, previous.get());
+		return &out;
+	};
+	std::vector<int> owner;
+	double s = time;
+	int stages = 0, stalled = 0;
+	bool carried = false;
+	while (s < tNext) {
+		stage.t0 = s; stage.t1 = tNext;
+		for (std::size_t m = 0; m < meshes; ++m) stage.mesh[m] = local(barrier_->MeshMotion(static_cast<std::uint32_t>(m)), meshLocal[m], s, tNext);
+		std::vector<const Motion*> pinMotion(config_.pins.size(), nullptr);
+		for (std::size_t g = 0; g < config_.pins.size(); ++g) pinMotion[g] = local(config_.pins[g].motion, pinLocal[g], s, tNext);
+		// Pins follow their motion; free vertices near a moving collider are carried with it.
+		const double travel = barrier_->ColliderTravel(s, tNext, stage.mesh);
+		barrier_->Owners(f, cur, reach + 2*travel, owner);
+		double clothTravel = 0;
+		for (std::uint32_t q = 0; q < n; ++q) {
+			stage.follow[q] = nullptr;
+			if (pinGroup_[q] >= 0) stage.follow[q] = pinMotion[static_cast<std::size_t>(pinGroup_[q])];
+			else if (owner[q] >= 0) {
+				stage.follow[q] = stage.mesh[static_cast<std::size_t>(owner[q])];
+				carried = true;
+			}
+			if (stage.follow[q]) clothTravel = std::max(clothTravel, stage.follow[q]->PathBound(At(cur, q), s, tNext));
+		}
+		barrier_->Candidates(f, cur, nullptr, travel + clothTravel);
+		ContactPair blocking;
+		const double tau = barrier_->KinematicStep(f, cur, stage, &blocking);
+		const double sNew = tau >= 1 ? tNext : s + tau*(tNext - s);
+		if (!(sNew > s)) {
+			fatal_ = true;
+			error = DescribeBlock(f, cur, stage, blocking, s);
+			return false;
+		}
+		for (std::uint32_t q = 0; q < n; ++q) {
+			if (!stage.follow[q]) continue;
+			if (pinGroup_[q] >= 0) Put(cur, q, stage.follow[q]->Position(At(sheet_.initial, q), sNew));
+			else Put(cur, q, stage.follow[q]->Advance(At(cur, q), s, sNew));
+		}
+		barrier_->PlaceStage(sNew, f, stage.mesh);
+		++stages;
+		stalled = sNew - s < 1e-3*(tNext - time) ? stalled + 1 : 0;
+		s = sNew;
+		if (s >= tNext) break;
+		// Relax the cloth against the kinematics at s.
+		StepStats local;
+		if (!Newton(p, cur, relax, false, local, error)) return false;
+		stats.newtonIterations += local.newtonIterations; stats.cgIterations += local.cgIterations;
+		stats.directSolves += local.directSolves; stats.projections += local.projections; stats.ccdLimited += local.ccdLimited;
+		if (stalled >= 3) {
+			// No progress for three stages: relax fully against these kinematics; if
+			// there is still no room to advance, the prescribed motion is infeasible.
+			StepStats full;
+			if (!Newton(p, cur, options, false, full, error)) return false;
+			stats.newtonIterations += full.newtonIterations; stats.cgIterations += full.cgIterations;
+			stats.directSolves += full.directSolves; stats.projections += full.projections; stats.ccdLimited += full.ccdLimited;
+			stage.t0 = s;
+			barrier_->Candidates(f, cur, nullptr, travel + clothTravel);
+			const double again = barrier_->KinematicStep(f, cur, stage, &blocking);
+			if (again*(tNext - s) < 1e-3*(tNext - time)) {
+				fatal_ = true;
+				error = DescribeBlock(f, cur, stage, blocking, s);
+				return false;
+			}
+			stalled = 0;
+		}
+		if (stages >= 400) {
+			error = "cloth contact: the kinematic stages did not reach the end of the step (400 stages)";
+			return false;
+		}
+	}
+	// The end pose: pins exactly at their targets.  Then the predictor x_n + h v_n
+	// for the free vertices, as far as the collision detection allows.
+	PinTargets(tNext, cur, nullptr);
+	barrier_->Place(tNext, f, time);
+	{
+		std::vector<double> d(dofs, 0.0);
+		for (std::uint32_t q = 0; q < n; ++q)
+			if (!fixed_[q]) for (int r = 0; r < 3; ++r) { const std::size_t k = 3*static_cast<std::size_t>(q) + r; d[k] = guess[k] - cur[k]; }
+		barrier_->Candidates(f, cur, &d);
+		const double alpha = barrier_->MaxStep(f, cur, d);
+		for (std::size_t k = 0; k < dofs; ++k) cur[k] += alpha*d[k];
+	}
+	stats.stages += stages;
+	if (carried) ++stats.carried;
+	guess.swap(cur);
+	return true;
+}
+
+// The diagnostic for a stalled kinematic stage: which prescribed motions pinch the cloth.
+std::string ClothSystem::DescribeBlock(const ContactFrame& f, const std::vector<double>& pos, const KinematicStage& stage,
+	const ContactPair& blocking, double t) const
+{
+	(void)stage;
+	const std::uint32_t nu = sheet_.spec.verticesU;
+	auto vertexName = [&](std::uint32_t q) {
+		return "vertex " + std::to_string(q) + " (i " + std::to_string(q % nu) + ", j " + std::to_string(q / nu) + ")";
+	};
+	std::vector<std::string> causes;
+	std::vector<int> groups;
+	auto add = [&](const std::string& c) { if (std::find(causes.begin(), causes.end(), c) == causes.end()) causes.push_back(c); };
+	auto addPin = [&](std::uint32_t q) {
+		const int g = pinGroup_[q];
+		if (std::find(groups.begin(), groups.end(), g) != groups.end()) return;
+		groups.push_back(g);
+		add("pin group " + std::to_string(g) + " (at " + vertexName(q) + ")");
+	};
+	std::vector<std::uint32_t> cloth;
+	std::vector<std::string> colliders;
+	barrier_->DescribePair(f, blocking, cloth, colliders);
+	for (const auto& c : colliders) add(c);
+	// The blocked pair's cloth vertices: pinned, or held by contact with
+	// something else, or next to a pin.
+	for (std::uint32_t q : cloth) if (fixed_[q]) addPin(q);
+	for (std::uint32_t q : cloth) {
+		if (fixed_[q]) continue;
+		std::vector<std::string> others;
+		barrier_->ContactsOf(f, pos, q, others);
+		for (const auto& o : others) add(o);
+	}
+	for (std::uint32_t q : cloth)
+		for (const auto& tri : sheet_.triangles)
+			for (int k = 0; k < 3; ++k) if (tri.v[k] == q)
+				for (int l = 0; l < 3; ++l) if (fixed_[tri.v[l]]) addPin(tri.v[l]);
+	std::string what;
+	for (std::size_t k = 0; k < causes.size(); ++k) what += (k ? (k + 1 == causes.size() ? " and " : ", ") : "") + causes[k];
+	char head[160];
+	std::snprintf(head, sizeof(head), "cloth contact: the prescribed motion is infeasible at t = %.6f s: ", t);
+	char tail[160];
+	std::snprintf(tail, sizeof(tail), " (no room for the contact offset, contact_thickness %g m)", barrier_->Thickness());
+	const std::string where = cloth.empty() ? std::string("the cloth") : "the cloth at " + vertexName(cloth[0]);
+	return std::string(head) + where + " is pinched between " + (causes.size() > 1 ? what : what + " and the cloth around it") + tail;
 }
 
 bool ClothSystem::StepRecursive(double h, Scheme scheme, const NewtonOptions& options, int depth, StepStats& stats,
@@ -1054,11 +1358,18 @@ bool ClothSystem::StepRecursive(double h, Scheme scheme, const NewtonOptions& op
 	const double sh = hPrev, st = time;
 	const bool sp = havePrev;
 	StepStats local;
+	fatal_ = false;
 	if (StepOnce(h, scheme, options, local, error)) { stats.Add(local); return true; }
 	stats.Add(local);
 	x = sx; v = sv; xPrev = spx; vPrev = spv; hPrev = sh; time = st; havePrev = sp;
-	if (depth >= options.maxHalvings) return false;
+	// Infeasible prescribed motion is not cured by smaller steps.
+	if (fatal_ || depth >= options.maxHalvings) return false;
 	++stats.halvings;
+	{
+		char when[96];
+		std::snprintf(when, sizeof when, " (step at t = %.6f s, h = %.3e s, halved to depth %d)", st, h, depth + 1);
+		stats.lastHalving = error + when;
+	}
 	const double t0 = time;
 	if (!StepRecursive(0.5*h, scheme, options, depth + 1, stats, error)) return false;
 	// The second half ends exactly at t0 + h.
@@ -1075,7 +1386,7 @@ bool ClothSystem::Step(double h, Scheme scheme, const NewtonOptions& options, St
 }
 
 bool ClothSystem::SolveStatic(const NewtonOptions& options, StepStats& stats, std::string& error, double tau0, int stages,
-	bool finish)
+	bool finish, int stageIterations)
 {
 	const std::size_t dofs = x.size();
 	std::vector<double> vel(dofs, 0.0);
@@ -1090,7 +1401,7 @@ bool ClothSystem::SolveStatic(const NewtonOptions& options, StepStats& stats, st
 	}
 	NewtonOptions stage = options;
 	stage.requireConvergence = false;
-	stage.maxIterations = std::min(options.maxIterations, 25);
+	stage.maxIterations = std::min(options.maxIterations, stageIterations);
 	double tau = tau0;
 	for (int s = 0; s < stages; ++s, tau *= 4) {
 		p.inertia = 1/(tau*tau);
@@ -1142,6 +1453,40 @@ bool ClothSystem::PathIntersectionFree(const std::vector<double>& x0, const std:
 	ContactFrame f;
 	barrier_->Place(t, f);
 	return barrier_->IntersectionFree(f, x0, x1, detail);
+}
+
+bool ClothSystem::PathIntersectionFree(const std::vector<double>& x0, const std::vector<double>& x1, double t0, double t1,
+	std::string& detail) const
+{
+	if (!barrier_) return true;
+	ContactFrame f0, f1;
+	barrier_->Place(t0, f0);
+	barrier_->Place(t1, f1);
+	return barrier_->IntersectionFree(f0, x0, x1, detail, false, &f1);
+}
+
+std::size_t ClothSystem::SelfContactPairs(const std::vector<double>& positions) const
+{
+	if (!barrier_ || !barrier_->Settings().selfCollision) return 0;
+	ContactFrame f;
+	barrier_->Place(time, f);
+	barrier_->Candidates(f, positions, nullptr);
+	f.candidates.erase(std::remove_if(f.candidates.begin(), f.candidates.end(), [](const ContactPair& p) {
+		return p.kind != ContactPair::SelfVertexTriangle && p.kind != ContactPair::SelfEdgeEdge; }), f.candidates.end());
+	return barrier_->ActivePairs(f, positions);
+}
+
+void ClothSystem::ContactForces(const std::vector<double>& positions, double t, std::vector<double>& forces) const
+{
+	forces.assign(positions.size(), 0.0);
+	if (!barrier_) return;
+	ContactFrame f;
+	barrier_->Place(t, f);
+	barrier_->Candidates(f, positions, nullptr);
+	const std::vector<char> none(sheet_.Vertices(), 0);
+	std::vector<double> g(positions.size(), 0.0);
+	barrier_->Evaluate(f, positions, &g, nullptr, false, none);
+	for (std::size_t k = 0; k < g.size(); ++k) forces[k] = -g[k];
 }
 
 double ClothSystem::ElasticEnergy(const std::vector<double>& positions) const

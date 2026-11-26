@@ -17,7 +17,13 @@ presents library state and forwards actions; it computes no keys, inspects no fi
 - Refused cache locations prompt for trust; trusted roots are persisted and re-applied at launch.
 - Every headless probe run passes; the clean two-run sequence of §5 has 36 and 46 checks.
 
-Not done: simulation parameters in the **properties panel** (§4). The Windows app is unchanged (§7).
+Not done here: simulation parameters in the **properties panel** (§4). The Windows app is unchanged (§7).
+
+**Follow-up (M5c, [SIMULATION_M5C_RESULTS.md](SIMULATION_M5C_RESULTS.md)):** the properties panel's Simulation
+category, the `rise-sim` worker built and embedded at `Contents/MacOS/rise-sim`, cloth and fire memory and cost
+estimates, the panel polish (legible buttons, Copy path / Reveal in Finder, the stale reason, light and dark renders),
+and the playback rate: ordinary animations step 30 authored frames per second again; scenes with simulation assets
+play in real time (§6 "Playback feel" below is superseded).
 
 ## 1. Building and running the app here
 
@@ -132,7 +138,7 @@ Trust calls `AddTrustedCacheRoot`, saves the root under `trustedSimulationCacheR
 checks the location again, and continues the action. Nothing is trusted without that click. When no root can help
 (the cache directory itself is not private), the alert explains that instead.
 
-## 4. Properties panel: not wired (needs a controller category)
+## 4. Properties panel: not wired here (needs a controller category; done in M5c)
 
 The brief expected the producer chunks' descriptors to make `cloth_simulation` / `fire_simulation` editable in the
 existing properties panel. They do not reach it:

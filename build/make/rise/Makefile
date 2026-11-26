@@ -288,6 +288,8 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Fire/, \
 # M3a: the cloth solver (strict IEEE arithmetic for reproducible checkpoints and evidence).
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, \
 	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
+# M6: coupling (group host, adapters, transform codec, rigid bodies): strict IEEE arithmetic.
+TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/, Simulation/SimulationTransform.o Simulation/Rigid/RigidBody.o Simulation/Rigid/RigidSolver.o Simulation/SimulationGroup.o Simulation/SimulationPortAdapters.o Simulation/Coupling/ClothRigidCoupling.o)
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -636,6 +638,12 @@ $(PATHLIBRARY)Simulation/Fire/FireSolver.o : $(PATHLIBRARY)Simulation/Fire/FireS
 CLOTH_STRICT_OBJS = $(addprefix $(PATHLIBRARY)Simulation/Cloth/, ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 $(CLOTH_STRICT_OBJS) : $(PATHLIBRARY)Simulation/Cloth/%.o : $(PATHLIBRARY)Simulation/Cloth/%.cpp
 	@echo "Compiling (strict cloth solver): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# M6: coupling sources without fast-math or FP contraction (deterministic checkpoints and evidence).
+M6_STRICT_OBJS = $(addprefix $(PATHLIBRARY), Simulation/SimulationTransform.o Simulation/Rigid/RigidBody.o Simulation/Rigid/RigidSolver.o Simulation/SimulationGroup.o Simulation/SimulationPortAdapters.o Simulation/Coupling/ClothRigidCoupling.o)
+$(M6_STRICT_OBJS) : $(PATHLIBRARY)%.o : $(PATHLIBRARY)%.cpp
+	@echo "Compiling (strict coupling): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 .cpp.o:

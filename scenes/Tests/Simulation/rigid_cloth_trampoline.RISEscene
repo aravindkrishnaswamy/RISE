@@ -1,0 +1,144 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           rigid_cloth_trampoline.RISEscene                                                        #
+#   Description:    Simulation M6: two-way coupling.  A ball (`rigid_simulation drop`, its body made from    #
+#                   the scene object `ball`) falls onto a cloth (`cloth_simulation sheet`) pinned at its    #
+#                   four corners.  `simulation_group trampoline` runs both with one macro step: the ball's  #
+#                   body_state moves the cloth's port-driven collider (rigid_surface), and the cloth's      #
+#                   collider_reaction (the barrier and friction impulse it felt) loads the ball            #
+#                   (contact_reaction).  Implicit Gauss-Seidel coupling, Aitken relaxation.  The rendered   #
+#                   ball follows the body by `transform_source drop.bodies[ball]`.                          #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> trampoline   (one process, both caches)            #
+#                   bin/tools/rise_sim status <this scene>                                                  #
+#   Render:         scripts/simulation_m6_trampoline.sh                                                     #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.6 0.7 0.9
+}
+
+uniformcolor_painter
+{
+	name			red
+	color			0.8 0.15 0.1
+}
+
+uniformcolor_painter
+{
+	name			cream
+	color			0.85 0.8 0.65
+}
+
+lambertian_material
+{
+	name			mat_ball
+	reflectance		red
+}
+
+lambertian_material
+{
+	name			mat_sheet
+	reflectance		cream
+}
+
+pinhole_camera
+{
+	location		1.2 0.8 1.6
+	lookat			0 0.05 0
+	up				0 1 0
+	fov				40.0
+}
+
+rigid_simulation
+{
+	name			drop
+	frames			31
+	body_object		ball mass 0.1
+}
+
+sphere_geometry
+{
+	name			geo_ball
+	radius			0.1
+}
+
+standard_object
+{
+	name			ball
+	geometry		geo_ball
+	material		mat_ball
+	position		0 0.36 0
+	transform_source	drop.bodies[ball]
+}
+
+cloth_simulation
+{
+	name			sheet
+	size_u			0.8
+	size_v			0.8
+	vertices_u		15
+	vertices_v		15
+	frames			31
+	origin			-0.4 0 0.4
+	pin				u0v0
+	pin				u1v0
+	pin				u0v1
+	pin				u1v1
+	collider_port	ball
+}
+
+simulation_group
+{
+	name			trampoline
+	members			drop
+	members			sheet
+	connect			drop.body_state -> sheet.collider_surface via rigid_surface body=ball
+	connect			sheet.collider_reaction -> drop.body_load via contact_reaction targets=ball
+	policy			implicit
+	order			gauss-seidel
+	member_order	drop sheet
+	tolerance		1e-6
+	absolute_tolerance	1e-4		# N: above the cloth Newton solve's noise in its reaction
+	sub_iterations	30
+}
+
+simulated_mesh_geometry
+{
+	name			geo_sheet
+	source			sheet.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			sheet_object
+	geometry		geo_sheet
+	material		mat_sheet
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.4 -1 -0.6
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.6
+	radiance_background	TRUE
+}

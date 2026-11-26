@@ -137,6 +137,33 @@ CaseResult RunContactCylinder(const CaseSettings& settings, const ContactSetting
 CaseResult RunContactIncline(const CaseSettings& settings, const ContactSettings& contact, double angle);
 CaseResult RunContactMesh(const CaseSettings& settings, const ContactSettings& contact, bool rotating, double duration);
 CaseResult RunContactBounce(const CaseSettings& settings, const ContactSettings& contact);
+// ---------------------------------------------------------------- self-collision cases
+//
+// Cloth-cloth barrier contact (self_collision), bake integrators:
+//   stack      two square layers (the upper a quarter cell off in plan) on a
+//              frictionless plane, no friction between them, static: the plane
+//              carries both weights and the lower layer the upper's (force
+//              balance to the Newton tolerance; error = the larger relative
+//              imbalance), and the gap between the layers above the offset lies
+//              in (0, dhat) (`measured`: its mean, which tends to 0 with dhat).
+//   incline    the upper layer resting on the lower (pinned) one, gravity
+//              tilted by `angle`: sticks below atan(self_friction) as the
+//              smoothed law's creep, slides above it at g (sin a - mu cos a)
+//              (errors as for the contact incline).
+//   hairpin    strip (16 bending lengths) folded over itself on a frictionless
+//              plane, static: `measured` the loop height, `secondary` the
+//              fold's reach past the free ends (for self-convergence studies;
+//              no analytic reference, see docs/SIMULATION_M3A_RESULTS.md).
+//   fold       every accepted step checked exactly for intersections, cloth
+//              against colliders and against itself, along its straight path
+//              (scenario 0: a sheet dropped corner-first onto a sphere; 1: a
+//              strip on a plane pushed into a fold by pins at its ends moving
+//              toward each other); error = violations; `secondary` = steps with
+//              cloth-cloth pairs within reach.
+CaseResult RunSelfStack(const CaseSettings& settings, const ContactSettings& contact);
+CaseResult RunSelfIncline(const CaseSettings& settings, const ContactSettings& contact, double angle);
+CaseResult RunSelfHairpin(const CaseSettings& settings, const ContactSettings& contact);
+CaseResult RunSelfFold(const CaseSettings& settings, const ContactSettings& contact, int scenario, double duration);
 //! The elastica draped over a cylinder (see "cylinder" above): positions (x
 //! from the top, y down from the top of the arc) at arc lengths s from the
 //! centre; also the lift-off arc length.

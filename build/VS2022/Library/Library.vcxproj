@@ -608,6 +608,25 @@
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothParameterSchema.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidParameterSchema.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Simulation\Coupling\ClothRigidCoupling.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGroup.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationPortAdapters.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationTransform.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidBody.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
@@ -1257,6 +1276,13 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothValidation.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothSolver.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothParameterSchema.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidParameterSchema.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Coupling\ClothRigidCoupling.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationGroup.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationPortAdapters.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTransform.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidBody.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireCase.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />

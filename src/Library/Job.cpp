@@ -50,6 +50,7 @@
 #include "Utilities/RISECBOR64.h"
 #include "Utilities/FireSequence.h"
 #include "Simulation/SimulationTimeline.h"
+#include "Simulation/SimulationTransform.h"
 #include "Utilities/FireSimulationRecords.h"
 #include "Version.h"
 #include "Utilities/Transformable.h"
@@ -10881,8 +10882,9 @@ bool Job::AddSimulation( const SimulationDescriptor& desc )
 	spec.solverId = desc.solverId;
 	spec.sceneInputs = desc.sceneInputs;
 	spec.outputs = desc.outputs;
+	spec.portSources = desc.portSources;   // M6
 	std::string error;
-	if( !desc.solverId.empty() ) {
+	if( !desc.solverId.empty() || desc.keyword == Simulation::kSimulationGroupKeyword ) {   // M6: a group's fields
 		if( !RISECBOR64::DecodeCanonical( desc.parameters, spec.parameters, &error ) ||
 			spec.parameters.GetType() != RISECBOR64::Value::Map )
 			return fail( desc.keyword + " `" + desc.name + "`: invalid parameter record: " + error );
@@ -10961,6 +10963,7 @@ bool Job::PlanSimulations( std::vector<Simulation::SceneSimulationPlan>& plans,
 	if( !pScene ) { error = "no scene"; return false; }
 	Simulation::SceneObjectInputProvider provider( *pScene,
 		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
+	provider.SetSimulationDriven( transformSourceObjects );   // M6
 	return simulationGraph->Plan( specs, provider, plans, error );
 }
 
@@ -10972,6 +10975,7 @@ bool Job::DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& s
 	if( !pScene ) { error = "no scene"; return false; }
 	Simulation::SceneObjectInputProvider provider( *pScene,
 		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
+	provider.SetSimulationDriven( transformSourceObjects );   // M6
 	if( !simulationGraph->Describe( specs, provider, statuses, error ) ) return false;
 	// M5: which consumer geometries show each simulation (the GUI's live
 	// controls address a live run by its geometry).
@@ -11041,6 +11045,148 @@ bool Job::AddFireMediumFromSimulation(
 	return AddFireMediumBound( name, manifest.c_str(), channel_carbon, channel_temperature, channel_condensed,
 		channel_reaction, channel_chem_ch, channel_chem_c2, channel_chem_co2, channel_velocity, chem_model_none );
 }
+
+// Simulation M6: `transform_source <simulation>.<output>[<body>]`.  The body's
+// motion becomes ordinary keyframes on the object's `position` and
+// `orientation` (the default animation), so scrubbing, playback, the viewport
+// and motion blur -- the time-indexed path included (DL-465) -- see a
+// simulated transform exactly as a keyframed one.  Keys at every output time
+// and a quarter interval either side of it, the latter from the frame's own
+// velocities (x + v d, exp(w d) R), so the blur over a shutter of up to half
+// an interval follows the simulated velocity.  The object's authored
+// transform is its pose at the simulation's first frame; later poses are
+// that pose moved by the body's displacement since then.  A cache that does
+// not exist yet leaves the object where it is authored, with a warning.
+bool Job::SetObjectTransformSource( const char* object, const char* source )
+{
+	const auto fail = []( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectTransformSource:: %s", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = message;
+		return false;
+	};
+	if( !object || !source ) return false;
+	const std::string text( source );
+	const auto dot = text.find( '.' ), open = text.find( '[' );
+	if( dot == std::string::npos || open == std::string::npos || open < dot || text.back() != ']' || open + 2 > text.size() - 1 )
+		return fail( std::string( "standard_object `" ) + object + "`: transform_source is `<simulation>.<output>[<body>]`, not `" + text + "`" );
+	const std::string simulation = text.substr( 0, dot ), output = text.substr( dot + 1, open - dot - 1 ),
+		body = text.substr( open + 1, text.size() - open - 2 );
+	const auto spec = simulationsMap.find( simulation );
+	if( spec == simulationsMap.end() )
+		return fail( std::string( "standard_object `" ) + object + "`: transform_source names `" + simulation +
+			"`, which is not a simulation declared before it" );
+	IObject* pObj = pObjectManager ? pObjectManager->GetItem( object ) : 0;
+	if( !pObj ) return fail( std::string( "standard_object `" ) + object + "`: no such object" );
+	Simulation::CacheSnapshot snapshot;
+	std::string error;
+	if( !Simulation::CacheSnapshot::Open( spec->second.cacheDir, std::size_t( 256 ) << 20, snapshot, error ) ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::SetObjectTransformSource:: `%s`: simulation `%s` has no cache yet (%s); "
+			"the object stays at its authored pose until it is baked (rise-sim bake <scene> %s)", object, simulation.c_str(),
+			spec->second.cacheDir.string().c_str(), simulation.c_str() );
+		transformSourceObjects.insert( object );
+		return true;
+	}
+	const auto& outs = snapshot.Description().outputs;
+	const auto o = std::find_if( outs.begin(), outs.end(), [&]( const Simulation::CacheOutput& x ) { return x.name == output; } );
+	if( o == outs.end() || o->type != Simulation::TransformCodec )
+		return fail( std::string( "standard_object `" ) + object + "`: `" + simulation + "." + output + "` is not a transform.v1 output" );
+	// The authored pose: translation p0, rotation O0 (columns of the linear part, normalised).
+	pObj->FinalizeTransformations();
+	const Matrix4 m0 = pObj->GetFinalTransformMatrix();
+	const double A[3][3] = { { m0._00, m0._10, m0._20 }, { m0._01, m0._11, m0._21 }, { m0._02, m0._12, m0._22 } };
+	double O0[3][3];
+	for( int c = 0; c < 3; ++c ) {
+		const double l = std::sqrt( A[0][c]*A[0][c] + A[1][c]*A[1][c] + A[2][c]*A[2][c] );
+		if( !( l > 0 ) ) return fail( std::string( "standard_object `" ) + object + "`: a degenerate transform cannot follow a body" );
+		for( int r = 0; r < 3; ++r ) O0[r][c] = A[r][c]/l;
+	}
+	const double p0[3] = { m0._30, m0._31, m0._32 };
+	struct Pose { double t; double R[9]; double x[3]; };
+	std::vector<std::pair<double, Simulation::TransformBody>> frames;
+	for( const auto& e : snapshot.Entries() ) {
+		if( e.output != output ) continue;
+		std::shared_ptr<const Simulation::Bytes> bytes;
+		Simulation::TransformFrame f;
+		if( snapshot.Read( e.index, output, std::size_t( 64 ) << 20, bytes, error ) != Simulation::FrameStatus::Ready ||
+			!Simulation::DecodeTransforms( *bytes, std::size_t( 64 ) << 20, f, error ) )
+			return fail( std::string( "standard_object `" ) + object + "`: " + simulation + " frame " + std::to_string( e.index ) + ": " + error );
+		const auto b = std::find_if( f.bodies.begin(), f.bodies.end(), [&]( const Simulation::TransformBody& x ) { return x.name == body; } );
+		if( b == f.bodies.end() ) return fail( std::string( "standard_object `" ) + object + "`: `" + simulation + "." + output +
+			"` has no body `" + body + "`" );
+		frames.emplace_back( e.time, *b );
+	}
+	if( frames.empty() ) return true;
+	std::sort( frames.begin(), frames.end(), []( const auto& a, const auto& b ) { return a.first < b.first; } );
+	const double interval = frames.size() > 1 ? frames[1].first - frames[0].first : 0;
+	const auto R0 = Simulation::QuaternionMatrix( frames.front().second.orientation );
+	const auto& x0 = frames.front().second.position;
+	// The body's pose a time d after a frame, from the frame's velocities.
+	auto poseAt = [&]( const Simulation::TransformBody& b, double d, double R[9], double x[3] ) {
+		const auto Rb = Simulation::QuaternionMatrix( b.orientation );
+		const double w[3] = { b.angularVelocity[0]*d, b.angularVelocity[1]*d, b.angularVelocity[2]*d };
+		const double th = std::sqrt( w[0]*w[0] + w[1]*w[1] + w[2]*w[2] );
+		double E[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+		if( th > 0 ) {
+			const double k[3] = { w[0]/th, w[1]/th, w[2]/th }, c = std::cos( th ), s = std::sin( th ), C = 1 - c;
+			const double r[9] = { c + k[0]*k[0]*C, k[0]*k[1]*C - k[2]*s, k[0]*k[2]*C + k[1]*s, k[1]*k[0]*C + k[2]*s, c + k[1]*k[1]*C,
+				k[1]*k[2]*C - k[0]*s, k[2]*k[0]*C - k[1]*s, k[2]*k[1]*C + k[0]*s, c + k[2]*k[2]*C };
+			std::copy( r, r + 9, E );
+		}
+		for( int i = 0; i < 3; ++i ) for( int j = 0; j < 3; ++j ) {
+			double a = 0;
+			for( int q = 0; q < 3; ++q ) a += E[3*i + q]*Rb[3*q + j];
+			R[3*i + j] = a;
+		}
+		for( int i = 0; i < 3; ++i ) x[i] = b.position[i] + b.velocity[i]*d;
+	};
+	double last[3] = { 0, 0, 0 };
+	bool first = true;
+	unsigned keys = 0;
+	const double end = frames.back().first;
+	for( const auto& fr : frames ) {
+		for( const double d : { -0.25*interval, 0.0, 0.25*interval } ) {
+			const double t = fr.first + d;
+			if( t < frames.front().first || t > end || ( d != 0 && interval == 0 ) ) continue;
+			double Rb[9], xb[3];
+			poseAt( fr.second, d, Rb, xb );
+			// D = Rb R0^T; O = D O0; p = D (p0 - x0) + xb.
+			double D[3][3], O[3][3], p[3];
+			for( int i = 0; i < 3; ++i ) for( int j = 0; j < 3; ++j ) {
+				double a = 0;
+				for( int q = 0; q < 3; ++q ) a += Rb[3*i + q]*R0[3*j + q];
+				D[i][j] = a;
+			}
+			for( int i = 0; i < 3; ++i ) for( int j = 0; j < 3; ++j ) {
+				double a = 0;
+				for( int q = 0; q < 3; ++q ) a += D[i][q]*O0[q][j];
+				O[i][j] = a;
+			}
+			for( int i = 0; i < 3; ++i ) {
+				p[i] = xb[i];
+				for( int q = 0; q < 3; ++q ) p[i] += D[i][q]*( p0[q] - x0[q] );
+			}
+			// Euler angles of RISE's orientation, R = Rx(a) Ry(b) Rz(c), unwrapped against the previous key.
+			double e[3] = { std::atan2( -O[1][2], O[2][2] ), std::asin( std::max( -1.0, std::min( 1.0, O[0][2] ) ) ), std::atan2( -O[0][1], O[0][0] ) };
+			for( int k = 0; k < 3; ++k ) {
+				e[k] *= 180.0/3.14159265358979323846;
+				if( !first ) e[k] += 360.0*std::round( ( last[k] - e[k] )/360.0 );
+				last[k] = e[k];
+			}
+			first = false;
+			char pv[160], ov[160];
+			std::snprintf( pv, sizeof( pv ), "%.17g %.17g %.17g", p[0], p[1], p[2] );
+			std::snprintf( ov, sizeof( ov ), "%.17g %.17g %.17g", e[0], e[1], e[2] );
+			if( !AddKeyframe( "object", object, "position", pv, t, 0, 0 ) || !AddKeyframe( "object", object, "orientation", ov, t, 0, 0 ) )
+				return fail( std::string( "standard_object `" ) + object + "`: cannot keyframe its transform" );
+			++keys;
+		}
+	}
+	transformSourceObjects.insert( object );
+	GlobalLog()->PrintEx( eLog_Info, "Job::SetObjectTransformSource:: `%s` follows %s.%s[%s]: %u poses from %zu frames%s", object,
+		simulation.c_str(), output.c_str(), body.c_str(), keys, frames.size(), snapshot.Complete() ? "" : " (partial cache)" );
+	return true;
+}
+
 
 bool Job::AddSimulatedMeshGeometryFromSimulation(
 	const char* name, const char* simulation, const char* output,

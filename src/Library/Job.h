@@ -430,6 +430,7 @@ namespace RISE
 		//! paths resolve against; the graph's Configure memo, which survives
 		//! ClearAll (it is keyed by content, never by entity).
 		std::map<std::string, Simulation::SceneSimulationSpec>	simulationsMap;
+		std::set<std::string>	transformSourceObjects;		//!< M6: objects a simulation drives (transform_source)
 		std::vector<std::string>						simulationOrder;
 		struct SimulatedGeometryRecord
 		{
@@ -2333,6 +2334,10 @@ namespace RISE
 			const char* channel_chem_ch, const char* channel_chem_c2,
 			const char* channel_chem_co2, const char* channel_velocity,
 			bool chem_model_none );
+
+		//! Simulation M6: an object follows a body of a transform.v1 output
+		//! (IJob::SetObjectTransformSource).
+		bool SetObjectTransformSource( const char* object, const char* source );
 
 		//! Adds a unit-transmission medium boundary distinct from "none".
 		//! Appended beside IJob's corresponding ABI-tail extension.

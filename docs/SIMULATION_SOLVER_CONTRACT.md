@@ -283,7 +283,7 @@ trusted with the caches. Windows keeps its previous checks (no ancestor policy).
 | `mesh.topology.v1` | static | implemented | [mesh §v2](SIMULATION_MESH_FORMAT.md#mesh-v2): connectivity + static UV sets |
 | `field.v1` | frame / port | implemented | [field](SIMULATION_FIELD_FORMAT.md): channels over a domain digest |
 | `points.v1` | frame | **specified, not implemented** | [Appendix A.2](#a2-pointsv1-specified-not-implemented) |
-| transforms | frame | not specified (M4/M6) | rigid transforms per named body |
+| `transform.v1` | frame / port | implemented (M6) | [transform](SIMULATION_TRANSFORM_FORMAT.md): named rigid bodies, position, unit quaternion, linear and angular velocity, binary64 |
 
 ## Appendix A. A liquid solver against the contract
 
@@ -333,12 +333,13 @@ solver's mesh (`field.v1` with a domain); undeclared `domain` decided per payloa
 Not working yet (each belongs to a later milestone):
 1. `points.v1` encoder/decoder and its renderer path (M7).
 2. Rendering a changing-topology or empty mesh (`SimulatedMeshSource` refuses both; M3b §8).
-3. The co-stepping group host, port adapters and sub-iteration (interfaces only; M6).
+3. ~~The co-stepping group host, port adapters and sub-iteration (interfaces only; M6).~~ Done in M6 (`SimulationGroup.h`, `SimulationPortAdapters.h`; [M6 results](SIMULATION_M6_RESULTS.md)).
 4. ~~Scene inputs in the worker (M4).~~ Done in M4 (`rise-sim bake <scene>`).
 5. Streaming or chunked checkpoints for very large states (all of `Checkpoint` is one in-memory `Bytes`).
 6. ~~No `Capabilities` field says which backend a configuration will actually run on.~~ M4 added
    `Capabilities::backend` (Appendix C).
-7. (M4) A one-way coupling fed from a cached output through a port (`CachedPortFeed`) is not keyed: the key covers
+7. ~~(M4) A one-way coupling fed from a cached output through a port (`CachedPortFeed`) is not keyed~~ (fixed in M6: the
+   group host adds the key input `rise.coupling`, covering the upstream cache key and the adapter identity): the key covers
    `inputs` (scene inputs) only, so a downstream simulation fed through a port would not go stale when its upstream
    changes. M4 binds an upstream simulation through a scene element instead (an object showing its output), whose
    identity embeds the upstream key; keying port feeds (an additive key input) belongs with M6's group host.
@@ -370,3 +371,8 @@ Not working yet (each belongs to a later milestone):
 | 2026-11-23 | (M4, not part of the contract) Solver parameter schemas (`SimulationParameterSchema.h`, `RegisterSolverSchema` beside `RegisterSolver`): names, types, defaults, ranges, units, docs; scene producer chunks are generated from them. | Optional; a solver without one still works through the contract. |
 | 2026-11-23 | `FindTrustedCacheRoot(path, root)`: the one decision of which trusted root a location falls under (`SecureCacheDirectory` and `DiskFileWriteBuffer`'s staging-ancestor check both use it; opt-in, nothing trusted by default). | New function; the cache writer's behaviour is unchanged. |
 | 2026-11-23 | (M5, host side, not part of the solver contract; [M5a results](SIMULATION_M5A_RESULTS.md)) Worker: `rise-sim.status.cbor` gains the optional members `pid`, `pid_start`, `host` and the state `waiting-gpu`; a configuration whose `Capabilities::backend` is stated and not `cpu` takes an advisory GPU lock (`--gpu-lock`, `RISE_SIM_GPU_LOCK`, per-user default) before `Start`/`Restore`; a `rise-sim.stop` file in the cache directory stops the worker like SIGINT; scene bakes take `--no-upstream` and `--expect-key NAME=KEY`. `WorkerStatus` and `WorkerOptions` gain defaulted members. `SceneSimulationStatus` gains `memoryEstimate`/`costEstimate` (from `Capabilities`). | Readers ignore the new status members (older records have none); a solver that states no backend or `cpu` never touches the lock; keys, epochs, payloads, manifests and every other sidecar are unchanged. |
+| 2026-11-23 | (M5c; [M5c results](SIMULATION_M5C_RESULTS.md)) Cloth and fire fill the existing `Capabilities::costEstimate` and `memoryEstimate` (cloth from vertices, substeps and mode, measured; fire from the driver's host-memory admission reserve for the tier's grid and the r275 s/step). Host side, not part of the contract: `ParameterSchema::describeUnkeyed` (a predicted solver states its unkeyed time support and estimates), `SceneSimulationStatus::staleReason` / `wallEstimate`, `FormatSimulationEstimate`, `PlaybackClock` time scale. | No new contract field; estimates are not keyed, so keys, epochs, payloads, manifests and outputs are unchanged (fire's predicted key checked equal in `SimulationSceneTest` M). `describeUnkeyed` null = the previous behaviour. |
+| 2026-11-25 | (M6; [M6 results](SIMULATION_M6_RESULTS.md)) `IPortAdapter` gains `Identity()`, `Fidelity()`, `Scope()` and `ConvertWithAuxiliary(...)` (payloads of other offered ports an adapter reads); `PortConnection` gains `adapter`, `adapterParameters`, `auxiliary`; `GroupPolicy` gains `relaxation`, `aitken`, `absoluteTolerance`, `onNonConvergence` (`Fail`/`Halve`), `minimumMacroStep`. | Virtual members with defaults (identity empty = the registry id, fidelity `preview`, auxiliary ignored); new struct members default to the behaviour of the fields before them. |
+| 2026-11-25 | (M6) A group host may append the key input `rise.coupling` to a coupled member's `SolverDescription::inputs`; its identity covers the policy, every member upstream of it (solver, version, effective parameters, input identities; a cached member's key, plus its manifest digest when foreign, plus a time offset when set) and every connection into them with its adapter's identity. A member nothing feeds keeps its standalone key. | Absent for every uncoupled configuration: their keys, epochs and caches are unchanged. |
+| 2026-11-25 | (M6) Codec `transform.v1` ([spec](SIMULATION_TRANSFORM_FORMAT.md)) is a native payload type; `TransformBodyDomain` names per-body `field.v1` data. | New codec; existing caches unaffected. |
+| 2026-11-25 | (M6, host side) `SimulationGroup` implements `ISimulationGroupHost`; `RegisterPortAdapterFactory` / `CreatePortAdapter` beside `RegisterPortAdapter`; `RegisterCouplingEvidence`; group manifest sidecar `rise-sim.group.cbor` in each recorded member cache and `rise-sim.group.checkpoint` in the group directory; `WriteWorkerStatus`. Solver side (additive, no version change for existing parameters): `cloth.shell` mesh colliders take `motion: {type: port, port: <name>}` and then offer `collider_reaction`; new solver `rigid.bodies`. | Existing parameters, keys and payloads unchanged; the cloth checkpoint gains `port_colliders` only when a port-driven collider exists. |

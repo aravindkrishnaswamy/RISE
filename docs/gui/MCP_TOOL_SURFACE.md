@@ -267,7 +267,7 @@ A bake is a separate `rise-sim` process run on the scene **file**, managed by th
 
 | Tool | Params | Autonomy | Result |
 |---|---|---|---|
-| `sim_list` | `{}` | read-safe | `{ok, scene, unsavedChanges, liveSupported, simulations:[{name, keyword, solver, state, upstreamOutOfDate, keyStatus, expectedKey, cacheKey, fidelity, cacheDir, interactive, backend, framesAvailable, framesTotal, startTime, interval, endTime, upstream, inputs, error?, job?}]}`; `keyStatus` is `current` / `stale` / `missing` / `unknown`; also adopts bakes still running from an earlier session |
+| `sim_list` | `{}` | read-safe | `{ok, scene, unsavedChanges, liveSupported, simulations:[{name, keyword, solver, state, upstreamOutOfDate, keyStatus, expectedKey, cacheKey, fidelity, cacheDir, interactive, backend, framesAvailable, framesTotal, startTime, interval, endTime, upstream, inputs, memoryEstimate, costEstimate, wallEstimateSeconds, estimate, staleReason?, error?, job?}]}`; `keyStatus` is `current` / `stale` / `missing` / `unknown`; the estimates (M5c) are the solver's, approximate, 0 / "" when unknown; also adopts bakes still running from an earlier session |
 | `sim_bake` | `{simulation}` or `{all:true, staleOnly?}`, `force?` | commit, owner session | `{ok, jobId, jobIds, jobs}` at once; a refusal (save first, unknown simulation) is `{ok:false, message}` |
 | `sim_status` | `{jobId?}` | read-safe | `{found, job}`, or `{jobs:[...]}` for the scene |
 | `sim_wait` | `{jobId, timeoutMs?}` | read-safe | `{completed, found, job}`; `timeoutMs` default 5000, clamped `[0,60000]` exactly like `render_wait` |

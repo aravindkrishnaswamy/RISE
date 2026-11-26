@@ -31,16 +31,21 @@ enum PropertyKind: Int {
     // misrouting every String/Filename/Enum/Reference row (a
     // DoubleMat4 even rendered a filename browse button).  Found by
     // the Windows-port slice mirroring the real wire values.
+    // M5c: DoubleVec2 (ChunkDescriptor.h, DL-32 round 3) sits at 3, so
+    // everything from DoubleVec3 on moved up by one; this enum still had
+    // the old values, which showed Reference rows (10) as plain strings
+    // and Enum rows (9) as reference chips.
     case bool       = 0
     case uint       = 1
     case double     = 2
-    case doubleVec3 = 3
-    case doubleVec4 = 4
-    case doubleMat4 = 5
-    case string     = 6
-    case filename   = 7
-    case enumKind   = 8
-    case reference  = 9
+    case doubleVec2 = 3
+    case doubleVec3 = 4
+    case doubleVec4 = 5
+    case doubleMat4 = 6
+    case string     = 7
+    case filename   = 8
+    case enumKind   = 9
+    case reference  = 10
 }
 
 /// Single quick-pick preset option, mirrors RISEViewportPropertyPreset.
@@ -128,6 +133,7 @@ private func categoryTitle(_ cat: RISEViewportCategory) -> String {
     case .sceneVariant: return "Variants"
     case .painter:      return "Painters"
     case .geometry:     return "Geometry"
+    case .simulation:   return "Simulations"
     case .none:         return "Scene"
     default:            return "Scene"
     }
@@ -151,6 +157,7 @@ private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
     case .sceneVariant: return "⧉"
     case .painter:      return "▧"
     case .geometry:     return "◇"
+    case .simulation:   return "∿"
     case .none:         return "•"
     default:            return "•"
     }
@@ -1714,7 +1721,7 @@ private struct PropertyRowView: View {
             )
         case .enumKind:
             EnumChipCell(row: row, onCommit: onCommit)
-        case .double, .uint, .string, .doubleVec4, .doubleMat4:
+        case .double, .uint, .string, .doubleVec2, .doubleVec4, .doubleMat4:
             // Vec4/Mat4 get the plain well: no bespoke multi-field
             // editor yet, and free-text is the honest fallback.
             TextWellCell(row: row, onCommit: onCommit, onScrubBegin: onScrubBegin, onScrubEnd: onScrubEnd)
@@ -2690,7 +2697,9 @@ private struct EnumChipCell: View {
 
 // MARK: - Button styles
 
-private struct PillButtonStyle: ButtonStyle {
+/// Internal (not private) since M5c: the Simulations panel's row actions
+/// use the same button style.
+struct PillButtonStyle: ButtonStyle {
     var filled: Bool
     @Environment(\.isEnabled) private var isEnabled
 

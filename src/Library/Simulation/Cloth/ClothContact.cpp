@@ -105,11 +105,14 @@ Piece PointTriangle(const V3* xs)
 	return best;
 }
 
-// Segments (0, 1) and (2, 3).  Nearly parallel segments (sin^2 of the angle
-// below `parallel`) use the point-edge pieces: their interior piece's Hessian
-// grows like 1/sin^2.  The distance is then overestimated by at most about
-// L sin/2 (1e-3 L with the default), far below the thickness offset.
-Piece EdgeEdge(const V3* xs, double parallel = 1e-6)
+// Segments (0, 1) and (2, 3).  Parallel segments (sin^2 of the angle below
+// `parallel`, round-off level) use the point-edge pieces, which then give the
+// distance exactly.  (m3a.3 switched at sin^2 = 1e-6, overestimating the
+// distance by up to L sin/2 there: the barrier energy jumped where a pair
+// crossed the threshold and Newton stalled on the jump, sec. 2 of
+// docs/SIMULATION_M3A_RESULTS.md.  The interior piece's 1/sin^2 Hessian growth
+// near parallel is now cancelled by the edge-edge mollifier, Mollifier below.)
+Piece EdgeEdge(const V3* xs, double parallel = 1e-14)
 {
 	const V3 da = Sub(xs[1], xs[0]), db = Sub(xs[3], xs[2]), r0 = Sub(xs[0], xs[2]);
 	const double a = Dot(da, da), b = Dot(da, db), c = Dot(db, db), d = Dot(da, r0), e = Dot(db, r0);
@@ -232,7 +235,7 @@ double PairDistance2(int kind, const V3* xs)
 // The exact segment distance (interior piece down to round-off parallelism), for the crossing test.
 double ExactDistance2(int kind, const V3* xs)
 {
-	return (kind == 0 ? PointTriangle(xs) : EdgeEdge(xs, 1e-14)).d2;
+	return (kind == 0 ? PointTriangle(xs) : EdgeEdge(xs)).d2;
 }
 
 // Smoothed friction: f1 and its antiderivative F0 (F0(0) = eps/3) at speed y.
@@ -243,6 +246,56 @@ void FrictionCurve(double y, double eps, double& f0, double& f1, double& df1)
 		df1 = 2/eps - 2*y/(eps*eps);
 		f0 = y*y/eps - y*y*y/(3*eps*eps) + eps/3;
 	} else { f1 = 1; df1 = 0; f0 = y; }
+}
+
+// IPC's edge-edge mollifier (Li et al. 2020, sec. 4.3) on c = |ea x eb|^2,
+// ea = x1 - x0, eb = x3 - x2: m(c) = (2 - c/eps) c/eps below eps, 1 above,
+// eps = 1e-3 |ea_rest|^2 |eb_rest|^2.  It takes the edge-edge barrier smoothly
+// to zero as the edges become parallel, where the distance's interior piece
+// stops being smooth (point-triangle pairs at the edges' end points carry the
+// contact there).  Gradient (12) and Hessian (144) over the four points when
+// asked; returns m.
+double Mollifier(const V3* xs, double eps, double* g, double* h)
+{
+	const V3 ea = Sub(xs[1], xs[0]), eb = Sub(xs[3], xs[2]);
+	const double aa = Dot(ea, ea), bb = Dot(eb, eb), ab = Dot(ea, eb);
+	const double c = aa*bb - ab*ab;
+	if (!(c < eps) || !(eps > 0)) {
+		if (g) std::fill(g, g + 12, 0.0);
+		if (h) std::fill(h, h + 144, 0.0);
+		return 1;
+	}
+	const double q = c/eps, m = (2 - q)*q;
+	if (!g && !h) return m;
+	const double m1 = 2*(1 - q)/eps, m2 = -2/(eps*eps);
+	// dc/dea = 2 bb ea - 2 ab eb, dc/deb = 2 aa eb - 2 ab ea.
+	V3 ga, gb;
+	for (int k = 0; k < 3; ++k) { ga[k] = 2*bb*ea[k] - 2*ab*eb[k]; gb[k] = 2*aa*eb[k] - 2*ab*ea[k]; }
+	double gc[12];
+	for (int k = 0; k < 3; ++k) { gc[k] = -ga[k]; gc[3 + k] = ga[k]; gc[6 + k] = -gb[k]; gc[9 + k] = gb[k]; }
+	if (g) for (int k = 0; k < 12; ++k) g[k] = m1*gc[k];
+	if (!h) return m;
+	// Hessian of c in (ea, eb): Haa = 2 bb I - 2 eb eb^T, Hbb = 2 aa I - 2 ea ea^T,
+	// Hab = 4 ea eb^T - 2 eb ea^T - 2 ab I (rows ea, columns eb).
+	double haa[9], hbb[9], hab[9];
+	for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+		const double id = i == j ? 1.0 : 0.0;
+		haa[3*i + j] = 2*bb*id - 2*eb[i]*eb[j];
+		hbb[3*i + j] = 2*aa*id - 2*ea[i]*ea[j];
+		hab[3*i + j] = 4*ea[i]*eb[j] - 2*eb[i]*ea[j] - 2*ab*id;
+	}
+	// Points: x0 = -ea, x1 = +ea, x2 = -eb, x3 = +eb.
+	const double sgn[4] = {-1, 1, -1, 1};
+	for (int a = 0; a < 4; ++a) for (int b = 0; b < 4; ++b) for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+		double hc;
+		if (a < 2 && b < 2) hc = haa[3*i + j];
+		else if (a >= 2 && b >= 2) hc = hbb[3*i + j];
+		else if (a < 2) hc = hab[3*i + j];
+		else hc = hab[3*j + i];
+		hc *= sgn[a]*sgn[b];
+		h[(3*a + i)*12 + 3*b + j] = m1*hc + m2*gc[3*a + i]*gc[3*b + j];
+	}
+	return m;
 }
 
 inline std::uint64_t CellKey(std::int64_t i, std::int64_t j, std::int64_t k)
@@ -476,7 +529,7 @@ bool BarrierContact::Initialize(const Sheet& sheet, const ModelConfig& config, s
 	shapes_ = config.colliders;
 	vertices_ = sheet.Vertices();
 	if (!(settings_.stiffness > 0) || !(settings_.activation > 0) || !(xi_ >= 0) || !(settings_.friction >= 0) ||
-		!(settings_.frictionVelocity > 0)) {
+		!(settings_.selfFriction >= 0) || !(settings_.frictionVelocity > 0)) {
 		error = "barrier contact needs positive stiffness, activation and slip speed, and nonnegative thickness and friction";
 		return false;
 	}
@@ -490,7 +543,12 @@ bool BarrierContact::Initialize(const Sheet& sheet, const ModelConfig& config, s
 			edgeArea[{std::min(a, b), std::max(a, b)}] += t.area/3;
 		}
 	}
-	for (const auto& e : edgeArea) { edges_.push_back(e.first.first); edges_.push_back(e.first.second); edgeWeight_.push_back(e.second); }
+	for (const auto& e : edgeArea) {
+		edges_.push_back(e.first.first); edges_.push_back(e.first.second); edgeWeight_.push_back(e.second);
+		const double du = sheet.materialU[e.first.second] - sheet.materialU[e.first.first];
+		const double dv = sheet.materialV[e.first.second] - sheet.materialV[e.first.first];
+		edgeRest2_.push_back(du*du + dv*dv);
+	}
 	double edgeSum = 0;
 	std::size_t edgeCount = 0;
 	for (std::size_t m = 0; m < config.meshColliders.size(); ++m) {
@@ -515,7 +573,9 @@ bool BarrierContact::Initialize(const Sheet& sheet, const ModelConfig& config, s
 		}
 		for (const auto& e : edges) {
 			colliderEdges_.push_back(e.first.first); colliderEdges_.push_back(e.first.second);
-			edgeSum += Norm(Sub(At(colliderV0_, e.first.first), At(colliderV0_, e.first.second)));
+			const double l = Norm(Sub(At(colliderV0_, e.first.first), At(colliderV0_, e.first.second)));
+			colliderEdgeRest2_.push_back(l*l);
+			edgeSum += l;
 			++edgeCount;
 		}
 		motions_.push_back(mc.motion);
@@ -532,19 +592,76 @@ bool BarrierContact::Initialize(const Sheet& sheet, const ModelConfig& config, s
 	return true;
 }
 
+namespace {
+// The rigid map x -> R x + c of a Track motion from time 0 to t.
+void TrackPose(const Motion& m, double t, double* rc)
+{
+	double r0[9], c0[3], r1[9], c1[3];
+	m.track->At(0.0, r0, c0);
+	m.track->At(t, r1, c1);
+	for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+		rc[3*i + j] = r1[3*i]*r0[3*j] + r1[3*i + 1]*r0[3*j + 1] + r1[3*i + 2]*r0[3*j + 2];
+	for (int i = 0; i < 3; ++i) rc[9 + i] = c1[i] - (rc[3*i]*c0[0] + rc[3*i + 1]*c0[1] + rc[3*i + 2]*c0[2]);
+}
+inline V3 ApplyPose(const double* rc, const V3& x)
+{
+	return {{rc[0]*x[0] + rc[1]*x[1] + rc[2]*x[2] + rc[9], rc[3]*x[0] + rc[4]*x[1] + rc[5]*x[2] + rc[10],
+		rc[6]*x[0] + rc[7]*x[1] + rc[8]*x[2] + rc[11]}};
+}
+}
+
 void BarrierContact::Place(double t, ContactFrame& f, double t0) const
 {
 	f.time = t;
 	const std::size_t nv = colliderV0_.size()/3;
 	f.colliderX.resize(colliderV0_.size());
 	f.colliderV.resize(colliderV0_.size());
+	// Scene-transform motions: one pose per mesh (sampling the scene is costly).
+	std::vector<std::array<double,12>> pose(motions_.size()), pose0(motions_.size()), poseMinus(motions_.size()), posePlus(motions_.size());
+	for (std::size_t m = 0; m < motions_.size(); ++m) {
+		if (motions_[m].type != Motion::Type::Track || !motions_[m].track) continue;
+		TrackPose(motions_[m], t, pose[m].data());
+		if (t0 < t) TrackPose(motions_[m], t0, pose0[m].data());
+		else { TrackPose(motions_[m], t - 1e-6, poseMinus[m].data()); TrackPose(motions_[m], t + 1e-6, posePlus[m].data()); }
+	}
 	for (std::size_t i = 0; i < nv; ++i) {
-		const Motion& m = motions_[colliderMesh_[i]];
+		const std::uint32_t mesh = colliderMesh_[i];
+		const Motion& m = motions_[mesh];
 		const V3 rest = At(colliderV0_, static_cast<std::uint32_t>(i));
-		const V3 p = m.Position(rest, t);
-		const V3 v = t0 < t ? Mul(Sub(p, m.Position(rest, t0)), 1/(t - t0)) : m.Velocity(rest, t);
+		V3 p, v;
+		if (m.type == Motion::Type::Track && m.track) {
+			p = ApplyPose(pose[mesh].data(), rest);
+			v = t0 < t ? Mul(Sub(p, ApplyPose(pose0[mesh].data(), rest)), 1/(t - t0)) :
+				Mul(Sub(ApplyPose(posePlus[mesh].data(), rest), ApplyPose(poseMinus[mesh].data(), rest)), 1/2e-6);
+		} else {
+			p = m.Position(rest, t);
+			v = t0 < t ? Mul(Sub(p, m.Position(rest, t0)), 1/(t - t0)) : m.Velocity(rest, t);
+		}
 		for (int k = 0; k < 3; ++k) { f.colliderX[3*i + k] = p[k]; f.colliderV[3*i + k] = v[k]; }
 	}
+	PlaceGrid(f);
+}
+
+void BarrierContact::PlaceStage(double t, ContactFrame& f, const std::vector<const Motion*>& mesh) const
+{
+	f.time = t;
+	const std::size_t nv = colliderV0_.size()/3;
+	f.colliderX.resize(colliderV0_.size());
+	std::vector<std::array<double,12>> pose(motions_.size());
+	for (std::size_t m = 0; m < motions_.size(); ++m)
+		if (mesh[m] && mesh[m]->type == Motion::Type::Track && mesh[m]->track) TrackPose(*mesh[m], t, pose[m].data());
+	for (std::size_t i = 0; i < nv; ++i) {
+		const std::uint32_t m = colliderMesh_[i];
+		const V3 rest = At(colliderV0_, static_cast<std::uint32_t>(i));
+		const V3 p = !mesh[m] ? rest : mesh[m]->type == Motion::Type::Track ? ApplyPose(pose[m].data(), rest) : mesh[m]->Position(rest, t);
+		for (int k = 0; k < 3; ++k) f.colliderX[3*i + k] = p[k];
+	}
+	PlaceGrid(f);
+}
+
+void BarrierContact::PlaceGrid(ContactFrame& f) const
+{
+	const std::size_t nv = colliderV0_.size()/3;
 	f.cell = std::max(meanEdge_, 2*(xi_ + settings_.activation));
 	f.gridTriangles.Clear(); f.gridEdges.Clear(); f.gridVertices.Clear();
 	const std::size_t nt = colliderTriangles_.size()/3, ne = colliderEdges_.size()/2;
@@ -569,11 +686,12 @@ void BarrierContact::Place(double t, ContactFrame& f, double t0) const
 	}
 }
 
-void BarrierContact::Candidates(ContactFrame& f, const std::vector<double>& x, const std::vector<double>* dx) const
+void BarrierContact::Candidates(ContactFrame& f, const std::vector<double>& x, const std::vector<double>* dx,
+	double inflate) const
 {
 	std::vector<ContactPair>& out = f.candidates;
 	out.clear();
-	const double reach = xi_ + settings_.activation;
+	const double reach = xi_ + settings_.activation + inflate;
 	auto point = [&](std::uint32_t i, Box& b) {
 		const V3 p = At(x, i);
 		b.Grow(p);
@@ -670,6 +788,13 @@ void BarrierContact::Candidates(ContactFrame& f, const std::vector<double>& x, c
 	out.erase(std::unique(out.begin(), out.end()), out.end());
 }
 
+double BarrierContact::MollifierScale(const ContactPair& p) const
+{
+	if (p.kind == ContactPair::EdgeEdge) return 1e-3*edgeRest2_[p.a]*colliderEdgeRest2_[p.b];
+	if (p.kind == ContactPair::SelfEdgeEdge) return 1e-3*edgeRest2_[p.a]*edgeRest2_[p.b];
+	return 0;
+}
+
 double BarrierContact::Weight(const ContactPair& p) const
 {
 	switch (p.kind) {
@@ -720,9 +845,10 @@ bool BarrierContact::Points(const ContactFrame& f, const std::vector<double>& x,
 
 namespace {
 // Adds a dense n-point (3n x 3n) contribution to the gradient and Hessian on
-// the free cloth points; `self`: only the diagonal blocks enter the Hessian.
+// the free cloth points (blocks between cloth points of a cloth-cloth pair that
+// are not in the element pattern go to the matrix's extension).
 void Scatter(const double* g, const double* h, int n, const std::uint32_t* ids, const bool* cloth,
-	const std::vector<char>& fixed, bool project, bool self, std::vector<double>* gradient, BlockMatrix* hessian)
+	const std::vector<char>& fixed, bool project, std::vector<double>* gradient, BlockMatrix* hessian)
 {
 	bool use[4];
 	for (int k = 0; k < n; ++k) use[k] = cloth[k] && !fixed[ids[k]];
@@ -737,19 +863,9 @@ void Scatter(const double* g, const double* h, int n, const std::uint32_t* ids, 
 	const int D = 3*n, S = 3*m;
 	for (int a = 0; a < m; ++a) for (int b = 0; b < m; ++b)
 		for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
-			sub[(3*a + i)*S + 3*b + j] = (self && a != b) ? 0.0 : h[(3*map[a] + i)*D + 3*map[b] + j];
-	if (project) {
-		if (self) {
-			for (int a = 0; a < m; ++a) {
-				double blk[9];
-				for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] = sub[(3*a + i)*S + 3*a + j];
-				ProjectPSD(blk, 3);
-				for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) sub[(3*a + i)*S + 3*a + j] = blk[3*i + j];
-			}
-		} else ProjectPSD(sub, S);
-	}
+			sub[(3*a + i)*S + 3*b + j] = h[(3*map[a] + i)*D + 3*map[b] + j];
+	if (project) ProjectPSD(sub, S);
 	for (int a = 0; a < m; ++a) for (int b = 0; b < m; ++b) {
-		if (self && a != b) continue;
 		double* blk = hessian->Block(hessian->Slot(ids[map[a]], ids[map[b]]));
 		for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) blk[3*i + j] += sub[(3*a + i)*S + 3*b + j];
 	}
@@ -773,12 +889,14 @@ void BarrierContact::LagFriction(ContactFrame& f, const std::vector<double>& x, 
 	f.friction.clear();
 	f.frictionScale = scale;
 	f.xTilde = xTilde;
-	if (!(settings_.friction > 0) || !(scale > 0)) return;
+	if (!(settings_.friction > 0 || (settings_.selfCollision && settings_.selfFriction > 0)) || !(scale > 0)) return;
 	const double dhat = settings_.activation, kappa = settings_.stiffness;
 	for (const ContactPair& p : f.candidates) {
 		FrictionRecord r;
+		r.mu = p.kind == ContactPair::SelfVertexTriangle || p.kind == ContactPair::SelfEdgeEdge ? settings_.selfFriction : settings_.friction;
+		if (!(r.mu > 0)) continue;
 		V3 normal;
-		double z;
+		double z, mollifier = 1;
 		if (p.kind == ContactPair::Shape) {
 			const V3 q = At(x, p.a);
 			z = shapes_[p.b].Distance(q, normal) - xi_;
@@ -791,6 +909,7 @@ void BarrierContact::LagFriction(ContactFrame& f, const std::vector<double>& x, 
 			Points(f, x, p, xs, ids, cloth, kind);
 			const Piece piece = kind == 0 ? PointTriangle(xs) : EdgeEdge(xs);
 			z = std::sqrt(piece.d2) - xi_;
+			if (kind == 1) mollifier = Mollifier(xs, MollifierScale(p), nullptr, nullptr);
 			V3 rv{{0, 0, 0}};
 			r.count = 4;
 			for (int k = 0; k < 4; ++k) { r.point[k] = ids[k]; r.cloth[k] = cloth[k]; r.weight[k] = 0; }
@@ -807,7 +926,7 @@ void BarrierContact::LagFriction(ContactFrame& f, const std::vector<double>& x, 
 		if (!(z > 0) || !(z < dhat)) continue;
 		double b1 = 0;
 		Barrier(z, dhat, &b1, nullptr);
-		r.normalForce = kappa*Weight(p)*std::fabs(b1);
+		r.normalForce = kappa*Weight(p)*mollifier*std::fabs(b1);
 		TangentBasis(normal, r.tangent);
 		f.friction.push_back(r);
 	}
@@ -819,6 +938,30 @@ double BarrierContact::Evaluate(const ContactFrame& f, const std::vector<double>
 	const double dhat = settings_.activation, kappa = settings_.stiffness;
 	double energy = 0;
 	const bool derivatives = gradient || hessian;
+	if (hessian && settings_.selfCollision) {
+		// Cloth-cloth pairs couple vertices the element pattern does not: the
+		// matrix's extension holds those blocks for this candidate list.
+		std::vector<std::pair<std::uint32_t,std::uint32_t>> couplings;
+		auto couple = [&](const std::uint32_t* ids, int n) {
+			for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b)
+				if (ids[a] != ids[b] && !fixed[ids[a]] && !fixed[ids[b]]) couplings.emplace_back(std::min(ids[a], ids[b]), std::max(ids[a], ids[b]));
+		};
+		for (const ContactPair& p : f.candidates) {
+			if (p.kind != ContactPair::SelfVertexTriangle && p.kind != ContactPair::SelfEdgeEdge) continue;
+			V3 xs[4];
+			std::uint32_t ids[4];
+			bool cloth[4];
+			int kind = 0;
+			Points(f, x, p, xs, ids, cloth, kind);
+			couple(ids, 4);
+		}
+		for (const FrictionRecord& r : f.friction) {
+			bool all = r.count > 1;
+			for (int k = 0; k < r.count; ++k) all = all && r.cloth[k];
+			if (all) couple(r.point, r.count);
+		}
+		hessian->Extend(couplings);
+	}
 	for (const ContactPair& p : f.candidates) {
 		if (p.kind == ContactPair::Shape) {
 			if (fixed[p.a]) continue;
@@ -836,7 +979,7 @@ double BarrierContact::Evaluate(const ContactFrame& f, const std::vector<double>
 			if (hessian) for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) h[3*i + j] = w*(b2*n[i]*n[j] + b1*hd[3*i + j]);
 			const std::uint32_t ids[1] = {p.a};
 			const bool cloth[1] = {true};
-			Scatter(g, hessian ? h : nullptr, 1, ids, cloth, fixed, project, false, gradient, hessian);
+			Scatter(g, hessian ? h : nullptr, 1, ids, cloth, fixed, project, gradient, hessian);
 			continue;
 		}
 		V3 xs[4];
@@ -852,22 +995,29 @@ double BarrierContact::Evaluate(const ContactFrame& f, const std::vector<double>
 		if (!(z < dhat)) continue;
 		double b1, b2;
 		const double w = kappa*Weight(p);
-		energy += w*Barrier(z, dhat, &b1, &b2);
+		// Edge-edge pairs: the barrier times the mollifier m (product rule below).
+		double mg[12], mh[144];
+		const bool mollified = kind == 1;
+		const double m = mollified ? Mollifier(xs, MollifierScale(p), derivatives && any ? mg : nullptr,
+			hessian && any ? mh : nullptr) : 1.0;
+		const double bv = Barrier(z, dhat, &b1, &b2);
+		energy += w*m*bv;
 		if (!derivatives || !any) continue;
 		double g2[12], h2[144], g[12], h[144];
 		PieceDerivatives(piece, xs, 4, g2, hessian ? h2 : nullptr);
 		double gd[12];
-		for (int k = 0; k < 12; ++k) { gd[k] = g2[k]/(2*d); g[k] = w*b1*gd[k]; }
+		for (int k = 0; k < 12; ++k) { gd[k] = g2[k]/(2*d); g[k] = w*(m*b1*gd[k] + (mollified ? bv*mg[k] : 0.0)); }
 		if (hessian)
 			for (int i = 0; i < 12; ++i) for (int j = 0; j < 12; ++j) {
 				const double hd = (h2[12*i + j] - 2*gd[i]*gd[j])/(2*d);
-				h[12*i + j] = w*(b2*gd[i]*gd[j] + b1*hd);
+				double v = m*(b2*gd[i]*gd[j] + b1*hd);
+				if (mollified) v += bv*mh[12*i + j] + b1*(gd[i]*mg[j] + mg[i]*gd[j]);
+				h[12*i + j] = w*v;
 			}
-		const bool self = p.kind == ContactPair::SelfVertexTriangle || p.kind == ContactPair::SelfEdgeEdge;
-		Scatter(g, hessian ? h : nullptr, 4, ids, cloth, fixed, project, self, gradient, hessian);
+		Scatter(g, hessian ? h : nullptr, 4, ids, cloth, fixed, project, gradient, hessian);
 	}
 	// Lagged friction: (mu lambda / c) F0(|T^T v_rel|), v = c (x - xtilde).
-	const double mu = settings_.friction, eps = settings_.frictionVelocity, c = f.frictionScale;
+	const double eps = settings_.frictionVelocity, c = f.frictionScale;
 	for (const FrictionRecord& r : f.friction) {
 		V3 v{{0, 0, 0}};
 		for (int k = 0; k < r.count; ++k) {
@@ -882,7 +1032,7 @@ double BarrierContact::Evaluate(const ContactFrame& f, const std::vector<double>
 		const double y = std::sqrt(u0*u0 + u1*u1);
 		double f0, f1, df1;
 		FrictionCurve(y, eps, f0, f1, df1);
-		const double ml = mu*r.normalForce;
+		const double ml = r.mu*r.normalForce;
 		energy += ml/c*f0;
 		if (!derivatives) continue;
 		// Force direction T u-hat and the 2x2 tangent stiffness.
@@ -908,9 +1058,7 @@ double BarrierContact::Evaluate(const ContactFrame& f, const std::vector<double>
 		if (hessian)
 			for (int a = 0; a < n; ++a) for (int b = 0; b < n; ++b) for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
 				h[(3*a + i)*3*n + 3*b + j] = ml*c*r.weight[a]*r.weight[b]*tm[3*i + j];
-		bool self = true;
-		for (int k = 0; k < n; ++k) self = self && r.cloth[k];
-		Scatter(g, hessian ? h : nullptr, n, r.point, r.cloth, fixed, false, n > 1 && self, gradient, hessian);
+		Scatter(g, hessian ? h : nullptr, n, r.point, r.cloth, fixed, false, gradient, hessian);
 	}
 	return energy;
 }
@@ -964,6 +1112,27 @@ double BarrierContact::SmallestGap(const ContactFrame& f, const std::vector<doub
 	return gap;
 }
 
+std::size_t BarrierContact::ActivePairs(const ContactFrame& f, const std::vector<double>& x) const
+{
+	std::size_t count = 0;
+	for (const ContactPair& p : f.candidates) {
+		double gap;
+		if (p.kind == ContactPair::Shape) {
+			V3 n;
+			gap = shapes_[p.b].Distance(At(x, p.a), n) - xi_;
+		} else {
+			V3 xs[4];
+			std::uint32_t ids[4];
+			bool cloth[4];
+			int kind = 0;
+			Points(f, x, p, xs, ids, cloth, kind);
+			gap = std::sqrt(PairDistance2(kind, xs)) - xi_;
+		}
+		if (gap < settings_.activation) ++count;
+	}
+	return count;
+}
+
 V3 BarrierContact::TotalForce(const ContactFrame& f, const std::vector<double>& x) const
 {
 	std::vector<double> g(x.size(), 0.0);
@@ -977,11 +1146,15 @@ V3 BarrierContact::TotalForce(const ContactFrame& f, const std::vector<double>& 
 }
 
 bool BarrierContact::IntersectionFree(ContactFrame& f, const std::vector<double>& x0, const std::vector<double>& x1,
-	std::string& detail, bool skipMoving) const
+	std::string& detail, bool skipMoving, const ContactFrame* f1) const
 {
 	std::vector<double> dx(x0.size());
 	for (std::size_t k = 0; k < dx.size(); ++k) dx[k] = x1[k] - x0[k];
-	Candidates(f, x0, &dx);
+	double travel = 0;
+	if (f1)
+		for (std::size_t i = 0; i < colliderV0_.size()/3; ++i)
+			travel = std::max(travel, Norm(Sub(At(f1->colliderX, static_cast<std::uint32_t>(i)), At(f.colliderX, static_cast<std::uint32_t>(i)))));
+	Candidates(f, x0, &dx, travel);
 	for (const ContactPair& p : f.candidates) {
 		if (p.kind == ContactPair::Shape) {
 			V3 n;
@@ -998,7 +1171,7 @@ bool BarrierContact::IntersectionFree(ContactFrame& f, const std::vector<double>
 		bool cloth[4];
 		int kind = 0;
 		Points(f, x0, p, a, ids, cloth, kind);
-		Points(f, x1, p, b, ids, cloth, kind);
+		Points(f1 ? *f1 : f, x1, p, b, ids, cloth, kind);
 		bool moving = false;
 		for (int k = 0; k < 4; ++k) moving = moving || (!cloth[k] && motions_[colliderMesh_[ids[k]]].Moving());
 		if (skipMoving && moving) continue;
@@ -1011,39 +1184,40 @@ bool BarrierContact::IntersectionFree(ContactFrame& f, const std::vector<double>
 	return true;
 }
 
-bool BarrierContact::Carry(const std::vector<double>& x, double t0, double t1, std::vector<double>& out) const
+double BarrierContact::ColliderTravel(double t0, double t1, const std::vector<const Motion*>& mesh) const
 {
-	out = x;
-	if (!moving_) return false;
-	ContactFrame f0, f1;
-	Place(t0, f0);
-	Place(t1, f1);
-	// Per moving mesh: its largest displacement over the step (vertices, and the
-	// farthest point of its box under the motion, which bounds carried cloth).
-	const std::size_t meshes = motions_.size();
-	std::vector<double> travel(meshes, 0.0);
-	std::vector<Box> boxes(meshes);
+	// Over each moving mesh's bounding box corners at t0 (a rigid motion's speed
+	// bound is convex in the position, so the corners bound the vertices).
+	double travel = 0;
+	std::vector<Box> boxes(motions_.size());
 	for (std::size_t i = 0; i < colliderV0_.size()/3; ++i) {
 		const std::uint32_t m = colliderMesh_[i];
-		const V3 p0 = At(f0.colliderX, static_cast<std::uint32_t>(i));
-		boxes[m].Grow(p0);
-		travel[m] = std::max(travel[m], Norm(Sub(At(f1.colliderX, static_cast<std::uint32_t>(i)), p0)));
+		if (!mesh[m]) continue;
+		boxes[m].Grow(mesh[m]->Position(At(colliderV0_, static_cast<std::uint32_t>(i)), t0));
 	}
-	double longest = 0;
-	for (std::size_t e = 0; e < edges_.size()/2; ++e)
-		longest = std::max(longest, Norm(Sub(At(x, edges_[2*e]), At(x, edges_[2*e + 1]))));
-	// A vertex within R of a moving mesh at t0 moves with it (the nearest one
-	// when several qualify).  R is wide enough that an element with a vertex
-	// beyond it stays out of reach however its carried vertices move: three
-	// times the travel, twice the reach and twice the longest cloth edge.
+	for (std::size_t m = 0; m < motions_.size(); ++m) {
+		if (!mesh[m]) continue;
+		for (int c = 0; c < 8; ++c) {
+			const V3 corner{{(c & 1) ? boxes[m].hi[0] : boxes[m].lo[0], (c & 2) ? boxes[m].hi[1] : boxes[m].lo[1],
+				(c & 4) ? boxes[m].hi[2] : boxes[m].lo[2]}};
+			travel = std::max(travel, mesh[m]->PathBound(corner, t0, t1));
+		}
+	}
+	return travel;
+}
+
+void BarrierContact::Owners(const ContactFrame& f, const std::vector<double>& x, double radius, std::vector<int>& owner) const
+{
+	owner.assign(vertices_, -1);
+	if (!moving_) return;
+	const std::size_t meshes = motions_.size();
+	std::vector<Box> boxes(meshes);
+	for (std::size_t i = 0; i < colliderV0_.size()/3; ++i) boxes[colliderMesh_[i]].Grow(At(f.colliderX, static_cast<std::uint32_t>(i)));
 	std::vector<double> nearest(vertices_, Infinity);
-	std::vector<int> owner(vertices_, -1);
-	const double reach = xi_ + settings_.activation;
 	for (std::size_t m = 0; m < meshes; ++m) {
 		if (!motions_[m].Moving()) continue;
-		const double R = 3*travel[m] + 2*reach + 2*longest;
 		Box b = boxes[m];
-		b.Inflate(R);
+		b.Inflate(radius);
 		for (std::uint32_t i = 0; i < vertices_; ++i) {
 			const V3 p = At(x, i);
 			bool inside = true;
@@ -1051,28 +1225,171 @@ bool BarrierContact::Carry(const std::vector<double>& x, double t0, double t1, s
 			if (!inside) continue;
 			Box q;
 			q.Grow(p);
-			q.Inflate(R);
+			q.Inflate(radius);
 			double best = Infinity;
 			auto test = [&](std::uint32_t t) {
 				if (colliderMesh_[colliderTriangles_[3*static_cast<std::size_t>(t)]] != m) return;
-				const V3 xs[4] = {p, At(f0.colliderX, colliderTriangles_[3*static_cast<std::size_t>(t)]),
-					At(f0.colliderX, colliderTriangles_[3*static_cast<std::size_t>(t) + 1]),
-					At(f0.colliderX, colliderTriangles_[3*static_cast<std::size_t>(t) + 2])};
+				const V3 xs[4] = {p, At(f.colliderX, colliderTriangles_[3*static_cast<std::size_t>(t)]),
+					At(f.colliderX, colliderTriangles_[3*static_cast<std::size_t>(t) + 1]),
+					At(f.colliderX, colliderTriangles_[3*static_cast<std::size_t>(t) + 2])};
 				best = std::min(best, std::sqrt(PointTriangle(xs).d2));
 			};
-			if (!ForCells(f0.gridTriangles, f0.cell, q, test))
+			if (!ForCells(f.gridTriangles, f.cell, q, test))
 				for (std::uint32_t t = 0; t < colliderTriangles_.size()/3; ++t) test(t);
-			if (best < R && best < nearest[i]) { nearest[i] = best; owner[i] = static_cast<int>(m); }
+			if (best < radius && best < nearest[i]) { nearest[i] = best; owner[i] = static_cast<int>(m); }
 		}
 	}
-	bool any = false;
-	for (std::uint32_t i = 0; i < vertices_; ++i) {
-		if (owner[i] < 0) continue;
-		const V3 q = motions_[static_cast<std::size_t>(owner[i])].Advance(At(x, i), t0, t1);
-		for (int k = 0; k < 3; ++k) out[3*static_cast<std::size_t>(i) + k] = q[k];
-		any = true;
+}
+
+namespace {
+// Conservative advancement of a gap g(tau), tau in [0, 1], Lipschitz with
+// constant L: the largest tau (up to 1) at which the gap is still above s
+// times its initial value (Li et al. 2021, Algorithm 1, on a general path).
+template <class Gap>
+double Advancement(Gap&& gap, double L, double s)
+{
+	const double gap0 = gap(0.0);
+	if (!(gap0 > 0)) return 0;
+	const double g = s*gap0;
+	double t = 0, tl = (1 - s)*gap0/L;
+	for (int it = 0; it < 100000; ++it) {
+		const double gt = gap(t + tl);
+		if (t > 0 && gt < g) return t;
+		t += tl;
+		if (t > 1) return 1;
+		tl = 0.9*gt/L;
 	}
-	return any;
+	return t;
+}
+}
+
+double BarrierContact::KinematicStep(const ContactFrame& f, const std::vector<double>& x, const KinematicStage& stage,
+	ContactPair* blocking) const
+{
+	const double ta = stage.t0, tb = stage.t1, span = tb - ta, s = 0.1;
+	double alpha = 1;
+	for (const ContactPair& p : f.candidates) {
+		double t = 1;
+		if (p.kind == ContactPair::Shape) {
+			const Motion* m = stage.follow[p.a];
+			if (!m) continue;
+			const V3 x0 = At(x, p.a);
+			const double L = m->PathBound(x0, ta, tb);
+			if (!(L > 0)) continue;
+			const Collider& c = shapes_[p.b];
+			t = Advancement([&](double tau) { V3 grad; return c.Distance(m->Advance(x0, ta, ta + tau*span), grad) - xi_; }, L, s);
+		} else {
+			V3 xs[4];
+			std::uint32_t ids[4];
+			bool cloth[4];
+			int kind = 0;
+			Points(f, x, p, xs, ids, cloth, kind);
+			const Motion* ms[4];
+			double B[4];
+			bool anyMoving = false, rigid = true;
+			for (int k = 0; k < 4; ++k) {
+				ms[k] = cloth[k] ? stage.follow[ids[k]] : stage.mesh[colliderMesh_[ids[k]]];
+				B[k] = ms[k] ? ms[k]->PathBound(xs[k], ta, tb) : 0.0;
+				anyMoving = anyMoving || ms[k];
+				rigid = rigid && ms[k] == ms[0];
+			}
+			if (!anyMoving || rigid) continue;
+			const double L = kind == 0 ? B[0] + std::max(B[1], std::max(B[2], B[3])) : std::max(B[0], B[1]) + std::max(B[2], B[3]);
+			if (!(L > 0)) continue;
+			t = Advancement([&](double tau) {
+				V3 ys[4];
+				for (int k = 0; k < 4; ++k) ys[k] = ms[k] ? ms[k]->Advance(xs[k], ta, ta + tau*span) : xs[k];
+				return std::sqrt(PairDistance2(kind, ys)) - xi_;
+			}, L, s);
+		}
+		if (t < alpha) { alpha = t; if (blocking) *blocking = p; }
+	}
+	return alpha;
+}
+
+void BarrierContact::DescribePair(const ContactFrame& f, const ContactPair& p, std::vector<std::uint32_t>& cloth,
+	std::vector<std::string>& colliders) const
+{
+	cloth.clear();
+	colliders.clear();
+	if (p.kind == ContactPair::Shape) {
+		cloth.push_back(p.a);
+		colliders.push_back("analytic collider " + std::to_string(p.b));
+		return;
+	}
+	V3 xs[4];
+	std::uint32_t ids[4];
+	bool isCloth[4];
+	int kind = 0;
+	const std::vector<double> origin(3*static_cast<std::size_t>(vertices_), 0.0); // positions are not needed
+	Points(f, origin, p, xs, ids, isCloth, kind);
+	for (int k = 0; k < 4; ++k) {
+		if (isCloth[k]) { if (std::find(cloth.begin(), cloth.end(), ids[k]) == cloth.end()) cloth.push_back(ids[k]); }
+		else {
+			const std::string name = "mesh collider " + std::to_string(colliderMesh_[ids[k]]);
+			if (std::find(colliders.begin(), colliders.end(), name) == colliders.end()) colliders.push_back(name);
+		}
+	}
+	if (p.kind == ContactPair::SelfVertexTriangle || p.kind == ContactPair::SelfEdgeEdge) colliders.push_back("the cloth itself");
+}
+
+void BarrierContact::ContactsOf(const ContactFrame& f, const std::vector<double>& x, std::uint32_t q,
+	std::vector<std::string>& names) const
+{
+	names.clear();
+	const double reach = xi_ + settings_.activation;
+	for (const ContactPair& p : f.candidates) {
+		std::vector<std::uint32_t> cloth;
+		std::vector<std::string> colliders;
+		DescribePair(f, p, cloth, colliders);
+		if (std::find(cloth.begin(), cloth.end(), q) == cloth.end()) continue;
+		double gap;
+		if (p.kind == ContactPair::Shape) {
+			V3 n;
+			gap = shapes_[p.b].Distance(At(x, p.a), n) - xi_;
+		} else {
+			V3 xs[4];
+			std::uint32_t ids[4];
+			bool isCloth[4];
+			int kind = 0;
+			Points(f, x, p, xs, ids, isCloth, kind);
+			gap = std::sqrt(PairDistance2(kind, xs)) - xi_;
+		}
+		if (!(gap < reach)) continue;
+		for (const auto& c : colliders) if (std::find(names.begin(), names.end(), c) == names.end()) names.push_back(c);
+	}
+}
+
+// M6 (coupling): see the header.  The pairs and friction records of f that
+// involve the mesh, evaluated with the public Evaluate on a filtered copy.
+void BarrierContact::MeshForces(const ContactFrame& f, const std::vector<double>& x, std::uint32_t mesh,
+	std::vector<double>& force) const
+{
+	force.assign(x.size(), 0.0);
+	if (mesh >= motions_.size()) return;
+	ContactFrame g = f;
+	Candidates(g, x, nullptr);
+	const std::vector<double> origin(x.size(), 0.0);
+	auto ofMesh = [&](const ContactPair& p) {
+		if (p.kind != ContactPair::VertexTriangle && p.kind != ContactPair::EdgeEdge && p.kind != ContactPair::TriangleVertex) return false;
+		V3 xs[4];
+		std::uint32_t ids[4];
+		bool isCloth[4];
+		int kind = 0;
+		Points(g, origin, p, xs, ids, isCloth, kind);
+		for (int k = 0; k < 4; ++k) if (!isCloth[k]) return colliderMesh_[ids[k]] == mesh;
+		return false;
+	};
+	g.candidates.erase(std::remove_if(g.candidates.begin(), g.candidates.end(), [&](const ContactPair& p) { return !ofMesh(p); }),
+		g.candidates.end());
+	g.friction.erase(std::remove_if(g.friction.begin(), g.friction.end(), [&](const FrictionRecord& r) {
+		for (int k = 0; k < r.count; ++k) if (!r.cloth[k]) return colliderMesh_[r.point[k]] != mesh;
+		return true;
+	}), g.friction.end());
+	std::vector<double> gradient(x.size(), 0.0);
+	const std::vector<char> none(vertices_, 0);
+	Evaluate(g, x, &gradient, nullptr, false, none);
+	for (std::size_t k = 0; k < x.size(); ++k) force[k] = -gradient[k];
 }
 
 } } }

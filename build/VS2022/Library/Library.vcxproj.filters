@@ -7,6 +7,12 @@
     <Filter Include="Simulation\Fire">
       <UniqueIdentifier>{4F8B2C61-7E0D-4B5A-9C3E-2D1A6F0B8E47}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Simulation\Rigid">
+      <UniqueIdentifier>{F2A222B2-6E54-4A6E-9D2B-A3216BB07512}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Simulation\Coupling">
+      <UniqueIdentifier>{E56AF69F-1769-4A6E-9D2B-32B6B826B4DF}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Simulation\Cloth">
       <UniqueIdentifier>{6C2D9E14-3B7A-4F05-8E1C-5A9F2B0D7C31}</UniqueIdentifier>
     </Filter>
@@ -404,6 +410,27 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\Cloth\ClothParameterSchema.cpp">
       <Filter>Simulation\Cloth</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidParameterSchema.cpp">
+      <Filter>Simulation\Rigid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Coupling\ClothRigidCoupling.cpp">
+      <Filter>Simulation\Coupling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationGroup.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationPortAdapters.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\SimulationTransform.cpp">
+      <Filter>Simulation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidBody.cpp">
+      <Filter>Simulation\Rigid</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.cpp">
+      <Filter>Simulation\Rigid</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequenceCache.cpp">
       <Filter>Utilities</Filter>
@@ -1808,6 +1835,27 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Simulation\Cloth\ClothParameterSchema.h">
       <Filter>Simulation\Cloth</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidParameterSchema.h">
+      <Filter>Simulation\Rigid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Coupling\ClothRigidCoupling.h">
+      <Filter>Simulation\Coupling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationGroup.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationPortAdapters.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\SimulationTransform.h">
+      <Filter>Simulation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidBody.h">
+      <Filter>Simulation\Rigid</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Simulation\Rigid\RigidSolver.h">
+      <Filter>Simulation\Rigid</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequenceCache.h">
       <Filter>Utilities</Filter>

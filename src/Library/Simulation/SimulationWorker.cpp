@@ -683,6 +683,13 @@ bool ReadWorkerJobRecord(const fs::path& root,std::string& solver,std::string& v
 	return true;
 }
 
+// M6: the status sidecar for a host other than this file's single-solver
+// worker (the scene group bake), with this process stamped in it.
+bool WriteWorkerStatus(const fs::path& root,const WorkerStatus& status,std::string& error)
+{
+	return WriteStatus(root,status,error);
+}
+
 bool ReadWorkerStatus(const fs::path& root,WorkerStatus& status,std::string& error)
 {
 	V v;

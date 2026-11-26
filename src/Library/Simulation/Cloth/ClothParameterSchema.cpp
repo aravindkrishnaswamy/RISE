@@ -211,6 +211,15 @@ bool Translate(const SchemaFieldValues& values, SchemaTranslation& out, std::str
 		if (std::find(out.sceneInputs.begin(), out.sceneInputs.end(), names[0]) == out.sceneInputs.end())
 			out.sceneInputs.push_back(names[0]);
 	}
+	// M6: `collider_port <object> [<port>]`: the object's geometry (world, t = 0) as a
+	// mesh collider that follows a coupling port (default collider_surface).
+	for (const auto& text : all("collider_port")) {
+		const auto t = Tokens(text);
+		if (t.empty() || t.size() > 2) return Fail(error, "collider_port names one object and optionally its port");
+		colliders.push_back(V::MapValue({{"type", V::String("mesh")}, {"scene_input", V::String(t[0])},
+			{"motion", V::MapValue({{"type", V::String("port")}, {"port", V::String(t.size() == 2 ? t[1] : "collider_surface")}})}}));
+		if (std::find(out.sceneInputs.begin(), out.sceneInputs.end(), t[0]) == out.sceneInputs.end()) out.sceneInputs.push_back(t[0]);
+	}
 	if (!colliders.empty()) out.parameters.emplace_back("colliders", V::ArrayValue(colliders));
 	return true;
 }
@@ -258,7 +267,8 @@ ParameterSchema Build()
 	P("contact_activation", SchemaType::Real, "0.001", "m", "Barrier activation distance");
 	P("friction", SchemaType::Real, "0.3", "", "Coulomb friction coefficient");
 	P("friction_velocity", SchemaType::Real, "0.001", "m/s", "Friction smoothing velocity");
-	P("self_collision", SchemaType::Bool, "FALSE", "", "Barrier self-collision (not validated: preview only)");
+	P("self_collision", SchemaType::Bool, "FALSE", "", "Barrier self-collision (cloth-cloth contact)");
+	P("self_friction", SchemaType::Real, "0.3", "", "Coulomb friction coefficient between cloth layers (self-collision)");
 	P("pressure", SchemaType::Real, "0", "Pa", "Uniform pressure on the front face");
 	P("drag_coefficient", SchemaType::Real, "0", "", "Quadratic air drag coefficient (explicit, unvalidated)");
 	P("air_density", SchemaType::Real, "1.2", "kg/m^3", "Air density for the drag");
@@ -300,6 +310,9 @@ ParameterSchema Build()
 		"`box x0 y0 z0 x1 y1 z1` or `cylinder px py pz ax ay az r` (metres, world space)");
 	F("collider_object", SchemaChunkField::Kind::ObjectReference, true, "A scene object the cloth collides with: its geometry "
 		"(tessellated, world space at t = 0) as a mesh collider moving rigidly with the object's transform");
+	F("collider_port", SchemaChunkField::Kind::Text, true, "M6: `<object> [<port>]`: the object's geometry (world space at "
+		"t = 0) as a mesh collider moved by a coupling port (default `collider_surface`, fed by a simulation_group "
+		"connection, e.g. from a rigid body's body_state via rigid_surface); the cloth then offers `collider_reaction`");
 	s.outputs = {{"surface", "mesh.v2", "The sheet: positions (m), velocities (m/s), normals, material UVs (m)"}};
 	s.translate = Translate;
 	return s;

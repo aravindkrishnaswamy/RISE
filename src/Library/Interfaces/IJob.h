@@ -4994,6 +4994,17 @@ namespace RISE
 			return false;
 		}
 
+		//! Simulation M6: `standard_object { transform_source <simulation>.<output>[<body>] }`
+		//! -- the object follows a rigid body of a transform.v1 output: its
+		//! authored transform is its pose at time 0, moved by the body's motion
+		//! since then.  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetObjectTransformSource(
+			const char* /*object*/, const char* /*source*/ )
+		{
+			return false;
+		}
+
 	};
 
 

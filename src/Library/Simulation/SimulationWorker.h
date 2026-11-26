@@ -67,6 +67,8 @@ extern const char* const kWorkerStopFileName;   // "rise-sim.stop"
 extern const char* const kWorkerSceneMismatch;  // "scene mismatch"
 
 bool ReadWorkerStatus(const std::filesystem::path& cache, WorkerStatus& status, std::string& error);
+//! M6: writes rise-sim.status.cbor (this process stamped in it), for the scene group bake.
+bool WriteWorkerStatus(const std::filesystem::path& cache, const WorkerStatus& status, std::string& error);
 //! M4: the job sidecar of a cache a worker baked (solver, version, the
 //! effective parameters and the key of the bake).
 bool ReadWorkerJobRecord(const std::filesystem::path& cache, std::string& solver, std::string& version,

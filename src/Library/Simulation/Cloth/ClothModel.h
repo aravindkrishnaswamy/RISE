@@ -74,6 +74,7 @@
 #include "ClothLinearAlgebra.h"
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -93,6 +94,8 @@ const char* LinearSolverName(LinearSolver s);
 
 class BarrierContact;
 struct ContactFrame;
+struct ContactPair;
+struct KinematicStage;
 
 struct SheetSpec {
 	double sizeU = 1, sizeV = 1;                 // rest size in material coordinates, m
@@ -146,6 +149,25 @@ public:
 	virtual void At(double t, double rotation[9], double translation[3]) const = 0;
 };
 
+//! A rigid motion sampled at the ends of `pieces` equal sub-intervals of [t0, t1]
+//! (and at time 0) and interpolated between them: rotation at a constant rate
+//! about the sampled relative rotation's axis, translation of the frame origin
+//! linearly.  The within-stage path of a scene-transform motion in the kinematic
+//! continuation (ClothSystem::KinematicStages), so that the many path
+//! evaluations of the collision detection do not each sample the scene.
+class SampledTrack final : public TransformTrack {
+public:
+	//! `start` (optional): the pose at t0 is taken from it instead of the source,
+	//! so that consecutive stages join without a jump.
+	SampledTrack(const TransformTrack& source, double t0, double t1, int pieces, const TransformTrack* start = nullptr);
+	void At(double t, double rotation[9], double translation[3]) const override;
+private:
+	std::vector<double> times_;
+	std::vector<std::array<double,12>> poses_; // rotation (row-major) then translation
+	std::vector<std::array<double,4>> steps_;  // per piece: unit axis and angle of R_{k+1} R_k^T
+	std::array<double,12> zero_;               // the pose at time 0
+};
+
 struct Motion {
 	enum class Type { Fixed, Translate, Rotate, Oscillate, Track };
 	Type type = Type::Fixed;
@@ -163,6 +185,11 @@ struct Motion {
 	//! The rigid map from time t0 to t1 applied to a point x (where a point
 	//! at x at time t0 is at time t1).
 	V3 Advance(const V3& x, double t0, double t1) const;
+	//! Bound on the speed of a point at x at time t0 along the motion until t1,
+	//! times (t1 - t0): the Lipschitz constant of the path in the stage
+	//! parameter (exact bound for translate, rotate and oscillate; Track:
+	//! estimated from 16 chords with a factor 1.5).
+	double PathBound(const V3& x, double t0, double t1) const;
 	bool Moving() const { return type != Type::Fixed; }
 };
 struct PinGroup {
@@ -185,6 +212,7 @@ struct MeshCollider {
 	std::vector<double> vertices;          // 3 per vertex, positions at motion time 0 (m)
 	std::vector<std::uint32_t> triangles;  // 3 per triangle
 	Motion motion;
+	std::string sceneInput;                // the scene input it was sampled from at t = 0 (empty: inline)
 };
 
 enum class ContactModel { Penalty, Barrier };
@@ -197,6 +225,7 @@ struct BarrierSettings {
 	double friction = 0.3;           // Coulomb coefficient (static = kinetic)
 	double frictionVelocity = 1e-3;  // eps_v, m/s: slip speed below which friction is smoothed (sticking)
 	bool selfCollision = false;
+	double selfFriction = 0.3;       // Coulomb coefficient between cloth layers (self-collision)
 };
 
 struct ModelConfig {
@@ -214,7 +243,21 @@ struct ModelConfig {
 	bool damping = true;            // apply the material's Rayleigh damping
 };
 
+//! One Newton iteration, for diagnostics (NewtonOptions::trace).
+struct NewtonTrace {
+	double time = 0, h = 0;        // the step's start and length
+	int iteration = 0, lineSearch = 0; // backtracking halvings of the accepted trial (-1: none accepted)
+	double residual = 0, phi = 0, slope = 0;
+	double ccdAlpha = 1, alpha = 0; // CCD bound and the accepted fraction of the Newton direction
+	bool projected = false, gradientStep = false;
+	std::size_t candidates = 0, active = 0; // contact pairs in the segment's list, pairs within the barrier's reach
+	double gap = 0;                // smallest gap d - xi at the iterate
+	std::uint32_t worst = 0;       // the vertex with the largest residual
+};
+
 struct NewtonOptions {
+	//! Diagnostics only (never changes results): called after every Newton iteration.
+	std::function<void(const NewtonTrace&)> trace;
 	int maxIterations = 50;
 	double tolerance = 1e-6;        // converged when max_i |grad_i| / m_i <= tolerance (m/s^2)
 	double cgTolerance = 1e-5;      // relative CG residual
@@ -231,13 +274,17 @@ struct StepStats {
 	int newtonIterations = 0, cgIterations = 0, directSolves = 0, halvings = 0, unconverged = 0, projections = 0;
 	int solves = 0;                 // Newton solves finished
 	int ccdLimited = 0;             // line searches whose first trial CCD shortened
-	int carried = 0;                // steps that started by carrying vertices with a moving collider
+	int carried = 0;                // steps that carried vertices with a moving collider
+	int stages = 0;                 // kinematic stages (moving pins or colliders with barrier contact)
 	double residual = 0;            // last residual (m/s^2)
 	double residualSum = 0;         // sum of the final residuals of finished solves
+	std::string lastHalving;        // why the latest halved step failed, and when (log)
 	void Add(const StepStats& o) {
 		newtonIterations += o.newtonIterations; cgIterations += o.cgIterations; directSolves += o.directSolves;
 		halvings += o.halvings; unconverged += o.unconverged; projections += o.projections; residual = o.residual;
 		solves += o.solves; residualSum += o.residualSum; ccdLimited += o.ccdLimited; carried += o.carried;
+		stages += o.stages;
+		if (!o.lastHalving.empty()) lastHalving = o.lastHalving;
 	}
 };
 
@@ -265,7 +312,7 @@ public:
 	//! such as a sheet on a frictionless plane, keeps the last stage's mass
 	//! term).  Leaves v = 0.
 	bool SolveStatic(const NewtonOptions& options, StepStats& stats, std::string& error,
-		double tau0 = 0.01, int stages = 8, bool finish = true);
+		double tau0 = 0.01, int stages = 8, bool finish = true, int stageIterations = 25);
 
 	// State (public for the solver's checkpoint and for validation).
 	std::vector<double> x, v, xPrev, vPrev;
@@ -273,6 +320,10 @@ public:
 	bool havePrev = false;
 	std::vector<double> portPressure;  // per vertex, Pa (empty: none)
 	std::vector<double> portTraction;  // 3 per vertex, Pa (empty: none)
+	//! M6 (coupling): called after every accepted step (each part of a halved one)
+	//! with the contact frame of its final Newton solve, the new positions and the
+	//! step length (the cloth solver's collider_reaction port); never changes results.
+	std::function<void(const ContactFrame&, const std::vector<double>&, double)> stepObserver;
 
 	// Barrier contact (null without it) and diagnostics for validation.
 	const BarrierContact* Barrier() const { return barrier_.get(); }
@@ -284,6 +335,15 @@ public:
 	double ContactEnergy(const std::vector<double>& x, double t) const;
 	//! Exact check of the straight path x0 -> x1 against the colliders at time t.
 	bool PathIntersectionFree(const std::vector<double>& x0, const std::vector<double>& x1, double t, std::string& detail) const;
+	//! Exact check of a step: the cloth on the straight path x0 -> x1 while each
+	//! mesh collider vertex moves on its chord from its position at t0 to t1
+	//! (and, with self-collision, cloth against cloth).
+	bool PathIntersectionFree(const std::vector<double>& x0, const std::vector<double>& x1, double t0, double t1,
+		std::string& detail) const;
+	//! Cloth-cloth pairs within the barrier's reach at x (0 without self-collision).
+	std::size_t SelfContactPairs(const std::vector<double>& x) const;
+	//! Barrier force on each cloth vertex (3 per vertex, N; no friction), colliders at time t.
+	void ContactForces(const std::vector<double>& x, double t, std::vector<double>& forces) const;
 
 	// Diagnostics.
 	double ElasticEnergy(const std::vector<double>& positions) const; // membrane + bending
@@ -309,6 +369,7 @@ private:
 		std::vector<double> force, xRef;    // constant external force and its reference point
 		bool useDamping = false;
 		std::shared_ptr<ContactFrame> contact; // barrier contact state (null: none)
+		double traceH = 0;                  // the step's length (diagnostics)
 	};
 	double Evaluate(const Potential& p, const std::vector<double>& pos, std::vector<double>* gradient,
 		BlockMatrix* hessian, bool project) const;
@@ -317,6 +378,11 @@ private:
 	bool Newton(const Potential& p, std::vector<double>& pos, const NewtonOptions& options, bool preferDirect,
 		StepStats& stats, std::string& error) const;
 	bool StepOnce(double h, Scheme scheme, const NewtonOptions& options, StepStats& stats, std::string& error);
+	bool Kinematic() const;  // barrier contact with moving pins or mesh colliders
+	bool KinematicStages(Potential& p, double tNext, std::vector<double>& guess, const NewtonOptions& options,
+		StepStats& stats, std::string& error);
+	std::string DescribeBlock(const ContactFrame& f, const std::vector<double>& pos, const KinematicStage& stage,
+		const ContactPair& blocking, double t) const;
 	bool StepRecursive(double h, Scheme scheme, const NewtonOptions& options, int depth, StepStats& stats,
 		std::string& error);
 	void ExternalForce(const std::vector<double>& pos, const std::vector<double>& vel, std::vector<double>& f) const;
@@ -344,6 +410,7 @@ private:
 	mutable std::vector<double> elementEnergy_; // per element: triangles, hinges, rods
 	mutable BandedCholesky factor_;           // the last direct factorisation
 	mutable bool factorValid_ = false;
+	bool fatal_ = false;                      // the last StepOnce failed in a way halving cannot cure
 };
 
 } } }

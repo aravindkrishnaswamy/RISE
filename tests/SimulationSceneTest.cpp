@@ -365,7 +365,7 @@ void TestKeySensitivity()
 		{"frames", "4"}, {"frame_rate", "24"}, {"substeps", "3"}, {"gravity", "0 -5 0"}, {"contact", "penalty"},
 		{"contact_stiffness", "2e5"}, {"contact_thickness", "0.003"}, {"barrier_stiffness", "2e5"},
 		{"contact_activation", "0.002"}, {"friction", "0.4"}, {"friction_velocity", "0.002"},
-		{"self_collision", "TRUE"}, {"pressure", "1"}, {"drag_coefficient", "0.5"}, {"air_density", "1.0"},
+		{"self_collision", "TRUE"}, {"self_friction", "0.4"}, {"pressure", "1"}, {"drag_coefficient", "0.5"}, {"air_density", "1.0"},
 		{"damping", "FALSE"}, {"newton_tolerance", "0.002"}, {"newton_iterations", "20"}, {"cg_tolerance", "1e-5"},
 		{"cg_iterations", "1000"}, {"linear_solver", "pcg"}};
 	const ParameterSchema& schema = ClothParameterSchema();
@@ -860,6 +860,70 @@ void TestEditorAndAgent(const fs::path& root, const fs::path& repo)
 	Check(reference, "simulated_mesh_geometry.source is a Reference to ChunkCategory::Simulation (the editor draws the connection)");
 }
 
+
+// ---------------------------------------------------------------- M (M5c)
+
+// The estimates a scheduler and the panel read before a bake (not keyed).
+void TestEstimates(const fs::path& root)
+{
+	std::printf("M: estimates\n");
+	Capabilities certified, fast, tier6, tier10;
+	FireEstimateCapabilities(8, false, {{0, 0, 0}}, certified);
+	FireEstimateCapabilities(8, true, {{0, 0, 0}}, fast);
+	FireEstimateCapabilities(6, false, {{0, 0, 0}}, tier6);
+	FireEstimateCapabilities(10, false, {{0, 0, 0}}, tier10);
+	const std::uint64_t table = ((14u + ((std::uint64_t(1) << 24) - 1)*8u) - (14u + 1023u*8u))*4u*sizeof(float);
+#if defined(__APPLE__)
+	// The production driver recorded this reserve for a tier-8 certified scene bake
+	// (host_memory_admission.v1 next_step_reserve_bytes, 2026-11-23).
+	Check(certified.memoryEstimate == 10201038848ull, "fire tier 8 certified: the driver's admission reserve",
+		std::to_string(certified.memoryEstimate));
+	Check(fast.memoryEstimate == certified.memoryEstimate - table, "fast mode leaves out the 24-level EOS table",
+		std::to_string(fast.memoryEstimate));
+	Check(tier6.memoryEstimate > 0 && tier6.memoryEstimate < certified.memoryEstimate &&
+		tier10.memoryEstimate > certified.memoryEstimate, "the reserve grows with the tier",
+		std::to_string(tier6.memoryEstimate) + " " + std::to_string(tier10.memoryEstimate));
+#endif
+	Check(certified.costEstimate == 2324 && fast.costEstimate == 1121 && tier6.costEstimate == 0 &&
+		std::fabs(tier10.costEstimate - 1.29*2324) < 1e-9, "fire cost: tier 8 measured, tier 10 scaled, tier 6 unknown");
+
+	const fs::path dir = root/"estimates";
+	fs::create_directories(dir);
+	WriteText(dir/"fire8.RISEscene", FireScene("\ttier\t8\n\tframe_origin_s\t1\n\tend_time_s\t2\n"));
+	Scene fire;
+	Check(Load(dir/"fire8.RISEscene", fire), "a tier-8 fire scene loads");
+	const auto st = Statuses(fire);
+	const ParameterSchema& schema = FireParameterSchema();
+	V completed;
+	std::string error, key;
+	if (fire.J() && !fire.J()->SimulationSpecs().empty())
+		Check(schema.completeParameters(fire.J()->SimulationSpecs()[0].parameters, completed, error) &&
+			MakeCacheKey("fire.methane", schema.solverVersion, completed, {}, key, error), "independent fire key", error);
+	Check(st.size() == 1 && st[0].expectedKey == key && st[0].framesTotal == 17,
+		"the estimates leave the predicted key and outputs unchanged");
+	if (st.size() == 1) {
+		Check(st[0].startTime == 1 && st[0].interval == 0.0625, "the predicted time support: frames from 1 s at 1/16 s");
+#if defined(__APPLE__)
+		Check(st[0].memoryEstimate == certified.memoryEstimate && st[0].costEstimate == 2324 &&
+			std::fabs(st[0].wallEstimate - 2324*2.0) < 1e-6 &&
+			FormatSimulationEstimate(st[0]) == "≈ 77 min, 10.2 GB", "the planned fire carries them: 2 simulated s",
+			FormatSimulationEstimate(st[0]));
+#endif
+	}
+	// Cloth: from the vertex count and mode (ClothSolver::Configure).
+	WriteText(dir/"cloth.RISEscene", std::string(Header) + Camera() + Cloth("flag", ""));
+	Scene cloth;
+	Check(Load(dir/"cloth.RISEscene", cloth), "a cloth scene loads");
+	const auto cs = Statuses(cloth);
+	const double n = 81, substeps = 4, rate = 30;
+	Check(cs.size() == 1 && cs[0].memoryEstimate == ((std::uint64_t(10) << 20) + 81*13312)*5/4 &&
+		std::fabs(cs[0].costEstimate - 12e-6*n*substeps*rate) < 1e-12 &&
+		std::fabs(cs[0].wallEstimate - cs[0].costEstimate*5.0/30.0) < 1e-12,
+		"cloth: memory 1.25 x (10 MiB + 13 KiB per vertex); cost 12 us per vertex-substep (bake)",
+		cs.empty() ? "" : FormatSimulationEstimate(cs[0]));
+	SceneSimulationStatus none;
+	Check(FormatSimulationEstimate(none).empty(), "nothing known: no estimate text");
+}
 } // namespace
 
 int main()
@@ -881,6 +945,7 @@ int main()
 	TestFire(root);
 	TestSimulationCache(root);
 	TestEditorAndAgent(root, fs::current_path());
+	TestEstimates(root);
 	fs::remove_all(RISE::TestSupport::ScratchTestRoot("rise_simulation_scene_"), ec);
 	std::printf("\n%d passed, %d failed\n", passes, failures);
 	return failures ? 1 : 0;

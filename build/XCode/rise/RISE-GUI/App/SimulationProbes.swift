@@ -15,9 +15,15 @@
 //    RISE_GUI_HEADLESS_PROBE=simulation_m5
 //    RISE_GUI_HEADLESS_PROBE_SCENE   scene (default
 //                                    scenes/Tests/Simulation/cloth_flag_scene.RISEscene)
-//    RISE_GUI_HEADLESS_PROBE_STEPS   comma list of: list, trust, bake, live, scrub, edit
-//                                    (run in that order; bake needs RISE_SIM_WORKER
-//                                    or a rise-sim beside the app, CPU cloth only)
+//    RISE_GUI_HEADLESS_PROBE_STEPS   comma list of: worker, list, trust, bake, live, scrub,
+//                                    edit, props, playrule (run in that order; bake uses the
+//                                    bundled Contents/MacOS/rise-sim, or RISE_SIM_WORKER;
+//                                    CPU cloth only).  M5c: `worker` checks the bundled
+//                                    worker is found with no override; `props` drives the
+//                                    Inspector's Simulation category (fields, a numeric edit,
+//                                    stale with its reason, undo); `playrule` checks the
+//                                    Play button's rate (RISE_GUI_HEADLESS_PROBE_RATE:
+//                                    realtime | stepping).
 //    RISE_GUI_HEADLESS_PROBE_EXPECT  expected state of `flag` for `list`
 //                                    (missing | complete | ...; default: any)
 //    RISE_GUI_HEADLESS_PROBE_OUT     directory for PNG snapshots (optional)
@@ -112,6 +118,7 @@ enum SimulationProbes {
         let model = vm.simulations
         step("simulations read", spin(5) { model.refresh(); return model.loaded })
 
+        if steps.contains("worker") { workerStep() }
         if steps.contains("list") { listStep(model, expect: expect) }
         if steps.contains("trust") { trustStep(model) }
         if steps.contains("bake") { bakeStep(model) }
@@ -122,6 +129,8 @@ enum SimulationProbes {
             scrubStep(vm, model, vb, frames: { frames }, image: { lastImage }, outDir: outDir)
         }
         if steps.contains("edit") { editStep(vm, model) }
+        if steps.contains("props") { propsStep(vm, model, vb) }
+        if steps.contains("playrule") { playRuleStep(vm, vb, expect: env["RISE_GUI_HEADLESS_PROBE_RATE"]) }
         _ = sink
         finish(vm)
     }
@@ -376,27 +385,125 @@ enum SimulationProbes {
         renderUI(vm, probeOutDir, "stale_selected")
     }
 
+    // MARK: M5c: the worker ships in the bundle
+
+    private static func workerStep() {
+        let env = ProcessInfo.processInfo.environment
+        step("worker: no RISE_SIM_WORKER override in this run", env["RISE_SIM_WORKER"] == nil)
+        var path: NSString?
+        var error: NSString?
+        let found = RISEViewportBridge.simulationWorkerPath(&path, error: &error)
+        let bundled = (Bundle.main.bundlePath as NSString).appendingPathComponent("Contents/MacOS/rise-sim")
+        note("worker: \(found ? (path as String? ?? "") : "not found: " + ((error as String?) ?? ""))")
+        step("worker: the bake manager finds Contents/MacOS/rise-sim",
+             found && (path as String?).map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path
+                 == URL(fileURLWithPath: bundled).resolvingSymlinksInPath().path } == true)
+        step("worker: it is executable", FileManager.default.isExecutableFile(atPath: bundled))
+    }
+
+    // MARK: M5c: the Inspector's Simulation category
+
+    private static func propsStep(_ vm: RenderViewModel, _ model: SimulationsModel, _ vb: RISEViewportBridge) {
+        guard model.row("flag")?.state == .complete else {
+            step("props: starts from a complete cache", false)
+            return
+        }
+        let jobBefore = model.bakeJobs["flag"]?.jobId
+        step("props: the outliner lists the simulation", vb.categoryEntities(.simulation) == ["flag"])
+        vm.jumpToEntity(category: .simulation, name: "flag")
+        step("props: selecting it makes it the Inspector's selection",
+             vb.selectionCategory == .simulation && vb.selectionName == "flag")
+        vb.refreshProperties()
+        let rows = vb.propertySnapshot(for: .simulation)
+        func row(_ name: String) -> RISEViewportProperty? { rows.first { $0.name == name } }
+        note("props: \(rows.count) rows: " + rows.prefix(12).map { "\($0.name)=\($0.value)" }.joined(separator: " "))
+        step("props: descriptor-driven fields (cloth_simulation)", rows.count > 20 && row("chunk_type")?.value == "cloth_simulation")
+        step("props: vertices_u shows 31, editable", row("vertices_u")?.value == "31" && row("vertices_u")?.editable == true)
+        step("props: substeps is an editable numeric field", row("substeps")?.editable == true)
+        let follow = row("follow_object[0]")
+        note("props: follow_object[0] kind \(follow?.kind ?? -1) presets \(follow?.presets.map { $0.value } ?? [])")
+        step("props: follow_object[0] is a reference row (\(follow?.value ?? "-")) offering scene objects",
+             follow.flatMap { PropertyKind(rawValue: $0.kind) } == .reference && follow?.value == "pole" && follow?.presets.contains { $0.value == "pole" } == true)
+        let key0 = model.row("flag")?.state
+        step("props: edit substeps through the panel path", vb.setProperty(for: .simulation, name: "substeps", value: "12"))
+        let stale = spin(10) { model.row("flag")?.state == .stale }
+        let reason = model.row("flag")?.staleReason ?? ""
+        step("props: the simulation becomes stale (\(model.row("flag")?.state.label ?? "-"))", stale && key0 == .complete)
+        step("props: the stale reason is reported (\(reason))", reason == "parameters changed (substeps)")
+        vb.refreshProperties()
+        step("props: the row shows the new value",
+             vb.propertySnapshot(for: .simulation).first { $0.name == "substeps" }?.value == "12")
+        renderUI(vm, probeOutDir, "props_stale")
+        spin(2)
+        step("props: no bake was started", model.bakeJobs["flag"]?.jobId == jobBefore
+             && model.bakeJobs["flag"].map { !$0.isActive } ?? true)
+        vm.undo()
+        let current = spin(10) { model.row("flag")?.state == .complete }
+        step("props: undo restores the current cache (\(model.row("flag")?.state.label ?? "-"))", current)
+        step("props: no stale reason after undo", model.row("flag")?.staleReason.isEmpty == true)
+        if let est = model.row("flag")?.estimateSummary { note("props: estimate \(est)") }
+        step("props: the row carries the library's estimate", !(model.row("flag")?.estimateSummary.isEmpty ?? true))
+    }
+
+    // MARK: M5c: the Play button's rate
+
+    private static func playRuleStep(_ vm: RenderViewModel, _ vb: RISEViewportBridge, expect: String?) {
+        vm.jumpTimelineSceneTime(to: vm.animationTimeStart, using: vb)
+        var t0: Double = 0, t1: Double = 0
+        var n: UInt = 0
+        _ = vb.getAnimationOptions(timeStart: &t0, timeEnd: &t1, numFrames: &n)
+        let grid = n > 1 && t1 > t0 ? Double(n - 1) / (t1 - t0) : 30
+        vm.startPreviewPlay()
+        step("playrule: started", vm.isPreviewPlaying)
+        spin(1.0)
+        let st = vm.lastPlaybackStatus
+        let scale = st?.timeScale ?? 0
+        let stepping = abs(scale * grid - 30) < 1e-6
+        note(String(format: "playrule: %lu frames over %.3f-%.3f s (grid %.3f fps); clock fps %.3f, time scale %.4f, "
+                    + "shown %llu dropped %llu in %.2f s", n, t0, t1, grid, st?.fps ?? 0, scale,
+                    st?.framesShown ?? 0, st?.framesDropped ?? 0, st?.wallSeconds ?? 0))
+        if expect == "stepping" {
+            step("playrule: an ordinary animation steps 30 authored frames per second", stepping && abs((st?.fps ?? 0) - grid) < 1e-6)
+        } else {
+            step("playrule: simulation assets play in real time", scale == 1)
+        }
+        vm.stopPreviewPlay()
+        step("playrule: stopped", !vm.isPreviewPlaying)
+    }
+
     // MARK: offscreen renders of the panel and the timeline (for a human)
 
     /// Renders the Simulations panel and the timeline bar (with its baked-
     /// range track) through SwiftUI's ImageRenderer -- no window needed.
+    /// M5c: both appearances (`_dark` / `_light`), through the in-memory
+    /// theme override (nothing persisted) plus the matching colorScheme.
     private static func renderUI(_ vm: RenderViewModel, _ outDir: String?, _ name: String) {
         guard let outDir else { return }
-        let panel = SimulationsPanel(model: vm.simulations)
-            .environmentObject(vm)
-            .frame(width: 344)
-            .background(Theme.bgPanel)
-        let timeline = TimelineSlider(time: .constant(vm.sceneTime),
-                                      range: vm.animationTimeStart...vm.animationTimeEnd,
-                                      isPlaying: vm.isPreviewPlaying)
-            .environmentObject(vm)
-            .frame(width: 900)
-        for (view, suffix) in [(AnyView(panel), "panel"), (AnyView(timeline), "timeline")] {
-            let renderer = ImageRenderer(content: view)
-            renderer.scale = 2
-            if let image = renderer.nsImage { save(image, "\(outDir)/ui_\(name)_\(suffix).png") }
-            else { note("ui: \(suffix) did not render") }
+        let original = ThemeState.mode
+        for mode in [ThemeMode.dark, ThemeMode.light] {
+            ThemeState.overrideForOffscreenRender(mode)
+            let scheme: ColorScheme = mode == .dark ? .dark : .light
+            let panel = SimulationsPanel(model: vm.simulations)
+                .environmentObject(vm)
+                .frame(width: 344)
+                .background(Theme.bgPanel)
+                .environment(\.colorScheme, scheme)
+            let timeline = TimelineSlider(time: .constant(vm.sceneTime),
+                                          range: vm.animationTimeStart...vm.animationTimeEnd,
+                                          isPlaying: vm.isPreviewPlaying)
+                .environmentObject(vm)
+                .frame(width: 900)
+                .background(Theme.bgTimeline)
+                .environment(\.colorScheme, scheme)
+            let tag = mode == .dark ? "dark" : "light"
+            for (view, suffix) in [(AnyView(panel), "panel"), (AnyView(timeline), "timeline")] {
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = 2
+                if let image = renderer.nsImage { save(image, "\(outDir)/ui_\(name)_\(suffix)_\(tag).png") }
+                else { note("ui: \(suffix) did not render") }
+            }
         }
+        ThemeState.overrideForOffscreenRender(original)
     }
 
     // MARK: Image helpers (probe-only)

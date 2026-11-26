@@ -9,7 +9,9 @@
 #include "pch.h"
 #include "FireParameterSchema.h"
 #include "FireSolver.h"
+#include "../SimulationSolver.h"
 #include "../../Utilities/FireSequence.h"
+#include "../../Utilities/FireProductionForce.h"   // M5c: the owner working-set certificate
 
 #include <algorithm>
 
@@ -72,6 +74,26 @@ bool Predict(const V& completed, const V* baked, V& effective, std::uint64_t& fr
 	return RISECBOR64::Encode(effective, probe, &error);
 }
 
+// M5c: the shared EOS bisection-prefix table, as FireProductionAdvectionMac.mm
+// sizes it (EOSPrefixTableBytes): 24 levels certified, 10 in fast mode.
+constexpr std::uint64_t EOSPrefixTableBytes(std::uint64_t nodes) { return (14u + nodes*8u)*4u*sizeof(float); }
+
+// The unkeyed description fields a prediction can know: the time support
+// Configure states (origin, cadence) and the estimates.
+void DescribeUnkeyed(const V& effective, SolverDescription& d)
+{
+	double origin = 0, cadence = 0, tier = 8;
+	if (Number(effective.Find("frame_origin_s"), origin) && Number(effective.Find("frame_cadence_s"), cadence) &&
+		cadence > 0) {
+		d.cache.startTime = origin;
+		d.cache.interval = cadence;
+	}
+	Number(effective.Find("tier"), tier);
+	const V* mode = effective.Find("mode");
+	const bool fast = mode && mode->GetType() == V::Text && mode->GetText() == "fast";
+	FireEstimateCapabilities(tier, fast, {{0, 0, 0}}, d.capabilities);
+}
+
 ParameterSchema Build()
 {
 	ParameterSchema s;
@@ -119,9 +141,34 @@ ParameterSchema Build()
 		return Complete(FireParameterSchema(), authored, completed, error);
 	};
 	s.predictEffectiveParameters = Predict;
+	s.describeUnkeyed = DescribeUnkeyed;   // M5c
 	return s;
 }
 } // namespace
+
+void FireEstimateCapabilities(double tier, bool fast, std::array<std::size_t, 3> grid, Capabilities& caps)
+{
+	if (grid[0] == 0 || grid[1] == 0 || grid[2] == 0) {
+		if (tier == 6) grid = {{52, 52, 80}};
+		else if (tier == 8) grid = {{69, 69, 106}};
+		else if (tier == 10) grid = {{86, 86, 132}};
+		else return;
+	}
+	FireProductionProjectionShape shape;
+	shape.nx = grid[0]; shape.ny = grid[1]; shape.nz = grid[2];
+	shape.cellWidthM = static_cast<float>(0.2448/tier);   // D*/tier; the byte counts do not depend on it
+	std::uint64_t owner = 0;
+	// The scene bake's admission: ProductionOwnerObservationReserveBytes(shape,
+	// observe=false) + 2 GiB (FireRunDriver.cpp, FireRunHostMemory.h).
+	if (FireProductionProjectedHeunMetalObserverWorkingSetBytes(shape, owner, true, false) && owner > 0) {
+		std::uint64_t bytes = owner + (std::uint64_t(2) << 30);
+		const std::uint64_t table = EOSPrefixTableBytes((std::uint64_t(1) << 24) - 1) - EOSPrefixTableBytes(1023);
+		if (fast && bytes > table) bytes -= table;
+		caps.memoryEstimate = bytes;
+	}
+	const double tier8 = fast ? 1121.0 : 2324.0;
+	caps.costEstimate = tier == 8 ? tier8 : tier == 10 ? 1.29*tier8 : 0.0;
+}
 
 const ParameterSchema& FireParameterSchema()
 {

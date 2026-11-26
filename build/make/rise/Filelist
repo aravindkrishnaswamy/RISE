@@ -126,6 +126,13 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Simulation/Cloth/ClothValidation.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothSolver.cpp		\
 	$(PATHLIBRARY)Simulation/Cloth/ClothParameterSchema.cpp	\
+	$(PATHLIBRARY)Simulation/Rigid/RigidParameterSchema.cpp	\
+	$(PATHLIBRARY)Simulation/Coupling/ClothRigidCoupling.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationGroup.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationPortAdapters.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationTransform.cpp	\
+	$(PATHLIBRARY)Simulation/Rigid/RigidBody.cpp	\
+	$(PATHLIBRARY)Simulation/Rigid/RigidSolver.cpp	\
 	$(PATHLIBRARY)Utilities/FireSequenceCache.cpp			\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
 	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\

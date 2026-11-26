@@ -9,6 +9,7 @@
 #include "pch.h"
 #include "ClothSolver.h"
 #include "ClothValidation.h"
+#include "ClothContact.h"
 #include "../SimulationField.h"
 #include "../SimulationMesh.h"
 
@@ -33,10 +34,20 @@ using namespace Cloth;
 constexpr std::size_t CodecBudget = std::size_t(256) << 20;
 // m3a.3: mesh.v2 output (static topology with material UVs), field.v1
 // surface_load, held port values per macro step in the state.
-constexpr const char* SolverVersion = "m3a.3";
+// m3a.4: results with mesh colliders, moving pins with barrier contact or
+// self-collision change (edge-edge mollifier and exact parallel test, kinematic
+// continuation for moving pins and colliders, cloth-cloth Hessian couplings,
+// `self_friction`); runs without contact, or with analytic shapes and static
+// pins only, give the same frames as m3a.3.
+constexpr const char* SolverVersion = "m3a.4";
 constexpr const char* StateFormat = "cloth.shell.state.v2";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";
+// M6 (coupling): a mesh collider with motion {type: port, port: <name>} follows
+// the mesh.v2 surface accepted on <name>; the contact reaction on every such
+// collider is offered on ReactionPort.
+constexpr const char* ReactionPort = "collider_reaction";
+constexpr const char* DefaultColliderPort = "collider_surface";
 
 bool Fail(std::string& error, const std::string& message) { error = message; return false; }
 
@@ -207,6 +218,7 @@ struct SceneUse {
 	std::vector<std::string> names;
 	std::vector<std::shared_ptr<const SceneTrack>> tracks;
 	void Name(const std::string& n) { if (std::find(names.begin(), names.end(), n) == names.end()) names.push_back(n); }
+	std::vector<std::pair<std::string, std::size_t>> ports;   // M6: (accepted port, mesh collider index)
 };
 
 bool ParseMotion(const V* v, Motion& motion, V& effective, SceneUse& scene, std::string& error)
@@ -369,6 +381,7 @@ bool ParseColliders(const V* v, const ISceneInputs& inputs, std::vector<Collider
 				if ((codec != "mesh.v1" && codec != "mesh.v2") || !DecodeMesh(*bytes, CodecBudget, resolve, frame, error))
 					return Fail(error, "collider scene input " + input + " is not a mesh frame: " + error);
 				scene.Name(input);
+				mesh.sceneInput = input;
 				for (std::uint32_t bits : frame.positions) mesh.vertices.push_back(FromF32(bits));
 				mesh.triangles = frame.indices;
 				r.out.emplace_back("scene_input", V::String(input));
@@ -392,7 +405,20 @@ bool ParseColliders(const V* v, const ISceneInputs& inputs, std::vector<Collider
 				r.out.emplace_back("triangles", V::ArrayValue(ts));
 			}
 			V motionValue;
-			if (!ParseMotion(r.Raw("motion"), mesh.motion, motionValue, scene, error)) return false;
+			// M6: {type: port, port: <name>} -- the collider follows a coupled surface.
+			const V* mv = r.Raw("motion");
+			const V* mt = mv && mv->GetType() == V::Map ? mv->Find("type") : nullptr;
+			if (mt && mt->GetType() == V::Text && mt->GetText() == "port") {
+				Reader mr(*mv, "collider motion", error);
+				mr.Text("type", "port");
+				const std::string port = mr.Text("port", DefaultColliderPort);
+				if (!mr.Finish()) return false;
+				if (port == LoadPort || port == StatePort || port == ReactionPort) return mr.Bad("a collider port needs its own name");
+				for (const auto& q : scene.ports) if (q.first == port) return Fail(error, "two colliders follow the port " + port);
+				mesh.motion.type = Motion::Type::Track;   // the port track is attached by Configure
+				scene.ports.emplace_back(port, meshes.size());
+				motionValue = V::MapValue(mr.out);
+			} else if (!ParseMotion(mv, mesh.motion, motionValue, scene, error)) return false;
 			r.out.emplace_back("motion", motionValue);
 			if (!r.Finish()) return false;
 			meshes.push_back(std::move(mesh));
@@ -497,12 +523,30 @@ const EvidenceSpec ContactSpecs[] = {
 		{1e-6, 1e-6, 1e-6}},
 };
 
+// Self-collision (only when the run has it; tests/ClothValidationTest.cpp
+// "Self-collision evidence" over the built-in records and both bake
+// integrators with the default contact settings).  The stack's force balance
+// is exact up to the Newton tolerance; stick and slide are 1.25 x the largest
+// observed (the layered contact's discretisation, which falls under mesh
+// refinement); the fold must have no violation.
+const EvidenceSpec SelfSpecs[] = {
+	{"self-stack-n6", "two layers on a plane: max |force / weight - 1| (plane: both, lower layer: the upper's); the gap within (0, dhat)",
+		{1e-8, 1e-8, 1e-8}},
+	{"self-stick", "a layer on a pinned layer tilted to half the self-friction angle: |creep speed - smoothed-friction law| / slip speed",
+		{1.6e-2, 1.6e-2, 1.6e-2}},
+	{"self-slide", "a layer on a pinned layer tilted 0.2 rad past the self-friction angle: relative acceleration error vs g (sin - mu cos)",
+		{4.8e-3, 4.8e-3, 4.8e-3}},
+	{"self-fold", "strip folded onto itself by moving pins, 1.2 s: steps whose straight path or end state violates an offset (cloth-cloth included)",
+		{0.5, 0.5, 0.5}},
+};
+
 struct EvidenceKey {
 	Material material;
 	Triangulation triangulation;
 	BendingModel bending;
 	Scheme scheme;
 	bool contact = false;          // barrier contact cases too
+	bool self = false;             // and the self-collision cases
 	BarrierSettings barrier;
 	double thickness = 0;
 };
@@ -517,6 +561,8 @@ V EvidenceConfiguration(const EvidenceKey& k, const char* id, int resolution)
 		m.emplace_back("contact", V::MapValue({{"barrier_stiffness", V::Float(k.barrier.stiffness)},
 			{"contact_activation", V::Float(k.barrier.activation)}, {"friction", V::Float(k.barrier.friction)},
 			{"friction_velocity", V::Float(k.barrier.frictionVelocity)}, {"contact_thickness", V::Float(k.thickness)}}));
+	if (k.contact && k.self)
+		m.emplace_back("self_collision", V::MapValue({{"self_friction", V::Float(k.barrier.selfFriction)}}));
 	return V::MapValue(m);
 }
 
@@ -592,6 +638,22 @@ std::vector<EvidenceCase> RunEvidence(const EvidenceKey& k, bool contactPart)
 		add(ContactSpecs[4], 10, mesh, mesh.error);
 		const CaseResult bounce = RunContactBounce(s, c);
 		add(ContactSpecs[5], 10, bounce, bounce.error);
+		if (k.self) {
+			ContactSettings sc = c;
+			sc.barrier.selfFriction = k.barrier.selfFriction;
+			s.resolution = 6;
+			const CaseResult stack = RunSelfStack(s, sc);
+			add(SelfSpecs[0], 6, stack, stack.error);
+			const double ms = sc.barrier.selfFriction;
+			CaseResult sstick = RunSelfIncline(s, sc, 0.5*std::atan(ms));
+			if (!(ms > 0)) { sstick.ok = false; sstick.failure = "no friction between layers"; }
+			add(SelfSpecs[1], 6, sstick, sstick.error);
+			const CaseResult sslide = RunSelfIncline(s, sc, std::atan(ms) + 0.2);
+			add(SelfSpecs[2], 6, sslide, sslide.error);
+			s.resolution = 10;
+			const CaseResult fold = RunSelfFold(s, sc, 1, 1.2);
+			add(SelfSpecs[3], 10, fold, fold.error);
+		}
 	}
 	return out;
 }
@@ -632,12 +694,126 @@ std::vector<EvidenceCase> Evidence(const EvidenceKey& k)
 
 // ------------------------------------------------------------------ solver
 
+// ------------------------------------------------------------------ M6: colliders driven by a port
+
+// The rigid motion of a port-driven mesh collider: the map from its rest pose
+// (its vertices as configured: the surface at time 0) to the pose fitted to
+// the accepted surface.  The accepted surface is where the collider is at the
+// END of the held step; over the step it moves rigidly from the pose it held
+// before (rotation at a constant rate about the relative axis, the rest
+// centroid linearly).  At(0) is the rest pose.
+class PortTrack final : public TransformTrack {
+public:
+	static constexpr std::size_t Size = 12 + 12 + 3;   // start pose, end pose, t0, t1, have
+	std::array<double,12> start{{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}}, end{{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}};
+	double t0 = 0, t1 = 0;
+	bool have = false;
+	V3 centroid{{0, 0, 0}};                              // of the rest vertices
+	void At(double t, double rotation[9], double translation[3]) const override {
+		if (t == 0 || !have) {
+			const double* src = t == 0 ? Identity() : end.data();
+			std::copy(src, src + 9, rotation);
+			std::copy(src + 9, src + 12, translation);
+			return;
+		}
+		const double f = t1 > t0 ? (t - t0)/(t1 - t0) : 1.0;
+		// Relative rotation D = Re Rs^T as axis-angle, scaled by f.
+		double D[9];
+		for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+			double a = 0;
+			for (int k = 0; k < 3; ++k) a += end[3*i + k]*start[3*j + k];
+			D[3*i + j] = a;
+		}
+		double axis[3] = {D[7] - D[5], D[2] - D[6], D[3] - D[1]};
+		const double sn = 0.5*std::sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
+		const double cs = 0.5*(D[0] + D[4] + D[8] - 1);
+		const double angle = std::atan2(sn, cs);
+		double F[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+		if (sn > 0) {
+			for (double& a : axis) a /= 2*sn;
+			const double th = f*angle, c = std::cos(th), s = std::sin(th), C = 1 - c;
+			const double x = axis[0], y = axis[1], z = axis[2];
+			const double R[9] = {c + x*x*C, x*y*C - z*s, x*z*C + y*s, y*x*C + z*s, c + y*y*C, y*z*C - x*s,
+				z*x*C - y*s, z*y*C + x*s, c + z*z*C};
+			std::copy(R, R + 9, F);
+		}
+		for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+			double a = 0;
+			for (int k = 0; k < 3; ++k) a += F[3*i + k]*start[3*k + j];
+			rotation[3*i + j] = a;
+		}
+		// The rest centroid moves linearly from its start to its end position.
+		for (int i = 0; i < 3; ++i) {
+			const double ps = start[3*i]*centroid[0] + start[3*i + 1]*centroid[1] + start[3*i + 2]*centroid[2] + start[9 + i];
+			const double pe = end[3*i]*centroid[0] + end[3*i + 1]*centroid[1] + end[3*i + 2]*centroid[2] + end[9 + i];
+			const double p = ps + f*(pe - ps);
+			translation[i] = p - (rotation[3*i]*centroid[0] + rotation[3*i + 1]*centroid[1] + rotation[3*i + 2]*centroid[2]);
+		}
+	}
+	static const double* Identity() { static const double I[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}; return I; }
+};
+
+// The rigid map (R, c) with p_i ~ R r_i + c in the least-squares sense
+// (Horn 1987: the largest eigenvector of the 4x4 quaternion matrix, Jacobi).
+std::array<double,12> FitRigid(const std::vector<double>& rest, const std::vector<double>& moved)
+{
+	const std::size_t n = rest.size()/3;
+	double rc[3] = {0, 0, 0}, pc[3] = {0, 0, 0};
+	for (std::size_t i = 0; i < n; ++i) for (int a = 0; a < 3; ++a) { rc[a] += rest[3*i + a]; pc[a] += moved[3*i + a]; }
+	for (int a = 0; a < 3; ++a) { rc[a] /= static_cast<double>(n); pc[a] /= static_cast<double>(n); }
+	double S[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+	for (std::size_t i = 0; i < n; ++i) for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b)
+		S[a][b] += (rest[3*i + a] - rc[a])*(moved[3*i + b] - pc[b]);
+	double N[4][4] = {
+		{S[0][0] + S[1][1] + S[2][2], S[1][2] - S[2][1], S[2][0] - S[0][2], S[0][1] - S[1][0]},
+		{S[1][2] - S[2][1], S[0][0] - S[1][1] - S[2][2], S[0][1] + S[1][0], S[2][0] + S[0][2]},
+		{S[2][0] - S[0][2], S[0][1] + S[1][0], -S[0][0] + S[1][1] - S[2][2], S[1][2] + S[2][1]},
+		{S[0][1] - S[1][0], S[2][0] + S[0][2], S[1][2] + S[2][1], -S[0][0] - S[1][1] + S[2][2]}};
+	double Q[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+	for (int sweep = 0; sweep < 50; ++sweep) {
+		double off = 0, diag = 0;
+		for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) (i == j ? diag : off) += N[i][j]*N[i][j];
+		if (!(off > 1e-30*diag)) break;
+		for (int p = 0; p < 3; ++p) for (int q = p + 1; q < 4; ++q) {
+			if (N[p][q] == 0) continue;
+			const double th = 0.5*std::atan2(2*N[p][q], N[q][q] - N[p][p]), c = std::cos(th), s = std::sin(th);
+			for (int k = 0; k < 4; ++k) { const double a = N[k][p], b = N[k][q]; N[k][p] = c*a - s*b; N[k][q] = s*a + c*b; }
+			for (int k = 0; k < 4; ++k) { const double a = N[p][k], b = N[q][k]; N[p][k] = c*a - s*b; N[q][k] = s*a + c*b; }
+			for (int k = 0; k < 4; ++k) { const double a = Q[k][p], b = Q[k][q]; Q[k][p] = c*a - s*b; Q[k][q] = s*a + c*b; }
+		}
+	}
+	int best = 0;
+	for (int i = 1; i < 4; ++i) if (N[i][i] > N[best][best]) best = i;
+	double w = Q[0][best], x = Q[1][best], y = Q[2][best], z = Q[3][best];
+	const double l = std::sqrt(w*w + x*x + y*y + z*z);
+	w /= l; x /= l; y /= l; z /= l;
+	std::array<double,12> m{{1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y), 2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x),
+		2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y), 0, 0, 0}};
+	for (int a = 0; a < 3; ++a) m[9 + a] = pc[a] - (m[3*a]*rc[0] + m[3*a + 1]*rc[1] + m[3*a + 2]*rc[2]);
+	return m;
+}
+
+// One port-driven collider: its track, its rest surface, and the reaction
+// impulse accumulated over the held step (about `point`, the collider's rest
+// centroid placed at the step's end pose).
+struct PortCollider {
+	std::string port;
+	std::size_t mesh = 0;
+	std::shared_ptr<PortTrack> track;
+	std::vector<double> rest;
+	std::string topology;
+	double impulse[3] = {0, 0, 0}, angular[3] = {0, 0, 0}, time = 0;
+	V3 point{{0, 0, 0}};
+	static constexpr std::size_t Size = PortTrack::Size + 10;
+};
+
 // Everything that determines later payloads (checkpoint and rollback).
 struct ClothState {
 	double t = 0, segStart = 0, segTarget = 0, heldFor = 0, hPrev = 0, time = 0;
 	std::uint64_t next = 0, segN = 0, segJ = 0;
 	bool finished = false, held = false, havePrev = false;
 	std::vector<double> x, v, xPrev, vPrev, pressure, traction;
+	std::vector<double> colliders;   // M6: PortCollider::Size per port-driven collider
 };
 
 struct ClothToken final : SolverStateToken {
@@ -672,6 +848,14 @@ private:
 	ClothState Capture() const;
 	bool Apply(ClothState&& state, std::string& error);
 	bool TrackFailure(std::string& error) const;
+	// M6: port-driven colliders and their contact reaction.
+	bool AcceptColliders(double t0, double t1, IPortExchange* ports, std::string& error);
+	bool OfferReaction(double time, IPortExchange& ports, std::string& error);
+	void ObserveSteps();
+	std::vector<double> SaveColliders() const;
+	bool LoadColliders(const std::vector<double>& state, std::string& error);
+	std::vector<PortCollider> colliders_;
+	std::string reactionDomain_;
 
 	bool configured_ = false, started_ = false, finished_ = false;
 	SheetSpec sheet_;
@@ -745,6 +929,20 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	if (!ParsePins(p.Raw("pins"), sheet, model.pins, pinsValue, scene, error)) return false;
 	p.out.emplace_back("pins", pinsValue);
 	if (!ParseColliders(p.Raw("colliders"), inputs, model.colliders, model.meshColliders, collidersValue, scene, error)) return false;
+	std::vector<PortCollider> portColliders;   // M6
+	for (const auto& q : scene.ports) {
+		PortCollider pc;
+		pc.port = q.first;
+		pc.mesh = q.second;
+		pc.track = std::make_shared<PortTrack>();
+		MeshCollider& mc = model.meshColliders[q.second];
+		mc.motion.track = pc.track;
+		pc.rest = mc.vertices;
+		pc.topology = MeshTopologyDigest(static_cast<std::uint32_t>(mc.vertices.size()/3), mc.triangles);
+		for (std::size_t i = 0; i < mc.vertices.size()/3; ++i) for (int a = 0; a < 3; ++a)
+			pc.track->centroid[a] += mc.vertices[3*i + a]/static_cast<double>(mc.vertices.size()/3);
+		portColliders.push_back(std::move(pc));
+	}
 	p.out.emplace_back("colliders", collidersValue);
 	const std::string contact = p.Text("contact", interactive ? "penalty" : "barrier", {"barrier", "penalty"});
 	model.contact = contact == "barrier" ? ContactModel::Barrier : ContactModel::Penalty;
@@ -755,6 +953,7 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	model.barrier.friction = p.Real("friction", 0.3);
 	model.barrier.frictionVelocity = p.Real("friction_velocity", 1e-3);
 	model.barrier.selfCollision = p.Bool("self_collision", false);
+	model.barrier.selfFriction = p.Real("self_friction", 0.3);
 	model.pressure = p.Real("pressure", 0.0);
 	model.dragCoefficient = p.Real("drag_coefficient", 0.0);
 	model.airDensity = p.Real("air_density", 1.2);
@@ -809,6 +1008,14 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	topology_ = MeshTopologyDigest(built.Vertices(), indices_);
 	staticReady_ = false;   // the static record is rebuilt for this configuration on first use
 	tracks_ = scene.tracks;
+	colliders_ = std::move(portColliders);
+	{
+		V::Values names;
+		for (const auto& pc : colliders_) names.push_back(V::String(pc.port));
+		Bytes encoded;
+		RISECBOR64::Encode(V::ArrayValue({V::String("cloth.collider_reaction.v1"), V::ArrayValue(names)}), encoded, nullptr);
+		reactionDomain_ = RISECBOR64::SHA256Hex(encoded);
+	}
 	configured_ = true;
 
 	candidate.solverId = ClothSolverId;
@@ -829,6 +1036,12 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			{{"normal", "normal", "1", 3}, {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""},
 		{LoadPort, "surface load", "Pa", "field.v1", false, "",
 			{{"pressure", "pressure", "Pa", 1}, {"traction", "traction", "Pa", 3}}, topology_}};
+	// M6: each port-driven collider accepts its surface; the reactions on all of them are offered.
+	for (const auto& pc : colliders_)
+		candidate.ports.push_back({pc.port, "collider surface", "m", "mesh.v2", false, "", {{"position", "position", "m", 3}}, pc.topology});
+	if (!colliders_.empty())
+		candidate.ports.push_back({ReactionPort, "contact reaction", "N", "field.v1", true, "",
+			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, reactionDomain_});
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true,
 		"portable C++17; `threads` (default min(4, cores)) does not change results"}};
@@ -838,15 +1051,19 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	caps.modes = {"bake", "interactive"};
 	caps.backend = "cpu";   // M4: the backend this configuration runs on
 	const std::uint64_t n = built.Vertices();
-	// About a dozen 3-vectors of doubles per vertex (state, history, Newton work)
-	// plus three block matrices (pattern, damping, Hessian) of ~13 3x3 blocks per row.
-	caps.memoryEstimate = n*(12*24 + 3*13*72) + (std::uint64_t(1) << 20);
-	// predictive needs bake mode, no air drag, and contact (if any) by barrier
-	// without self-collision; the contact cases then join the evidence.
+	// M5c, measured (rise-sim peak footprint/RSS, 121..14,641 vertices, both modes, sphere contact):
+	// about 10 MiB + 13 KiB per vertex; declared with a 25% margin.  Not keyed.
+	caps.memoryEstimate = ((std::uint64_t(10) << 20) + n*13312) * 5 / 4;
+	// Wall s per simulated s: per vertex-substep 12 us in bake mode (measured 7-23 us),
+	// 3 us interactive (2.5-3.3 us), M1 Max, default threads.  Approximate.  Not keyed.
+	caps.costEstimate = (interactive ? 3e-6 : 12e-6) * double(n) * double(substeps) * rate;
+	// predictive needs bake mode, no air drag, no motion sampled from the scene,
+	// and contact (if any) by barrier; the contact cases (and with
+	// self-collision the self-collision cases) then join the evidence.
 	const bool barrierContact = model.contact == ContactModel::Barrier && anyContact;
 	const bool sceneMotion = !scene.tracks.empty();
 	const bool predictiveConditions = !interactive && model.dragCoefficient == 0 && !sceneMotion &&
-		(!anyContact || (barrierContact && !model.barrier.selfCollision));
+		(!anyContact || barrierContact);
 	candidate.evidence.fidelity = predictiveConditions ? "predictive" : "preview";
 	caps.earnableFidelity = predictiveConditions ? std::vector<std::string>{"preview", "predictive"} :
 		std::vector<std::string>{"preview"};
@@ -854,8 +1071,7 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 		caps.fidelityLimit = interactive ? "interactive mode accepts truncated Newton iterates" :
 			model.dragCoefficient > 0 ? "air drag is explicit and unvalidated" :
 			sceneMotion ? "motion sampled from the scene is not covered by the validation cases" :
-			model.contact == ContactModel::Penalty ? "penalty contact has no collision detection" :
-			"self-collision is not validated";
+			"penalty contact has no collision detection";
 	// What the label covers (docs/SIMULATION_M3A_RESULTS.md section 5), as
 	// conditions and one sentence; both are bound into the evidence digests.
 	{
@@ -879,21 +1095,77 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			{"material", {model.material.name}},
 			{"mesh", {"structured-sheet"}},
 			{"mode", {mode}},
-			{"motion", {sceneMotion ? "scene-transform" : "prescribed"}},
+			{"motion", colliders_.empty() ? std::vector<std::string>{sceneMotion ? "scene-transform" : "prescribed"} :
+				std::vector<std::string>{"port", sceneMotion ? "scene-transform" : "prescribed"}},   // M6: "port" < both
 			{"self_collision", {model.barrier.selfCollision && barrierContact ? "true" : "false"}},
 			{"triangulation", {sheet.triangulation == Triangulation::Alternating ? "alternating" : "consistent"}}};
 		std::string scope = std::string("The cloth model (structured sheet, ") + bending + " bending, the material record " +
 			model.material.name + ") integrated by " + integrator + " in " + mode + " mode";
 		if (barrierContact) scope += ", with barrier contact and lagged smoothed friction against analytic shapes and "
 			"static or rigidly moving mesh colliders at contact parameters whose own cases pass";
+		if (barrierContact && model.barrier.selfCollision) scope += ", and cloth-cloth barrier contact with lagged smoothed "
+			"friction between layers (self_friction)";
 		scope += ": certified on canonical problems (force balance, an analytic drape, analytic friction, an "
-			"intersection-free tumble, no energy gain); it does not bound the error of a given bake and does not "
-			"cover self-collision, air drag, imported irregular meshes, measured fabric behaviour, deforming "
-			"colliders or motion sampled from the scene.";
+			"intersection-free tumble, no energy gain";
+		if (barrierContact && model.barrier.selfCollision) scope += "; layers' force balance, friction between layers, an "
+			"intersection-free fold";
+		scope += "); it does not bound the error of a given bake and does not "
+			"cover air drag, imported irregular meshes, measured fabric behaviour, deforming "
+			"colliders or motion sampled from the scene";
+		if (barrierContact && model.barrier.selfCollision) scope += ", nor the shape of a self-contact fold (no analytic "
+			"reference; self-convergence only)";
+		scope += ".";
+		if (!colliders_.empty()) scope += " Colliders that follow a coupling port move rigidly as the pose fitted to the "
+			"accepted surface (covered by the coupling's own evidence, not by these cases).";   // M6
 		candidate.evidence.scope = scope;
+	}
+	// Mesh colliders from scene inputs are their geometry at t = 0 moved rigidly
+	// (deforming colliders are out of scope).  Chosen: a documented
+	// approximation, made explicit: the geometry is sampled again at three later
+	// times of the run, and if it departs from the t = 0 geometry moved by the
+	// collider's motion the run says so in its notes and is labelled preview.
+	std::vector<std::string> deforming;
+	for (const auto& mc : model.meshColliders) {
+		if (mc.sceneInput.empty() || count_ < 2) continue;
+		const double end = static_cast<double>(count_ - 1)*interval_;
+		double worst = 0, at = 0;
+		bool topology = false;
+		for (int k = 1; k <= 3; ++k) {
+			const double t = end*k/3.0;
+			std::string why, codec;
+			std::shared_ptr<const Bytes> bytes;
+			MeshFrame frame;
+			const StaticPayloadResolver resolve = [&inputs](const std::string& digest, std::size_t budget,
+				std::shared_ptr<const Bytes>& fixed, std::string& reason) { return inputs.ResolveStatic(digest, budget, fixed, reason); };
+			if (!inputs.Sample(mc.sceneInput, t, bytes, codec, why) || !bytes ||
+				(codec != "mesh.v1" && codec != "mesh.v2") || !DecodeMesh(*bytes, CodecBudget, resolve, frame, why))
+				return Fail(error, "collider scene input " + mc.sceneInput + " at t = " + std::to_string(t) + ": " + why);
+			if (frame.positions.size() != mc.vertices.size() || frame.indices != mc.triangles) { topology = true; at = t; break; }
+			for (std::size_t v = 0; v < mc.vertices.size()/3; ++v) {
+				const V3 rest{{mc.vertices[3*v], mc.vertices[3*v + 1], mc.vertices[3*v + 2]}};
+				const V3 moved = mc.motion.Position(rest, t);
+				double d = 0;
+				for (int c = 0; c < 3; ++c) { const double e = FromF32(frame.positions[3*v + c]) - moved[c]; d += e*e; }
+				if (std::sqrt(d) > worst) { worst = std::sqrt(d); at = t; }
+			}
+		}
+		if (topology || worst > 1e-5) {
+			std::ostringstream note;
+			note << "mesh collider " << mc.sceneInput << " deforms during the run (";
+			if (topology) note << "its topology changes";
+			else note << "it departs from its t = 0 geometry moved rigidly by up to " << worst << " m";
+			note << ", at t = " << at << " s): the solver follows its t = 0 geometry moved rigidly, an approximation (preview)";
+			deforming.push_back(note.str());
+		}
+	}
+	if (!deforming.empty()) {
+		candidate.evidence.fidelity = "preview";
+		caps.earnableFidelity = {"preview"};
+		if (caps.fidelityLimit.empty()) caps.fidelityLimit = "a deforming collider is followed as its t = 0 geometry moved rigidly";
 	}
 	EvidenceKey key{model.material, sheet.triangulation, sheet.bending, scheme_};
 	key.contact = barrierContact;
+	key.self = barrierContact && model.barrier.selfCollision;
 	key.barrier = model.barrier;
 	key.thickness = model.contactThickness;
 	candidate.evidence.cases = Evidence(key);
@@ -905,8 +1177,9 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	if (barrierContact)
 		candidate.notes.push_back("barrier contact with continuous collision detection and lagged smoothed friction");
 	if (barrierContact && model.barrier.selfCollision)
-		candidate.notes.push_back("self-collision is not validated: preview only");
+		candidate.notes.push_back("cloth-cloth barrier contact with lagged smoothed friction between layers (self_friction)");
 	if (model.dragCoefficient > 0) candidate.notes.push_back("air drag is explicit and unvalidated: preview only");
+	for (const auto& note : deforming) candidate.notes.push_back(note);
 	d = std::move(candidate);
 	return true;
 }
@@ -918,6 +1191,15 @@ bool ClothSolver::Start(std::string& error)
 	if (!BuildSheet(sheet_, model_.material, sheet, error) || !system_.Initialize(sheet, model_, error)) return false;
 	system_.SetThreads(threads_);
 	system_.Reset(0);
+	for (auto& pc : colliders_) {   // M6: port-driven colliders start at rest
+		pc.track->start = pc.track->end = {{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}};
+		pc.track->t0 = pc.track->t1 = 0;
+		pc.track->have = false;
+		for (int a = 0; a < 3; ++a) pc.impulse[a] = pc.angular[a] = 0;
+		pc.time = 0;
+		pc.point = pc.track->centroid;
+	}
+	ObserveSteps();
 	if (!(system_.ContactGap(system_.x, 0) > 0))
 		return Fail(error, "the sheet starts within the contact offset of a collider (contact_thickness)");
 	system_.portPressure.clear();
@@ -983,6 +1265,7 @@ bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPo
 	if (!sink.Publish(index, "surface", time, payload, {}, error)) return false;
 	if (ports && (!ports->OfferStatic(MeshTopologyStaticType, fixed, error) || !ports->Offer(StatePort, time, payload, error)))
 		return false;
+	if (ports && !colliders_.empty() && !OfferReaction(time, *ports, error)) return false;   // M6
 	return true;
 }
 
@@ -991,7 +1274,8 @@ bool ClothSolver::OfferState(double time, IPortExchange& ports, std::string& err
 	auto bytes = std::make_shared<Bytes>();
 	std::shared_ptr<const Bytes> fixed;
 	if (!Encode(*bytes, fixed, error)) return false;
-	return ports.OfferStatic(MeshTopologyStaticType, fixed, error) && ports.Offer(StatePort, time, std::move(bytes), error);
+	if (!ports.OfferStatic(MeshTopologyStaticType, fixed, error) || !ports.Offer(StatePort, time, std::move(bytes), error)) return false;
+	return colliders_.empty() || OfferReaction(time, ports, error);   // M6
 }
 
 // surface_load: field.v1 over the sheet's vertices (domain: the sheet's
@@ -1064,6 +1348,7 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 			// port values are read once, at its start, and held over all of it.
 			if (!macro || !held_ || heldFor_ != request.macroEnd) {
 				if (!AcceptLoads(segStart_, ports, error)) return false;
+				if (!AcceptColliders(segStart_, macro ? request.macroEnd : segTarget_, ports, error)) return false;
 				held_ = macro;
 				heldFor_ = request.macroEnd;
 			}
@@ -1091,6 +1376,122 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 	}
 }
 
+// ------------------------------------------------------------------ M6: port-driven colliders
+
+// At the start of a held step [t0, t1]: each port-driven collider accepts the
+// surface it must reach by t1 (a mesh.v2 or mesh.v1 of its own topology); it
+// moves there from the pose it held.  Unbound or unavailable: it stays.  The
+// reaction accumulators restart.
+bool ClothSolver::AcceptColliders(double t0, double t1, IPortExchange* ports, std::string& error)
+{
+	for (auto& pc : colliders_) {
+		PortTrack& tr = *pc.track;
+		const std::array<double,12> previous = tr.have ? tr.end : std::array<double,12>{{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0}};
+		std::array<double,12> next = previous;
+		if (ports) {
+			std::shared_ptr<const Bytes> bytes;
+			const auto status = ports->Accept(pc.port, t0, bytes, error);
+			if (status == PortStatus::Failed) return false;
+			if (status == PortStatus::Ready) {
+				MeshFrame m;
+				if (!DecodeMesh(*bytes, CodecBudget, ports->Resolver(), m, error)) return Fail(error, pc.port + ": " + error);
+				if (m.positionUnits != "m" || m.positions.size() != pc.rest.size() ||
+					MeshTopologyDigest(static_cast<std::uint32_t>(pc.rest.size()/3), m.indices) != pc.topology)
+					return Fail(error, pc.port + " must carry the collider's own surface (its topology, metres)");
+				std::vector<double> moved(m.positions.size());
+				for (std::size_t k = 0; k < moved.size(); ++k) moved[k] = FromF32(m.positions[k]);
+				next = FitRigid(pc.rest, moved);
+			}
+		}
+		tr.start = previous;
+		tr.end = next;
+		tr.t0 = t0;
+		tr.t1 = t1;
+		tr.have = true;
+		for (int a = 0; a < 3; ++a) pc.impulse[a] = pc.angular[a] = 0;
+		pc.time = 0;
+		for (int a = 0; a < 3; ++a)
+			pc.point[a] = next[3*a]*tr.centroid[0] + next[3*a + 1]*tr.centroid[1] + next[3*a + 2]*tr.centroid[2] + next[9 + a];
+	}
+	return true;
+}
+
+// After every accepted step: the contact force each port-driven collider
+// exerted on the cloth (barrier and friction, ClothContact's MeshForces on the
+// step's own frame), integrated over the step, with its moment about `point`.
+void ClothSolver::ObserveSteps()
+{
+	if (colliders_.empty()) { system_.stepObserver = nullptr; return; }
+	system_.stepObserver = [this](const ContactFrame& f, const std::vector<double>& x, double h) {
+		const BarrierContact* barrier = system_.Barrier();
+		if (!barrier) return;
+		std::vector<double> force;
+		for (auto& pc : colliders_) {
+			barrier->MeshForces(f, x, static_cast<std::uint32_t>(pc.mesh), force);
+			for (std::size_t i = 0; i < force.size()/3; ++i) {
+				const double* fi = &force[3*i];
+				if (fi[0] == 0 && fi[1] == 0 && fi[2] == 0) continue;
+				const double r[3] = {x[3*i] - pc.point[0], x[3*i + 1] - pc.point[1], x[3*i + 2] - pc.point[2]};
+				const double m[3] = {r[1]*fi[2] - r[2]*fi[1], r[2]*fi[0] - r[0]*fi[2], r[0]*fi[1] - r[1]*fi[0]};
+				for (int a = 0; a < 3; ++a) { pc.impulse[a] += h*fi[a]; pc.angular[a] += h*m[a]; }
+			}
+			pc.time += h;
+		}
+	};
+}
+
+// collider_reaction: field.v1 over the port-driven colliders (declaration
+// order); per collider the mean force the cloth exerted ON it over the held
+// step so far (N), the point the torque is about (m) and that torque (N m).
+bool ClothSolver::OfferReaction(double time, IPortExchange& ports, std::string& error)
+{
+	FieldFrame f;
+	f.domain = reactionDomain_;
+	f.count = static_cast<std::uint32_t>(colliders_.size());
+	FieldChannel force{"force", "N", 3, {}}, point{"point", "m", 3, {}}, torque{"torque", "N m", 3, {}};
+	for (const auto& pc : colliders_) {
+		const double inv = pc.time > 0 ? 1/pc.time : 0.0;
+		for (int a = 0; a < 3; ++a) {
+			force.values.push_back(F32(-pc.impulse[a]*inv));
+			point.values.push_back(F32(pc.point[a]));
+			torque.values.push_back(F32(-pc.angular[a]*inv));
+		}
+	}
+	f.channels = {force, point, torque};
+	auto bytes = std::make_shared<Bytes>();
+	if (!EncodeField(f, CodecBudget, *bytes, error)) return false;
+	return ports.Offer(ReactionPort, time, std::move(bytes), error);
+}
+
+std::vector<double> ClothSolver::SaveColliders() const
+{
+	std::vector<double> out;
+	for (const auto& pc : colliders_) {
+		out.insert(out.end(), pc.track->start.begin(), pc.track->start.end());
+		out.insert(out.end(), pc.track->end.begin(), pc.track->end.end());
+		out.insert(out.end(), {pc.track->t0, pc.track->t1, pc.track->have ? 1.0 : 0.0});
+		out.insert(out.end(), {pc.impulse[0], pc.impulse[1], pc.impulse[2], pc.angular[0], pc.angular[1], pc.angular[2], pc.time,
+			pc.point[0], pc.point[1], pc.point[2]});
+	}
+	return out;
+}
+
+bool ClothSolver::LoadColliders(const std::vector<double>& s, std::string& error)
+{
+	if (s.size() != PortCollider::Size*colliders_.size()) return Fail(error, "cloth solver state does not match the configured port colliders");
+	std::size_t k = 0;
+	for (auto& pc : colliders_) {
+		for (double& x : pc.track->start) x = s[k++];
+		for (double& x : pc.track->end) x = s[k++];
+		pc.track->t0 = s[k++]; pc.track->t1 = s[k++]; pc.track->have = s[k++] != 0;
+		for (int a = 0; a < 3; ++a) pc.impulse[a] = s[k++];
+		for (int a = 0; a < 3; ++a) pc.angular[a] = s[k++];
+		pc.time = s[k++];
+		for (int a = 0; a < 3; ++a) pc.point[a] = s[k++];
+	}
+	return true;
+}
+
 ClothState ClothSolver::Capture() const
 {
 	ClothState c;
@@ -1100,6 +1501,7 @@ ClothState ClothSolver::Capture() const
 	c.finished = finished_; c.held = held_; c.havePrev = system_.havePrev;
 	c.x = system_.x; c.v = system_.v; c.xPrev = system_.xPrev; c.vPrev = system_.vPrev;
 	c.pressure = system_.portPressure; c.traction = system_.portTraction;
+	c.colliders = SaveColliders();
 	return c;
 }
 
@@ -1121,6 +1523,8 @@ bool ClothSolver::Apply(ClothState&& c, std::string& error)
 	system.hPrev = c.hPrev; system.havePrev = c.havePrev; system.time = c.time;
 	system.portPressure.swap(c.pressure); system.portTraction.swap(c.traction);
 	system_ = std::move(system);
+	if (!LoadColliders(c.colliders, error)) return false;   // M6
+	ObserveSteps();
 	t_ = c.t; next_ = static_cast<std::int64_t>(c.next); finished_ = c.finished;
 	segStart_ = c.segStart; segTarget_ = c.segTarget; segN_ = c.segN; segJ_ = c.segJ;
 	held_ = c.held; heldFor_ = c.heldFor;
@@ -1140,6 +1544,7 @@ bool ClothSolver::Checkpoint(Bytes& state, std::string& error)
 		{"hPrev", V::Float(system_.hPrev)}, {"havePrev", V::Bool(system_.havePrev)}, {"time", V::Float(system_.time)},
 		{"pressure", V::BytesValue(PackDoubles(system_.portPressure))},
 		{"traction", V::BytesValue(PackDoubles(system_.portTraction))}};
+	if (!colliders_.empty()) m.emplace_back("port_colliders", V::BytesValue(PackDoubles(SaveColliders())));   // M6
 	return RISECBOR64::Encode(V::MapValue(m), state, &error);
 }
 
@@ -1164,6 +1569,8 @@ bool ClothSolver::Restore(const Bytes& state, std::string& error)
 		!UnpackDoubles(v.Find("xPrev"), dofs, c.xPrev, true) || !UnpackDoubles(v.Find("vPrev"), dofs, c.vPrev, true) ||
 		!UnpackDoubles(v.Find("pressure"), dofs/3, c.pressure, true) || !UnpackDoubles(v.Find("traction"), dofs, c.traction, true))
 		return Fail(error, "cloth solver state does not match the configured sheet");
+	if (!colliders_.empty() && !UnpackDoubles(v.Find("port_colliders"), PortCollider::Size*colliders_.size(), c.colliders, false))
+		return Fail(error, "cloth solver state does not match the configured port colliders");
 	if (!Apply(std::move(c), error)) return false;
 	staticSent_ = false;
 	return true;

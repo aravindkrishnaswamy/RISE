@@ -22,6 +22,21 @@
 //                   g (sin - mu cos) above); (iv) no intersection on a sheet
 //                   tumbling over a static and a rotating cube mesh, every step
 //                   checked exactly; (v) no energy gain on a bounce
+//   moving colliders  kinematic continuation (m3a.4): the edge-edge mollifier
+//                   and its energy continuous across near-parallel edges; a
+//                   UV-sphere mesh ball moving laterally under a pinned 25 x 25
+//                   sheet at the default 8 substeps (failed Newton in m3a.3);
+//                   a cube rotating at 20 rad/s; a collider moving off with the
+//                   sheet already in contact at t = 0; every accepted step
+//                   checked exactly with the colliders on their chords; two
+//                   pinched configurations fail with the specific diagnostic
+//   self-collision  (vi) two layers on a plane: force balance, gap -> offset as
+//                   dhat -> 0; (vii) a layer on a layer on an incline: sticks
+//                   below and slides above the self-friction angle; (viii) a
+//                   hairpin fold: self-convergence under mesh and dhat
+//                   refinement; (ix) no intersection, cloth-cloth included, on a
+//                   strip folded by moving pins and a sheet dropped corner-first
+//                   onto a sphere; the self-collision evidence over the records
 //
 // Fast tier: three refinement levels per case.  --extended (or
 // RISE_TEST_EXTENDED=1) adds finer levels.  Tolerances are 1.25 x the error
@@ -37,6 +52,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -627,6 +643,365 @@ void ContactEvidenceFamily()
 	std::printf("  largest: rest %.2e  cylinder %.3e  stick %.3e  slide %.2e  mesh %.0f  bounce %.2e\n", worst[0], worst[1],
 		worst[2], worst[3], worst[4], worst[5]);
 }
+// ---------------------------------------------------------------- moving colliders (m3a.4)
+
+// A UV sphere as RISE's sphere_geometry tessellates it (poles welded, seam duplicated).
+MeshCollider UVSphere(int n, double r, const V3& c)
+{
+	MeshCollider m;
+	std::vector<std::vector<std::uint32_t>> rows(static_cast<std::size_t>(n) + 1);
+	std::uint32_t north = 0, south = 0;
+	auto add = [&](double x, double y, double z) {
+		m.vertices.insert(m.vertices.end(), {c[0] + r*x, c[1] + r*y, c[2] + r*z});
+		return static_cast<std::uint32_t>(m.vertices.size()/3 - 1);
+	};
+	for (int j = 0; j <= n; ++j) {
+		const double phi = Pi*j/n;
+		if (j == 0 || j == n) { (j == 0 ? north : south) = add(-std::sin(phi), std::cos(phi), 0); continue; }
+		for (int i = 0; i <= n; ++i) {
+			const double th = 2*Pi*i/n;
+			rows[static_cast<std::size_t>(j)].push_back(add(-std::sin(phi)*std::cos(th), std::cos(phi), std::sin(phi)*std::sin(th)));
+		}
+	}
+	auto I = [&](int j, int i) { return j == 0 ? north : j == n ? south : rows[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)]; };
+	for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) {
+		const std::uint32_t a = I(j, i), b = I(j, i + 1), cc = I(j + 1, i), d = I(j + 1, i + 1);
+		if (j != 0) m.triangles.insert(m.triangles.end(), {a, cc, b});
+		if (j + 1 != n) m.triangles.insert(m.triangles.end(), {b, cc, d});
+	}
+	return m;
+}
+
+MeshCollider Cube(const V3& c, double side)
+{
+	MeshCollider m;
+	const double h = 0.5*side;
+	for (int k = 0; k < 8; ++k) m.vertices.insert(m.vertices.end(), {c[0] + ((k & 1) ? h : -h), c[1] + ((k & 2) ? h : -h), c[2] + ((k & 4) ? h : -h)});
+	const std::uint32_t f[12][3] = {{0,2,1},{1,2,3},{4,5,6},{5,7,6},{0,1,4},{1,5,4},{2,6,3},{3,6,7},{0,4,2},{2,4,6},{1,3,5},{3,7,5}};
+	for (const auto& t : f) m.triangles.insert(m.triangles.end(), {t[0], t[1], t[2]});
+	return m;
+}
+
+struct Run {
+	bool ok = false;
+	std::string error;
+	int steps = 0, violations = 0;
+	double smallest = std::numeric_limits<double>::infinity();
+	StepStats stats;
+	std::string first;
+};
+
+// Steps a system as the solver does (8 substeps per 1/30 s frame, BDF2,
+// newton_tolerance 1e-3) for `duration`, checking every accepted step exactly.
+Run Drive(ClothSystem& system, double duration, int substeps = 8)
+{
+	Run r;
+	NewtonOptions o;
+	o.tolerance = 1e-3; o.maxIterations = 50; o.cgTolerance = 1e-6; o.cgIterations = 2000;
+	const double interval = 1.0/30;
+	const int frames = static_cast<int>(std::lround(duration/interval));
+	double t = 0;
+	for (int f = 0; f < frames; ++f)
+		for (int k = 0; k < substeps; ++k) {
+			const double tn = f*interval + interval*(k + 1)/substeps;
+			const std::vector<double> before = system.x;
+			const double t0 = system.time;
+			if (!system.Step(tn - t, Scheme::BDF2, o, r.stats, r.error)) return r;
+			system.time = tn; t = tn;
+			++r.steps;
+			std::string detail;
+			if (!system.PathIntersectionFree(before, system.x, t0, system.time, detail)) { ++r.violations; if (r.first.empty()) r.first = detail; }
+			const double gap = system.ContactGap(system.x, system.time);
+			if (!(gap > 0)) { ++r.violations; if (r.first.empty()) r.first = "end gap " + std::to_string(gap); }
+			r.smallest = std::min(r.smallest, gap);
+		}
+	r.ok = true;
+	return r;
+}
+
+bool MakeSystem(const SheetSpec& spec, const ModelConfig& config, ClothSystem& system)
+{
+	Sheet sheet;
+	std::string error;
+	const bool ok = BuildSheet(spec, config.material, sheet, error) && system.Initialize(sheet, config, error);
+	Check(ok, "system builds", error);
+	if (ok) { system.SetThreads(4); system.Reset(0); }
+	return ok;
+}
+
+void MovingRow(const char* id, const Run& r, double seconds)
+{
+	const bool pass = r.ok && r.violations == 0;
+	std::printf("| %-34s | %5d steps | %d violations | smallest gap %.2e m | %5.2f Newton/step | %d halvings | %d stages | %-4s | %6.2f s |\n",
+		id, r.steps, r.violations, r.smallest, r.steps ? double(r.stats.newtonIterations)/r.steps : 0.0, r.stats.halvings,
+		r.stats.stages, pass ? "pass" : "FAIL", seconds);
+	if (!r.ok) std::printf("|   failed: %s\n", r.error.c_str());
+	if (!r.first.empty()) std::printf("|   first violation: %s\n", r.first.c_str());
+	Check(pass, id, r.error + " " + r.first);
+}
+
+void MovingColliders(bool extended)
+{
+	std::printf("\nMoving colliders (kinematic continuation; every accepted step checked exactly, colliders on their chords)\n");
+	Material cotton;
+	FindMaterial("cotton-plain-weave", cotton);
+	// The edge-edge barrier is continuous as a pair turns parallel (m3a.3 jumped
+	// at sin^2 = 1e-6, which stalled Newton on the lateral ball below), and its
+	// gradient matches finite differences of the energy there.
+	{
+		SheetSpec spec;
+		spec.verticesU = spec.verticesV = 2; spec.sizeU = spec.sizeV = 0.1;
+		spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, 1}};
+		ModelConfig config;
+		config.material = cotton;
+		config.contact = ContactModel::Barrier;
+		MeshCollider tri;
+		// A long thin collider triangle whose edge (0,1) runs along x just below the cloth edge (0,1).
+		tri.vertices = {-0.05, -0.0026, 0.001, 0.15, -0.0026, 0.001, 0.05, -0.0026, -0.3};
+		tri.triangles = {0, 1, 2};
+		config.meshColliders.push_back(tri);
+		ClothSystem system;
+		if (MakeSystem(spec, config, system)) {
+			double jump = 0, gradErr = 0, scale = 0;
+			std::vector<double> x = system.x;
+			double previous = -1;
+			for (int k = -40; k <= 40; ++k) {
+				// Rotate cloth vertex 1 about vertex 0 in the horizontal plane: sin^2 of the
+				// angle to the collider edge from 1e-8 to 1e-4 (through 1e-6).
+				const double angle = k == 0 ? 0.0 : (k > 0 ? 1 : -1)*std::pow(10.0, -4 + 2.0*std::fabs(k)/40);
+				x[3] = 0.1*std::cos(angle); x[5] = 0.1*std::sin(angle);
+				const double e = system.ContactEnergy(x, 0);
+				if (previous >= 0 && std::abs(k) > 1) jump = std::max(jump, std::fabs(e - previous)/std::max(e, 1e-300));
+				previous = e;
+				std::vector<double> f;
+				system.ContactForces(x, 0, f);
+				for (int c = 0; c < 12; ++c) {
+					std::vector<double> xp = x, xm = x;
+					xp[c] += 1e-8; xm[c] -= 1e-8;
+					const double d = (system.ContactEnergy(xp, 0) - system.ContactEnergy(xm, 0))/2e-8;
+					gradErr = std::max(gradErr, std::fabs(d + f[c]));
+					scale = std::max(scale, std::fabs(f[c]));
+				}
+			}
+			std::printf("  edge-edge mollifier: largest relative energy change between neighbouring angles %.2e; gradient vs finite differences %.2e (scale %.2e N)\n",
+				jump, gradErr/std::max(scale, 1e-300), scale);
+			Check(jump < 0.05 && gradErr <= 1e-5*scale, "edge-edge energy continuous near parallel, gradient consistent",
+				std::to_string(jump) + " " + std::to_string(gradErr/scale));
+		}
+	}
+	std::printf("| %-34s | %11s | %12s | %21s | %15s | %10s | %9s | %-4s | %8s |\n", "case", "steps", "violations", "gap", "Newton", "halvings", "stages", "", "time");
+	// The lateral ball (the M4 failure): 25 x 25, corners pinned, a 24 x 24 UV
+	// sphere (r 0.25) translating at 0.15 m/s under it, 8 substeps.
+	{
+		const double t0 = Seconds();
+		SheetSpec spec;
+		spec.verticesU = spec.verticesV = 25; spec.origin = {{-0.5, 0.6, 0.5}};
+		ModelConfig config;
+		config.material = cotton;
+		config.contact = ContactModel::Barrier;
+		MeshCollider ball = UVSphere(24, 0.25, {{0, 0.25, 0}});
+		ball.motion.type = Motion::Type::Translate; ball.motion.vector = {{0.15, 0, 0}};
+		config.meshColliders.push_back(ball);
+		ClothSystem system;
+		if (MakeSystem(spec, config, system))
+			MovingRow("lateral UV ball, 25 x 25, 8 substeps", Drive(system, extended ? 2.0 : 0.5), Seconds() - t0);
+	}
+	// A cube (0.3 m, face up) rotating at 20 rad/s about the vertical under a
+	// sheet that falls onto it (corner speed 4.2 m/s).
+	{
+		const double t0 = Seconds();
+		SheetSpec spec;
+		const std::uint32_t n = extended ? 25 : 15;
+		spec.verticesU = spec.verticesV = n; spec.origin = {{-0.5, 0.47, 0.5}};
+		ModelConfig config;
+		config.material = cotton;
+		config.contact = ContactModel::Barrier;
+		MeshCollider cube = Cube({{0, 0.3, 0}}, 0.3);
+		cube.motion.type = Motion::Type::Rotate; cube.motion.center = {{0, 0.3, 0}}; cube.motion.axis = {{0, 1, 0}}; cube.motion.rate = 20;
+		config.meshColliders.push_back(cube);
+		ClothSystem system;
+		if (MakeSystem(spec, config, system))
+			MovingRow(extended ? "cube at 20 rad/s, 25 x 25" : "cube at 20 rad/s, 15 x 15", Drive(system, extended ? 1.0 : 0.5), Seconds() - t0);
+	}
+	// In contact at t = 0: the sheet starts 0.5 mm above the offset on the
+	// ball's top (within the barrier's reach), the ball moves up and sideways.
+	{
+		const double t0 = Seconds();
+		SheetSpec spec;
+		spec.verticesU = spec.verticesV = 21; spec.origin = {{-0.5, 0.6, 0.5}};
+		ModelConfig config;
+		config.material = cotton;
+		config.contact = ContactModel::Barrier;
+		MeshCollider ball = UVSphere(24, 0.25, {{0, 0.6 - 0.25 - 0.0025, 0}});
+		ball.motion.type = Motion::Type::Translate; ball.motion.vector = {{0.5, 0.25, 0}};
+		config.meshColliders.push_back(ball);
+		ClothSystem system;
+		if (MakeSystem(spec, config, system)) {
+			Check(system.ContactGap(system.x, 0) < config.barrier.activation, "the sheet starts in contact");
+			MovingRow("in contact at t = 0, ball moving off", Drive(system, extended ? 1.0 : 0.5), Seconds() - t0);
+		}
+	}
+	// Pinched: a ball rising into a pinned edge, and a ball coming down onto a
+	// sheet lying on a plane.  The step fails with a diagnostic naming both.
+	struct Pinch { const char* id; const char* expect; };
+	for (const Pinch& pc : {Pinch{"ball into a pinned edge", "pinched between mesh collider 0 and pin group 0"},
+		Pinch{"ball onto a sheet on a plane", "pinched between analytic collider 0 and mesh collider 0"}}) {
+		const double t0 = Seconds();
+		const bool edge = pc.expect[std::strlen("pinched between ")] == 'm';
+		SheetSpec spec;
+		spec.verticesU = spec.verticesV = 15; spec.origin = {{-0.5, 0.6, 0.5}};
+		ModelConfig config;
+		config.material = cotton;
+		config.contact = ContactModel::Barrier;
+		MeshCollider ball = UVSphere(24, 0.1, edge ? V3{{0, 0.45, 0.5}} : V3{{0, 0.75, 0}});
+		ball.motion.type = Motion::Type::Translate; ball.motion.vector = {{0, edge ? 0.3 : -0.5, 0}};
+		config.meshColliders.push_back(ball);
+		if (edge) {
+			PinGroup g;
+			for (std::uint32_t i = 0; i < spec.verticesU; ++i) g.vertices.push_back(i);
+			config.pins.push_back(g);
+		} else {
+			Collider plane;
+			plane.type = Collider::Type::Plane; plane.a = {{0, 0.595, 0}}; plane.b = {{0, 1, 0}};
+			config.colliders.push_back(plane);
+		}
+		ClothSystem system;
+		if (!MakeSystem(spec, config, system)) continue;
+		const Run r = Drive(system, 1.0);
+		const bool specific = !r.ok && r.error.find(pc.expect) != std::string::npos && r.error.find("infeasible at t = ") != std::string::npos;
+		std::printf("| %-34s | fails after %d steps: %s | %-4s | %6.2f s |\n", pc.id, r.steps, r.error.c_str(), specific && r.violations == 0 ? "pass" : "FAIL",
+			Seconds() - t0);
+		Check(specific && r.violations == 0, std::string("pinch diagnostic: ") + pc.id, r.error);
+	}
+}
+
+// ---------------------------------------------------------------- self-collision (m3a.4)
+
+void SelfCollision(bool extended)
+{
+	std::printf("\nSelf-collision (cloth-cloth barrier contact)\n");
+	CaseSettings s;
+	FindMaterial("cotton-plain-weave", s.material);
+	ContactSettings c;
+	// (vi) stacked layers: force balance exact, gap above the offset in (0, dhat), -> 0 with dhat.
+	{
+		std::printf("(vi) two layers (0.1 m, 10 x 10 cells, aligned) on a frictionless plane, static\n");
+		s.resolution = 10;
+		std::vector<double> gaps, dhats;
+		for (double dh : {1e-3, 5e-4, 2.5e-4, 1.25e-4}) {
+			const double t0 = Seconds();
+			ContactSettings cd = c;
+			cd.barrier.activation = dh;
+			const CaseResult r = RunSelfStack(s, cd);
+			char id[64];
+			std::snprintf(id, sizeof id, "stack, dhat %.3g mm", dh*1e3);
+			Row(id, "force balance", r, 1e-8, Seconds() - t0);
+			gaps.push_back(r.measured); dhats.push_back(dh);
+		}
+		std::printf("  gap above the offset / dhat:");
+		for (std::size_t k = 0; k < gaps.size(); ++k) std::printf(" %.4f", gaps[k]/dhats[k]);
+		double worst = 10;
+		std::printf("; order of gap -> 0 in dhat:");
+		for (std::size_t k = 0; k + 1 < gaps.size(); ++k) {
+			const double p = std::log(gaps[k]/gaps[k+1])/std::log(dhats[k]/dhats[k+1]);
+			worst = std::min(worst, p);
+			std::printf(" %.3f", p);
+		}
+		std::printf("\n");
+		Check(worst > 0.95, "the layers' gap tends to the offset linearly in dhat", std::to_string(worst));
+	}
+	// (vii) friction between layers.
+	{
+		std::printf("(vii) a layer (0.1 m, 6 x 6) on a pinned layer, gravity tilted, self_friction %.2f (atan %.4f rad), 0.1 s\n",
+			c.barrier.selfFriction, std::atan(c.barrier.selfFriction));
+		s.resolution = 6;
+		const double mu = c.barrier.selfFriction, a0 = std::atan(mu);
+		for (double angle : {0.25*a0, 0.5*a0, 0.9*a0, a0 + 0.05, a0 + 0.2, a0 + 0.4}) {
+			const double t0 = Seconds();
+			const CaseResult r = RunSelfIncline(s, c, angle);
+			char id[64];
+			std::snprintf(id, sizeof id, "%s at %.4f rad", angle < a0 ? "sticks" : "slides", angle);
+			// 1.25 x the largest observed over the sweep: the layered contact's
+			// effective coefficient is within about 0.5% of mu (amplified in the creep
+			// near the friction angle), and at 0.4 rad past it the layer overhangs.
+			Row(id, angle < a0 ? "creep law / slip speed" : "g (sin - mu cos)", r, angle < a0 ? 8e-2 : 2.5e-2, Seconds() - t0);
+			if (angle < a0) Check(r.measured < c.barrier.frictionVelocity, "below the friction angle the layer sticks (creep below the slip speed)");
+			else Check(r.measured > 0, "above the friction angle the layer slides");
+		}
+	}
+	// (viii) hairpin: self-convergence.
+	{
+		std::printf("(viii) hairpin (strip of 16 bending lengths folded on itself, frictionless plane, ends held, xi 0.2 mm): self-convergence\n");
+		std::printf("       no analytic reference: the rigid-contact folded heavy elastica fixes kappa = 0 at both lift-off points,\n");
+		std::printf("       theta = pi and the layers' height difference at the upper one, one condition more than single-segment\n");
+		std::printf("       shooting has unknowns; the contact sets of both layers near the fold are part of the solution.\n");
+		ContactSettings ch = c;
+		ch.thickness = 2e-4;
+		auto study = [&](const std::vector<int>& levels, const std::vector<double>& dh, const char* what) {
+			std::vector<double> heights, reaches;
+			std::vector<int> labels;
+			for (std::size_t k = 0; k < levels.size(); ++k) {
+				const double t0 = Seconds();
+				s.resolution = levels[k];
+				ch.barrier.activation = dh[k];
+				const CaseResult r = RunSelfHairpin(s, ch);
+				std::printf("  %s: %3d segments, dhat %.4g mm: loop height %.6e m, fold reach %.6e m (%.2f s) %s\n", what, levels[k], dh[k]*1e3,
+					r.measured, r.secondary, Seconds() - t0, r.ok ? "" : r.failure.c_str());
+				Check(r.ok, "hairpin runs", r.failure);
+				heights.push_back(r.measured); reaches.push_back(r.secondary);
+			}
+			for (std::size_t k = 0; k + 2 < heights.size(); ++k) {
+				const double ph = std::log(std::fabs(heights[k] - heights[k+1])/std::fabs(heights[k+1] - heights[k+2]))/std::log(2.0);
+				const double pr = std::log(std::fabs(reaches[k] - reaches[k+1])/std::fabs(reaches[k+1] - reaches[k+2]))/std::log(2.0);
+				std::printf("  %s: observed order (levels %zu..%zu): loop height %.2f, fold reach %.2f; successive height changes %.2e, %.2e m\n",
+					what, k, k + 2, ph, pr, std::fabs(heights[k] - heights[k+1]), std::fabs(heights[k+1] - heights[k+2]));
+				Check(std::fabs(heights[k+1] - heights[k+2]) < std::fabs(heights[k] - heights[k+1]), std::string("hairpin converges under ") + what);
+			}
+		};
+		if (extended) {
+			study({48, 96, 192, 384}, {2e-4, 2e-4, 2e-4, 2e-4}, "mesh");
+			study({96, 96, 96}, {4e-4, 2e-4, 1e-4}, "dhat");
+		} else study({48, 96, 192}, {2e-4, 2e-4, 2e-4}, "mesh");
+	}
+	// (ix) no intersection, cloth-cloth included.
+	{
+		std::printf("(ix) every accepted step checked exactly, cloth against the colliders and itself\n");
+		const double t0 = Seconds();
+		s.resolution = extended ? 30 : 15;
+		Row(extended ? "strip folded by pins, 31 x 7" : "strip folded by pins, 16 x 4", "exact crossing test", RunSelfFold(s, c, 1, 1.2), 0.5, Seconds() - t0);
+		const double t1 = Seconds();
+		s.resolution = extended ? 30 : 20;
+		const CaseResult corner = RunSelfFold(s, c, 0, extended ? 2.0 : 1.0);
+		Row(extended ? "corner-first on a sphere, 31 x 31" : "corner-first on a sphere, 21 x 21", "exact crossing test", corner, 0.5, Seconds() - t1);
+	}
+}
+
+// The self-collision evidence cases over the built-in records (ClothSolver.cpp SelfSpecs).
+void SelfEvidenceFamily()
+{
+	std::printf("\nSelf-collision evidence over the built-in records (default contact settings):\n");
+	double worst[4] = {0, 0, 0, 0};
+	for (const auto& m : BuiltInMaterials())
+		for (Scheme sc : {Scheme::BackwardEuler, Scheme::BDF2}) {
+			CaseSettings s;
+			s.material = m;
+			s.scheme = sc;
+			ContactSettings c;
+			const double mu = c.barrier.selfFriction;
+			s.resolution = 6;
+			const CaseResult st = RunSelfStack(s, c), sk = RunSelfIncline(s, c, 0.5*std::atan(mu)), sl = RunSelfIncline(s, c, std::atan(mu) + 0.2);
+			s.resolution = 10;
+			const CaseResult fo = RunSelfFold(s, c, 1, 1.2);
+			const double v[4] = {st.error, sk.error, sl.error, fo.error};
+			std::printf("  %-20s %-15s stack %.2e  stick %.3e  slide %.3e  fold %.0f (%.0f steps with cloth-cloth pairs)\n", m.name.c_str(),
+				SchemeName(sc), v[0], v[1], v[2], v[3], fo.secondary);
+			for (int k = 0; k < 4; ++k) worst[k] = std::max(worst[k], v[k]);
+			Check(st.ok && sk.ok && sl.ok && fo.ok && fo.secondary > 0, "self-collision evidence cases run for " + m.name);
+		}
+	std::printf("  largest: stack %.2e  stick %.3e  slide %.3e  fold %.0f (tolerances 1e-8, 1.6e-2, 4.8e-3, 0.5)\n", worst[0], worst[1],
+		worst[2], worst[3]);
+	Check(worst[0] <= 1e-8 && worst[1] <= 1.6e-2 && worst[2] <= 4.8e-3 && worst[3] < 0.5, "self-collision evidence within the solver's tolerances");
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -646,6 +1021,9 @@ int main(int argc, char** argv)
 	ContactKernels();
 	ContactCases(extended);
 	ContactEvidenceFamily();
+	MovingColliders(extended);
+	SelfCollision(extended);
+	SelfEvidenceFamily();
 	std::printf("\ntotal %.1f s\n", Seconds() - t0);
 	if (failures) { std::cerr << failures << " cloth validation check(s) failed\n"; return 1; }
 	std::cout << "Cloth validation passed\n";

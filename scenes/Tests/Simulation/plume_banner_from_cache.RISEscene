@@ -1,0 +1,70 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           plume_banner_from_cache.RISEscene                                                       #
+#   Description:    Simulation M6: one-way coupling from a CACHE.  A silk banner, pinned along two edges,   #
+#                   hangs above a methane plume read from an existing fire cache (`simulation_cache fire`;  #
+#                   no fire solver runs).  `port_source` feeds the banner's surface_load through the        #
+#                   aerodynamic_drag adapter: the gas velocity (cm/s in the fire cache) and a density from  #
+#                   the temperature by the ideal gas law at ambient pressure (molar mass of air), sampled   #
+#                   at each vertex; quadratic drag on the velocity relative to the cloth, normal and        #
+#                   tangential coefficients 1.2 / 0.02.  A MODEL: the banner is preview.  The fire cache's  #
+#                   key and the adapter's identity enter the banner's key.                                  #
+#                                                                                                           #
+#   PLACEHOLDER:    `cache` below names the M2 acceptance bake on the machine this was written on (3 frames #
+#                   of a tier-8 methane fire, read-only).  Point it at any fire native cache; adjust the    #
+#                   banner's `origin` to sit above the plume and `time_offset` to the cache's first frame.  #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> banner                                             #
+#                                                                                                           #
+#############################################################################################################
+
+pinhole_camera
+{
+	location		2.5 1.8 2.5
+	lookat			0 1 0
+	up				0 1 0
+	fov				40.0
+}
+
+simulation_cache
+{
+	name			fire
+	cache			~/.cache/rise-sim-m2/t8_accept
+}
+
+cloth_simulation
+{
+	name			banner
+	material		silk-lightweight
+	size_u			0.4
+	size_v			0.4
+	vertices_u		11
+	vertices_v		11
+	frames			31
+	origin			0.84 1.14 2.29
+	pin				u0
+	pin				u1
+	port_source		surface_load from fire.volume via aerodynamic_drag temperature_channel=temperature time_offset 10.466
+}
+
+simulated_mesh_geometry
+{
+	name			geo_banner
+	source			banner.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			banner_object
+	geometry		geo_banner
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.4 -1 -0.6
+}

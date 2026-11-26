@@ -499,11 +499,15 @@ key. Port-fed keys belong with M6 (contract Appendix A.3, item 7).
 
 **Mesh colliders are sampled at t = 0.** Cloth samples a mesh collider once, at t = 0, then moves it rigidly. A
 collider that shows a deforming simulation is therefore its frame at scene time 0; use `time_offset` to choose which
-frame (the chain sample uses drape's last frame). A scale that changes over time is refused.
+frame (the chain sample uses drape's last frame). A scale that changes over time is refused. Since cloth m3a.4 a
+collider whose geometry deforms over the run is detected at Configure, stated in the notes and labelled `preview`
+(SIMULATION_M3A_RESULTS.md §10.5).
 
 **Cloth convergence (observed, not changed).** In bake mode at 25 × 25 with the default 8 substeps, a cloth sliding
 over a laterally moving mesh ball failed Newton ("did not reach its tolerance", 5–12 m/s²). A static ball, or a
-vertical motion with 16 substeps, bakes; the chain sample uses those.
+vertical motion with 16 substeps, bakes; the chain sample uses those. **Fixed in cloth m3a.4**: the cause was a jump
+in the edge–edge barrier energy at near-parallel edges (the UV sphere's rings against the sheet); the lateral scene
+now bakes at 8 substeps (SIMULATION_M3A_RESULTS.md §10.1–10.2).
 
 **Fire keys are predicted.**
 

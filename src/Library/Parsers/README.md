@@ -211,7 +211,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
 | Geometry | 28 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry`, `simulated_mesh_geometry` (a deforming mesh read from a simulation cache's mesh output -- a `cache` directory, or since M4 a producer's output by `source <simulation>.<output>` -- with deformation motion blur; docs/SIMULATION_M3B_RESULTS.md, docs/SIMULATION_M4_RESULTS.md) |
 | Hair guides | 1 | `hair_guides` |
-| Simulations | 3 | `cloth_simulation`, `fire_simulation`, `simulation_cache` (M4, `ChunkCategory::Simulation`; see "Simulation producers" below) |
+| Simulations | 5 | `cloth_simulation`, `fire_simulation`, `simulation_cache` (M4), `rigid_simulation`, `simulation_group` (M6) (`ChunkCategory::Simulation`; see "Simulation producers" and "Coupling" below) |
 | Modifiers | 4 | `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
 | Media | 5 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `multichannel_heterogeneous_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
@@ -320,6 +320,44 @@ fire_medium { name flame   fidelity_mode preview   source campfire.volume   chan
   does not yet capture and restore a simulation record); its consumers are re-derived with it.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
+
+## Coupling (M6)
+
+docs/SIMULATION_M6_RESULTS.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and
+`simulation_group` are data only, like the other producers.  `rise-sim bake <scene> <group>` (or any member's name)
+bakes a group as ONE process running the group host; each member keeps its own cache.
+
+```text
+rigid_simulation
+{
+    name            drop
+    frames          31
+    body_object     ball mass 0.1             # <object> [mass m|density d] [velocity ..] [spin ..]: geometry at t = 0
+    body            crate box 0.3 0.3 0.3 density 500 at 0 1 0 spin 0 2 0   # or box|sphere r|cylinder r h
+    plane           0 0 0 0 1 0 restitution 0.5 friction 0.4               # impulse contact (preview)
+}
+cloth_simulation { ...  collider_port ball }  # the object's geometry as a collider moved by port collider_surface
+simulation_group
+{
+    name            trampoline
+    members         drop                      # repeatable Reference to {Simulation}
+    members         sheet
+    connect         drop.body_state -> sheet.collider_surface via rigid_surface body=ball
+    connect         sheet.collider_reaction -> drop.body_load via contact_reaction targets=ball
+    policy          implicit                  # staggered | implicit
+    order           gauss-seidel              # gauss-seidel | jacobi
+    member_order    drop sheet
+    tolerance       1e-6                      # implicit; also sub_iterations, relaxation, aitken,
+    absolute_tolerance 1e-4                   #   on_non_convergence fail|halve, minimum_macro_step
+    macro_step      0.0333333                 # default: the smallest member output interval
+}
+standard_object { name ball ... transform_source drop.bodies[ball] }   # follows the body (keyframes)
+```
+
+One-way from another simulation's cache, on the downstream (any solver chunk):
+`port_source <port> from <simulation>.<output> [via <adapter> [key=value ...]] [aux <member>.<port>] [time_offset s]`,
+e.g. `port_source surface_load from fire.volume via aerodynamic_drag temperature_channel=temperature`.  The upstream
+is baked first; its key and the adapter's identity enter the downstream's key.
 
 ## `thinlens_camera` Units & Sensor-Format Presets
 

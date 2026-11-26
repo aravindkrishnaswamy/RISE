@@ -5811,6 +5811,7 @@ bool RoleMatchesKindConstraint( const std::string& role, const std::string& role
 			else if( roleKindSuffix == "light"    ) kindMatch = ( cc == ChunkCategory::Light );
 			else if( roleKindSuffix == "medium"   ) kindMatch = ( cc == ChunkCategory::Medium );
 			else if( roleKindSuffix == "camera"   ) kindMatch = ( cc == ChunkCategory::Camera );
+			else if( roleKindSuffix == "simulation" ) kindMatch = ( cc == ChunkCategory::Simulation );   // Simulation M5c: simulation_cache
 		}
 	}
 	return kindMatch;

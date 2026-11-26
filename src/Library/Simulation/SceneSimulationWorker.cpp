@@ -1,10 +1,12 @@
 #include "pch.h"
 #include "SceneSimulationWorker.h"
 #include "SceneSimulation.h"
+#include "SimulationGroup.h"
 #include "../Job.h"
 #include "../Utilities/Reference.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <iostream>
 #include <set>
@@ -48,6 +50,113 @@ struct JobHolder {
 	IJobPriv* job = nullptr;
 	~JobHolder() { if (job) job->release(); }
 };
+
+// M6: bakes a coupled run as one job: a simulation_group (every member), or a
+// simulation fed one-way through port_source lines (its upstream caches as
+// cached members).  Sidecars of the run (rise-sim.group.checkpoint, a status)
+// live in `spec.cacheDir` (the group's own directory, or the downstream's
+// cache); each live member records its own cache, with a status sidecar and
+// the group manifest beside it.  Stops at macro-step boundaries on a
+// rise-sim.stop file (in the run's or any member's directory) or after
+// --stop-after-frames macro steps, with a checkpoint; resume continues it.
+constexpr char groupCheckpointName[] = "rise-sim.group.checkpoint";
+
+int BakeCoupled(const SceneSimulationSpec& spec, const std::vector<SceneSimulationPlan>& plans, const std::string& command,
+	const WorkerOptions& options, std::ostream& out, std::ostream& err)
+{
+	namespace fs = std::filesystem;
+	const auto members = SceneGroupLiveMembers(spec);
+	auto planOf = [&](const std::string& name) -> const SceneSimulationPlan* {
+		for (const auto& p : plans) if (p.spec->name == name) return &p;
+		return nullptr;
+	};
+	bool allComplete = true, allPartial = true;
+	for (const auto& m : members) {
+		const SceneSimulationPlan* p = planOf(m);
+		if (!p) { err << "rise-sim: " << spec.name << ": no member " << m << "\n"; return WorkerFailed; }
+		SceneSimulationStatus st;
+		InspectSceneSimulation(*p, st);
+		allComplete = allComplete && st.state == SceneSimulationState::Complete;
+		allPartial = allPartial && (st.state == SceneSimulationState::Partial || st.state == SceneSimulationState::Failed);
+	}
+	if (command == "bake" && allComplete && !options.force) { out << "rise-sim: " << spec.name << ": up to date\n"; return WorkerFinished; }
+	if (command == "resume" && !allPartial) { out << "rise-sim: " << spec.name << ": nothing to resume\n"; return WorkerFinished; }
+	std::string error;
+	SimulationGroup group;
+	if (!BuildSceneGroup(spec, plans, group, error)) { err << "rise-sim: " << spec.name << ": " << error << "\n"; return WorkerFailed; }
+	const fs::path dir = spec.cacheDir;
+	if (!CheckCacheLocation(dir, true, error)) { err << "rise-sim: " << spec.name << ": " << error << "\n"; return WorkerFailed; }
+	Bytes state;
+	std::string ignored;
+	const bool resume = allPartial && !options.force && ReadSidecarFile(dir, groupCheckpointName, options.budget, state, ignored);
+	if (command == "resume" && !resume) { err << "rise-sim: " << spec.name << ": no group checkpoint to resume from\n"; return WorkerFailed; }
+	for (const auto& m : members)
+		if (!group.Record(m, planOf(m)->spec->cacheDir, options.budget, resume, error)) {
+			err << "rise-sim: " << spec.name << ": member " << m << ": " << error << "\n"; return WorkerFailed; }
+	if (resume ? !group.Restore(state, error) : !group.Start(error)) {
+		err << "rise-sim: " << spec.name << ": " << error << "\n"; return WorkerFailed; }
+	out << "rise-sim: " << spec.name << ": " << (resume ? "resuming" : "baking") << " the coupled run of";
+	for (const auto& m : members) out << " " << m << " (" << group.MemberFidelity(m) << ")";
+	out << ", macro step " << group.MacroStep() << " s\n";
+	const auto started = std::chrono::steady_clock::now();
+	auto status = [&](const char* st, const std::string& why) {
+		for (const auto& m : members) {
+			WorkerStatus w;
+			w.state = st;
+			w.solver = group.Description(m)->solverId;
+			w.simulatedTime = group.Time();
+			w.endTime = group.EndTime();
+			const auto snap = group.Snapshot(m);
+			const auto outputs = group.Description(m)->cache.outputs.size();
+			w.framesWritten = outputs ? snap->EntryCount()/outputs : 0;
+			w.framesTotal = group.Description(m)->cache.count;
+			w.wallSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+			w.lastError = why;
+			w.detail = "coupled run " + spec.name;
+			std::string e;
+			WriteWorkerStatus(planOf(m)->spec->cacheDir, w, e);
+			if (m == members.front() && dir != planOf(m)->spec->cacheDir) WriteWorkerStatus(dir, w, e);
+		}
+	};
+	auto checkpoint = [&]() {
+		Bytes s;
+		std::string e;
+		return group.Checkpoint(s, e) && ReplaceFileDurably(dir, groupCheckpointName, s, e);
+	};
+	auto stopRequested = [&]() {
+		std::error_code ec;
+		if (fs::exists(dir/kWorkerStopFileName, ec)) return true;
+		for (const auto& m : members) if (fs::exists(planOf(m)->spec->cacheDir/kWorkerStopFileName, ec)) return true;
+		return false;
+	};
+	status("running", "");
+	auto last = std::chrono::steady_clock::now();
+	std::uint64_t steps = 0;
+	while (!group.Finished()) {
+		if (stopRequested() || (options.stopAfter && steps >= options.stopAfter)) {
+			if (!checkpoint()) { status("failed", "cannot write the group checkpoint"); return WorkerFailed; }
+			status("stopped", "");
+			out << "rise-sim: " << spec.name << ": stopped at t = " << group.Time() << " s; `resume` continues\n";
+			return WorkerStopped;
+		}
+		if (!group.StepMacro(error)) {
+			status("failed", error);
+			err << "rise-sim: " << spec.name << ": " << error << "\n";
+			return WorkerFailed;
+		}
+		++steps;
+		const auto now = std::chrono::steady_clock::now();
+		if (std::chrono::duration<double>(now - last).count() >= options.checkpointSeconds) {
+			last = now;
+			checkpoint();
+			status("running", "");
+		}
+	}
+	if (!group.SealRecordings(error)) { status("failed", error); err << "rise-sim: " << spec.name << ": " << error << "\n"; return WorkerFailed; }
+	status("finished", "");
+	out << "rise-sim: " << spec.name << ": finished, every member sealed\n";
+	return WorkerFinished;
+}
 
 } // namespace
 
@@ -120,8 +229,9 @@ int SceneWorkerMain(const std::string& command, const std::string& scene, const 
 	// read its upstream's cache, which the previous bake may just have written.
 	std::vector<std::string> order;
 	for (const auto& p : plans) order.push_back(p.spec->name);
+	std::set<std::string> coupledDone;   // M6: group runs (and their members) already baked
 	for (const std::string& name : order) {
-		if (!wanted.count(name)) continue;
+		if (!wanted.count(name) || coupledDone.count(name)) continue;
 		if (!job->PlanSimulations(plans, specs, error)) { err << "rise-sim: " << error << "\n"; return WorkerFailed; }
 		const SceneSimulationPlan* current = planOf(name);
 		if (!current) { err << "rise-sim: simulation " << name << " vanished from the plan\n"; return WorkerFailed; }
@@ -129,6 +239,30 @@ int SceneWorkerMain(const std::string& command, const std::string& scene, const 
 		const SceneSimulationSpec& spec = *plan.spec;
 		SceneSimulationStatus state;
 		InspectSceneSimulation(plan, state);
+		// M6: a group (or a member of one) bakes as one coupled run; so does a port_source simulation.
+		const SceneSimulationSpec* group = spec.keyword == kSimulationGroupKeyword ? &spec : SceneGroupOf(specs, name);
+		if (group || !spec.portSources.empty()) {
+			const SceneSimulationSpec& run = group ? *group : spec;
+			coupledDone.insert(run.name);
+			for (const auto& m : SceneGroupLiveMembers(run)) coupledDone.insert(m);
+			// Upstreams outside the run must be complete.
+			for (const auto& p : plans) {
+				if (!coupledDone.count(p.spec->name)) continue;
+				for (const auto& u : p.upstream) {
+					if (coupledDone.count(u)) continue;
+					SceneSimulationStatus up;
+					InspectSceneSimulation(*planOf(u), up);
+					if (up.state != SceneSimulationState::Complete) {
+						err << "rise-sim: " << run.name << " reads simulation " << u << ", which is " <<
+							SceneSimulationStateName(up.state) << "; bake it first\n";
+						return WorkerFailed;
+					}
+				}
+			}
+			const int code = BakeCoupled(run, plans, command, options, out, err);
+			if (code != WorkerFinished) return code;
+			continue;
+		}
 		if (spec.solverId.empty()) {
 			out << "rise-sim: " << spec.name << ": a " << spec.keyword << " has no solver; " <<
 				SceneSimulationStateName(state.state) << ", not baked\n";

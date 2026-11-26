@@ -647,7 +647,8 @@ bool CanDecodeCanonicalRecord(const Bytes& encoded,std::size_t budget)
 
 bool IsNativePayloadType(const std::string& type)
 {
-	return type=="grid.v1" || type=="mesh.v1" || type=="mesh.v2" || type=="field.v1";
+	return type=="grid.v1" || type=="mesh.v1" || type=="mesh.v2" || type=="field.v1" ||
+		type=="transform.v1"; // M6: rigid bodies (SimulationTransform.h)
 }
 
 bool IsNativeStaticType(const std::string& type)

@@ -34,6 +34,9 @@ namespace RISE
 		//! Outputs the producer declares: (name, codec).  Empty for a
 		//! simulation_cache, whose outputs come from its manifest.
 		std::vector< std::pair<std::string, std::string> > outputs;
+		//! M6: one-way couplings declared on this simulation (`port_source`
+		//! lines, as authored); a `simulation_group` keeps its fields in `parameters`.
+		std::vector<std::string> portSources;
 	};
 }
 

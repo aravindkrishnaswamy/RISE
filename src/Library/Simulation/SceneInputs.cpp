@@ -280,6 +280,7 @@ std::shared_ptr<const ISceneInputs> SceneObjectInputProvider::Capture(const std:
 		}
 		// The chain from the root to the object.
 		std::vector<Implementation::Object*> chain{object};
+		std::vector<std::string> chainNames{name};
 		std::set<std::string> seen{name};
 		for (const char* parent = objects->GetObjectParent(name.c_str()); parent && parent[0];
 			parent = objects->GetObjectParent(parent)) {
@@ -288,14 +289,18 @@ std::shared_ptr<const ISceneInputs> SceneObjectInputProvider::Capture(const std:
 			auto* ancestor = dynamic_cast<Implementation::Object*>(objects->GetItem(p.c_str()));
 			if (!ancestor) { error = "the parent `" + p + "` of `" + name + "` is not a plain object"; return nullptr; }
 			chain.push_back(ancestor);
+			chainNames.push_back(p);
 		}
 		std::reverse(chain.begin(), chain.end());
+		std::reverse(chainNames.begin(), chainNames.end());
 		std::vector<Scalar> keyTimes;
-		for (Implementation::Object* node : chain) {
+		for (std::size_t n = 0; n < chain.size(); ++n) {
+			Implementation::Object* node = chain[n];
 			c->holders.push_back(node->ClonePoseHolder());
 			c->keys.push_back(node);
 			std::vector<String> params;
-			const bool animated = animator && animator->GetActiveAnimatedParameters(node, params);
+			// M6: a simulation-driven object is read at its authored pose.
+			const bool animated = !driven_.count(chainNames[n]) && animator && animator->GetActiveAnimatedParameters(node, params);
 			c->animated.push_back(animated);
 			if (animated && timelines) timelines->CollectElementKeyframeTimes(node, keyTimes);
 		}

@@ -164,6 +164,10 @@ namespace RISE
 			bool			waitingForSolver = false;
 			double			time = 0;				//!< last scene time shown
 			double			start = 0, end = 0, fps = 0;
+			//! M5c: scene seconds per wall-clock second (1 = real time).  A
+			//! frame-stepping playback shows frame k at wall time k / (fps x
+			//! timeScale) -- SceneEditController::PlaybackPlay's rule.
+			double			timeScale = 1;
 			bool			loop = false;
 			std::uint64_t	framesShown = 0;		//!< applied through the scrub path
 			std::uint64_t	framesDropped = 0;		//!< clock frames never shown (render slower than the clock)
@@ -190,11 +194,13 @@ namespace RISE
 			explicit PlaybackClock( Hooks hooks );
 			~PlaybackClock();	//!< Shutdown
 
-			//! Plays [start, end] from `from` at `fps` clock frames per second
-			//! of wall time (scene time advances in real time, quantized to
-			//! the frame grid).  `loop` wraps; otherwise playback stops at the
-			//! end.  A second Play while playing updates rate and range.
-			bool Play( double start, double end, double from, double fps, bool loop, std::string& error );
+			//! Plays [start, end] from `from` on a grid of `fps` frames per
+			//! scene second; scene time advances `timeScale` scene seconds per
+			//! wall-clock second (1: real time), quantized to the grid.  `loop`
+			//! wraps; otherwise playback stops at the end.  A second Play while
+			//! playing updates rate and range.
+			bool Play( double start, double end, double from, double fps, bool loop, std::string& error,
+				double timeScale = 1.0 );
 			void Pause();
 			//! While playing, moves the clock; false when paused (the caller
 			//! scrubs directly).

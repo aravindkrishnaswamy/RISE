@@ -168,6 +168,17 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
 
+# M6: coupling sources (group host, adapters, transform codec, rigid bodies): no fast-math or FP contraction.
+set_source_files_properties(
+    "${RISE_LIB}/Simulation/SimulationTransform.cpp"
+    "${RISE_LIB}/Simulation/Rigid/RigidBody.cpp"
+    "${RISE_LIB}/Simulation/Rigid/RigidSolver.cpp"
+    "${RISE_LIB}/Simulation/SimulationGroup.cpp"
+    "${RISE_LIB}/Simulation/SimulationPortAdapters.cpp"
+    "${RISE_LIB}/Simulation/Coupling/ClothRigidCoupling.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+
 # Link rise against vendored libpng + zlib so PNG reader/writer resolve.
 target_link_libraries(rise PUBLIC png_local z_local)
 

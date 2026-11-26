@@ -312,17 +312,25 @@ namespace RISE
 			                  ///< this category this slice (no dedicated PanelMode value) —
 			                  ///< property rows are read via PropertyCountFor/PropertyNameFor
 			                  ///< (indexed directly by Category, not by the current panel).
-			Geometry   = 11   ///< Geometry section (IGeometryManager; every "*_geometry"
+			Geometry   = 11,  ///< Geometry section (IGeometryManager; every "*_geometry"
 			                  ///< chunk).  GUI redesign 2026-07-22: enumerated via
 			                  ///< IJob::EnumerateGeometryNames; property rows are the
 			                  ///< generic descriptor+CST surface (CstIntrospection); edits
 			                  ///< route through ApplyAgentParamEdit (entityKind
 			                  ///< "geometry").  Same PanelMode::None convention as Painter.
+			Simulation = 12   ///< Simulation M5c: scene simulations (`cloth_simulation`,
+			                  ///< `fire_simulation`, `simulation_cache`; Job::simulationsMap via
+			                  ///< IJob::EnumerateSimulationNames).  Rows are the generic
+			                  ///< descriptor+CST surface plus one editable row per occurrence of
+			                  ///< a repeatable field (`collider_object[0]`); edits route through
+			                  ///< ApplyAgentParamEdit (entityKind "simulation"), mark the
+			                  ///< simulation stale, start no bake, and resync a live run.  Same
+			                  ///< PanelMode::None convention as Painter.
 		};
 
-		//! Category array bound (None..Geometry).  PUBLIC so free helpers
+		//! Category array bound (None..Simulation).  PUBLIC so free helpers
 		//! (PropsForCat) and shells never mirror it as a stale literal.
-		static constexpr int kNumCategories = 12;
+		static constexpr int kNumCategories = 13;
 
 		//! Model-B F2 slice S1: render IDENTITY.  A monotonic id assigned to
 		//! every render this controller (or a headless AgentSession wrapping
@@ -3727,13 +3735,23 @@ namespace RISE
 		// the scene declares no animation.
 
 		//! Play scene time on a controller thread through the time-scrub
-		//! path at `fps` frames per second of wall time (<= 0: the
-		//! timeline's own frame spacing), over the timeline's range, from
-		//! the current scene time (from the start when at the end).  Opens
-		//! one scrub composite until it stops.  Starts attached live
-		//! simulations; the clock never runs ahead of their latest frame.
+		//! path at `fps` frames per second of wall time, in real time, over
+		//! the timeline's range, from the current scene time (from the start
+		//! when at the end).  Opens one scrub composite until it stops.
+		//! Starts attached live simulations; the clock never runs ahead of
+		//! their latest frame.
+		//!
+		//! M5c, `fps <= 0` (the shells' Play button): the timeline's own
+		//! frame grid ((frames-1) / (end-start)).  A scene with simulation
+		//! assets (a declared simulation, a time-varying asset, or a live run) plays
+		//! it in REAL TIME; any other scene steps through its authored
+		//! frames at kFrameSteppingPlaybackFps frames per wall second, the
+		//! shells' behaviour before M5 (a 30 Hz timer advancing one authored
+		//! frame per tick), whatever time span those frames cover.
 		bool PlaybackPlay( double fps, bool loop );
-		bool PlaybackPlayRange( double start, double end, double fps, bool loop );
+		//! `timeScale`: scene seconds per wall second (PlaybackClock::Play).
+		bool PlaybackPlayRange( double start, double end, double fps, bool loop, double timeScale = 1.0 );
+		static constexpr double kFrameSteppingPlaybackFps = 30.0;
 		bool PlaybackPause();				//!< also pauses live solvers
 		//! Move the playhead: while playing, the clock jumps there; while
 		//! paused, one scrub (clamped to the latest live frame).

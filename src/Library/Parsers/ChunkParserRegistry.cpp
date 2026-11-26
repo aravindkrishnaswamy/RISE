@@ -76,6 +76,8 @@
 #include "../Simulation/SimulationParameterSchema.h"	// Simulation M4: producer chunk descriptors
 #include "../Simulation/Cloth/ClothParameterSchema.h"
 #include "../Simulation/Fire/FireParameterSchema.h"
+#include "../Simulation/Rigid/RigidParameterSchema.h"
+#include "../Simulation/SceneSimulation.h"
 #include "../Managers/GenericManager.h"			// g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure (reserved camera name)
 // Phase B: descriptor-driven introspection used by
 // PopulateLoadedPropertySnapshot to capture loaded parameter values.
@@ -6501,6 +6503,12 @@ namespace RISE
 							p.kind = ValueKind::String;
 						}
 					}
+					// M6: one-way coupling from another simulation's cache through a port.
+					{ auto& p = P(); p.name = "port_source"; p.kind = ValueKind::String; p.repeatable = true;
+					  p.description = "M6: feed an accepted port from another simulation's cached output: `<port> from "
+						"<simulation>.<output> [via <adapter> [key=value ...]] [aux <member>.<port>]` (e.g. `surface_load from "
+						"fire.volume via aerodynamic_drag temperature_channel=temperature`).  The upstream is baked first; "
+						"its key and the adapter's identity enter this simulation's key"; }
 					std::string outputs;
 					for( const Simulation::SchemaOutput& o : schema.outputs )
 						outputs += ( outputs.empty() ? "" : "; " ) + o.name + " (" + o.codec + "): " + o.doc;
@@ -6524,8 +6532,9 @@ namespace RISE
 					d.solverId = schema.solverId;
 					d.cache = bag.GetString( "cache", "" );
 					Simulation::SchemaFieldValues values;
+					d.portSources = bag.GetRepeatable( "port_source" );   // M6
 					for( const ParameterDescriptor& p : cd.parameters ) {
-						if( p.name == "name" || p.name == "cache" ) continue;
+						if( p.name == "name" || p.name == "cache" || p.name == "port_source" ) continue;
 						if( p.repeatable ) {
 							const std::vector<std::string>& r = bag.GetRepeatable( p.name );
 							if( !r.empty() ) values[p.name] = r;
@@ -6564,6 +6573,94 @@ namespace RISE
 				}
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = SimulationChunks::Build( "fire_simulation", Simulation::FireParameterSchema() );
+					return d;
+				}
+			};
+
+			struct RigidSimulationAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					return SimulationChunks::FinalizeSolverChunk( Describe(), Simulation::RigidParameterSchema(), bag, pJob );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = SimulationChunks::Build( "rigid_simulation", Simulation::RigidParameterSchema() );
+					return d;
+				}
+			};
+
+			// M6: a co-stepping group of simulations declared elsewhere in the
+			// scene; data only (its fields go to the Job's table as the group's
+			// parameter map).
+			struct SimulationGroupAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					SimulationDescriptor d;
+					d.keyword = Simulation::kSimulationGroupKeyword;
+					d.name = bag.GetString( "name", "" );
+					d.cache = bag.GetString( "cache", "" );
+					RISECBOR64::Value::Members m;
+					auto list = [&]( const char* key ) {
+						RISECBOR64::Value::Values v;
+						for( const std::string& x : bag.GetRepeatable( key ) ) v.push_back( RISECBOR64::Value::String( x ) );
+						m.emplace_back( key, RISECBOR64::Value::ArrayValue( v ) );
+					};
+					list( "members" );
+					list( "connect" );
+					for( const char* key : { "policy", "order", "member_order", "on_non_convergence" } )
+						if( bag.Has( key ) ) m.emplace_back( key, RISECBOR64::Value::String( bag.GetString( key ) ) );
+					for( const char* key : { "macro_step", "tolerance", "relaxation", "minimum_macro_step", "absolute_tolerance" } )
+						if( bag.Has( key ) ) m.emplace_back( key, RISECBOR64::Value::Float( bag.GetDouble( key, 0 ) ) );
+					if( bag.Has( "sub_iterations" ) ) m.emplace_back( "sub_iterations", RISECBOR64::Value::Unsigned( bag.GetUInt( "sub_iterations", 30 ) ) );
+					if( bag.Has( "aitken" ) ) m.emplace_back( "aitken", RISECBOR64::Value::Bool( bag.GetBool( "aitken", true ) ) );
+					std::string error;
+					if( !RISECBOR64::Encode( RISECBOR64::Value::MapValue( m ), d.parameters, &error ) )
+						return SimulationChunks::Fail( "simulation_group `" + d.name + "`: " + error );
+					return pJob.AddSimulation( d );
+				}
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = Simulation::kSimulationGroupKeyword;
+						cd.category = ChunkCategory::Simulation;
+						cd.description = "M6: simulations that are two-way coupled, run by one co-stepping group host with a "
+							"shared macro step and a port exchange per step (`rise-sim bake <scene> <group>` bakes it as one "
+							"job; each member keeps its own cache).  docs/SIMULATION_M6_RESULTS.md.";
+						SimulationChunks::AddCommonParams( cd );
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "members"; p.kind = ValueKind::Reference; p.repeatable = true;
+						  p.referenceCategories = { ChunkCategory::Simulation };
+						  p.description = "A member simulation (declared before the group)"; }
+						{ auto& p = P(); p.name = "connect"; p.kind = ValueKind::String; p.repeatable = true;
+						  p.description = "A port connection: `<member>.<offered port> -> <member>.<accepted port> [via <adapter> "
+							"[key=value ...]] [aux <member>.<port>]` (adapters: unit_scale, field_relabel, rigid_surface, "
+							"aerodynamic_drag, contact_reaction)"; }
+						{ auto& p = P(); p.name = "policy"; p.kind = ValueKind::Enum; p.enumValues = { "staggered", "implicit" };
+						  p.defaultValueHint = "staggered";
+						  p.description = "staggered: one exchange per macro step (preview); implicit: sub-iterate each step to the tolerance (needs rollback; can be predictive)"; }
+						{ auto& p = P(); p.name = "order"; p.kind = ValueKind::Enum; p.enumValues = { "gauss-seidel", "jacobi" };
+						  p.defaultValueHint = "gauss-seidel"; p.description = "Exchange order"; }
+						{ auto& p = P(); p.name = "member_order"; p.kind = ValueKind::String;
+						  p.description = "Gauss-Seidel order: member names separated by spaces (default: as listed)"; }
+						{ auto& p = P(); p.name = "macro_step"; p.kind = ValueKind::Double; p.unitLabel = "s";
+						  p.description = "Seconds per exchange (default: the smallest member output interval)"; }
+						{ auto& p = P(); p.name = "tolerance"; p.kind = ValueKind::Double; p.defaultValueHint = "1e-6";
+						  p.description = "implicit: relative change of the exchanged values that ends the sub-iteration"; }
+						{ auto& p = P(); p.name = "absolute_tolerance"; p.kind = ValueKind::Double; p.defaultValueHint = "0";
+						  p.description = "implicit: an absolute allowance on the exchanged values' change (their own units; above a member's solver noise, e.g. 1e-4 for a cloth reaction in N)"; }
+						{ auto& p = P(); p.name = "sub_iterations"; p.kind = ValueKind::UInt; p.defaultValueHint = "30";
+						  p.description = "implicit: most passes per step"; }
+						{ auto& p = P(); p.name = "relaxation"; p.kind = ValueKind::Double; p.defaultValueHint = "1";
+						  p.description = "implicit: initial under-relaxation factor in (0, 1]"; }
+						{ auto& p = P(); p.name = "aitken"; p.kind = ValueKind::Bool; p.defaultValueHint = "TRUE";
+						  p.description = "implicit: Aitken's dynamic relaxation"; }
+						{ auto& p = P(); p.name = "on_non_convergence"; p.kind = ValueKind::Enum; p.enumValues = { "fail", "halve" };
+						  p.defaultValueHint = "fail"; p.description = "implicit: fail the step, or retry it as two halves"; }
+						{ auto& p = P(); p.name = "minimum_macro_step"; p.kind = ValueKind::Double; p.unitLabel = "s";
+						  p.description = "implicit, halve: the floor (default macro_step / 64)"; }
+						return cd;
+					}();
 					return d;
 				}
 			};
@@ -10301,6 +10398,10 @@ namespace RISE
 						}
 					}
 
+					// Simulation M6: follow a simulated rigid body.
+					if( bRet && bag.Has( "transform_source" ) && bag.GetString( "transform_source", "none" ) != "none" )
+						bRet = pJob.SetObjectTransformSource( name.c_str(), bag.GetString( "transform_source" ).c_str() );
+
 					return bRet;
 				}
 
@@ -10337,6 +10438,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 transform, column-major, LOCAL to `parent` (overrides position/orientation/quaternion/scale)"; }
 						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale (`Sx Sy Sz`).  ONE number is accepted as a UNIFORM-scale shorthand (`scale 0.35` broadcasts to (0.35, 0.35, 0.35), with a log warning) -- anything else that is not exactly one or three finite numbers is a hard parse error (DL-32, docs/DEBT_LEDGER.md): a partial fill used to derive a silently DEGENERATE transform (the object would vanish and refuse every proximity() query)"; p.defaultValueHint = "1 1 1"; p.allowsUniformScalarBroadcast = true; }
 						{ auto& p = P(); p.name = "mirror";           p.kind = ValueKind::Enum;      p.enumValues = {"x","y","z","none"}; p.description = "REFLECT this node across the plane through its OWN origin perpendicular to the named LOCAL axis -- author one wing, hand, fin or shoe and mirror the other instead of building both.  Applied INNERMOST, before this node's `position` / `orientation` / `scale`, so `mirror x  position 3 0 0` puts the reflected shape AT +3 (it does not move it to -3).  With `source` the whole cloned SUBTREE arrives reflected, which is the headline use: `standard_object { name right_wing  source left_wing  mirror x }` off an UN-mirrored `left_wing`; with `count_u` every repetition is mirrored.  `mirror` is INSTANCE-OWN, never inherited through `source` -- exactly like `position` / `orientation` / `scale`.  So if the SOURCE itself carries a `mirror`, a plain `source` copy DROPS it and comes out as the source's mirror image; repeat the same `mirror <axis>` on the copy to reproduce the source exactly (the derive warns when you have not).  Legal on a geometry-less CONTAINER too -- everything parented under it composes through the reflection, exactly once, so a mirrored arm's own children are not double-mirrored.  `none` (or omitting the line) means no mirror"; }
+						{ auto& p = P(); p.name = "transform_source"; p.kind = ValueKind::String; p.description = "Simulation M6: follow a simulated rigid body, `<simulation>.<output>[<body>]` (a `rigid_simulation`'s `bodies`, e.g. `drop.bodies[ball]`).  The authored transform is the object's pose at the simulation's first frame; it then moves with the body.  The motion becomes keyframes on `position` and `orientation` (so scrubbing, playback and motion blur treat it as keyframed; velocities shape the blur within a frame).  Top-level objects only.  A simulation with no cache yet leaves the object at its authored pose"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "radiance_map";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; p.deprecated = true; p.replacement = "the rasterizer's own radiance_map"; p.semantics.pipe = ParameterPipe::Color; }
@@ -14787,6 +14889,8 @@ namespace RISE
 		add( "cloth_simulation",                      std::make_unique<ClothSimulationAsciiChunkParser>() );
 		add( "fire_simulation",                       std::make_unique<FireSimulationAsciiChunkParser>() );
 		add( "simulation_cache",                      std::make_unique<SimulationCacheAsciiChunkParser>() );
+		add( "rigid_simulation",                      std::make_unique<RigidSimulationAsciiChunkParser>() );   // M6
+		add( "simulation_group",                      std::make_unique<SimulationGroupAsciiChunkParser>() );   // M6
 
 		// Modifiers
 		add( "relief_modifier",                       std::make_unique<ReliefModifierAsciiChunkParser>() );

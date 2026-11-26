@@ -2297,7 +2297,7 @@ int main()
 		Check(crossPlatformArchitecture.find(
 				"## 2. Historical baseline (2026-06) & shipped shared-core update") !=
 				std::string::npos &&
-			crossPlatformArchitecture.find("SceneEditCategory_*` (0–11)") !=
+			crossPlatformArchitecture.find("SceneEditCategory_*` (0–12)") !=
 				std::string::npos &&
 			crossPlatformArchitecture.find("`AgentMcpAdapter`") !=
 				std::string::npos &&
