@@ -135,6 +135,7 @@ HyLIoSComplexLayoutTest	pool	30
 HyLIoSComplexForwardTransportTest	pool	5
 HyLIoSSurfaceBoundaryTest	pool	3
 HyLIoSLocalResponseTest	pool	2	Scheduling estimate; pure angular numeric core, no renderer or timing assertion
+HyLIoSLocalResponseAssetTest	pool	3	Scheduling estimate; bounded asset codec and atomic IO controls
 HyLIoSMeasurementStatisticsTest	pool	2
 EnvironmentSamplerDomainTest	pool	2
 HyLIoSAngularLineageTest	pool	3
