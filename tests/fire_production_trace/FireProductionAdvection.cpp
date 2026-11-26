@@ -86,14 +86,8 @@ namespace RISEFireProductionTrace
 			if(error)*error=std::string("digest-v2 failure: ")+exception.what();return false;}
 	}
 
-#if !defined(__APPLE__)
-	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>&,
-		unsigned int,FireProductionPayloadDigestV2& result,double& deviceMS,std::string* error,unsigned int)
-	{
-		result=FireProductionPayloadDigestV2();deviceMS=0.0;
-		if(error)*error="digest-v2 Metal device unavailable on this platform";return false;
-	}
-#endif
+	// Without Metal, FireProductionPayloadDigestMetal is the refusal stub in
+	// FireProductionAdvectionUnsupported.cpp (every non-Metal build links it).
 	namespace
 	{
 		const std::uint64_t MetalAllocationQuantumBytes=UINT64_C(16384);

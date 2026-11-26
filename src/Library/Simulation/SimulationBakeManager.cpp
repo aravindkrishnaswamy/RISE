@@ -265,8 +265,15 @@ bool SimulationBakeManager::ResolveWorker(std::vector<std::string>& command, std
 	if (!LocateWorker(override, found, &searched)) {
 		std::string list;
 		for (const auto& s : searched) list += (list.empty() ? "" : ", ") + s.string();
+#if defined(_WIN32) || defined(__ANDROID__)
+		// M8: the VS2022 and Android builds have no rise-sim target and this
+		// platform's process host has never been compiled or run.
+		const std::string platform = " (out-of-process bakes are unsupported on this platform: no rise-sim worker is built for it)";
+#else
+		const std::string platform;
+#endif
 		return Fail(error, override.empty() ?
-			"rise-sim was not found (looked in: " + list + "); set the worker path (RISE_API_SimulationBake_SetWorkerPath or RISE_SIM_WORKER)" :
+			"rise-sim was not found (looked in: " + list + "); set the worker path (RISE_API_SimulationBake_SetWorkerPath or RISE_SIM_WORKER)" + platform :
 			"the configured rise-sim worker " + override + " is not an executable file");
 	}
 	command = {found.string()};

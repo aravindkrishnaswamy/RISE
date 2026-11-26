@@ -1,0 +1,2 @@
+# M8 golden cache: exact bytes on every platform (no end-of-line conversion).
+simulation_golden_cache/** binary

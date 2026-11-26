@@ -610,14 +610,14 @@ private:
 						// Skip edges far from the liquid (phi at the nearest cell).
 						int ci[3];
 						for (int q = 0; q < 3; ++q) ci[q] = std::min(std::max(q == c ? e[q] : e[q] - 1, 0), n[q] - 1);
-						bool near = false;
-						for (int m = 0; m < 4 && !near; ++m) {
+						bool nearLiquid = false;  // not `near`: an MSVC <windows.h> macro
+						for (int m = 0; m < 4 && !nearLiquid; ++m) {
 							int q2[3] = {ci[0], ci[1], ci[2]};
 							if (m & 1) q2[a] = std::min(e[a], n[a] - 1);
 							if (m & 2) q2[b] = std::min(e[b], n[b] - 1);
-							if (phi_[g.C(q2[0], q2[1], q2[2])] < 1.8*g.h) near = true;
+							if (phi_[g.C(q2[0], q2[1], q2[2])] < 1.8*g.h) nearLiquid = true;
 						}
-						if (!near) continue;
+						if (!nearLiquid) continue;
 						we_[c][Index(d, i, j, k)] = liquidOpen(x);
 					}
 				}

@@ -693,7 +693,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	c.physicalRecords=envelope;
 	out.capabilities.backends={
 		{"metal",BackendStatus::Supported,metal_,metalDetail_},
-		{"cpu",BackendStatus::Unsupported,false,"the fire solver has no CPU path yet"}};
+		{"cpu",BackendStatus::Unsupported,false,"no CPU run path: the CPU projected-Heun owner is a one-step calibration reference (single-threaded, 2 GiB cap) that the run driver does not call (M8)"}};
 	out.capabilities.interactive=false;
 	// Certified mode is bit-reproducible (r274/M0 identity checks); fast mode is
 	// not claimed to be (FireFastMode.h: "not bit-reproducible").

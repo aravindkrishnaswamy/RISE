@@ -637,7 +637,8 @@ bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			{{"center_of_mass", "position", "m", 3}, {"external_force", "force", "N", 3},
 			 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, domain_}};
 	auto& caps = candidate.capabilities;
-	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17, single-threaded"}};
+	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17, single-threaded; built and tested on macOS (with and without Metal), "
+		"Windows and Android builds not yet compiled"}};
 	caps.interactive = caps.deterministic = caps.resumable = caps.externalMacroStep = caps.rollback = true;
 	caps.threadCountInvariant = true;
 	caps.modes = {"bake"};

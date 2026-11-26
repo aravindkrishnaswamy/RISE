@@ -13,6 +13,8 @@ using namespace RISE::Simulation;
 namespace {
 using Bytes = std::vector<std::uint8_t>;
 constexpr char Magic[] = "RISETRFM";
+static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559,
+	"transform.v1 stores IEEE binary64 bit patterns");
 constexpr std::size_t BodyNumbers = 13;          // position 3, orientation 4, velocity 3, angular velocity 3
 constexpr std::size_t MinimumBodyBytes = 2 + 1 + 8*BodyNumbers;
 constexpr double UnitTolerance = 1e-9;

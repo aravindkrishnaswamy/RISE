@@ -1088,7 +1088,8 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, reactionDomain_});
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true,
-		"portable C++17; `threads` (default min(4, cores)) does not change results"}};
+		"portable C++17; `threads` (default min(4, cores)) does not change results; built and tested on macOS "
+		"(with and without Metal), Windows and Android builds not yet compiled"}};
 	caps.interactive = caps.deterministic = caps.resumable = caps.externalMacroStep = true;
 	caps.rollback = true;
 	caps.threadCountInvariant = true; // ClothParallel.h: bitwise the same for any thread count

@@ -23,10 +23,8 @@
 
 namespace RISEFireProductionFP64
 {
-#if defined(__APPLE__)
 	//! Identity of the exact source compiled by the resident projection library.
 	std::string FireProductionProjectionMetalKernelSourceSHA256();
-#endif
 	enum FireProductionProjectionBoundary
 	{
 		FireProductionProjectionPeriodic,

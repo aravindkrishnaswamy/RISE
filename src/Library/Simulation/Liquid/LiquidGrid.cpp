@@ -342,8 +342,8 @@ void LiquidCells(const Grid& g, const std::vector<Shape>& regions, std::vector<d
 		}
 	});
 	// No region: all air, a positive distance bounded by the domain.
-	const double far = g.h*double(g.n[0] + g.n[1] + g.n[2]);
-	for (double& x : phi) x = Clamp(x, -far, far);
+	const double farDistance = g.h*double(g.n[0] + g.n[1] + g.n[2]);  // not `far`: an MSVC <windows.h> macro
+	for (double& x : phi) x = Clamp(x, -farDistance, farDistance);
 }
 
 } } }

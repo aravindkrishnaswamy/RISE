@@ -24,6 +24,7 @@
 #include "../src/Library/Simulation/Cloth/ClothParameterSchema.h"
 #include "../src/Library/Simulation/Fire/FireParameterSchema.h"
 #include "../src/Library/Simulation/BuiltinSolvers.h"
+#include "../src/Library/Utilities/FireProductionCompute.h"
 #include "../src/Library/Geometry/SimulatedMeshGeometry.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Job.h"
@@ -873,7 +874,14 @@ void TestEstimates(const fs::path& root)
 	FireEstimateCapabilities(6, false, {{0, 0, 0}}, tier6);
 	FireEstimateCapabilities(10, false, {{0, 0, 0}}, tier10);
 	const std::uint64_t table = ((14u + ((std::uint64_t(1) << 24) - 1)*8u) - (14u + 1023u*8u))*4u*sizeof(float);
-#if defined(__APPLE__)
+	// M8: the reserve comes from the Metal owner's working set, so a build without
+	// Metal (any non-Apple platform, or macOS with Metal compiled out) reports 0 (unknown).
+	RISE::FireProductionComputeCapability compute;
+	RISE::QueryFireProductionComputeCapability(compute);
+	const bool metalBuilt = compute.deviceDiscovery != RISE::FireProductionDeviceBackendNotBuilt;
+	if (!metalBuilt)
+		Check(certified.memoryEstimate == 0 && fast.memoryEstimate == 0, "without Metal the fire memory estimate is unknown");
+	if (metalBuilt) {
 	// The production driver recorded this reserve for a tier-8 certified scene bake
 	// (host_memory_admission.v1 next_step_reserve_bytes, 2026-11-23).
 	Check(certified.memoryEstimate == 10201038848ull, "fire tier 8 certified: the driver's admission reserve",
@@ -883,7 +891,7 @@ void TestEstimates(const fs::path& root)
 	Check(tier6.memoryEstimate > 0 && tier6.memoryEstimate < certified.memoryEstimate &&
 		tier10.memoryEstimate > certified.memoryEstimate, "the reserve grows with the tier",
 		std::to_string(tier6.memoryEstimate) + " " + std::to_string(tier10.memoryEstimate));
-#endif
+	}
 	Check(certified.costEstimate == 2324 && fast.costEstimate == 1121 && tier6.costEstimate == 0 &&
 		std::fabs(tier10.costEstimate - 1.29*2324) < 1e-9, "fire cost: tier 8 measured, tier 10 scaled, tier 6 unknown");
 
@@ -903,12 +911,11 @@ void TestEstimates(const fs::path& root)
 		"the estimates leave the predicted key and outputs unchanged");
 	if (st.size() == 1) {
 		Check(st[0].startTime == 1 && st[0].interval == 0.0625, "the predicted time support: frames from 1 s at 1/16 s");
-#if defined(__APPLE__)
+		if (metalBuilt)
 		Check(st[0].memoryEstimate == certified.memoryEstimate && st[0].costEstimate == 2324 &&
 			std::fabs(st[0].wallEstimate - 2324*2.0) < 1e-6 &&
 			FormatSimulationEstimate(st[0]) == "≈ 77 min, 10.2 GB", "the planned fire carries them: 2 simulated s",
 			FormatSimulationEstimate(st[0]));
-#endif
 	}
 	// Cloth: from the vertex count and mode (ClothSolver::Configure).
 	WriteText(dir/"cloth.RISEscene", std::string(Header) + Camera() + Cloth("flag", ""));

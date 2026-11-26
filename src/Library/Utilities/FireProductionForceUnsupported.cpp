@@ -207,7 +207,6 @@ namespace RISE
 		return 0u;
 	}
 
-#if defined(__APPLE__)
 	bool CaptureFireProductionPreconstructionResources(
 		const FireProductionFrozenSourcePacketSeal&,
 		FireProductionPreconstructionResourceSample& sample )
@@ -215,5 +214,4 @@ namespace RISE
 		sample=FireProductionPreconstructionResourceSample();
 		return false;
 	}
-#endif
 }

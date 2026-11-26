@@ -169,6 +169,8 @@ frequency under a layer; a light sheet holding liquid on one side that sweeps ac
 leaks ([M7e results](SIMULATION_M7E_RESULTS.md)). Not done within M7: spray and thin films, contact inside the liquid,
 one-sided sweeping sheets, and the multigrid weakness with large bodies at 256³ (PCG iterations triple).
 
+2026-11-26: **M8 partial** (in review; [M8 results](SIMULATION_M8_RESULTS.md)). Cross-platform playback: every codec and the cache container were already byte-defined little-endian; a committed golden cache (all six frame codecs, a static topology record, changing and empty topology) is decoded value by value and re-encoded to identical bytes by a fast-tier test. The library, `rise`, `rise-sim` and all tests build warning-free with Metal compiled out and the non-fire fast tier passes there. Reading the VS2022 and Android builds found seven certain compile errors (four broke the fire stack on every non-Apple build; `liquid.mac` did not compile with MSVC), all fixed; neither platform was compiled, and neither has a `rise-sim` target. Fire on the CPU: a complete one-step CPU projected-Heun owner exists as a calibration reference, but it is single-threaded, capped at 2 GiB, not callable by the run driver, and lacks r264's centred momentum carrier; on a 64-cell fixture it differs from the Metal owner by 1–3e-6 of field maximum, 4–10× more than rounding explains, cause not isolated. **The fire CPU backend stays `unsupported`; the M8 exit criterion for fire is not met.**
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.

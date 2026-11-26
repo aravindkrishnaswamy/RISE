@@ -144,7 +144,7 @@ private:
 // check: for a directory below a trusted root only the components below the
 // root are checked; the root and its ancestors are trusted as they are.
 // Trusted roots come from RISE_SIMULATION_TRUSTED_ROOTS (colon-separated
-// absolute paths; other entries are ignored) and from AddTrustedCacheRoot.
+// absolute paths, semicolon-separated on Windows; other entries are ignored) and from AddTrustedCacheRoot.
 constexpr const char* TrustedCacheRootsEnvironment = "RISE_SIMULATION_TRUSTED_ROOTS";
 // Adds an existing absolute directory (canonicalised now) for this process.
 bool AddTrustedCacheRoot(const std::filesystem::path& root, std::string& error);

@@ -82,7 +82,6 @@ namespace RISE
 		return false;
 	}
 
-#if defined(__APPLE__)
 	bool EvaluateFireProductionResidentTransportMetalComparator(
 		const FireProductionResidentTransportComparatorRequest&,
 		FireProductionResidentTransportComparatorResult& result,std::string* error )
@@ -186,12 +185,30 @@ namespace RISE
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
-#endif
 
 	// The Metal build defines this autorelease-pool RED in
 	// FireProductionAdvectionMac.mm; without Metal there is no pool to exercise.
 	bool FireProductionProjectedHeunPoolAllocationFailureRED()
 	{
+		return false;
+	}
+
+	// M8 (non-Metal link of FireProductionCalibrationTest): the same decision as
+	// FireProductionAdvectionMac.mm, which owns it in the Metal build.
+	bool FireProductionDualLayoutPackRequiresSerialOwner(
+		const bool auditSerial,const bool legacyLowPriority )
+	{
+		return auditSerial||legacyLowPriority;
+	}
+
+	// Fail-closed in every build, as in FireProductionAdvectionMac.mm.
+	bool BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest&,
+		FireProductionScalarPhysicalFluxPrerequisiteResult& result,std::string* error )
+	{
+		result=FireProductionScalarPhysicalFluxPrerequisiteResult();
+		if(error)*error=
+			"production scalar physical-flux Metal prerequisite lacks fp64 identity qualification";
 		return false;
 	}
 }

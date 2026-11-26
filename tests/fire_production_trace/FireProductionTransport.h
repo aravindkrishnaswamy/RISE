@@ -1121,7 +1121,6 @@ namespace RISEFireProductionTrace
 	bool FireProductionResidentPhysicalFluxLiveIncrementWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
 
-#if defined(__APPLE__)
 	//! Exact Metal execution identity for the resident EOS logarithm
 	//! qualification. The compiled pipeline has no public binary-export API, so
 	//! its identity is the conjunction of the selected device, Metal runtime,
@@ -1675,7 +1674,6 @@ namespace RISEFireProductionTrace
 	{
 		return phases&&predicateAndInputs&&seals;
 	}
-#endif
 
 	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The
 	//! values are disposable packing bytes; carrier and side ambient arrays are

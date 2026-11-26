@@ -11984,7 +11984,11 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::fprintf(stderr,"BURNER_TARGET terms_pass=%d resident=%d budget_refused=%d "
 			"parent_refused=%d allocation_exact=%d\n",termsPass?1:0,resident?1:0,budgetRefused?1:0,
 			parentRefused?1:0,allocationExact?1:0);
-		if(!termsPass||!resident||!budgetRefused||!parentRefused||!allocationExact)return 220;
+		// M8: fast mode's plain binary32 target terms are not meant to meet the certified
+		// enclosures; the reference diagnostic (not a contract gate) may continue past them.
+		const bool fastReference=burnerReferenceOnly&&RISE::FireSim::FireFastMode();
+		if(fastReference&&!termsPass)std::fprintf(stderr,"BURNER_TARGET fast_mode_reference terms_gate_skipped=1\n");
+		if((!termsPass&&!fastReference)||!resident||!budgetRefused||!parentRefused||!allocationExact)return 220;
 		if(burnerOnly)return 0;
 	}
 	mutation=request;mutation.qualificationCertifiedContinuousEnclosure=true;
@@ -12587,13 +12591,27 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		::RISEFireProductionFP64::FireProductionProjectedHeunOwnerResult result64;
 		FireProductionProjectedHeunMetalOwnerResult metal;
 		std::string e32,e64,em;
+		const auto clock0=std::chrono::steady_clock::now();
 		const bool ok32=cpu32.Begin(ownerRequest32,&e32)&&cpu32.SolveR0(transport32,&e32)&&
 			cpu32.SolveR1(transport32,&e32)&&cpu32.SolveR2(transport32,result32,&e32);
+		const auto clock1=std::chrono::steady_clock::now();
 		const bool ok64=cpu64.Begin(ownerRequest64,&e64)&&cpu64.SolveR0(transport64,&e64)&&
 			cpu64.SolveR1(transport64,&e64)&&cpu64.SolveR2(transport64,result64,&e64);
+		const auto clock2=std::chrono::steady_clock::now();
 		const bool okMetal=AttemptFireProductionProjectedHeunMetalOwner(burnerReferenceInput,metal,&em);
+		const auto clock3=std::chrono::steady_clock::now();
+		const auto ms=[](std::chrono::steady_clock::time_point a,std::chrono::steady_clock::time_point b){
+			return std::chrono::duration<double,std::milli>(b-a).count();};
 		std::fprintf(stderr,"BURNER_REFERENCE_DIAGNOSTIC cpu32=%d cpu64=%d metal=%d error32=%s error64=%s errorMetal=%s\n",
 			ok32?1:0,ok64?1:0,okMetal?1:0,e32.c_str(),e64.c_str(),em.c_str());
+		// M8: one owner step each; the first Metal call includes kernel compilation, the repeat does not.
+		FireProductionProjectedHeunMetalOwnerResult metalRepeat;std::string emRepeat;
+		const bool okRepeat=AttemptFireProductionProjectedHeunMetalOwner(burnerReferenceInput,metalRepeat,&emRepeat);
+		const auto clock4=std::chrono::steady_clock::now();
+		std::fprintf(stderr,"BURNER_REFERENCE_TIMING cells=%zu cpu32_ms=%.3f cpu64_ms=%.3f metal_first_ms=%.3f "
+			"metal_repeat_ms=%.3f repeat_identical=%d fast_mode=%d\n",
+			cells,ms(clock0,clock1),ms(clock1,clock2),ms(clock2,clock3),ms(clock3,clock4),
+			okRepeat&&metalRepeat.conservativeValues==metal.conservativeValues?1:0,RISE::FireSim::FireFastMode()?1:0);
 		if(!ok32||!ok64||!okMetal)return 221;
 		auto mismatched=ownerRequest32;mismatched.physicalContract.bottomFuelMassFluxKGPerM2S[0]*=2.0f;
 		FireProductionProjectedHeunCPUOwner badOwner;
@@ -12610,12 +12628,30 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::fprintf(stderr,"BURNER_REFERENCE_ADMISSION mismatched_parent_refused=%d forged_mask_refused=%d same_mask_stale_hash_refused=%d\n",
 			mismatchedRefused?1:0,forgedRefused?1:0,staleHashRefused?1:0);
 		if(!mismatchedRefused||!forgedRefused||!staleHashRefused)return 221;
-		for(std::size_t component=0u;component<9u;++component){double maximum=0.0;std::size_t mismatches=0u;
+		for(std::size_t component=0u;component<9u;++component){double maximum=0.0,cpuMaximum=0.0,pairMaximum=0.0,scale=0.0;
+			std::size_t mismatches=0u;
 			for(std::size_t cell=0u;cell<cells;++cell){const std::size_t i=component*cells+cell;
 				maximum=std::max(maximum,std::fabs(static_cast<double>(metal.conservativeValues[i])-result64.conservativeValues[i]));
+				// M8: the CPU32 owner's own distance from fp64 and the Metal/CPU32 distance, so the
+				// Metal/CPU difference can be set against binary32 rounding of the same scheme.
+				cpuMaximum=std::max(cpuMaximum,std::fabs(static_cast<double>(result32.conservativeValues[i])-result64.conservativeValues[i]));
+				pairMaximum=std::max(pairMaximum,std::fabs(static_cast<double>(metal.conservativeValues[i])-
+					static_cast<double>(result32.conservativeValues[i])));
+				scale=std::max(scale,std::fabs(result64.conservativeValues[i]));
 				if(std::memcmp(&metal.conservativeValues[i],&result32.conservativeValues[i],sizeof(float))!=0)++mismatches;}
-			std::fprintf(stderr,"BURNER_REFERENCE_DIAGNOSTIC component=%zu metal_cpu32_bit_mismatches=%zu metal_fp64_max_abs=%.17g not_a_contract_verdict=1\n",
-				component,mismatches,maximum);}
+			std::fprintf(stderr,"BURNER_REFERENCE_DIAGNOSTIC component=%zu metal_cpu32_bit_mismatches=%zu metal_fp64_max_abs=%.17g "
+				"cpu32_fp64_max_abs=%.17g metal_cpu32_max_abs=%.17g fp64_max_magnitude=%.17g not_a_contract_verdict=1\n",
+				component,mismatches,maximum,cpuMaximum,pairMaximum,scale);}
+		for(unsigned int axis=0u;axis<3u;++axis){double pairMaximum=0.0,cpuMaximum=0.0,scale=0.0;
+			const auto& m=metal.velocityMPerS[axis];const auto& c=result32.velocityMPerS[axis];
+			const auto& d=result64.velocityMPerS[axis];
+			if(m.size()!=c.size()||c.size()!=d.size()){std::fprintf(stderr,"BURNER_REFERENCE_VELOCITY axis=%u size_mismatch=1\n",axis);continue;}
+			for(std::size_t face=0u;face<m.size();++face){
+				pairMaximum=std::max(pairMaximum,std::fabs(static_cast<double>(m[face])-static_cast<double>(c[face])));
+				cpuMaximum=std::max(cpuMaximum,std::fabs(static_cast<double>(c[face])-d[face]));
+				scale=std::max(scale,std::fabs(d[face]));}
+			std::fprintf(stderr,"BURNER_REFERENCE_VELOCITY axis=%u metal_cpu32_max_abs=%.17g cpu32_fp64_max_abs=%.17g fp64_max_magnitude=%.17g\n",
+				axis,pairMaximum,cpuMaximum,scale);}
 		return 0;
 	}
 	ResidentOwnerTransportFP32 ownerTransport32(ownerEOS.physicalFlux);

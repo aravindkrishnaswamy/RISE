@@ -110,6 +110,7 @@ SceneEditorCancelRestartTest	exclusive	2	timing window (sleep-paced drag counts)
 SheenDirectionalAlbedoTest	pool	5
 SignalEmitterRecordTest	pool	17
 SignalIntegratorConsistencyTest	pool	19
+SimulationGoldenCacheTest	pool	1	M8 committed cross-platform golden cache (CPU only)
 SourceHygieneTest	pool	12
 SpectralOnlyEmitterTest	pool	96
 SpectralPainterScaleTest	pool	14

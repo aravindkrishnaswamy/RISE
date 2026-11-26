@@ -38,10 +38,8 @@ namespace RISEFireProductionFP64
         const std::uint64_t bytes)
     { return bytes<=FireProductionFP64QualificationOwnerCapacityBytes; }
 
-#if defined(__APPLE__)
 	//! Identity of the exact source compiled by the resident force library.
 	std::string FireProductionForceMetalKernelSourceSHA256();
-#endif
 	//! r271 A/B: true when this process's force context selected the opt-in
 	//! compact MAC viscous stencil (RISE_FIRE_COMPACT_VISCOUS_STENCIL=1).
 	bool FireProductionForceMetalCompactViscousStencil();
@@ -529,13 +527,11 @@ namespace RISEFireProductionFP64
 		bool sourceLayoutKnown=false,hostTelemetryKnown=false,peakTelemetryKnown=false;
 		bool deviceTelemetryKnown=false;
 	};
-#if defined(__APPLE__)
 	//! Does not call owner/context factories or create field buffers. Device
 	//! discovery may initialize driver resources; telemetry samples follow it.
 	bool CaptureFireProductionPreconstructionResources(
 		const FireProductionFrozenSourcePacketSeal& source,
 		FireProductionPreconstructionResourceSample& sample );
-#endif
 
 	struct FireProductionProjectedHeunMetalOwnerRequest
 	{

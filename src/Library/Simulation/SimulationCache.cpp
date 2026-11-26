@@ -730,9 +730,14 @@ std::vector<fs::path> TrustedCacheRoots()
 	std::vector<fs::path> roots;
 	if (const char* list=std::getenv(TrustedCacheRootsEnvironment)) {
 		const std::string text(list);
+#if defined(_WIN32)
+		const char separator=';';  // PATH convention; ':' is part of a drive letter
+#else
+		const char separator=':';
+#endif
 		std::size_t begin=0;
 		while (begin<=text.size()) {
-			const auto end=std::min(text.find(':',begin),text.size());
+			const auto end=std::min(text.find(separator,begin),text.size());
 			fs::path canonical;
 			// Relative, missing or unresolvable entries are ignored (never trusted).
 			if (end>begin && Canonical(fs::path(text.substr(begin,end-begin)),canonical) &&

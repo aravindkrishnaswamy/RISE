@@ -157,6 +157,13 @@ namespace RISE
 	//! the path writer would produce (header, payload, header rewrite).
 	struct InMemoryCheckpointFile {};
 
+	// M8 portability: checkpoint values are written in host byte order behind
+	// the 0x0102030405060708 endian tag, which readers check (a foreign-order
+	// file is refused, never misread). Every supported target (macOS arm64,
+	// Windows x64/ARM64, Android arm64) is little-endian and 64-bit, so the
+	// same bytes read everywhere; std::size_t and bool fields rely on these.
+	static_assert(sizeof(std::size_t)==8u&&sizeof(bool)==1u&&sizeof(float)==4u&&sizeof(double)==8u,
+		"fire checkpoint layout assumes a 64-bit target with 1-byte bool");
 	class CheckpointWriter
 	{
 	public:
@@ -187,6 +194,7 @@ namespace RISE
 		template<typename T> bool Pod(const T& value)
 		{
 			static_assert(std::is_arithmetic<T>::value,"checkpoint POD must be arithmetic");
+			static_assert(sizeof(T)==1u||sizeof(T)==4u||sizeof(T)==8u,"checkpoint POD width must match on every target");
 			return Bytes(&value,sizeof(value));
 		}
 		bool Bytes(const void* data,const std::size_t size)
@@ -244,6 +252,7 @@ namespace RISE
 		template<typename T> bool Pod(T& value)
 		{
 			static_assert(std::is_arithmetic<T>::value,"checkpoint POD must be arithmetic");
+			static_assert(sizeof(T)==1u||sizeof(T)==4u||sizeof(T)==8u,"checkpoint POD width must match on every target");
 			return Bytes(&value,sizeof(value));
 		}
 		bool Bytes(void* data,const std::size_t size)

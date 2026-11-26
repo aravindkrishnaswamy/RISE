@@ -39,6 +39,19 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// setenv/unsetenv are POSIX; MSVC has _putenv_s (an empty value removes the variable).
+	bool SetProcessEnvironment(const char* name,const char* value)
+	{
+#if defined(_WIN32)
+		return _putenv_s(name,value?value:"")==0;
+#else
+		return value ? ::setenv(name,value,1)==0 : ::unsetenv(name)==0;
+#endif
+	}
+}
+
 namespace RISE
 {
 	namespace FireRun
@@ -3222,13 +3235,13 @@ namespace RISE
 									!production.projection.velocityMPerS[0].empty():
 									!production.physicalProjection.velocityMPerS[0].empty();
 							}else if(attemptComputed&&restorationModeClear&&
-								setenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed",1)==0){
+								SetProcessEnvironment("RISE_FIRE_PRODUCTION_RESTORATION_TEST","removed")){
 								physicalOnlyComputed=persistence.compatibleMomentumDiagnostic?
 									RISE::AttemptFireProductionCompatibleMomentumDiagnosticMetal(
 										request,physicalOnly,&physicalOnlyError):
 									RISE::AttemptFireProductionResidentStepMetal(
 										request,physicalOnly,&physicalOnlyError);
-								unsetenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST");
+								SetProcessEnvironment("RISE_FIRE_PRODUCTION_RESTORATION_TEST",nullptr);
 							}
 							const RISE::FireProductionProjectionResult& physical=useRetainedPhysicalProjection?
 								(retainedPhysicalIsTerminal?production.projection:

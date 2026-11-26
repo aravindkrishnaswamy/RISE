@@ -1317,7 +1317,8 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			{{"impulse", "impulse", "N s", 3}, {"segment", "index", "1", 1}}, ""});
 	}
 	auto& caps = candidate.capabilities;
-	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17; `threads` does not change results"}};
+	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17; `threads` does not change results; built and tested on macOS (with and without "
+		"Metal), Windows and Android builds not yet compiled"}};
 	const std::size_t cells = setup.grid.Cells();
 	caps.interactive = cells <= InteractiveCells;
 	caps.deterministic = caps.resumable = caps.externalMacroStep = caps.rollback = true;
