@@ -70,7 +70,9 @@ double ProlateSurfaceToVolume(double a, double b) {
 	const double ratio = AxisRatio(a,b);
 	// (1-r)(1+r) avoids cancellation in 1-r*r near the sphere.
 	const double eccentricity = std::sqrt((1.0-ratio)*(1.0+ratio));
-	const double sincInverse = eccentricity == 0.0 ? 1.0 : std::asin(eccentricity)/eccentricity;
+	// asin(e) loses the complementary angle when a slender spheroid's e
+	// rounds toward one. atan2 retains that angle from the independent ratio.
+	const double sincInverse = eccentricity == 0.0 ? 1.0 : std::atan2(eccentricity,ratio)/eccentricity;
 	return ProductRatio({1.5, ratio+sincInverse}, {a});
 }
 double GeometricEncounterRate(double surfaceToVolume, double volume) {
@@ -89,9 +91,10 @@ double SampleOrientationCosine(double uniform, double a, double b) {
 	const double ratio = AxisRatio(a,b);
 	const double signedMass = 2.0*uniform-1.0;
 	const double mass = std::abs(signedMass);
-	// Rationalized quadratic root. The discriminant equals (1-m)+r*r*m,
-	// removing subtraction of nearly equal terms for slender spheroids.
-	const double root = std::sqrt((1.0-mass)+ratio*ratio*mass);
+	// The complementary mass is 2*min(u,1-u). Compute it directly:
+	// forming 1-abs(2*u-1) would erase tiny lower-tail probabilities.
+	const double complement = 2.0*(uniform <= 0.5 ? uniform : 1.0-uniform);
+	const double root = std::sqrt(complement+ratio*ratio*mass);
 	const double magnitude = mass*(1.0+ratio)/(1.0+root);
 	return std::copysign(magnitude, signedMass);
 }

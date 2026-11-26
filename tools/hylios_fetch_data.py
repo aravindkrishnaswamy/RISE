@@ -24,6 +24,7 @@ ALLOWED_MANIFEST_IDS = {
     "pheomelanin_extinction", "oxy_deoxy_hemoglobin", "carboxyhemoglobin",
     "methemoglobin", "sulfhemoglobin", "beta_carotene", "bilirubin",
     "water_absorption", "lipid_absorption", "palmer_williams_real_ior",
+    "hale_querry_water_real_ior", "hale_querry_water_extinction",
 }
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -47,9 +48,12 @@ def _digest(data: bytes) -> str:
 def _validate_relative_path(relative: str) -> PurePosixPath:
     _require(isinstance(relative, str) and relative != "", "artifact path must be a non-empty string")
     _require("\\" not in relative, f"artifact path must use POSIX separators: {relative!r}")
-    path = PurePosixPath(relative)
-    _require(not path.is_absolute() and all(part not in {"", ".", ".."} for part in path.parts),
+    _require(not re.match(r"^[A-Za-z]:", relative), f"artifact path must not have a drive prefix: {relative!r}")
+    raw_parts = relative.split("/")
+    _require(all(part not in {"", ".", ".."} for part in raw_parts),
              f"artifact path must be a clean relative path: {relative!r}")
+    path = PurePosixPath(relative)
+    _require(not path.is_absolute(), f"artifact path must be a clean relative path: {relative!r}")
     return path
 
 
@@ -58,6 +62,19 @@ def _validate_url(url: str) -> None:
     _require(parsed.scheme == "https" and parsed.hostname == EXPECTED_HOST and
              parsed.username is None and parsed.password is None and not parsed.fragment,
              f"artifact URL must be HTTPS on {EXPECTED_HOST}: {url!r}")
+
+
+class RestrictedHTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects away from the pinned NPSG HTTPS origin before follow-up I/O."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _default_open(request: urllib.request.Request, timeout: int):
+    opener = urllib.request.build_opener(RestrictedHTTPSRedirectHandler())
+    return opener.open(request, timeout=timeout)
 
 
 def collect_artifacts(manifest: dict[str, Any]) -> dict[str, tuple[str, str]]:
@@ -149,9 +166,11 @@ def _fetch_one(url: str, destination: Path, expected_sha: str,
 
 
 def fetch_artifacts(manifest: dict[str, Any], output_root: Path,
-                    opener: Callable[..., Any] = urllib.request.urlopen,
+                    opener: Callable[..., Any] | None = None,
                     timeout: int = DEFAULT_TIMEOUT_SECONDS) -> tuple[int, int]:
     artifacts = collect_artifacts(manifest)
+    if opener is None:
+        opener = _default_open
     root = output_root.resolve()
     destinations = {relative: _destination(root, relative) for relative in artifacts}
     # Validate all existing cache entries before downloading anything.

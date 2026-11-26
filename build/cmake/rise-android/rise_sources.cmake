@@ -184,6 +184,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBMATERIALS
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSOpticalData.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSOptics.cpp"
+    "${RISE_LIB}/Materials/HyLIoS/HyLIoSSlabTransport.cpp"
     "${RISE_LIB}/Materials/AshikminShirleyAnisotropicPhongBRDF.cpp"
     "${RISE_LIB}/Materials/AshikminShirleyAnisotropicPhongSPF.cpp"
     "${RISE_LIB}/Materials/BioSpecSkinSPF.cpp"

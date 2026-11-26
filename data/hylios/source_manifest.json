@@ -551,6 +551,9 @@
             "sha256": "6efe55fb9f51c5751d6af1b4673e444f0d273c8079a86bd78d39c30c962fe901",
             "reason": "Filename collision: downloaded riW2.txt is IAPWS (200\u20131100 nm, n(200 nm)=1.426), not Hale\u2013Querry. water2_n.m is the Hale\u2013Querry candidate (n(200 nm)=1.3960). Do not import the text artifact for this source."
           }
+        ],
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/water/water2_n.m"
         ]
       },
       {
@@ -568,7 +571,11 @@
           200,
           2500
         ],
-        "source": "Hale and Querry; not interchangeable with water absorption coefficient"
+        "source": "Hale and Querry; not interchangeable with water absorption coefficient",
+        "download_urls": [
+          "https://www.npsg.uwaterloo.ca/data/water/water2_k.m",
+          "https://www.npsg.uwaterloo.ca/data/water/ecW2.txt"
+        ]
       }
     ],
     "note": "Candidate sources, not yet reconciled to the specific HyLIoS formulation. MATLAB was not executed."

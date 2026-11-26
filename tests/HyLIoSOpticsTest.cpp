@@ -19,6 +19,7 @@ void Near(double actual, double expected, double relativeTolerance, const char* 
 	const bool valid = std::isfinite(actual) && std::isfinite(expected);
 	const double scale = std::max(std::abs(actual), std::abs(expected));
 	if (!valid || std::abs(actual-expected) > relativeTolerance*scale) {
+		std::cerr.precision(std::numeric_limits<double>::max_digits10);
 		++failures; std::cerr << "FAIL: " << contract << ": actual=" << actual << ", expected=" << expected << '\n';
 	}
 }
@@ -51,6 +52,9 @@ int main() {
 	Near(ProlateSurfaceToVolume(0.25,1.0), 10.0*ProlateSurfaceToVolume(2.5,10.0), 2e-15, "axis scaling gives inverse length");
 	Near(ProlateSurfaceToVolume(1.0,std::nextafter(1.0,2.0)), 3.0, 5e-16, "near-sphere expression has continuous finite limit");
 	Near(ProlateSurfaceToVolume(1.0,largest), 3.0*Pi/4.0, 2e-15, "slender spheroid approaches 3*pi/(4*a)");
+	// 90-decimal reference of 3/2*(r+asin(sqrt(1-r*r))/sqrt(1-r*r)),
+	// r=10^-8. Evaluating asin after rounding eccentricity loses the angle.
+	Near(ProlateSurfaceToVolume(1.0,1e8),2.3561944901923450467,1e-15,"slender spheroid preserves the small complementary angle");
 	Near(GeometricEncounterRate(ProlateSurfaceToVolume(2.0,2.0),0.2),0.075,2e-15,"sphere encounter rate is 3*v/(4*r)");
 	Check(GeometricEncounterRate(largest,0.0)==0.0,"zero volume eliminates geometric events exactly");
 	Near(GeometricEncounterRate(largest,smallest),largest*smallest/4.0,2e-15,"tiny fraction does not vanish before large S/V compensates");
@@ -62,6 +66,15 @@ int main() {
 	for (double u : {0.0,0.125,0.5,0.875}) Check(SampleOrientationCosine(u,1.0,1.0)==2.0*u-1.0,"sphere inverse CDF is uniform cosine");
 	Check(SampleOrientationCosine(0.0,1.0,2.0)==-1.0,"orientation inverse reaches lower endpoint exactly");
 	Check(SampleOrientationCosine(0.5,1.0,2.0)==0.0,"orientation inverse median is zero");
+	// Independent 90-decimal lower-tail quadratic in d=x+1:
+	// u=(r*d+(1-r)*d*d/2)/(1+r), r=10^-8 and u=2^-55.
+	Near(SampleOrientationCosine(0x1p-55,1e-8,1.0),-0.9999999975295889463,2e-16,"orientation inverse retains a tiny lower-tail probability");
+	Check(SampleOrientationCosine(0.0,1e-8,1.0)==-1.0,"slender orientation lower endpoint remains exact");
+	Check(SampleOrientationCosine(0.5,1e-8,1.0)==0.0,"slender orientation median remains exact");
+	// Allow the quotient's binary64 rounding at these very small central values.
+	const double centralTolerance = 4.0*std::numeric_limits<double>::epsilon();
+	Near(SampleOrientationCosine(std::nextafter(0.5,0.0),1e-8,1.0),-5.5511151786369340875e-17,centralTolerance,"orientation inverse preserves the sample immediately below its median");
+	Near(SampleOrientationCosine(std::nextafter(0.5,1.0),1e-8,1.0),1.1102230357273868483e-16,centralTolerance,"orientation inverse preserves the sample immediately above its median");
 	for (double ratio : {1.0,0.5,1e-6,1e-100}) {
 		Near(Integrate([&](double x){ return OrientationCosinePdf(x,ratio,1.0); },-1.0,1.0),1.0,2e-13,"orientation cosine PDF integrates to one");
 		const double expectedSecond = (1.0+3.0*ratio)/(6.0*(1.0+ratio));

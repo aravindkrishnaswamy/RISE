@@ -120,3 +120,4 @@ WeaveGapShadowTransmittanceTest	pool	34
 WetTextureDetailRenderTest	wide:2	1	1.9 cores (measured)
 HyLIoSOpticalDataTest	pool	2
 HyLIoSOpticsTest	pool	2
+HyLIoSSlabTransportTest	pool	2

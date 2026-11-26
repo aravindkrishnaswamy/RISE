@@ -1,6 +1,6 @@
 # HyLIoS in RISE: refreshed design and implementation plan
 
-**Status:** implementation started with checked optical-data primitives and source-evidence tooling; transport and renderer integration are not yet implemented. Phase exit gates below remain requirements, not completed milestones.
+**Status:** implementation started with checked optical-data primitives, source-evidence tooling, and a six-layer absorption/dielectric transport control. The full particle/fiber skin transport and renderer integration are not yet implemented. Phase exit gates below remain requirements, not completed milestones.
 **Refreshed:** 2026-11-25, against branch `hyperspectral-skin`, HEAD `be3e7ed74`.
 **Supersedes:** the original plan introduced by `3e40fe1d1` (retained in Git).
 **External review dispositions:** [round 1](HYLIOS_RESEARCH_NOTES.md#6-external-review-disposition-2026-11-25) and [round 2](HYLIOS_RESEARCH_NOTES.md#7-round-2-review-disposition-2026-11-25).
@@ -11,6 +11,10 @@ The initial implementation lives in `src/Library/Materials/HyLIoS/HyLIoSOpticalD
 `HyLIoSOptics.{h,cpp}` now supplies isolated prolate surface/volume, orientation, exponential free-flight/forward-scatter and Rayleigh primitives, with bounded one-proposal sampling calls. These are not yet a complete walk. The [equation worksheet](HYLIOS_EQUATIONS.md) separates candidate interpretations from source statements. [Source-data instructions](../data/hylios/README.md) cover explicit checksum-verified fetching and conversion of the 14 absorber tables plus water real index. Imports preserve source grids and reference-sample units; they do not supply missing tails or resolve a complete physiological specimen.
 
 The recommendation is to implement a wavelength-resolved, layered transport kernel first, validate it independently of image rendering, and then integrate it into RISE through an explicit transport contract. Do **not** implement the old plan's thickness-averaged homogeneous random walk as HyLIoS. It removes the layer/particle structure that motivates this work and can add an unrelated epidermal attenuation factor on top of absorption already counted in the walk.
+
+`HyLIoSSlabTransport.{h,cpp}` implements the explicitly named `slab-control-v1`: six constant-coefficient layers, smooth dielectric interfaces, a diffuse reflecting bottom, analog/weighted absorption, optional compensated roulette, and resumable outer-boundary events. It preserves lateral displacement and per-layer absorption/path tallies. It has no particles, fibers, folds, or finite footprint; it is an analytic control for the forthcoming model, not an executable S1–S4 specimen. Its tests compare absorption against an independent slab integral and compare estimators statistically.
+
+The implementation also has authorization for a separately labelled approximate-data profile to fill unsupported spectral tails. Reference curves remain non-extrapolating. Approximate outputs must carry a versioned profile identity, source hashes and explicit per-curve extrapolation/substitution rules; they must not be labelled validated publication reproduction. This authorization changes data availability for exploratory rendering, not the transport or renderer acceptance gates.
 
 This is a research implementation with a production integration path. A plausible portrait is a demonstration, not its acceptance criterion. The scientific target is the 2015 model, with individually documented interpretations where the publications are insufficient. Newer data, curved geometry, and faster approximations must remain identifiable extensions.
 

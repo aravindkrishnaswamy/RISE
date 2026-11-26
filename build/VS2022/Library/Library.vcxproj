@@ -230,6 +230,7 @@
     <ClCompile Include="..\..\..\src\Library\Managers\ObjectManager.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOpticalData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOptics.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSlabTransport.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp" />
@@ -876,6 +877,7 @@
     <ClInclude Include="..\..\..\src\Library\Managers\ShaderOpManager.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOpticalData.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOptics.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSlabTransport.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.h" />
