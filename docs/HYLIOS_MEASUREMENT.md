@@ -1,7 +1,7 @@
 # HyLIoS forward measurement and diagnostic variants
 
 `tools/hylios_measure.cpp` measures the current forward-only individual-spheroid
-and explicit-complex kernel with explicitly selected post-scattering semantics. Diagnostic or budget-limited histories retain unresolved power in the result. It does not validate the publication's physiological reflectance.
+and explicit-complex kernel with explicitly selected post-scattering and outer-boundary semantics. Diagnostic or budget-limited histories retain unresolved power in the result. It does not validate the publication's physiological reflectance.
 
 ## Build and run
 
@@ -42,7 +42,7 @@ it does not verify the Python producer's canonical semantic JSON hash. Formattin
 changes legitimately change byte identity while preserving the claimed hash.
 
 Required options: `--specimen FILE`, `--wavelength-nm N`, `--placement fixed|null`,
-`--post-scatter diagnostic|discard`, `--boundary smooth`, `--histories N`, `--max-transitions N`, `--seed U64`,
+`--post-scatter diagnostic|discard`, `--boundary smooth|hylios2015`, `--histories N`, `--max-transitions N`, `--seed U64`,
 `--output FILE`. Every option occurs at most once; unknown options fail.
 The wavelength must exactly equal an explicitly resolved grid value; no spectral
 interpolation occurs. Six layers must use SC/SG/SS/SB/PD/RD order and SI unit tags.
@@ -51,7 +51,7 @@ the known strict and approximation profiles cannot contradict their flags.
 All coefficient/index arrays must have the complete grid shape, even at
 unselected wavelengths. Duplicate JSON keys and nonfinite values are rejected.
 
-JSON numbers use binary64 semantics, with supported magnitude at most
+Input JSON numbers use binary64 semantics, with supported source magnitude at most
 `9007199254740992` (`2^53`). The CLI compares each original decimal numeric token
 against this bound **before** parsing it, including decimal/exponent forms, so an
 integer such as `9007199254740993` cannot silently become its rounded neighbor.
@@ -132,10 +132,17 @@ exponential event. The final angular event occurs once at nonempty envelope exit
 empty complexes introduce no angular kick even at visible wavelengths. PD
 complexes with a nonzero fiber rate are explicitly refused; current composed
 S1/S2/S3 complexes occupy SG/SS/SB.
-`--boundary smooth` is a mandatory explicit **override** of authored fold metadata.
+Boundary selection is mandatory. `--boundary smooth` is an explicit **override** of authored fold metadata.
 The original fold aspect ratio is retained and
-`authored_surface_folds_simulated=false` is explicit. Surface folds are not
-implemented. Choosing smooth must never be interpreted as evaluating that field.
+`authored_surface_folds_simulated=false` is explicit for smooth. Choosing smooth
+never evaluates that field. `--boundary hylios2015` instead evaluates authored
+`surface_fold_aspect_ratio` with the selected
+`hylios2015_macro_fresnel_normal_perturb_v1` law: macro Fresnel first, a normalized
+Eq. (8) normal perturbation only for reflection, and macro Snell transmission.
+Normalization and strict incident-side rejection are explicit clean-room choices.
+This forward boundary is documented in
+[HYLIOS_SURFACE_BOUNDARY.md](HYLIOS_SURFACE_BOUNDARY.md); it is not an adjoint or
+reciprocity claim.
 
 Placement is mandatory: `fixed` selects `FixedEventDiagnosticV1`, with a frozen
 entry event and resampled geometry; `null` selects `NullCollisionPlacementV1`,
@@ -155,7 +162,12 @@ wording; it does not claim a persistent packed medium or author-code equivalence
 Both variants count inward draws in `inwardPostExitEvents`. Data approximation
 labels are separate from the recorded transport interpretation. At the exact
 zero-angle endpoint, both policies produce identical physical histories and RNG
-consumption. The report schema is `hylios-forward-measure-v3`.
+consumption. The report schema is `hylios-forward-measure-v4`.
+For HyLIoS boundary selection, zero fold is the exact smooth delta. Positive
+source folds must lie in the explicit binary64 working interval
+[sqrt(epsilon),1/sqrt(epsilon)]; unsupported values fail before histories.
+The smooth override retains the legacy nonnegative-source validation and does
+not silently apply the new positive-fold working interval.
 
 Fixed placement can also
 remain impossible; a finite caller transition budget becomes `budget_exceeded`,
@@ -165,7 +177,10 @@ original number of incident histories. It never divides by completed histories.
 
 After input resolution the CLI flushes `hylios_measure: signal handlers ready` to stderr;
 this is the readiness handshake used by the cancellation test, with no timing sleep.
-SIGINT/SIGTERM is checked between at most 64-transition batches. A started history
+SIGINT/SIGTERM is checked between at most 64 transport transitions and between
+every fold-boundary transition. A once-per-run
+`hylios_measure: reflected surface branch pending` readiness line marks the first
+pending reflected-normal sampler; it is diagnostic progress, not scientific identity. A started history
 retains its already tallied absorption and current live weight. All unstarted
 histories are recorded as cancelled with initial live weight 1. The complete JSON
 is atomically published, then cancellation returns exit130. Other invalid input
@@ -175,7 +190,11 @@ inspect `complete_physical_estimate` and `unresolved_history_count`.
 
 Input is limited to 64 MiB, the wavelength grid to 10,000 entries, histories and each
 transition cap to 10,000,000, and their product to 10^10. These are explicit tooling
-budgets, not physical model cutoffs. Positive bounds are validated before running.
+budgets, not physical model cutoffs. In HyLIoS boundary mode, the cap counts kernel
+transport work plus every boundary branch/proposal attempt. A rejected normal
+costs one unit and keeps the Fresnel branch pinned. Smooth retains its exact
+legacy cap ordering, counting transport transitions and excluding its boundary
+draws. `boundary_work_convention` records this difference. Positive bounds are validated before running.
 
 ## Output and statistics
 
@@ -185,6 +204,19 @@ inputs/rate, estimator/RR settings, RNG seed/algorithm and random draw count.
 History IDs are zero based; SplitMix64 starts with state
 `(seed+history_id) mod 2^64` and maps its top 53 bits to [0,1). Histories use separate
 streams, so scheduling/batching cannot change their initial random state.
+
+`caller_work_units` records the complete caller work total.
+`aggregate_counters.workUnits` remains transport-only; the separate
+`surface_boundary_counters` records branch/proposal attempts, rejected normals,
+exterior/interior R/T branches, ready decisions, pending-state stops and failures.
+Budget/cancel stops preserve live kernel weight. In HyLIoS boundary mode, invalid-variate and
+numerical exceptions cancel pending transport for cleanup and publish their own
+unresolved diagnostic classification; they do not abort a partially completed
+measurement or add absorption. Boundary numerical failures are identified as
+`surface_boundary` in `numerical_failure_details`. The cancellation counter counts
+pending boundary-state cleanup, including diagnostics; terminal outcome counts
+remain the physical accounting authority. A selected reflected branch still
+awaiting a normal is unresolved power, not escaped power.
 
 Outcomes have separate counts, terminal live weights and unresolved flags.
 External reflection and subsurface return are distinct. Absorption is accumulated
@@ -236,7 +268,7 @@ RISE_HYLIOS_MEASURE=/absolute/path/to/hylios_measure \
 
 Tests default to repository `bin/tools/hylios_measure` (`hylios_measure.exe` on
 Windows). `RISE_HYLIOS_MEASURE` selects another binary without consuming unittest
-arguments. A missing binary explicitly skips the eighteen contracts with the build
+arguments. A missing binary explicitly skips the twenty-three contracts with the build
 command. Standard unittest discovery, test selection and flags remain available.
 
 A strict standalone POSIX build reads sources directly and avoids shared-archive
@@ -250,6 +282,7 @@ clang++ -std=c++17 -O2 -Wall -Werror -pedantic \
   tools/hylios_measure.cpp "$inc/HyLIoSForwardTransport.cpp" \
   "$inc/HyLIoSOptics.cpp" "$inc/HyLIoSParticleGeometry.cpp" \
   "$inc/HyLIoSParticleOverlap.cpp" "$inc/HyLIoSComplexLayout.cpp" \
+  "$inc/HyLIoSSurfaceBoundary.cpp" \
   "$inc/HyLIoSSlabTransport.cpp" src/Library/Agent/Json.cpp \
   src/Library/Utilities/RISECBOR64.cpp -o "$hylios_check_dir/hylios_measure"
 RISE_HYLIOS_MEASURE="$hylios_check_dir/hylios_measure" \
@@ -257,13 +290,13 @@ RISE_HYLIOS_MEASURE="$hylios_check_dir/hylios_measure" \
 ```
 
 The canonical build uses its platform optimization flags. Particle geometry and
-certified overlap and complex layout retain strict floating-point compilation.
+certified overlap, complex layout and surface boundary retain strict floating-point compilation.
 For isolated checks, compile the source list in the Windows example below with
 C++17 and the repository `src/Library` include directory. GCC/Clang strict mode uses
 `-fno-fast-math -ffp-contract=off`; ASan/UBSan adds
 `-O1 -g -fsanitize=address,undefined` to compilation and linking. Full-LTO checks use
 `-O3 -flto=full`, compiling the driver/forward/optics/slab with
-`-ffast-math -fno-finite-math-only` and particle geometry, overlap, complex layout, JSON and SHA
+`-ffast-math -fno-finite-math-only` and particle geometry, overlap, complex layout, surface boundary, JSON and SHA
 with `-fno-fast-math -ffp-contract=off`. Compile each TU separately before linking
 so its floating-point contract survives LTO. The isolated modes were exercised on
 macOS; Windows/Linux have not been executed in this environment.
@@ -276,6 +309,8 @@ skip, missing coverage and missing explicit complex-policy refusal,
 complex count/radius/rate validation with atomic output preservation,
 one-child full-envelope exact event counts, successful five-child physical paths,
 construction-only budget accounting, visible empty-complex Beer/bottom quadrature,
+macro Fresnel mass under rejected normal proposals, exact zero-fold smooth parity,
+pinned reflected-proposal budgets, authored-fold validation and in-sampler cancellation,
 schema/unit/shape/nonfinite rejection,
 source labels and byte-hash preservation, deterministic seeded replay, atomic
 failure preservation and concurrent unique publication. No render is invoked.
@@ -294,6 +329,7 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /fp:strict /I"$repo\src\Library" `
   "$repo\tools\hylios_measure.cpp" "$inc\HyLIoSForwardTransport.cpp" `
   "$inc\HyLIoSOptics.cpp" "$inc\HyLIoSParticleGeometry.cpp" `
   "$inc\HyLIoSParticleOverlap.cpp" "$inc\HyLIoSComplexLayout.cpp" `
+  "$inc\HyLIoSSurfaceBoundary.cpp" `
   "$inc\HyLIoSSlabTransport.cpp" `
   "$repo\src\Library\Agent\Json.cpp" "$repo\src\Library\Utilities\RISECBOR64.cpp" `
   /Fe:"$repo\bin\tools\hylios_measure.exe"
@@ -304,7 +340,7 @@ Pop-Location
 python tools/test_hylios_measure.py -v
 ```
 
-The POSIX SIGINT contract is skipped on Windows; the other seventeen CLI contracts
+The two POSIX SIGINT contracts are skipped on Windows; the other twenty-one CLI contracts
 have no POSIX-specific invocation requirement. Their Windows implementation
 remains unverified here.
 
@@ -345,7 +381,7 @@ validated.
 
 ## Full-suite pinned-fixture runtime
 
-The measurement CLI's eighteen contracts and the HyLIoS binaries can be tested
+The measurement CLI's twenty-three contracts and the HyLIoS binaries can be tested
 directly with the commands above. The repository-wide `run_all_tests.sh` also
 checks unrelated committed fire records before applying its test filter.
 
@@ -476,10 +512,97 @@ inputs, not convergence, author-code equivalence, agreement with measured skin,
 or a validated ordering of presets. More histories and angle studies remain
 separate work; none of these runs implements authored surface folds.
 
-The eighteen CLI contracts pass source-linked strict, ASan/UBSan and mixed full-LTO
-builds. They include the exact full-envelope one-child limit that was observed
+The eighteen CLI contracts at that milestone passed source-linked strict, ASan/UBSan and mixed full-LTO
+builds. They included the exact full-envelope one-child limit that was observed
 RED with 267 numerical failures among 500 histories before owned-boundary reuse,
 and GREEN with complete R=1 afterward. The same test checks exact child/envelope
 counts and identical physical histories with or without a consistent declared
 encounter rate. Source, kernel and measurement mechanics tests remain separate
 from the exploratory scientific interpretation above.
+
+
+## Version 4 authored-fold controls (2026-11-26)
+
+Eight runs selected `--boundary hylios2015` and the authored fold aspects
+S1=.1, S2=.25, S3=.1, S4=.45. All other experimental inputs match the v3 smooth
+controls above: 100 normal-incidence histories per row, analog, no roulette,
+explicit null/discard/explicit-pack policies, named Eq7 fiber defaults,
+transition cap 100000, seeds 55001 and 130001. Every exact input-byte digest and
+claimed/source bundle identity matches the corresponding v3 row. The new cap
+counts transport plus boundary work; no row exhausted it. Existing v3 reports
+were preserved.
+
+The source-linked mixed-full-LTO binary includes strict geometry, overlap,
+complex layout, surface boundary, JSON and SHA TUs; caller/forward/optics/slab use
+fast math with finite-math-only disabled. Compiler and platform match the v3
+record. Measurement version is `hylios-forward-measure-v4`, kernel version remains
+`hylios-forward-explicit-complex-draft-v2`, and boundary law is
+`hylios2015_macro_fresnel_normal_perturb_v1`. Binary SHA-256:
+
+`b17724743a593fa878d9baf1da8cf6089bf32d1e37768e0f586949815521b90d`
+
+All 800 incident histories complete with zero unresolved live weight, zero
+budget/cancel stops, zero numerical failures and zero invalid boundary samples.
+R+A accounts for one per row within binary64 summation error. External and
+subsurface returns below are counts out of 100; their sum gives escaped R.
+The uncertainty is the sample standard error, not an author-reference error.
+
+| Preset | nm | Fold s | Escaped R ± standard error | External / subsurface returns | A | Historical smooth R |
+|---|---:|---:|---:|---:|---:|---:|
+| S1 | 550 | 0.10 | 0.40 ± 0.04924 | 4 / 36 | 0.60 | 0.41 |
+| S1 | 1300 | 0.10 | 0.36 ± 0.04824 | 2 / 34 | 0.64 | 0.41 |
+| S2 | 550 | 0.25 | 0.21 ± 0.04094 | 4 / 17 | 0.79 | 0.25 |
+| S2 | 1300 | 0.25 | 0.45 ± 0.05000 | 2 / 43 | 0.55 | 0.43 |
+| S3 | 550 | 0.10 | 0.31 ± 0.04648 | 4 / 27 | 0.69 | 0.35 |
+| S3 | 1300 | 0.10 | 0.41 ± 0.04943 | 2 / 39 | 0.59 | 0.36 |
+| S4 | 550 | 0.45 | 0.49 ± 0.05024 | 4 / 45 | 0.51 | 0.53 |
+| S4 | 1300 | 0.45 | 0.72 ± 0.04513 | 2 / 70 | 0.28 | 0.63 |
+
+Every selected reflected branch completes exactly once in these rows:
+normal proposals minus rejected normals equals exterior plus interior reflection
+branches. Boundary work equals branch attempts plus normal proposal attempts;
+caller work equals transport work plus boundary work. The table reports these
+raw counts and sequential elapsed process times, with no isolated-throughput
+claim. R/T branch counts are exterior R/T then interior R/T.
+
+| Preset | nm | Transport work | Exterior R/T; interior R/T | Normal proposals / rejections | Boundary work | Caller work | Wall seconds |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| S1 | 550 | 736203 | 4/96; 101/36 | 439 / 334 | 676 | 736879 | 2.277 |
+| S1 | 1300 | 736667 | 2/98; 70/34 | 260 / 188 | 464 | 737131 | 2.299 |
+| S2 | 550 | 489905 | 4/96; 50/17 | 303 / 249 | 470 | 490375 | 1.513 |
+| S2 | 1300 | 692913 | 2/98; 66/43 | 298 / 230 | 507 | 693420 | 2.164 |
+| S3 | 550 | 646455 | 4/96; 107/27 | 518 / 407 | 752 | 647207 | 1.976 |
+| S3 | 1300 | 782380 | 2/98; 107/39 | 494 / 385 | 740 | 783120 | 2.418 |
+| S4 | 550 | 19297 | 4/96; 85/45 | 396 / 307 | 626 | 19923 | 0.022 |
+| S4 | 1300 | 50788 | 2/98; 168/70 | 932 / 762 | 1270 | 52058 | 0.045 |
+
+Distinct reports are named
+`rendered/hylios-complex/S{1,2,3,4}-{550,1300}-measure-v4-hylios2015.json`.
+`rendered/hylios-complex/exploration-v4-hylios2015-summary.json` retains exact
+input/report/binary hashes, unrounded means, all boundary counters and timing.
+A replay command after rebuilding the declared mode is:
+
+```sh
+./bin/tools/hylios_measure --specimen rendered/hylios-complex/S3-resolved.json \
+  --wavelength-nm 550 --placement null --post-scatter discard \
+  --complex-layout explicit-pack-v1 --boundary hylios2015 --histories 100 \
+  --max-transitions 100000 --seed 55001 --estimator analog --roulette-target 0 \
+  --output rendered/hylios-complex/S3-550-measure-v4-hylios2015.json
+```
+
+These are accounting and implementation sanity controls using the same explicitly
+approximate spectra/composition and selected clean-room transport rules. At only
+100 histories, smooth/fold differences and preset ordering do not establish
+statistical significance or convergence; changed random consumption also means
+identical seeds are not an independently validated paired estimator. No
+comparison to author code or measured skin is inferred. Incidence studies,
+outgoing histograms and any adjoint/renderer boundary remain separate increments.
+
+The complete 23-contract CLI suite passes strict, ASan/UBSan and mixed full LTO.
+A temporary mutation omitting boundary work from the cap was observed RED in the
+reflected-proposal budget contract (five proposals occurred with cap1), while the
+implemented guard is GREEN. An additional weighted cap2 control preserves
+exp(-.2) live power plus 1-exp(-.2) prior host absorption across the new caller
+work accounting. Invalid used variate and numerical-boundary paths are defensive
+adapter diagnostics; the production SplitMix64 source emits only valid uniforms,
+while boundary-unit tests directly exercise invalid variates.

@@ -241,6 +241,93 @@ void PhysicalRuntimeControls() {
     Check(light->CanGeneratePhotons(),"valid pose restores authored photon eligibility");
     light->release();
 }
+void ScaledSourceReviewControls() {
+    IShader* shader=nullptr; RISE_API_CreateStandardShader(&shader,{});
+    IRayCaster* caster=nullptr; RISE_API_CreateRayCaster(&caster,false,4,*shader,false);
+    auto* bsdf=new UnitBSDF;
+    RayIntersectionGeometric ri(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+    ri.ptIntersection=Point3(0,0,0);ri.vNormal=Vector3(0,0,1);ri.vGeomNormal=ri.vNormal;
+    const double rampNm[]={1100,1300};
+    const double sub=std::numeric_limits<double>::denorm_min(), ramp[]={0,sub}, huge[]={1e308,1e308};
+    const double expected=(sub*1e308)/100;
+    for(int kind=0;kind<3;++kind) {
+        ILightPriv* light=nullptr;
+        const bool ok=kind==0 ? RISE_API_CreatePhysicalPointOmniLight(&light,2,rampNm,ramp,"zero",1e308,false) :
+            kind==1 ? RISE_API_CreatePhysicalPointSpotLight(&light,2,rampNm,ramp,"zero",1e308,Point3(0,0,2),Point3(0,0,0),.4,.8,false) :
+            RISE_API_CreatePhysicalDirectionalLight(&light,2,rampNm,ramp,"zero",1e308,Vector3(0,0,1));
+        Check(ok&&light,"subnormal-ramp physical source fixture");
+        if(light) {
+            if(kind==0){light->SetPosition(Point3(0,0,2));light->FinalizeTransformations();}
+            Near(light->emittedRadianceNM(Vector3(0,0,-1),1102)/expected,1,
+                "scale precedes interpolation rounding at every NM emitter [physical-spd-scaled-interpolation]");
+            Near(light->ComputeDirectLightingNM(ri,*caster,*bsdf,false,1102)/(expected*(kind==2 ? .25:.0625)),1,
+                "direct NM preserves interpolated subnormal source before scaling");
+            light->release();
+        }
+        light=nullptr;
+        const bool bright=kind==0 ? RISE_API_CreatePhysicalPointOmniLight(&light,2,rampNm,huge,"zero",1e-308,false) :
+            kind==1 ? RISE_API_CreatePhysicalPointSpotLight(&light,2,rampNm,huge,"zero",1e-308,Point3(0,0,.1),Point3(0,0,0),.4,.8,false) :
+            RISE_API_CreatePhysicalDirectionalLight(&light,2,rampNm,huge,"zero",1e-308,Vector3(0,0,1));
+        Check(bright&&light,"huge spectrum with compensating source scale fixture");
+        if(light) {
+            if(kind==0){light->SetPosition(Point3(0,0,.1));light->FinalizeTransformations();}
+            Near(light->ComputeDirectLightingNM(ri,*caster,*bsdf,false,1200),kind==2 ? .25:25,
+                "physical source scale precedes BRDF and inverse-square factors [physical-spd-direct-order]");
+            light->release();
+        }
+    }
+    const double visibleNm[]={380,780}, unit[]={1,1}, visibleRamp[]={0,sub}, scaledRamp[]={0,sub*1e308};
+    ILightPriv *faint=nullptr,*reference=nullptr;
+    Check(RISE_API_CreatePhysicalPointOmniLight(&faint,2,visibleNm,visibleRamp,"zero",1e308,false)&&
+        RISE_API_CreatePhysicalPointOmniLight(&reference,2,visibleNm,scaledRamp,"zero",1,false),"scaled visible ramp fixture");
+    if(faint&&reference) {
+        const RISEPel actual=faint->emittedRadiance(Vector3(0,0,-1)), expect=reference->emittedRadiance(Vector3(0,0,-1));
+        Check(expect.r>0&&expect.g>0&&expect.b>0,"visible ramp has independently scaled positive RGB projection");
+        Near(actual.r/expect.r,1,"RGB source projection preserves scaled subnormal ramp red");
+        Near(actual.g/expect.g,1,"RGB source projection preserves scaled subnormal ramp green");
+        Near(actual.b/expect.b,1,"RGB source projection preserves scaled subnormal ramp blue");
+    }
+    safe_release(faint);safe_release(reference);
+    const double fullNm[]={380,780,1100}, fullValues[]={1e-308,1e-308,1e308}, faintFlat[]={1e-308,1e-308};
+    Check(RISE_API_CreatePhysicalPointOmniLight(&faint,3,fullNm,fullValues,"zero",1,false)&&
+        RISE_API_CreatePhysicalPointOmniLight(&reference,2,visibleNm,faintFlat,"zero",1,false),"huge SWIR with faint visible component fixture");
+    if(faint&&reference) {
+        const RISEPel actual=faint->emittedRadiance(Vector3(0,0,-1)),expect=reference->emittedRadiance(Vector3(0,0,-1));
+        Check(actual.r>0&&expect.r>0,"out-of-visible maximum does not erase faint visible source");
+        Near(actual.r/expect.r,1,"visible projection normalization excludes unrelated SWIR maximum");
+    }
+    safe_release(faint);safe_release(reference);
+    ILightPriv* spot=nullptr;
+    Check(RISE_API_CreatePhysicalPointSpotLight(&spot,2,visibleNm,unit,"zero",1,Point3(0,0,0),Point3(1,1,1),.4,.8,false),"diagonal physical spot fixture");
+    if(spot) {
+        const Vector3 axis=spot->emissionDirection();
+        RayIntersectionGeometric diagonal(Ray(Point3(0,0,0),Vector3(1,1,1)),nullRasterizerState);
+        diagonal.ptIntersection=Point3(1,1,1);diagonal.vNormal=-axis;diagonal.vGeomNormal=-axis;
+        RISEPel actual;spot->ComputeDirectLighting(diagonal,*caster,*bsdf,false,actual);
+        const RISEPel emitted=spot->emittedRadiance(axis);
+        Near(actual.r/emitted.r,1.0/12,"physical RGB spot direct agrees with emission on rounded diagonal axis [physical-spot-rgb-angle]");
+        Near(spot->ComputeDirectLightingNM(diagonal,*caster,*bsdf,false,500),1.0/12,"diagonal spot NM analytic control");
+        spot->release();
+    }
+    ILightPriv* directional=nullptr;
+    Check(RISE_API_CreatePhysicalDirectionalLight(&directional,2,visibleNm,unit,"zero",1,Vector3(0,0,1)),"directional edit fixture");
+    if(directional) {
+        for(const char* invalid : {"0 0 0","1e308 0 0"}) {
+            auto* key=directional->KeyframeFromParameters("direction",invalid);
+            Check(!key,"physical directional rejects invalid direction key [physical-directional-key]");
+            if(key)key->release();
+        }
+        for(const Vector3& invalid : {Vector3(0,0,0),Vector3(1e308,0,0)}) {
+            auto* key=directional->KeyframeFromParameters("direction","0 1 0");
+            Check(key!=nullptr,"valid directional key fixture");
+            if(key) {Vector3 value=invalid;key->setValue(&value);directional->SetIntermediateValue(*key);key->release();}
+            Near(directional->emissionDirection().z,1,"invalid interpolated physical direction retains prior axis");
+            Near(directional->ComputeDirectLightingNM(ri,*caster,*bsdf,false,500),.25,"retained directional axis keeps analytic NM response");
+        }
+        directional->release();
+    }
+    bsdf->release();caster->release();shader->release();
+}
 void SceneControls() {
     const char* kinds[] = {"omni_light","spot_light","directional_light"};
     const char* extra[] = {"position 0 0 2\n","position 0 0 2\ntarget 0 0 0\ninner 20\nouter 40\n","direction 0 0 1\n"};
@@ -313,4 +400,4 @@ void SceneControls() {
     }
 }
 }
-int main() { SourceControls(); DeltaControls(); PhysicalRuntimeControls(); SceneControls(); std::printf("PhysicalLightSpectrumTest: %d failures\n",failures); return failures ? 1 : 0; }
+int main() { SourceControls(); DeltaControls(); PhysicalRuntimeControls(); ScaledSourceReviewControls(); SceneControls(); std::printf("PhysicalLightSpectrumTest: %d failures\n",failures); return failures ? 1 : 0; }

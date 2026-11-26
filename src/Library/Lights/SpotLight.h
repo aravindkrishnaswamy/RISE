@@ -56,7 +56,7 @@ namespace RISE
 			std::shared_ptr<const PhysicalLightSpectrum> physicalSpectrum;
             bool physicalPoseValid = true;
             bool ValidPhysicalAxis(const Point3& target) const;
-			Scalar SourceSpectrumNM(Scalar nm) const { return physicalSpectrum ? physicalSpectrum->Eval(nm) : cSpectrum.Eval(nm); }
+			Scalar ScaledSourceSpectrumNM(Scalar nm) const { return physicalSpectrum ? physicalSpectrum->EvalScaled(nm,radiantEnergy) : cSpectrum.Eval(nm)*radiantEnergy; }
 
 			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
 			//! `cColor`.
@@ -156,9 +156,11 @@ namespace RISE
 
 				const Scalar acost = physicalSpectrum ? std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vLightOut,vDirection)),cost) : acos(cost);
 				if( acost <= halfInner ) {
+					if (physicalSpectrum) return physicalSpectrum->ScaledVisibleRGB(radiantEnergy);
 					return (cColor * radiantEnergy);
 				} else if( acost <= halfOuter ) {
 					const Scalar t = (halfOuter - acost) / (halfOuter - halfInner);
+					if (physicalSpectrum) return physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*(t*t);
 					return (cColor * radiantEnergy) * (t * t);
 				}
 
@@ -182,10 +184,10 @@ namespace RISE
 
 				const Scalar acost = physicalSpectrum ? std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vLightOut,vDirection)),cost) : acos(cost);
 				if( acost <= halfInner ) {
-					return SourceSpectrumNM( nm ) * radiantEnergy;
+					return ScaledSourceSpectrumNM( nm );
 				} else if( acost <= halfOuter ) {
 					const Scalar t = (halfOuter - acost) / (halfOuter - halfInner);
-					return SourceSpectrumNM( nm ) * radiantEnergy * (t * t);
+					return ScaledSourceSpectrumNM( nm ) * (t * t);
 				}
 
 				return Scalar(0);

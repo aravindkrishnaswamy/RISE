@@ -150,7 +150,8 @@ void DirectionalLight::ComputeDirectLightingSampled(
 		}
 	}
 
-	amount = (cColor * brdf.valueStateful( vDirection, ri , pIORStack)) * (fDot * radiantEnergy) * shadowT;
+	if (physicalSpectrum) amount=(physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vDirection,ri,pIORStack))*fDot*shadowT;
+    else amount = (cColor * brdf.valueStateful( vDirection, ri , pIORStack)) * (fDot * radiantEnergy) * shadowT;
 }
 
 Scalar DirectionalLight::ComputeDirectLightingSampledNM(
@@ -199,7 +200,8 @@ Scalar DirectionalLight::ComputeDirectLightingSampledNM(
 
 	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
 	// luma projection.  See PointLight::ComputeDirectLightingNM.
-	const Scalar lightSpec = SourceSpectrumNM( nm );
+	if (physicalSpectrum) return ScaledSourceSpectrumNM(nm)*brdf.valueStatefulNM(vDirection,ri,nm,pIORStack)*fDot*shadowT;
+	const Scalar lightSpec = cSpectrum.Eval( nm );
 	return lightSpec * brdf.valueStatefulNM( vDirection, ri, nm , pIORStack) * fDot * radiantEnergy * shadowT;
 }
 
@@ -215,6 +217,10 @@ IKeyframeParameter* DirectionalLight::KeyframeFromParameters( const String& name
 	if( name == "direction" ) {
 		double d[3];
 		if( ParseStrictVec3( value, d ) ) {
+            if (physicalSpectrum) {
+                const Scalar magnitude=Vector3Ops::Magnitude(Vector3(d));
+                if (!RISE::IsFiniteDouble(magnitude) || !(magnitude>0)) return nullptr;
+            }
 			p = new Vector3Keyframe( Vector3( d[0], d[1], d[2] ), DIRECTION_ID );
 		}
 	} else if( name == "color" ) {
@@ -244,7 +250,16 @@ void DirectionalLight::SetIntermediateValue( const IKeyframeParameter& val )
 	{
 	case DIRECTION_ID:
 		{
-			vDirection = Vector3Ops::Normalize(*(Vector3*)val.getValue());
+			const Vector3 direction=*(const Vector3*)val.getValue();
+            if (physicalSpectrum) {
+                const Scalar magnitude=Vector3Ops::Magnitude(direction);
+                if (!RISE::IsFiniteDouble(direction.x) || !RISE::IsFiniteDouble(direction.y) || !RISE::IsFiniteDouble(direction.z) ||
+                    !RISE::IsFiniteDouble(magnitude) || !(magnitude>0)) {
+                    GlobalLog()->PrintEasyError("physical directional light: invalid direction keyframe; previous axis retained");
+                    return;
+                }
+            }
+            vDirection = Vector3Ops::Normalize(direction);
 		}
 		break;
 	case COLOR_ID:

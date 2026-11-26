@@ -966,6 +966,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSComplexLayout.cpp">
       <Filter>Materials\HyLIoS</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp">
       <Filter>Materials\BioSpec</Filter>
     </ClCompile>
@@ -2713,6 +2716,9 @@
       <Filter>Materials\HyLIoS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSComplexLayout.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.h">
       <Filter>Materials\HyLIoS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h">

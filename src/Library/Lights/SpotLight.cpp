@@ -131,7 +131,7 @@ void SpotLight::ComputeDirectLightingSampled(
 	}
 
 	const Scalar fDirDot = Vector3Ops::Dot( vToLight, -vDirection );
-	const Scalar fAngleOfIncidence = acos(fDirDot);
+	const Scalar fAngleOfIncidence = physicalSpectrum ? std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vToLight,-vDirection)),fDirDot) : acos(fDirDot);
 
 	if( fAngleOfIncidence <= dOuterAngle/2.0 )
 	{
@@ -155,11 +155,13 @@ void SpotLight::ComputeDirectLightingSampled(
 		const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
-			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
+			if (physicalSpectrum) amount=(physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vToLight,ri,pIORStack))*(invDistSq * fDot)*shadowT;
+            else amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 		} else {
 			// Quadratic falloff between inner and outer half-angles
 			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
-			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
+			if (physicalSpectrum) amount=(physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vToLight,ri,pIORStack))*(invDistSq * t * t * fDot)*shadowT;
+            else amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
 		}
 	}
 }
@@ -216,8 +218,9 @@ Scalar SpotLight::ComputeDirectLightingSampledNM(
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
 	// luma projection of its RGB colour.  See PointLight::ComputeDirectLightingNM.
-	const Scalar lightSpec = SourceSpectrumNM( nm );
-	const Scalar base = lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
+	const Scalar base = physicalSpectrum
+        ? ScaledSourceSpectrumNM(nm)*brdf.valueStatefulNM(vToLight,ri,nm,pIORStack)*invDistSq*fDot*shadowT
+        : cSpectrum.Eval(nm) * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
 
 	if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
 		return base;

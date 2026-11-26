@@ -11,9 +11,11 @@ Particle geometric rates and Eq5 orientations reuse checked optical primitives;
 projected hits reuse the geometric sampler. Unversioned complex organization is refused; `ExplicitComplexPackV1` is the selected finite spatial organization described below.
 
 The caller controls each outer boundary decision through the existing slab
-encounter/token/decision record. The supplied smooth Fresnel helper can be used
-for forward measurement. This kernel neither implements nor claims publication
-surface folds. Internal planar interfaces own smooth Fresnel/Snell once; bottom
+encounter/token/decision record. The adapter can select the existing smooth Fresnel helper or the separate
+`HyLIoSSurfaceBoundary` forward law using authored surface fold aspect. The kernel
+keeps boundary decisions external; the CLI owns the selected law's branch,
+proposal, cancellation and budget state. See
+[HYLIOS_SURFACE_BOUNDARY.md](HYLIOS_SURFACE_BOUNDARY.md). Internal planar interfaces own smooth Fresnel/Snell once; bottom
 reflectance is one with cosine diffuse return. Histories preserve lateral travel.
 
 ## Two explicitly named placement interpretations
@@ -265,10 +267,16 @@ No input is skipped, treated as a null event or hidden with an origin epsilon.
 
 
 The measurement adapter exposes this model only when the caller selects
-`--complex-layout explicit-pack-v1`. Its v3 report maps resolved
+`--complex-layout explicit-pack-v1`. Its report maps resolved
 `complex_diameter_m/2` to R and `maximum_internal_count` to actual N, verifies any
 declared rate against `3*f/(4*R)`, and retains construction conventions and all
 counter groups. See [HYLIOS_MEASUREMENT.md](HYLIOS_MEASUREMENT.md) for CLI scope,
 atomic validation and standalone build sources. To run the focused complex
 control directly, use the standalone command above with
 `tests/HyLIoSComplexForwardTransportTest.cpp` in place of the individual test.
+
+
+Measurement v4 adds explicit `--boundary hylios2015`, counting each boundary
+branch/proposal attempt against the caller cap while preserving separate kernel
+transport counters. The smooth diagnostic preserves its legacy ordering and RNG.
+Neither selected forward boundary supplies an adjoint or renderer connection PDF.

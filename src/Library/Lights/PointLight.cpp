@@ -153,7 +153,8 @@ void PointLight::ComputeDirectLightingSampled(
 	// Irradiance at surface = emittedRadiance * cos / d^2
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
-	amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
+	if (physicalSpectrum) amount = (physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vToLight,ri,pIORStack))*(invDistSq*fDot)*shadowT;
+    else amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 }
 
 Scalar PointLight::ComputeDirectLightingSampledNM(
@@ -205,7 +206,8 @@ Scalar PointLight::ComputeDirectLightingSampledNM(
 	// projection of its RGB colour used flat at every wavelength.  The luma
 	// collapse made every coloured point light spectrally grey and tinted
 	// even a white one by the flat-spectrum chromaticity.
-	const Scalar lightSpec = SourceSpectrumNM( nm );
+	if (physicalSpectrum) return ScaledSourceSpectrumNM(nm)*brdf.valueStatefulNM(vToLight,ri,nm,pIORStack)*invDistSq*fDot*shadowT;
+	const Scalar lightSpec = cSpectrum.Eval( nm );
 	return lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
 }
 

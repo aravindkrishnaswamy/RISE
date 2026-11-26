@@ -58,7 +58,7 @@ namespace RISE
 			//! `emissionColor()` and retains the immutable physical source, if any.
 			RGBIlluminantSpectrum	cSpectrum;
 			std::shared_ptr<const PhysicalLightSpectrum> physicalSpectrum;
-			Scalar SourceSpectrumNM(Scalar nm) const { return physicalSpectrum ? physicalSpectrum->Eval(nm) : cSpectrum.Eval(nm); }
+			Scalar ScaledSourceSpectrumNM(Scalar nm) const { return physicalSpectrum ? physicalSpectrum->EvalScaled(nm,radiantEnergy) : cSpectrum.Eval(nm)*radiantEnergy; }
 
 			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
 			//! `cColor`.
@@ -99,6 +99,7 @@ namespace RISE
 
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
 			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadiance( vLightOut ) );
+				if (physicalSpectrum) return physicalSpectrum->ScaledVisibleRGB(radiantEnergy);
 				return (cColor * radiantEnergy);
 			}
 
@@ -108,7 +109,7 @@ namespace RISE
 			//! instead evaluate their immutable authored SPD without RGB uplift.
 			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
 			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
-				return SourceSpectrumNM( nm ) * radiantEnergy;
+				return ScaledSourceSpectrumNM( nm );
 			}
 
 			inline Point3 position() const override

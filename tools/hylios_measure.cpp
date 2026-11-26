@@ -1,6 +1,7 @@
 #include "Agent/Json.h"
 #include "Materials/HyLIoS/HyLIoSForwardTransport.h"
 #include "Materials/HyLIoS/HyLIoSOptics.h"
+#include "Materials/HyLIoS/HyLIoSSurfaceBoundary.h"
 #include "Utilities/RISECBOR64.h"
 #include <algorithm>
 #include <array>
@@ -15,6 +16,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -35,7 +37,7 @@
 using namespace RISE::HyLIoS;
 using J = RISE::Agent::JsonValue;
 namespace {
-constexpr const char *MeasurementVersion = "hylios-forward-measure-v3";
+constexpr const char *MeasurementVersion = "hylios-forward-measure-v4";
 volatile std::sig_atomic_t interrupted = 0;
 void Signal(int) {
     interrupted = 1;
@@ -241,10 +243,10 @@ struct Options {
 };
 void Usage() {
     std::cout << "hylios_measure --specimen FILE --wavelength-nm N --placement fixed|null "
-                 "--post-scatter diagnostic|discard --boundary smooth --histories N --max-transitions N --seed U64 --output FILE\n"
+                 "--post-scatter diagnostic|discard --boundary smooth|hylios2015 --histories N --max-transitions N --seed U64 --output FILE\n"
                  "  [--complex-layout explicit-pack-v1] [--estimator analog|weighted] [--roulette-target N] [--exterior-ior N]\n"
                  "  [--fiber-radius-m N] [--fiber-volume-fraction N] [--fiber-relative-ior N]\n"
-                 "Only forward particle/complex transport and explicit smooth boundary override are "
+                 "Forward particle/complex transport supports explicit smooth or hylios2015 boundary selection; adjoint sampling is not "
                  "supported.\n";
 }
 Options Parse(int argc, char **argv) {
@@ -291,8 +293,8 @@ Options Parse(int argc, char **argv) {
         Require(o.complexLayout == "explicit-pack-v1", "complex-layout must be explicit-pack-v1");
     }
     o.boundary = flags.at("--boundary");
-    Require(o.boundary == "smooth",
-            "only explicit --boundary smooth is implemented; authored folds are not simulated");
+    Require(o.boundary == "smooth" || o.boundary == "hylios2015",
+            "only explicit --boundary smooth or hylios2015 is implemented");
     o.wavelength = Real(flags.at("--wavelength-nm"), "wavelength", 0, true);
     o.histories = Integer(flags.at("--histories"), "histories", 10000000);
     o.maxTransitions = Integer(flags.at("--max-transitions"), "max-transitions", 10000000);
@@ -351,6 +353,7 @@ struct Resolved {
     std::array<ForwardLayer, 6> layers{};
     J selected = J::MakeArray();
     std::string bytesHash;
+    double surfaceFoldAspect=0;
 };
 Resolved Resolve(const Options &options) {
     const auto bytes = Read(options.specimen);
@@ -393,7 +396,11 @@ Resolved Resolve(const Options &options) {
                     source.get("spectral_bundle_sha256").asString(),
                 "nested spectral bundle identity disagrees with top-level metadata");
     }
-    Number(source.get("surface_fold_aspect_ratio"), "surface fold aspect ratio");
+    r.surfaceFoldAspect=Number(source.get("surface_fold_aspect_ratio"), "surface fold aspect ratio");
+    if(options.boundary=="hylios2015") {
+        // Invalid authored fold values are input errors, before any histories.
+        HyLIoSSurfaceBoundary{r.surfaceFoldAspect};
+    }
     const auto &grid = source.get("wavelength_nm");
     Require(grid.isArray() && grid.size() > 0 && grid.size() <= 10000, "invalid wavelength grid");
     std::size_t selected = grid.size();
@@ -603,15 +610,100 @@ J Array(const std::array<double, 6> &a) {
         j.push_back(Num(v));
     return j;
 }
+struct SurfaceWork {
+    std::uint64_t workUnits=0, branchAttempts=0, normalProposalAttempts=0, normalRejections=0;
+    std::uint64_t exteriorReflectionBranches=0, exteriorTransmissionBranches=0;
+    std::uint64_t interiorReflectionBranches=0, interiorTransmissionBranches=0;
+    std::uint64_t readyDecisions=0, budgetStops=0, cancellations=0;
+    std::uint64_t invalidSamples=0, numericalFailures=0;
+};
+struct InvalidBoundarySample : std::runtime_error {
+    InvalidBoundarySample():std::runtime_error("invalid used surface-boundary random variate") {}
+};
+double BoundaryDraw(RISE::ISampler& rng) {
+    const double u=rng.Get1D();
+    if(!std::isfinite(u)||u<0||u>=1) throw InvalidBoundarySample();
+    return u;
+}
+// The adapter owns the outer law, while the transport owns all live power and
+// absorption. Boundary diagnostics therefore cancel the pending transport and
+// explicitly override only the report's terminal classification below.
+ForwardTermination RunFoldBoundaryHistory(const HyLIoSForwardTransport& kernel,
+    const HyLIoSSurfaceBoundary& law,ForwardState& state,RISE::ISampler& rng,
+    std::uint64_t limit,SurfaceWork& counters,bool& progressAnnounced) {
+    std::optional<SurfaceBoundaryState> pending;
+    ForwardTermination diagnostic=ForwardTermination::None;
+    const auto StopBoundary=[&](bool cancel) {
+        if(!pending||(pending->Phase()!=SurfaceBoundaryPhase::Branch&&pending->Phase()!=SurfaceBoundaryPhase::NormalProposal)) return;
+        if(cancel) {law.Cancel(*pending);++counters.cancellations;}
+        else {law.StopForBudget(*pending);++counters.budgetStops;}
+    };
+    while(state.Termination()==ForwardTermination::None&&
+        state.Counters().workUnits+counters.workUnits<limit&&!interrupted) {
+        if(!state.HasPendingBoundary()) {
+            kernel.Advance(state,rng,static_cast<std::size_t>(std::min<std::uint64_t>(64,
+                limit-state.Counters().workUnits-counters.workUnits)));
+            continue;
+        }
+        try {
+            if(!pending) pending.emplace(law.Begin(state.PendingBoundary()));
+            const bool branch=pending->Phase()==SurfaceBoundaryPhase::Branch;
+            const auto side=pending->Encounter().incidentSide;
+            // Caller work counts every attempted transition, including failures.
+            ++counters.workUnits;
+            if(branch) ++counters.branchAttempts;else ++counters.normalProposalAttempts;
+            const double u=BoundaryDraw(rng);
+            double v=0,acceptance=0;
+            if(!branch) {v=BoundaryDraw(rng);acceptance=BoundaryDraw(rng);}
+            const auto phase=law.TrySample(*pending,u,v,acceptance);
+            if(branch) {
+                const bool reflected=phase==SurfaceBoundaryPhase::NormalProposal||pending->Decision().action==BoundaryAction::Reflect;
+                if(side==SlabSide::Exterior) {
+                    if(reflected) ++counters.exteriorReflectionBranches;else ++counters.exteriorTransmissionBranches;
+                } else {
+                    if(reflected) ++counters.interiorReflectionBranches;else ++counters.interiorTransmissionBranches;
+                }
+                if(phase==SurfaceBoundaryPhase::NormalProposal&&!progressAnnounced) {
+                    std::cerr<<"hylios_measure: reflected surface branch pending\n"<<std::flush;
+                    progressAnnounced=true;
+                }
+            } else if(phase==SurfaceBoundaryPhase::NormalProposal) ++counters.normalRejections;
+            if(phase==SurfaceBoundaryPhase::Ready) {
+                ++counters.readyDecisions;
+                kernel.ResumeBoundary(state,pending->Encounter().token,pending->Decision());
+                pending.reset();
+            }
+        } catch(const InvalidBoundarySample&) {
+            ++counters.invalidSamples;diagnostic=ForwardTermination::InvalidSample;
+            StopBoundary(true);kernel.Cancel(state);
+        } catch(const std::exception&) {
+            ++counters.numericalFailures;diagnostic=ForwardTermination::NumericalFailure;
+            StopBoundary(true);kernel.Cancel(state);
+        }
+    }
+    if(state.Termination()==ForwardTermination::None) {
+        if(interrupted) {StopBoundary(true);kernel.Cancel(state);}
+        else {StopBoundary(false);kernel.StopForBudget(state);}
+    }
+    return diagnostic;
+}
 struct Aggregate {
     std::map<std::string, std::uint64_t> counts, failureDetails;
-    std::map<std::string, double> outcomeWeights, counters;
+    std::map<std::string, double> outcomeWeights, counters, surfaceCounters;
     std::array<double, 6> hostAbs{}, particleAbs{}, layerPath{}, hostPath{}, particlePath{};
     Moments reflectance, external, subsurface, absorption, unresolved, accounted;
     std::array<Moments, 6> hostLayerAbsorption, particleLayerAbsorption;
-    std::uint64_t draws = 0;
-    void Add(const ForwardState &s, std::uint64_t randomDraws) {
-        const auto term = s.Termination();
+    std::uint64_t draws = 0,callerWork=0;
+    void Add(const ForwardState &s, std::uint64_t randomDraws,const SurfaceWork& surface,
+             ForwardTermination boundaryDiagnostic) {
+        const auto term = boundaryDiagnostic==ForwardTermination::None ? s.Termination():boundaryDiagnostic;
+        callerWork+=s.Counters().workUnits+surface.workUnits;
+#define ADD_SURFACE(name) surfaceCounters[#name]+=static_cast<double>(surface.name)
+        ADD_SURFACE(workUnits);ADD_SURFACE(branchAttempts);ADD_SURFACE(normalProposalAttempts);
+        ADD_SURFACE(normalRejections);ADD_SURFACE(exteriorReflectionBranches);ADD_SURFACE(exteriorTransmissionBranches);
+        ADD_SURFACE(interiorReflectionBranches);ADD_SURFACE(interiorTransmissionBranches);ADD_SURFACE(readyDecisions);
+        ADD_SURFACE(budgetStops);ADD_SURFACE(cancellations);ADD_SURFACE(invalidSamples);ADD_SURFACE(numericalFailures);
+#undef ADD_SURFACE
         const auto outcome = Outcome(term);
         ++counts[outcome];
         if (term == ForwardTermination::NumericalFailure) {
@@ -623,7 +715,7 @@ struct Aggregate {
                     ? "overlap_unsupported_range"
                 : detail == ForwardFailureDetail::ArithmeticOrGeometry ? "arithmetic_or_geometry"
                                                                        : "unspecified_arithmetic";
-            ++failureDetails[name];
+            ++failureDetails[boundaryDiagnostic==ForwardTermination::NumericalFailure ? "surface_boundary":name];
         }
         outcomeWeights[outcome] += s.Weight();
         draws += randomDraws;
@@ -693,10 +785,18 @@ J Measure(const Options &o, const Resolved &r) {
                                : ForwardPlacementPolicy::NullCollisionPlacementV1,
         o.postScatter == "diagnostic" ? ForwardPostScatterPolicy::DiagnosticRetainParticleV1
                                       : ForwardPostScatterPolicy::DiscardAfterScatterV1);
+    std::optional<HyLIoSSurfaceBoundary> surfaceLaw;
+    if(o.boundary=="hylios2015") surfaceLaw.emplace(r.surfaceFoldAspect);
+    bool boundaryProgressAnnounced=false;
     Aggregate aggregate;
     for (std::uint64_t history = 0; history < o.histories; ++history) {
         Random rng(o.seed + history);
         auto s = kernel.Begin({0, 0, 0}, {0, 0, 1});
+        SurfaceWork surface;
+        ForwardTermination boundaryDiagnostic=ForwardTermination::None;
+        if(surfaceLaw) boundaryDiagnostic=RunFoldBoundaryHistory(kernel,*surfaceLaw,s,rng,o.maxTransitions,surface,boundaryProgressAnnounced);
+        else {
+        // Keep smooth's legacy RNG, cap and boundary-dispatch ordering exact.
         while (s.Termination() == ForwardTermination::None &&
                s.Counters().workUnits < o.maxTransitions && !interrupted) {
             const auto result = kernel.Advance(s, rng,
@@ -714,7 +814,8 @@ J Measure(const Options &o, const Resolved &r) {
             else
                 kernel.StopForBudget(s);
         }
-        aggregate.Add(s, rng.draws);
+        }
+        aggregate.Add(s, rng.draws,surface,boundaryDiagnostic);
     }
     J output = J::MakeObject();
     output.set("measurement_version", Str(MeasurementVersion));
@@ -731,8 +832,16 @@ J Measure(const Options &o, const Resolved &r) {
     Put(construction, "proposals_per_child_before_restart", ComplexLayout::ProposalsPerChildBeforeRestart);
     construction.set("interaction_count_cap", J::MakeNull());
     output.set("complex_layout_convention", o.complexLayout.empty() ? J::MakeNull() : construction);
-    output.set("boundary_law", Str("smooth_planar_dielectric_override_v1"));
-    output.set("authored_surface_folds_simulated", Bool(false));
+    output.set("boundary_law", Str(surfaceLaw ? SurfaceBoundaryVersion:"smooth_planar_dielectric_override_v1"));
+    output.set("authored_surface_folds_simulated", Bool(surfaceLaw.has_value()));
+    output.set("boundary_work_convention",Str(surfaceLaw ?
+        "transport transitions plus every surface branch/proposal attempt; pending branch retained":
+        "legacy smooth diagnostic: transport transitions only; smooth boundary draws excluded"));
+    output.set("boundary_failure_convention",Str(surfaceLaw ?
+        "pending transport cancelled to preserve live power; adapter classifies boundary invalid/numerical failure separately":
+        "legacy smooth diagnostic: helper errors abort before output replacement"));
+    if(surfaceLaw) Put(output,"surface_polar_normalization",surfaceLaw->Normalization());
+    else output.set("surface_polar_normalization",J::MakeNull());
     output.set("authored_surface_fold_aspect_ratio", r.original.get("surface_fold_aspect_ratio"));
     output.set("post_exit_reentry_policy",
                Str(o.postScatter == "diagnostic" ? "hylios_diagnostic_retain_particle_v1"
@@ -807,6 +916,10 @@ J Measure(const Options &o, const Resolved &r) {
     for (const auto &pair : aggregate.counters)
         Put(counters, pair.first, pair.second);
     output.set("aggregate_counters", counters);
+    J surfaceCounters=J::MakeObject();
+    for(const auto& pair:aggregate.surfaceCounters) Put(surfaceCounters,pair.first,pair.second);
+    output.set("surface_boundary_counters",surfaceCounters);
+    Put(output,"caller_work_units",static_cast<double>(aggregate.callerWork));
     output.set("host_absorbed_weight_by_layer", Array(aggregate.hostAbs));
     output.set("particle_absorbed_weight_by_layer", Array(aggregate.particleAbs));
     output.set("path_length_m_by_layer", Array(aggregate.layerPath));

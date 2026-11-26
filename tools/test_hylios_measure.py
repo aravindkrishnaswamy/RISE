@@ -9,6 +9,8 @@ import json
 import math
 import os
 import signal
+import selectors
+import time
 from pathlib import Path
 import subprocess
 import tempfile
@@ -263,7 +265,7 @@ class MeasurementCLI(unittest.TestCase):
     def test_complex_full_child_counters_and_provenance(self):
         p = specimen();p["layers"][1]["particles"] = active_complex()
         a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard", "--histories": "500"})
-        self.assertEqual(a["measurement_version"], "hylios-forward-measure-v3")
+        self.assertEqual(a["measurement_version"], "hylios-forward-measure-v4")
         self.assertEqual(a["complex_layout_policy"], "hylios_complex_explicit_pack_v1")
         self.assertEqual(a["explicit_cli_options"]["--complex-layout"], "explicit-pack-v1")
         convention = a["complex_layout_convention"]
@@ -426,6 +428,159 @@ class MeasurementCLI(unittest.TestCase):
         self.assertEqual(a["seed_u64"], "18446744073709551615")
         self.assertIsNone(a["estimates"]["escaped_reflectance"]["standard_error"])
         self.reject_case(specimen(), "paths must differ", **{"--output": str(self.source)})
+
+    def test_hylios_boundary_macro_mass_and_pinned_reflection(self):
+        value = specimen(100000)
+        value["surface_fold_aspect_ratio"] = 1.
+        for layer in value["layers"]:
+            layer["real_refractive_index"] = [1.5, 1.5]
+        a = self.run_case(value, **{"--boundary": "hylios2015", "--histories": "10000", "--max-transitions": "100"})
+        c = a["surface_boundary_counters"]
+        # Independent normal-incidence Fresnel identity. The opaque host
+        # absorbs transmitted paths before another boundary, so reflected mass
+        # is the initial macro F even though normal rejection is frequent.
+        expected = ((1.5-1)/(1.5+1))**2
+        observed = a["outcomes"]["external_reflection"]["count"]/10000
+        self.assertLessEqual(abs(observed-expected), 5*math.sqrt(expected*(1-expected)/10000))
+        self.assertEqual(c["branchAttempts"], 10000)
+        self.assertEqual(c["exteriorReflectionBranches"], a["outcomes"]["external_reflection"]["count"])
+        self.assertEqual(c["exteriorTransmissionBranches"], a["outcomes"]["physical_absorption"]["count"])
+        self.assertGreater(c["normalProposalAttempts"], c["exteriorReflectionBranches"])
+        self.assertGreater(c["normalRejections"], 0)
+        self.assertEqual(c["normalProposalAttempts"]-c["normalRejections"], c["exteriorReflectionBranches"])
+        self.assertEqual(a["caller_work_units"], a["aggregate_counters"]["workUnits"]+c["workUnits"])
+        self.assertEqual(c["workUnits"], c["branchAttempts"]+c["normalProposalAttempts"])
+        self.assertEqual(a["unresolved_history_count"], 0)
+        self.assertTrue(a["authored_surface_folds_simulated"])
+        self.assertEqual(a["boundary_law"], "hylios2015_macro_fresnel_normal_perturb_v1")
+        self.assertEqual(a["surface_polar_normalization"], 1)
+        self.assertAlmostEqual(a["estimates"]["accounted_weight"]["mean"], 1, places=14)
+
+    def test_hylios_zero_fold_preserves_exact_smooth_histories(self):
+        value = specimen(40)
+        value["surface_fold_aspect_ratio"] = 0.
+        for layer in value["layers"]:
+            layer["real_refractive_index"] = [1.3, 1.3]
+        common = {"--histories": "1000", "--estimator": "weighted", "--max-transitions": "10000"}
+        smooth = self.run_case(value, **common)
+        folded = self.run_case(value, **dict(common, **{"--boundary": "hylios2015"}))
+        for key in ("outcomes", "aggregate_counters", "estimates", "random_draw_count",
+                    "host_absorbed_weight_by_layer", "particle_absorbed_weight_by_layer",
+                    "host_path_length_m_by_layer", "particle_path_length_m_by_layer"):
+            self.assertEqual(smooth[key], folded[key], key)
+        self.assertEqual(folded["surface_boundary_counters"]["normalProposalAttempts"], 0)
+        self.assertEqual(folded["surface_polar_normalization"], 0)
+        self.assertEqual(smooth["caller_work_units"], smooth["aggregate_counters"]["workUnits"])
+        self.assertGreater(folded["caller_work_units"], smooth["caller_work_units"])
+        self.assertFalse(smooth["authored_surface_folds_simulated"])
+        self.assertTrue(folded["authored_surface_folds_simulated"])
+        self.assertIn("legacy smooth diagnostic", smooth["boundary_failure_convention"])
+        self.assertIn("pending transport cancelled", folded["boundary_failure_convention"])
+        # Smooth remains an explicit override and ignores the authored aspect.
+        value["surface_fold_aspect_ratio"] = .75
+        ignored = self.run_case(value, **common)
+        for key in ("outcomes", "aggregate_counters", "estimates", "random_draw_count"):
+            self.assertEqual(smooth[key], ignored[key], key)
+
+    def test_hylios_reflected_proposal_budget_is_live_power(self):
+        value = specimen();value["surface_fold_aspect_ratio"] = 1.
+        for layer in value["layers"]:
+            layer["real_refractive_index"] = [1.5, 1.5]
+        # Documented SplitMix64 seed48 gives branch U=.0157795 < F=.04,
+        # then polar cosine .6633609 < sqrt(.5): a reflected direction in the
+        # wrong macro hemisphere. No numerical threshold or timed race is used.
+        for cap, proposals in ((1, 0), (2, 1), (3, 2)):
+            a = self.run_case(value, **{"--boundary": "hylios2015", "--seed": "48",
+                                        "--histories": "1", "--max-transitions": str(cap)})
+            c = a["surface_boundary_counters"]
+            self.assertEqual(c["branchAttempts"], 1)
+            self.assertEqual(c["exteriorReflectionBranches"], 1)
+            self.assertEqual(c["exteriorTransmissionBranches"], 0)
+            self.assertEqual(c["normalProposalAttempts"], proposals)
+            self.assertEqual(a["caller_work_units"], cap)
+            self.assertEqual(a["aggregate_counters"]["workUnits"], 0)
+            self.assertEqual(a["random_draw_count"], 1+3*proposals)
+            self.assertEqual(a["estimates"]["physical_absorption"]["mean"], 0)
+            if cap<=2:
+                self.assertEqual(a["outcomes"]["budget_exceeded"]["terminal_live_weight"], 1)
+                self.assertEqual(c["budgetStops"], 1)
+                self.assertFalse(a["complete_physical_estimate"])
+                self.assertEqual(a["estimates"]["unresolved_live_weight"]["mean"], 1)
+            if cap==2:
+                self.assertEqual(c["normalRejections"], 1)
+        # Seed0 transmits at the first macro branch. A second caller unit is
+        # exactly one weighted host flight, so budget stop must retain its
+        # separate already-absorbed and remaining live power.
+        weighted = specimen(200)
+        for layer in weighted["layers"]:
+            layer["real_refractive_index"] = [1.5, 1.5]
+        a = self.run_case(weighted, **{"--boundary": "hylios2015", "--seed": "0",
+            "--histories": "1", "--estimator": "weighted", "--max-transitions": "2"})
+        self.assertEqual(a["caller_work_units"], 2)
+        self.assertEqual(a["aggregate_counters"]["workUnits"], 1)
+        self.assertEqual(a["surface_boundary_counters"]["exteriorTransmissionBranches"], 1)
+        self.assertAlmostEqual(a["estimates"]["unresolved_live_weight"]["mean"], math.exp(-.2), places=14)
+        self.assertAlmostEqual(a["estimates"]["physical_absorption"]["mean"], -math.expm1(-.2), places=14)
+        self.assertAlmostEqual(a["estimates"]["accounted_weight"]["mean"], 1, places=14)
+
+    def test_hylios_authored_fold_validation_is_atomic(self):
+        for fold in (-1, 1e-12, 1e9, True, "0.1", None):
+            value = specimen();value["surface_fold_aspect_ratio"] = fold
+            self.reject_case(value, "fold", **{"--boundary": "hylios2015"})
+        for fold in (.1, .25, .3, .45, 1., math.sqrt(2**-52), 1/math.sqrt(2**-52)):
+            # Matched indices guarantee transmission; supported extreme folds
+            # therefore validate without requiring an unbounded reflection walk.
+            value = specimen();value["surface_fold_aspect_ratio"] = fold
+            a = self.run_case(value, **{"--boundary": "hylios2015", "--histories": "10"})
+            self.assertTrue(a["complete_physical_estimate"])
+            self.assertEqual(a["surface_boundary_counters"]["normalProposalAttempts"], 0)
+            self.assertEqual(a["authored_surface_fold_aspect_ratio"], fold)
+        # The smooth diagnostic does not silently apply the new working range.
+        value = specimen();value["surface_fold_aspect_ratio"] = 1e-12
+        a = self.run_case(value)
+        self.assertFalse(a["authored_surface_folds_simulated"])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX signal delivery contract")
+    def test_hylios_cancel_pinned_surface_branch(self):
+        value = specimen();value["surface_fold_aspect_ratio"] = 1/math.sqrt(2**-52)
+        for layer in value["layers"]:
+            layer["real_refractive_index"] = [1e6, 1e6]
+        self.source.write_text(json.dumps(value))
+        process = subprocess.Popen(self.command(**{"--boundary": "hylios2015", "--seed": "48",
+            "--histories": "100", "--max-transitions": "10000000"}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            # Read binary pipe chunks so buffered readline cannot hide the
+            # second readiness line from select. The deadline bounds failures;
+            # it does not decide when to deliver cancellation.
+            expected = [b"hylios_measure: signal handlers ready",
+                        b"hylios_measure: reflected surface branch pending"]
+            buffered = b"";deadline = time.monotonic()+10
+            with selectors.DefaultSelector() as ready:
+                ready.register(process.stderr, selectors.EVENT_READ)
+                while expected:
+                    self.assertTrue(ready.select(max(0, deadline-time.monotonic())), "surface readiness deadline exceeded")
+                    chunk = os.read(process.stderr.fileno(), 4096)
+                    self.assertTrue(chunk, "process ended before reflected-branch readiness")
+                    buffered += chunk
+                    while b"\n" in buffered and expected:
+                        line, buffered = buffered.split(b"\n", 1)
+                        self.assertEqual(line, expected.pop(0))
+            self.assertIsNone(process.poll(), "pinned reflected branch is still active")
+            process.send_signal(signal.SIGINT)
+            out, err = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 130, (out, err))
+        finally:
+            if process.poll() is None:
+                process.kill();process.communicate(timeout=30)
+        a = json.loads(self.output.read_text())
+        self.assertEqual(a["outcomes"]["cancelled"]["count"], 100)
+        self.assertEqual(a["outcomes"]["cancelled"]["terminal_live_weight"], 100)
+        self.assertEqual(a["surface_boundary_counters"]["branchAttempts"], 1)
+        self.assertEqual(a["surface_boundary_counters"]["cancellations"], 1)
+        self.assertEqual(a["estimates"]["physical_absorption"]["mean"], 0)
+        self.assertEqual(a["estimates"]["accounted_weight"]["mean"], 1)
+        self.assertFalse(a["complete_physical_estimate"])
 
     @unittest.skipUnless(os.name == "posix", "POSIX signal delivery contract")
     def test_cancellation_accounts_unstarted_histories(self):

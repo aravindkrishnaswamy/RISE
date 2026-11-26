@@ -189,6 +189,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSParticleGeometry.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSParticleOverlap.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSComplexLayout.cpp"
+    "${RISE_LIB}/Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp"
     "${RISE_LIB}/Materials/AshikminShirleyAnisotropicPhongBRDF.cpp"
     "${RISE_LIB}/Materials/AshikminShirleyAnisotropicPhongSPF.cpp"
     "${RISE_LIB}/Materials/BioSpecSkinSPF.cpp"

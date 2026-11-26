@@ -18,11 +18,16 @@ class PhysicalLightSpectrum final
     std::vector<double> wavelengths;
     std::vector<double> values;
     RISEPel visibleRGB;
+    RISEPel visibleFraction;
+    int visibleExponent[3] = {0,0,0};
+    void EvalParts(Scalar nm, double& fraction, int& exponent) const;
     PhysicalLightSpectrum(const double* nm, const double* samples, unsigned int count);
 public:
     static std::shared_ptr<const PhysicalLightSpectrum> Create(
         const double* nm, const double* samples, unsigned int count, const char* outsidePolicy);
     Scalar Eval(Scalar nm) const;
+    // Apply the physical intensity scale before rounding an interpolated value.
+    Scalar EvalScaled(Scalar nm, Scalar scale) const;
     bool CanScale(Scalar scale, Scalar angularBound = 1) const;
     // Exponent-factored products used by actual RGB power consumers too.
     RISEPel ScaledVisibleRGB(Scalar scale, Scalar angularFactor = 1) const;
