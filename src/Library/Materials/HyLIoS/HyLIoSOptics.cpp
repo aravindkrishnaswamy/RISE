@@ -86,17 +86,31 @@ double OrientationCosinePdf(double cosine, double a, double b) {
 	const double magnitude = std::abs(cosine);
 	return ((1.0-magnitude)+ratio*magnitude)/(1.0+ratio);
 }
-double SampleOrientationCosine(double uniform, double a, double b) {
+OrientationSample SampleOrientation(double uniform, double a, double b) {
 	Uniform(uniform);
 	const double ratio = AxisRatio(a,b);
+	if (uniform == 0.0) return {-1.0, 0.0};
 	const double signedMass = 2.0*uniform-1.0;
 	const double mass = std::abs(signedMass);
-	// The complementary mass is 2*min(u,1-u). Compute it directly:
-	// forming 1-abs(2*u-1) would erase tiny lower-tail probabilities.
+	// C=2*min(u,1-u) retains tiny lower-tail probabilities. hypot also
+	// retains a tiny ratio whose square would underflow before adding C.
 	const double complement = 2.0*(uniform <= 0.5 ? uniform : 1.0-uniform);
-	const double root = std::sqrt(complement+ratio*ratio*mass);
+	const double root = std::hypot(std::sqrt(complement),ratio*std::sqrt(mass));
 	const double magnitude = mass*(1.0+ratio)/(1.0+root);
-	return std::copysign(magnitude, signedMass);
+	// Rationalizing 1-|cos(alpha)| gives delta=C*(1+r)/(root+r).
+	// Its square root must precede multiplication: delta itself can round
+	// at subnormal precision while the transverse radius remains normal.
+	const double gain = (1.0+ratio)/(root+ratio);
+	const double delta = complement*gain;
+	// Materialize these square roots so full-LTO fast-math cannot fold them
+	// into sqrt(C*gain), reintroducing that subnormal intermediate.
+	volatile double rootComplement = std::sqrt(complement);
+	volatile double rootGain = std::sqrt(gain);
+	const double radius = rootComplement*rootGain*std::sqrt(2.0-delta);
+	return {std::copysign(magnitude, signedMass), radius};
+}
+double SampleOrientationCosine(double uniform, double a, double b) {
+	return SampleOrientation(uniform,a,b).cosine;
 }
 std::optional<double> SampleExponentialFreePath(double rate, double uniform) {
 	Nonnegative(rate, "event rate"); Uniform(uniform);

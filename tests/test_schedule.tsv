@@ -125,6 +125,7 @@ HyLIoSOpticalDataTest	pool	2
 HyLIoSOpticsTest	pool	2
 HyLIoSSlabTransportTest	pool	2
 HyLIoSForwardTransportTest	pool	2
+HyLIoSForwardDirectionPrecisionTest	pool	2
 HyLIoSForwardFailureTest	pool	2
 HyLIoSParticleGeometryTest	pool	2
 HyLIoSGeometrySumTest	pool	2

@@ -14,6 +14,11 @@ double GeometricEncounterRate(double surfaceToVolumePerMetre, double volumeFract
 
 // Eq. (5), density relative to d(cos(alpha)); chi1=pi*a*b, chi2=pi*a*a.
 double OrientationCosinePdf(double cosine, double semiMinorMetres, double semiMajorMetres);
+// Coupled components of the same inverse-CDF sample. The transverse radius is
+// evaluated independently: recovering it from a rounded endpoint cosine loses
+// representable lower-tail directions. No additional variate is consumed.
+struct OrientationSample { double cosine, transverseRadius; };
+OrientationSample SampleOrientation(double uniform, double semiMinorMetres, double semiMajorMetres);
 double SampleOrientationCosine(double uniform, double semiMinorMetres, double semiMajorMetres);
 
 // Uniform variates everywhere are finite in [0,1). No RNG state is owned here.

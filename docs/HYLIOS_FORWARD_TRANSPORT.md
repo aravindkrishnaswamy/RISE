@@ -1,6 +1,6 @@
 # HYLIOS forward transport with individual particles and complexes
 
-`HyLIoSForwardTransport` is an experimental forward kernel with explicitly selected placement and post-scatter policies and explicit unresolved outcomes. The independent `HyLIoSSlabTransport` remains the analytic control. There is no renderer integration, reciprocity, adjoint sampler, or full S1–S4 claim. Version 2 adds the explicitly selected finite complex organization described below.
+`HyLIoSForwardTransport` is an experimental forward kernel with explicitly selected placement and post-scatter policies and explicit unresolved outcomes. The independent `HyLIoSSlabTransport` remains the analytic control. There is no renderer integration, reciprocity, adjoint sampler, or full S1–S4 claim. Version 2 added the explicitly selected finite complex organization described below. Numerical revision 3 preserves the intended angular laws while retaining tiny representable transverse components; see the numerical revision section below.
 
 `HyLIoSForwardTransport` accepts exactly six resolved monochromatic layers in
 SC/SG/SS/SB/PD/RD order, explicit host/particle coefficients and indices, an
@@ -280,3 +280,11 @@ Measurement v4 adds explicit `--boundary hylios2015`, counting each boundary
 branch/proposal attempt against the caller cap while preserving separate kernel
 transport counters. The smooth diagnostic preserves its legacy ordering and RNG.
 Neither selected forward boundary supplies an adjoint or renderer connection PDF.
+
+## Numerical revision 3
+
+`hylios-forward-explicit-complex-draft-v3` constructs angular directions from coupled cosine and transverse components. Cosine, Rayleigh, and final exponential proposals retain their original variates; the orientation producer now supplies an independently evaluated transverse radius to particle placement. This avoids recovering a tiny sine from an already rounded cosine. The orientation formula retains minimum-subnormal tail inputs without first rounding the small cosine complement. Materialized binary64 steps also prevent full-LTO reassociation from cancelling the wavelength gap below the exact 1400nm identity endpoint.
+
+The intended probability laws, angular-lineage version, and draw ordering at each event are unchanged. Numerical directions and subsequent trajectories can change, so revision 3 has its own kernel identity. The earlier v2 lineage byte-parity evidence remains evidence for that historical observational change; it is not a v2/v3 parity claim. Generic sub-ULP rotations can still round to the same Cartesian direction.
+
+`HyLIoSForwardDirectionPrecisionTest` covers independent high-precision orientation references, tail symmetry and moments, actual axial particle placement, conditional reflected cosine, quantitative Rayleigh radii at tiny/minimum-subnormal/ordinary variates, and the 780/1024/1400nm endpoint gaps. Private strict, sanitizer, and full-LTO gates and formula-restoring negative controls accompany the source review. These numerical controls do not establish biological validation or an adjoint transport law.

@@ -7,7 +7,7 @@
 namespace RISE::HyLIoS {
 // Forward-only clean-room interpretation: individual spheroids or explicit
 // finite spatial complexes, resolved monochromatic coefficients; no adjoint PDF.
-inline constexpr const char* ForwardTransportVersion = "hylios-forward-explicit-complex-draft-v2";
+inline constexpr const char* ForwardTransportVersion = "hylios-forward-explicit-complex-draft-v3";
 // Both policies sample the same nominal geometric encounter rate. Fixed-event
 // resamples geometry at one frozen event and can remain unplaceable indefinitely.
 // Null-collision consumes one rejected candidate as a host-only flight event;

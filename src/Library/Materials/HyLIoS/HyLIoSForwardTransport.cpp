@@ -10,6 +10,13 @@
 namespace RISE::HyLIoS {
 namespace {
 constexpr double Pi=3.141592653589793238462643383279502884;
+// Sterbenz subtraction is exact for nm in [780,1400). Materialize that
+// binary64 evaluation before the angular scale multiplication so fast-math
+// cannot distribute the scale across the nearly cancelling subtraction.
+double ForwardEndpointGap(double nm) {
+    volatile double gap=1400-nm;
+    return gap;
+}
 void Require(bool v,const char* m) { if(!v) throw std::invalid_argument(m); }
 bool Finite(double v) { return std::isfinite(v); }
 bool Finite(SlabVector v) { return Finite(v.x)&&Finite(v.y)&&Finite(v.z); }
@@ -34,8 +41,7 @@ struct Frame {
     SlabVector ToWorld(SlabVector d) const { return Unit(Add(Add(Mul(x,d.x),Mul(y,d.y)),Mul(z,d.z))); }
     SlabVector ToLocal(SlabVector d) const { return {Dot(d,x),Dot(d,y),Dot(d,z)}; }
 };
-SlabVector Polar(SlabVector axis,double cosine,double azimuth) {
-    const double radius=std::sqrt(std::max(0.,(1-cosine)*(1+cosine)));
+SlabVector PolarComponents(SlabVector axis,double cosine,double radius,double azimuth) {
     return Frame(axis).ToWorld({radius*std::cos(azimuth),radius*std::sin(azimuth),cosine});
 }
 bool Draw(ISampler& rng,double& u) { u=rng.Get1D();return Finite(u)&&u>=0&&u<1; }
@@ -104,7 +110,7 @@ ForwardLayerValidation ValidateForwardLayers(const std::array<ForwardLayer,6>& l
 HyLIoSForwardTransport::HyLIoSForwardTransport(std::array<ForwardLayer,6> layers,double wavelengthNm,
     double exteriorIOR,double fiberRate,AbsorptionEstimator estimator,double rouletteTarget,ForwardPlacementPolicy placementPolicy,ForwardPostScatterPolicy postScatterPolicy):
     layers_(layers),wavelengthNm_(wavelengthNm),exteriorIOR_(exteriorIOR),fiberRate_(fiberRate),
-    rouletteTarget_(rouletteTarget),forwardAngle_(wavelengthNm<780 ? 5*Pi/180 : wavelengthNm<1400 ? (5*Pi/180)*(1400-wavelengthNm)/620 : 0),estimator_(estimator),placementPolicy_(placementPolicy),postScatterPolicy_(postScatterPolicy) {
+    rouletteTarget_(rouletteTarget),forwardAngle_(wavelengthNm<780 ? 5*Pi/180 : wavelengthNm<1400 ? (5*Pi/180)*ForwardEndpointGap(wavelengthNm)/620 : 0),estimator_(estimator),placementPolicy_(placementPolicy),postScatterPolicy_(postScatterPolicy) {
     Require(postScatterPolicy==ForwardPostScatterPolicy::DiagnosticRetainParticleV1||postScatterPolicy==ForwardPostScatterPolicy::DiscardAfterScatterV1,"invalid post-scatter policy");
     Require(placementPolicy==ForwardPlacementPolicy::FixedEventDiagnosticV1||placementPolicy==ForwardPlacementPolicy::NullCollisionPlacementV1,"invalid placement policy");
     Require(Finite(wavelengthNm)&&wavelengthNm>0&&Finite(exteriorIOR)&&exteriorIOR>0,"invalid wavelength/exterior IOR");
@@ -239,7 +245,7 @@ void HyLIoSForwardTransport::Bulk(ForwardState& s,ISampler& rng) const {
     double u,v;
     if(down&&i==5) {
         if(!Draw(rng,u)||!Draw(rng,v)) {s.termination_=ForwardTermination::InvalidSample;return;}
-        s.direction_=Polar({0,0,-1},std::sqrt(1-u),2*Pi*v);
+        s.direction_=PolarComponents({0,0,-1},std::sqrt(1-u),std::sqrt(u),2*Pi*v);
         s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::DiffuseBottom};
         ++s.counters_.bottomReflections;return;
     }
@@ -259,7 +265,8 @@ void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
     ProlateParticle particle{o.envelopeRadiusMetres,o.envelopeRadiusMetres,{0,0,1}};
     if(o.organization==ForwardOrganization::IndividualSpheroids) {
         double u,v;if(!Draw(rng,u)||!Draw(rng,v)) {s.termination_=ForwardTermination::InvalidSample;return;}
-        particle={o.semiMinorMetres,o.semiMajorMetres,P(Polar(s.direction_,SampleOrientationCosine(u,o.semiMinorMetres,o.semiMajorMetres),2*Pi*v))};
+        const auto orientation=SampleOrientation(u,o.semiMinorMetres,o.semiMajorMetres);
+        particle={o.semiMinorMetres,o.semiMajorMetres,P(PolarComponents(s.direction_,orientation.cosine,orientation.transverseRadius,2*Pi*v))};
     }
     if(!Draw(rng,r)||!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
     ++s.counters_.placementAttempts;
@@ -461,7 +468,7 @@ void HyLIoSForwardTransport::Perturb(ForwardState& s,ISampler& rng) const {
     ++s.counters_.perturbationProposals;
     if(!Draw(rng,u)||!Draw(rng,v)) {s.termination_=ForwardTermination::InvalidSample;return;}
     if(s.phase_==ForwardPhase::ReflectedPerturbation) {
-        const auto direction=Polar(s.perturbationAxis_,std::sqrt(1-u),2*Pi*v);
+        const auto direction=PolarComponents(s.perturbationAxis_,std::sqrt(1-u),std::sqrt(u),2*Pi*v);
         if(Dot(direction,V(s.exitNormal_))>=0) return; // one conditional-inward proposal
         s.direction_=direction;
         SurfaceExit(s.particle_,s.particlePoint_,direction,s.chordDistance_,s.particleExit_,s.exitNormal_);
@@ -479,14 +486,17 @@ void HyLIoSForwardTransport::Perturb(ForwardState& s,ISampler& rng) const {
     if(s.phase_==ForwardPhase::FiberPerturbation) {
         const auto cosine=TrySampleRayleighCosine(u,v);if(!cosine) return;
         if(!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
-        s.direction_=Polar(s.perturbationAxis_,*cosine,2*Pi*a);
+        s.direction_=PolarComponents(s.perturbationAxis_,*cosine,2*std::sqrt(u)*std::sqrt(1-u),2*Pi*a);
         s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::FiberRayleigh};
         s.phase_=ForwardPhase::BulkFlight;return;
     }
     if(!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
     const auto angle=TrySampleExponentialForward(forwardAngle_,u,v,a);if(!angle) return;
     if(!Draw(rng,a)) {s.termination_=ForwardTermination::InvalidSample;return;}
-    s.direction_=Polar(s.perturbationAxis_,std::cos(angle->thetaRadians),2*Pi*a);
+    // Preserve the sampled transverse component when cos(theta) rounds to one.
+    // This applies the same ideal angular law; generic sub-ULP rotations can
+    // still round at the final Cartesian output, as with any binary64 vector.
+    s.direction_=PolarComponents(s.perturbationAxis_,std::cos(angle->thetaRadians),std::sin(angle->thetaRadians),2*Pi*a);
     s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ExponentialForward};
     FinishForwardScatter(s);
 }
