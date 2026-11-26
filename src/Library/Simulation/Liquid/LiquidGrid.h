@@ -151,15 +151,19 @@ void SolidNodes(const Grid& g, const std::vector<Shape>& shapes, double band, st
 //! Open (non-solid) fraction of every face from the node signed distance:
 //! each face is split into four triangles about its centre (the mean of its
 //! corners) and the positive area of the linear interpolant is exact on
-//! each (Ng, Min and Gibou 2009, face fractions from a level set).  Domain
-//! boundary faces are closed (fraction 0), except the top faces of axis
-//! `openAxis` when `openTop` (fraction from the solid as inside).
+//! each (Ng, Min and Gibou 2009, face fractions from a level set).  Node
+//! distances within 1e-9 h of zero are zero and only strictly positive
+//! values are open, so a solid face lying on a grid plane closes the faces
+//! in that plane and opens none inside the solid (round-off had opened
+//! slivers of 1e-16 there; docs/SIMULATION_M7A_RESULTS.md section 13).
+//! Domain boundary faces are closed (fraction 0), except the top faces of
+//! axis `openAxis` when `openTop` (fraction from the solid as inside).
 void FaceFractions(const Grid& g, const std::vector<double>& nodes, bool openTop, int openAxis,
 	std::array<std::vector<double>,3>& fraction, Pool* pool);
 //! Open fraction of each cell, clamp(1/2 + phi_s(centre)/h, 0, 1) with
 //! phi_s(centre) the mean of its eight nodes.
 void CellOpenFractions(const Grid& g, const std::vector<double>& nodes, std::vector<double>& open, Pool* pool);
-//! Positive-area fraction of a triangle with linear values a, b, c.
+//! Fraction of a triangle where the linear interpolant of a, b, c is > 0.
 double TrianglePositiveFraction(double a, double b, double c);
 
 //! Signed distance of the union of initial liquid regions at every cell

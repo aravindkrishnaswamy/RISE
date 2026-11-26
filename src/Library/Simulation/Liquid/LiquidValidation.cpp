@@ -563,6 +563,88 @@ CollapseResult RunColumnCollapse(int cells, double length, const SolverOptions& 
 	return r;
 }
 
+SolidCollapseResult RunSolidCollapse(int cells, double angle, const V3& pivot, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	SolidCollapseResult r;
+	const double gm = 9.81, H = 1, L = 1, h = 1.0/cells;
+	const double ca = std::cos(angle), sa = std::sin(angle);
+	const V3 e1{{ca, sa, 0}}, e2{{-sa, ca, 0}};
+	LiquidSetup s = Tank2D(static_cast<int>(std::ceil(2.4/h)), static_cast<int>(std::ceil(1.7/h)), h);
+	s.gravity = {{gm*sa, -gm*ca, 0}};
+	Shape wall, bed;
+	wall.type = bed.type = Shape::Type::Plane;
+	wall.point = bed.point = V3{{pivot[0], pivot[1], 0}};
+	wall.axis = e1;   // solid where x' < 0
+	bed.axis = e2;    // solid where y' < 0
+	s.solids = {wall, bed};
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.l2 = 1e300; return r; }
+	const Grid& g = m.GridSpec();
+	auto local = [&](const V3& x, double& xl, double& yl) {
+		const double dx = x[0] - pivot[0], dy = x[1] - pivot[1];
+		xl = dx*e1[0] + dy*e1[1];
+		yl = dx*e2[0] + dy*e2[1];
+	};
+	std::vector<double> phi(g.Cells());
+	for (int j = 0; j < g.n[1]; ++j) for (int i = 0; i < g.n[0]; ++i) {
+		double xl, yl;
+		local(g.CellCentre(i, j, 0), xl, yl);
+		const double dx = xl - L, dy = yl - H;
+		phi[g.C(i, j, 0)] = dx <= 0 && dy <= 0 ? std::max(dx, dy) : std::sqrt(Sq(std::max(dx, 0.0)) + Sq(std::max(dy, 0.0)));
+	}
+	if (!m.SetLevelSet(phi, error)) { r.l2 = 1e300; return r; }
+	const double dt = 1e-5;
+	StepStats st;
+	if (!m.Step(dt, st, error)) { r.l2 = 1e300; return r; }
+	const int terms = 40*cells;
+	double sum = 0;
+	for (int a = 0; a < 2; ++a) {
+		const auto d = g.FaceDims(a);
+		for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+			const std::size_t f = g.F(a, i, j, 0);
+			const int idx[2] = {i, j};
+			if (!(m.fraction[a][f] > 0) || idx[a] == 0 || idx[a] == g.n[a]) continue;
+			const std::size_t cl = a == 0 ? g.C(i - 1, j, 0) : g.C(i, j - 1, 0), cr = g.C(i, j, 0);
+			if (!(m.phi[cl] < 0 && m.phi[cr] < 0)) continue;
+			double xl, yl;
+			local(g.FaceCentre(a, i, j, 0), xl, yl);
+			if (xl > L || yl > H) continue;
+			double ax, ay;
+			CollapseAcceleration(xl, yl, L, terms, ax, ay);
+			const double ref = ax*e1[a] + ay*e2[a];
+			const double e = m.u.u[a][f]/dt/gm - ref;
+			sum += e*e;
+			++r.faces;
+			r.minFraction = std::min(r.minFraction, m.fraction[a][f]);
+			if (Sq(xl - L) + Sq(yl) < 0.0625) continue;
+			r.maxFar = std::max(r.maxFar, std::fabs(e));
+			if (xl < 2*h || yl < 2*h) { r.maxNearSolid = std::max(r.maxNearSolid, std::fabs(e)); ++r.nearFaces; }
+			else r.maxInterior = std::max(r.maxInterior, std::fabs(e));
+		}
+	}
+	r.l2 = std::sqrt(sum/double(std::max<std::size_t>(1, r.faces)));
+	// p = rho g (H - y') + sum A_n cos(l y') cosh(l x') / cosh(l L), A_n = -2 rho g / (H l^2) (section 4).
+	for (int j = 0; j < g.n[1]; ++j) for (int i = 0; i < g.n[0]; ++i) {
+		const std::size_t c = g.C(i, j, 0);
+		if (!(m.phi[c] < 0)) continue;
+		double xl, yl;
+		local(g.CellCentre(i, j, 0), xl, yl);
+		if (!(xl > 0 && yl > 0 && xl < L && yl < H) || Sq(xl - L) + Sq(yl) < 0.0625) continue;
+		double pe = H - yl;
+		for (int k = 0; k < terms; ++k) {
+			const double l = (2*k + 1)*Pi/2;
+			pe -= 2/(H*l*l)*std::cos(l*yl)*(std::exp(l*(xl - L)) + std::exp(-l*(xl + L)))/(1 + std::exp(-2*l*L));
+		}
+		r.pressure = std::max(r.pressure, std::fabs(m.Pressure(c)/(s.density*gm*H) - pe));
+	}
+	r.seconds = Now() - start;
+	return r;
+}
+
 const double MartinMoyceSquare[][2] = {
 	{1.11, 0.43}, {1.22, 0.62}, {1.44, 0.80}, {1.67, 0.97}, {1.89, 1.14}, {2.11, 1.29}, {2.33, 1.45}, {2.56, 1.62},
 	{2.78, 1.76}, {3.00, 1.93}, {3.22, 2.07}, {3.44, 2.24}, {3.67, 2.40}, {3.89, 2.54}, {4.11, 2.71}, {4.33, 2.87},

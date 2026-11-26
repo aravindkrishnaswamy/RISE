@@ -232,12 +232,12 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	if (setup.solids.empty()) solidNodes.assign(g.Nodes(), band);
 	else SolidNodes(g, setup.solids, band, solidNodes, pool);
 	FaceFractions(g, solidNodes, setup.openTop, 1, fraction, pool);
-	// Cut faces less than `minFaceFraction` open are closed.  An under-resolved film
-	// entering a narrow cut-cell slit is squeezed through its small faces and jets
-	// (measured: dam breaks against a box diverged at 20^3 with 0.1 and at 64^3
-	// with 0.3; at 0.5 they did not jet at the obstacle).  The solid is then
-	// located to within half a cell; hydrostatic rest stays exact.
-	for (int a = 0; a < 3; ++a) for (double& f : fraction[a]) if (f < options.minFaceFraction) f = 0;
+	// Cut faces less than `minFaceFraction` open are closed (default 0: none).  The
+	// jets that closing faces below 1/2 had suppressed came from transporting the
+	// velocities of narrow cut faces (LiquidFlow.h Project, minValidFraction); closing
+	// locates the solid only to half a cell (docs/SIMULATION_M7A_RESULTS.md section 13).
+	if (options.minFaceFraction > 0)
+		for (int a = 0; a < 3; ++a) for (double& f : fraction[a]) if (f < options.minFaceFraction) f = 0;
 	CellOpenFractions(g, solidNodes, openCells, pool);
 	LiquidCells(g, setup.liquid, phi, pool);
 	// phi is not extrapolated into solids: the velocity is (closed faces are
@@ -251,8 +251,9 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	lastDt_ = 0;
 	steps = 0;
 	time_ = 0;
+	clampedFaces = clampedSteps = 0;
 	PressureStats stats;
-	if (!Project(g, phi, fraction, nullptr, options_.pressure, {}, u, q_, valid, stats, pool, error)) return false;
+	if (!Project(g, phi, fraction, nullptr, FinalPressure(), {}, u, q_, valid, stats, pool, error)) return false;
 	targetVolume_ = Volume();
 	if (options_.particles) particles.Seed(g, phi, options_.particle, 0, pool);
 	else particles = MarkerParticles();
@@ -296,10 +297,17 @@ double LiquidModel::MaxStep(double segment) const
 	return dt;
 }
 
+PressureOptions LiquidModel::FinalPressure() const
+{
+	PressureOptions po = options_.pressure;
+	po.minValidFraction = options_.minTransportFraction;
+	return po;
+}
+
 bool LiquidModel::ProjectState(std::string& error)
 {
 	PressureStats stats;
-	return Project(setup_.grid, phi, fraction, nullptr, options_.pressure, {}, u, q_, valid, stats, pool_.get(), error);
+	return Project(setup_.grid, phi, fraction, nullptr, FinalPressure(), {}, u, q_, valid, stats, pool_.get(), error);
 }
 
 bool LiquidModel::SetLevelSet(std::vector<double> levelSet, std::string& error)
@@ -397,16 +405,15 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	const bool weno = options_.momentum == MomentumScheme::Weno5;
 	MacField s1;
 	if (options_.momentumStages <= 1) AdvectVelocity(g, un, dt, options_.momentum, s1, pool);
-	else if (weno) {
-		MacField rate;
-		VelocityAdvectionRate(g, un, rate, pool);
-		s1 = un;
-		for (int a = 0; a < 3; ++a) if (g.n[a] > 1) for (std::size_t c = 0; c < s1.u[a].size(); ++c) s1.u[a][c] += dt*rate.u[a][c];
-	} else AdvectFieldAlong(g, un, un, dt, options_.momentum, s1, pool);
+	else if (weno) LimitedAdvectionStage(g, un, dt, s1, pool);
+	else AdvectFieldAlong(g, un, un, dt, options_.momentum, s1, pool);
 	addGravity(s1, 1);
 	t0 = Now();
 	stats.momentum += t0 - t1;
-	PressureOptions po = options_.pressure;
+	// The step's last projection leaves cut faces narrower than minTransportFraction invalid
+	// (replaced by extrapolation before the next step transports them); the
+	// first stage's keeps every updated face for the second stage.
+	PressureOptions po = options_.momentumStages <= 1 ? FinalPressure() : options_.pressure;
 	if (!Project(g, phi, fraction, nullptr, po, {}, s1, q_, valid, stats.pressure, pool, error)) return false;
 	t1 = Now();
 	stats.project += t1 - t0;
@@ -415,11 +422,9 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		ExtrapolateVelocity(g, s1, valid, options_.extrapolationLayers, 0, pool);
 		MacField s2;
 		if (weno) {
-			MacField rate;
-			VelocityAdvectionRate(g, s1, rate, pool);
-			s2.Resize(g);
+			LimitedAdvectionStage(g, s1, dt, s2, pool);
 			for (int a = 0; a < 3; ++a) if (g.n[a] > 1)
-				for (std::size_t c = 0; c < s2.u[a].size(); ++c) s2.u[a][c] = 0.5*un.u[a][c] + 0.5*(s1.u[a][c] + dt*rate.u[a][c]);
+				for (std::size_t c = 0; c < s2.u[a].size(); ++c) s2.u[a][c] = 0.5*un.u[a][c] + 0.5*s2.u[a][c];
 			addGravity(s2, 0.5);
 		} else {
 			MacField mid;
@@ -434,6 +439,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		// q2 starts from q1/2 (Heun) or q1.
 		const std::vector<double> q1 = q_;
 		for (double& x : q_) x *= weno ? 0.5 : 1.0;
+		po = FinalPressure();
 		po.warmStart = true;
 		PressureStats second;
 		if (!Project(g, phi, fraction, nullptr, po, {}, s2, q_, valid, second, pool, error)) return false;
@@ -444,10 +450,10 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		u = std::move(s2);
 		t1 = t0;
 	}
-	// Safeguard (not part of the validated model): an under-resolved film in a
-	// corner can amplify its face velocity step after step (measured in a closed
-	// box, docs/SIMULATION_M7A_RESULTS.md section 10).  Speeds above
-	// speedLimit sqrt(2 |g| D) are clamped and counted; a non-finite state fails.
+	// Safeguard (not part of the validated model): valid face speeds above
+	// speedLimit sqrt(2 |g| D) are clamped and counted (none in the robustness
+	// sweep since m7a.2: docs/SIMULATION_M7A_RESULTS.md section 13; invalid faces
+	// are replaced by the extrapolation before any use); a non-finite state fails.
 	{
 		const double gn = std::sqrt(setup_.gravity[0]*setup_.gravity[0] + setup_.gravity[1]*setup_.gravity[1] +
 			setup_.gravity[2]*setup_.gravity[2]);
@@ -455,12 +461,19 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			setup_.initialVelocity[2]*setup_.initialVelocity[2]);
 		const double limit = options_.speedLimit*std::max(std::sqrt(2*gn*depth_), u0);
 		bool finite = true;
-		for (int a = 0; a < 3; ++a) for (double& x : u.u[a]) {
-			if (!std::isfinite(x)) { finite = false; continue; }
-			if (limit > 0 && std::fabs(x) > limit) { x = x > 0 ? limit : -limit; ++stats.clamped; }
+		for (int a = 0; a < 3; ++a) {
+			std::vector<double>& f = u.u[a];
+			const std::vector<std::uint8_t>& ok = valid[a];
+			for (std::size_t c = 0; c < f.size(); ++c) {
+				double& x = f[c];
+				if (!std::isfinite(x)) { finite = false; continue; }
+				if (limit > 0 && ok[c] && std::fabs(x) > limit) { x = x > 0 ? limit : -limit; ++stats.clamped; }
+			}
 		}
 		if (finite) for (double x : phi) if (!std::isfinite(x)) { finite = false; break; }
 		if (!finite) { error = "the liquid simulation diverged (non-finite velocity or level set) at step " + std::to_string(steps + 1); return false; }
+		clampedFaces += stats.clamped;
+		clampedSteps += stats.clamped > 0;
 	}
 	lastDt_ = dt;
 	++steps;
@@ -469,6 +482,16 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 }
 
 // ------------------------------------------------------------------ outputs
+
+MacField LiquidModel::OutputVelocity() const
+{
+	// The field the next step's interface moves with: invalid faces (air, and
+	// narrow cut faces whose projected speed is not transported) re-extrapolated.
+	MacField v = u;
+	FaceMask known = valid;
+	ExtrapolateVelocity(setup_.grid, v, known, options_.interfaceExtrapolationLayers, options_.linearExtrapolationLayers, pool_.get());
+	return v;
+}
 
 bool LiquidModel::Surface(MeshFrame& frame, std::string& error) const
 {
@@ -506,6 +529,7 @@ bool LiquidModel::Surface(MeshFrame& frame, std::string& error) const
 	frame.positions.resize(3*nv);
 	frame.velocities.resize(3*nv);
 	frame.normals.resize(3*nv);
+	const MacField vf = OutputVelocity();
 	const std::size_t strides[3] = {1, std::size_t(d[0]), std::size_t(d[0])*std::size_t(d[1])};
 	auto gradient = [&](std::size_t s, V3& gr) {
 		const int idx[3] = {int(s % std::size_t(d[0])), int((s/std::size_t(d[0])) % std::size_t(d[1])),
@@ -541,7 +565,7 @@ bool LiquidModel::Surface(MeshFrame& frame, std::string& error) const
 			if (len > 0) for (double& x : n) x /= len;
 			else n = {{0, 1, 0}};
 			const V3 x{{iso.positions[3*v], iso.positions[3*v + 1], iso.positions[3*v + 2]}};
-			const V3 vel = SampleVelocity(g, u, x);
+			const V3 vel = SampleVelocity(g, vf, x);
 			for (int b = 0; b < 3; ++b) {
 				frame.positions[3*v + std::size_t(b)] = Bits(x[b]);
 				frame.velocities[3*v + std::size_t(b)] = Bits(vel[b]);
@@ -583,7 +607,7 @@ bool LiquidModel::Fields(GridFrame& frame, std::string& error) const
 	channel("phi", "m", 1, [&](std::size_t i, int) { return phi[i]; });
 	channel("pressure", "Pa", 1, [&](std::size_t i, int) { return Pressure(i); });
 	std::array<std::vector<double>,3> c;
-	CellVelocity(g, u, c, pool_.get());
+	CellVelocity(g, OutputVelocity(), c, pool_.get());
 	channel("velocity", "m/s", 3, [&](std::size_t i, int m) { return c[std::size_t(m)][i]; });
 	(void)error;
 	return true;
@@ -598,8 +622,9 @@ bool LiquidModel::Points(PointsFrame& frame, std::string& error) const
 	if (ps.empty()) { (void)error; return true; }
 	frame.velocityUnits = "m/s";
 	PointAttribute sign{"sign", "1", 1, {}};
+	const MacField vf = OutputVelocity();
 	for (const auto& p : ps) {
-		const V3 v = SampleVelocity(g, u, p.x);
+		const V3 v = SampleVelocity(g, vf, p.x);
 		for (int a = 0; a < 3; ++a) { frame.positions.push_back(Bits(p.x[a])); frame.velocities.push_back(Bits(v[a])); }
 		frame.radii.push_back(Bits(p.radius));
 		frame.ids.push_back(p.id);

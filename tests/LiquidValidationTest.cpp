@@ -15,6 +15,8 @@
 //      omega^2 = g k tanh(k d), observed orders, numerical decay
 //   4  sloshing: the first two modes of a rectangular tank
 //   5  early-time collapse of a column against the potential-flow series
+//   5s the same collapse against two cut-cell solid planes rotated off the
+//      grid (the solid boundary's convergence)
 //   6  volume: raw loss without correction, correction shifts with it
 //   7  observed orders of 2-5 (within each case)
 //   8  dam break against Martin and Moyce 1952 (reported, not gating)
@@ -192,7 +194,7 @@ void Momentum(bool extended, Pool* pool)
 	std::printf("\n2m. Taylor-Green vortex, T = 2 (rms face error / max speed; 1 - kinetic energy ratio)\n");
 	const std::pair<MomentumScheme, const char*> schemes[] = {{MomentumScheme::Weno5, "weno5"}, {MomentumScheme::MacCormack, "maccormack"},
 		{MomentumScheme::SemiLagrangian, "semi_lagrangian"}};
-	const std::map<int, double> tol{{16, 1.7e-3}, {32, 3.7e-4}, {64, 8.1e-5}, {128, 1.7e-5}};
+	const std::map<int, double> tol{{16, 1.8e-3}, {32, 3.8e-4}, {64, 8.2e-5}, {128, 1.8e-5}};   // m7a.2 (bounded stages)
 	std::vector<int> levels{16, 32, 64};
 	if (extended) levels.push_back(128);
 	for (int stages = 2; stages >= 1; --stages) for (const auto& s : schemes) {
@@ -243,7 +245,7 @@ void Waves(bool extended, Pool* pool)
 	{
 		std::vector<int> sl{20};
 		if (extended) sl.push_back(40);
-		const std::map<int, std::array<double,2>> st{{20, {{2.4e-3, 6.9e-3}}}, {40, {{5.8e-4, 4.9e-4}}}};
+		const std::map<int, std::array<double,2>> st{{20, {{2.4e-3, 6.9e-3}}}, {40, {{5.8e-4, 5.0e-4}}}};
 		std::vector<SloshResult> r;
 		for (int n : sl) {
 			r.push_back(RunSloshing(n, 2, o, pool));
@@ -271,6 +273,38 @@ void Waves(bool extended, Pool* pool)
 		double ax, ay;
 		CollapseAcceleration(1.0, 1.0 - 1e-9, 1.0, 200000, ax, ay);
 		Row("series: free fall at the top corner", "a_y = -g", 0, ay + 1, 1e-4, 0, "the reference itself: a_x = " + std::to_string(ax));
+	}
+}
+
+// ------------------------------------------------------------------ 5s
+
+void SolidBoundary(bool extended, Pool* pool)
+{
+	std::printf("\n5s. Early-time collapse against cut-cell solids: wall and bed rotated 0.35 rad, pivot off the grid (acceleration / g; pressure / (rho g H))\n");
+	const SolverOptions o;
+	std::vector<int> levels{16, 32, 64};
+	if (extended) levels.push_back(128);
+	// {velocity max beyond H/4 of the corner, pressure max}: 1.25 x observed (m7a.2).
+	const std::map<int, std::array<double,2>> tol{{16, {{3.7e-2, 6.8e-4}}}, {32, {{1.8e-2, 2.0e-4}}}, {64, {{1.1e-2, 4.5e-5}}},
+		{128, {{6.4e-3, 1.6e-5}}}};
+	const V3 pivot{{0.8123, 0.1789, 0}};
+	std::vector<SolidCollapseResult> r;
+	for (int n : levels) {
+		r.push_back(RunSolidCollapse(n, 0.35, pivot, o, pool));
+		const SolidCollapseResult& c = r.back();
+		char note[160];
+		std::snprintf(note, sizeof note, "within 2h of a solid %.2e (%zu faces), farther %.2e; L2 %.2e; smallest open fraction %.3f", c.maxNearSolid,
+			c.nearFaces, c.maxInterior, c.l2, c.minFraction);
+		Row("velocity, max beyond H/4", "potential-flow series", n, c.maxFar, tol.at(n)[0], c.seconds, note);
+		Row("pressure, max beyond H/4", "potential-flow series", n, c.pressure, tol.at(n)[1], 0);
+	}
+	// The pressure converges at about second order; the velocity on the faces
+	// next to the cut cells (where the max is) at about first order: the
+	// face-fraction (Ng, Min and Gibou 2009) operator's gradient is one order
+	// below its solution at the boundary.  Minimums below the observed orders.
+	for (std::size_t k = 1; k < r.size(); ++k) {
+		OrderRow("cut-cell velocity", r[k - 1].maxFar, r[k].maxFar, 0.6);
+		OrderRow("cut-cell pressure", r[k - 1].pressure, r[k].pressure, 1.4);
 	}
 }
 
@@ -409,6 +443,7 @@ int main(int argc, char** argv)
 	Hydrostatic(&pool);
 	Momentum(extended, &pool);
 	Waves(extended, &pool);
+	SolidBoundary(extended, &pool);
 	Volume(extended, &pool);
 	DamBreak(extended, &pool);
 	std::printf("\n%s (%d failures, %.1f s)\n", failures ? "FAILED" : "PASSED", failures, Seconds() - t0);

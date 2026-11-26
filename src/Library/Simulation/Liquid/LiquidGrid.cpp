@@ -251,7 +251,7 @@ void SolidNodes(const Grid& g, const std::vector<Shape>& shapes, double band, st
 
 double TrianglePositiveFraction(double a, double b, double c)
 {
-	const bool pa = a >= 0, pb = b >= 0, pc = c >= 0;
+	const bool pa = a > 0, pb = b > 0, pc = c > 0;
 	const int positives = int(pa) + int(pb) + int(pc);
 	if (positives == 3) return 1;
 	if (positives == 0) return 0;
@@ -287,6 +287,9 @@ void FaceFractions(const Grid& g, const std::vector<double>& nodes, bool openTop
 						if (m == 1 || m == 2) ++q[b];
 						if (m == 2 || m == 3) ++q[c];
 						v[m] = nodes[g.N(q[0], q[1], q[2])];
+						// A solid surface through a node (a box face on a grid plane) is
+						// exact there: round-off of either sign must not open a sliver.
+						if (std::fabs(v[m]) < 1e-9*g.h) v[m] = 0;
 					}
 					// Thin (one-cell) dimensions: the face spans the whole extent.
 					const double centre = 0.25*(v[0] + v[1] + v[2] + v[3]);

@@ -8,7 +8,8 @@
 //    1. extrapolate the velocity from the liquid's faces into the air;
 //    2. advect the marker particles (when enabled) and the level set
 //       (WENO5 + SSP-RK3) with that velocity;
-//    3. advect the velocity (the configured momentum scheme);
+//    3. advect the velocity (the configured momentum scheme; WENO5 stages
+//       bounded by their upwind values, LiquidFlow.h LimitedAdvectionStage);
 //    4. correct the level set from escaped particles, carry it into solids,
 //       reinitialise it, correct it again, adjust radii and reseed;
 //    5. shift it so the liquid volume equals the initial one (optional;
@@ -59,8 +60,9 @@ struct SolverOptions {
 	bool volumeCorrection = true;
 	double cfl = 0.5;
 	double waveCfl = 0.5;
-	double speedLimit = 3;             // faces faster than this x sqrt(2 |g| D) are clamped (a safeguard; counted); 0: off
-	double minFaceFraction = 0.5;      // faces less open than this are closed (narrow cut faces jet and diverge; docs section 2)
+	double speedLimit = 3;             // valid faces faster than this x sqrt(2 |g| D) are clamped (a safeguard; counted); 0: off
+	double minFaceFraction = 0;        // cut faces less open than this are closed (0: none; closing locates solids to half a cell)
+	double minTransportFraction = 0.25; // cut faces less open leave each step invalid, re-extrapolated (LiquidFlow.h Project)
 	int extrapolationLayers = 6;          // momentum field: WENO5 reaches 3 cells beyond the liquid, plus the CFL travel
 	int interfaceExtrapolationLayers = 4; // interface field: the cells within reach of the surface's stencils
 	int linearExtrapolationLayers = 1;
@@ -84,7 +86,7 @@ struct StepStats {
 	double volumeShift = 0;           // m
 	std::size_t escaped = 0;
 	bool reinitialised = false;
-	std::size_t clamped = 0;          // faces whose speed the safeguard limited this step
+	std::size_t clamped = 0;          // valid faces whose speed the safeguard limited this step
 	// Wall seconds per phase: extrapolation, level set (advection + reinit +
 	// volume), particles, momentum advection, pressure (assembly + solve + update).
 	double extrapolate = 0, levelSet = 0, particles = 0, momentum = 0, project = 0;
@@ -116,6 +118,8 @@ public:
 	double Pressure(std::size_t cell) const { return lastDt_ > 0 ? q_[cell]*setup_.density*setup_.grid.h/lastDt_ : 0.0; }
 	double MaxSpeed() const;
 	double Volume() const;
+	//! Totals of StepStats::clamped since Initialize (not checkpointed: a run's own count).
+	std::uint64_t clampedFaces = 0, clampedSteps = 0;
 	double TargetVolume() const { return targetVolume_; }
 
 	// State (checkpoints).
@@ -136,12 +140,18 @@ public:
 	//! The liquid surface: marching cubes on phi with the solids carved out
 	//! half a cell inside their surface and the domain walls closing it.
 	bool Surface(MeshFrame& frame, std::string& error) const;
-	//! phi (m), pressure (Pa) and the cell-centred velocity (m/s) on the cells.
+	//! phi (m), pressure (Pa) and the cell-centred velocity (m/s) on the cells
+	//! (the velocities of all three outputs are sampled from OutputVelocity).
 	bool Fields(GridFrame& frame, std::string& error) const;
 	bool Points(PointsFrame& frame, std::string& error) const;
 
 	Pool* ThreadPool() const { return pool_.get(); }
 private:
+	//! The pressure options of a step's last projection (and of Initialize).
+	PressureOptions FinalPressure() const;
+	//! The velocity the outputs sample: u with its invalid faces extrapolated
+	//! as for the interface (the field the next step moves the surface with).
+	MacField OutputVelocity() const;
 	LiquidSetup setup_;
 	SolverOptions options_;
 	std::unique_ptr<Pool> pool_;

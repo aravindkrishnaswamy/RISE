@@ -203,7 +203,7 @@ void Description()
 	// Refusals.
 	for (const auto& bad : {With(Small(), "bogus", V::Unsigned(1)), With(Small(), "cfl", V::Float(2)),
 		With(With(Small(), "particles", V::Bool(false)).GetMap(), "publish_particles", V::Bool(true)), With(Small(), "momentum", V::String("upwind")),
-		With(Small(), "domain_size", Vec(0, 1, 1)), With(Small(), "theta_min", V::Float(0.7)),
+		With(Small(), "domain_size", Vec(0, 1, 1)), With(Small(), "theta_min", V::Float(0.7)), With(Small(), "min_transport_fraction", V::Float(1.5)),
 		With(Small(), "liquid", V::ArrayValue({V::MapValue({{"type", V::String("box")}, {"min", Vec(1, 1, 1)}, {"max", Vec(0, 0, 0)}})}))}) {
 		SolverDescription x;
 		Check(!s->Configure(bad, EmptySceneInputs(), x, error), "refused: " + error);
@@ -264,7 +264,22 @@ void Frames()
 	const V* solids = d.effectiveParameters.Find("solids");
 	Check(solids && solids->GetArray().size() == 2 && solids->GetArray()[1].Find("identity"), "its identity is an effective parameter");
 	DigestSink sink;
-	Check(RunAll(*s, sink, error), "run", error);
+	// The safeguard's count reaches the progress detail (cloth's channel for its solver counts).
+	class Detail final : public IProgress {
+	public:
+		bool Report(double, double, const std::string& detail) override { last = detail; return true; }
+		std::string last;
+	} detail;
+	{
+		bool ran = true;
+		for (int guard = 0; ran && guard < 1000; ++guard) {
+			AdvanceResult r;
+			ran = s->Advance(AdvanceRequest{}, sink, nullptr, &detail, r, error);
+			if (r.status == AdvanceResult::Status::Finished) break;
+		}
+		Check(ran, "run", error);
+	}
+	Check(detail.last.find("clamped faces 0 in 0 steps") != std::string::npos, "the progress detail reports the clamped-face count", detail.last);
 	Check(sink.payloads.size() == 18, "6 frames x 3 outputs");
 	for (int i = 0; i < 6; ++i) {
 		MeshFrame mesh;

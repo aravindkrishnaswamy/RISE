@@ -64,7 +64,7 @@ enum class MomentumScheme { SemiLagrangian, MacCormack, Weno5 };
 //!   Weno5           u_t + (u . grad) u = 0 per component on its own face
 //!                   grid: WENO5 upwind derivatives, the advecting velocity
 //!                   averaged to the face, SSP-RK3 (the advecting field
-//!                   recomputed at each stage).
+//!                   recomputed at each stage) of LimitedAdvectionStage.
 //! Components along a one-cell axis stay zero.
 void AdvectVelocity(const Grid& g, const MacField& u, double dt, MomentumScheme scheme, MacField& out, Pool* pool);
 //! The semi-Lagrangian or MacCormack step of the field `f` along the
@@ -72,6 +72,18 @@ void AdvectVelocity(const Grid& g, const MacField& u, double dt, MomentumScheme 
 void AdvectFieldAlong(const Grid& g, const MacField& f, const MacField& v, double dt, MomentumScheme scheme, MacField& out, Pool* pool);
 //! rate = -(u . grad) u per face component (the Weno5 spatial operator).
 void VelocityAdvectionRate(const Grid& g, const MacField& u, MacField& rate, Pool* pool);
+//! One forward-Euler stage of the Weno5 operator, out = u + dt L(u), with
+//! each face value then limited to the range of u over the corners of the
+//! face's upwind cell (the face and its neighbours one step against the
+//! advecting velocity along each axis): the exact transport of each
+//! component takes its value from that cell when the CFL number is at most
+//! one, so a stage creates no new extremum.  WENO5's one-sided derivatives
+//! read two faces downwind; at a velocity peak against a wall in a film one
+//! or two cells thick every candidate stencil is non-smooth and the
+//! derivative took the wrong sign, so the unlimited stage raised the peak
+//! by about 10% a step (docs/SIMULATION_M7A_RESULTS.md section 13).  In
+//! smooth flow the bound is inactive except at extrema.
+void LimitedAdvectionStage(const Grid& g, const MacField& u, double dt, MacField& out, Pool* pool);
 
 //! Seam for rigid degrees of freedom in the pressure solve (not used in this pass).
 class IPressureCoupling {
@@ -92,6 +104,7 @@ struct PressureOptions {
 	int smoothing = 2;           // red-black Gauss-Seidel sweeps before and after each coarse correction
 	bool openTop = false;        // +y boundary: p = 0 there
 	bool warmStart = false;      // start PCG from the q passed in (else from zero)
+	double minValidFraction = 0; // updated cut faces less open than this are left invalid (re-extrapolated)
 };
 
 struct PressureStats {
@@ -105,10 +118,20 @@ struct PressureStats {
 
 //! Projects u (on input u*, on output divergence-free on every liquid cell):
 //! builds the system from phi and the face open fractions, solves it, and
-//! updates every face with an open part next to a liquid cell (valid = 1).
-//! Faces with no open part take the solid velocity (zero when `solid` is
-//! null); domain boundary faces are valid, others invalid (to extrapolate).
-//! `q` receives the scaled pressure (0 outside the liquid).
+//! updates every face with an open part next to a liquid cell.  Those faces
+//! are valid when their open fraction A is at least options.minValidFraction;
+//! narrower cut faces carry the velocity that satisfies their cells'
+//! constraints but are left invalid, so the extrapolation replaces them
+//! before the velocity is transported.  Such a face's velocity is the speed
+//! in its open part, A u its flux: copied into a full face by the
+//! extrapolation or the advection it carried 1/A times the flux, which the
+//! next projection drained through the nearly empty cells beside the solid
+//! at u* + q / theta, as jets (docs/SIMULATION_M7A_RESULTS.md section 13).
+//! The projection minimises sum A_f theta_f (u_f - u*_f)^2 (theta = 1
+//! between liquid cells; the ghost-fluid update is that minimiser).  Faces with no open part
+//! take the solid velocity (zero when `solid` is null); domain boundary
+//! faces are valid, others invalid (to extrapolate).  `q` receives the
+//! scaled pressure (0 outside the liquid).
 bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
 	const MacField* solid, const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings,
 	MacField& u, std::vector<double>& q, FaceMask& valid, PressureStats& stats, Pool* pool, std::string& error);

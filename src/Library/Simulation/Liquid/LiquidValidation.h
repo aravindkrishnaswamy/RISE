@@ -120,6 +120,26 @@ CollapseResult RunColumnCollapse(int cells, double length, const SolverOptions& 
 //! The reference: (a_x, a_y) / g at (x, y) inside the column, N terms.
 void CollapseAcceleration(double x, double y, double length, int terms, double& ax, double& ay);
 
+//! The early-time collapse of case 5 against cut-cell solids (case 5s): the
+//! column 0 <= x' <= L, 0 <= y' <= H (L = H = 1) of a frame rotated by `angle`
+//! about the pivot P, its wall x' = 0 and bed y' = 0 two static solid planes
+//! the grid cuts, gravity along -y'.  The reference is case 5's series in the
+//! rotated frame (both solid walls are planes of symmetry of its even
+//! extension).  h = 1 / cells in a 2.4 x 1.7 box.  The level set is the
+//! distance to {x' <= L, y' <= H} (the liquid continues into the solids).
+//! Errors / g of u / dt after one step from rest on every face with an open
+//! part between two liquid cells, at the face centre: the max at least H/4
+//! from the dam face's bottom corner (over all such faces, over those
+//! within 2h of a solid, and over the rest) and the L2 norm; and the max
+//! pressure error / (rho g H) at the centres of liquid cells inside the
+//! column, H/4 from that corner.
+struct SolidCollapseResult {
+	double maxFar = 0, maxNearSolid = 0, maxInterior = 0, l2 = 0, pressure = 0, seconds = 0;
+	std::size_t faces = 0, nearFaces = 0;
+	double minFraction = 1;   // the smallest open fraction among the measured faces
+};
+SolidCollapseResult RunSolidCollapse(int cells, double angle, const V3& pivot, const SolverOptions& options, Pool* pool);
+
 //! Dam break: a square column a = 1 (n^2 = 1 in Martin and Moyce's notation)
 //! against the wall of a tank 6a long and 1.25a high; the surge front Z = z/a
 //! (from the wall) against T = t sqrt(g/a).  `frontTimes` receives T at each

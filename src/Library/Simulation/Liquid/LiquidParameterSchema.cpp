@@ -150,8 +150,9 @@ ParameterSchema Build()
 	P("wave_cfl", SchemaType::Real, "0.5", "", "CFL number on the shallow-water wave speed sqrt(g D)");
 	P("pressure_tolerance", SchemaType::Real, "1e-08", "", "Relative residual of the pressure solve");
 	P("theta_min", SchemaType::Real, "0.001", "", "Smallest ghost-fluid interface fraction");
-	P("speed_limit", SchemaType::Real, "3", "", "Safeguard: face speeds above this x sqrt(2 g D) are clamped (0: off; not part of the validated model)");
-	P("min_face_fraction", SchemaType::Real, "0.5", "", "Cut faces less open than this are closed (narrow cut faces let under-resolved films jet)");
+	P("speed_limit", SchemaType::Real, "3", "", "Safeguard: valid face speeds above this x sqrt(2 g D) are clamped and counted (0: off; not part of the validated model)");
+	P("min_face_fraction", SchemaType::Real, "0", "", "Cut faces less open than this are closed (0: none; closing locates solids only to half a cell)");
+	P("min_transport_fraction", SchemaType::Real, "0.25", "", "Cut faces less open than this keep their velocity in the pressure solve but are re-extrapolated before it is transported");
 	{ auto& p = P("extrapolation_layers", SchemaType::Count, "6", "", "Cells the velocity is extrapolated into the air for momentum advection"); range(p, 1, 64); }
 	{ auto& p = P("interface_extrapolation_layers", SchemaType::Count, "4", "", "Cells the velocity is extrapolated into the air for the interface"); range(p, 1, 64); }
 	{ auto& p = P("linear_extrapolation_layers", SchemaType::Count, "1", "", "Of the interface layers, those extrapolated linearly (second-order surface velocity)"); range(p, 0, 8); }

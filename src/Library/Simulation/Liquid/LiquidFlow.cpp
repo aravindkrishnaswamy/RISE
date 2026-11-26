@@ -443,6 +443,50 @@ void VelocityAdvectionRate(const Grid& g, const MacField& u, MacField& rate, Poo
 	}
 }
 
+void LimitedAdvectionStage(const Grid& g, const MacField& u, double dt, MacField& out, Pool* pool)
+{
+	out.Resize(g);
+	for (int a = 0; a < 3; ++a) {
+		if (g.n[a] == 1) continue;
+		const auto d = g.FaceDims(a);
+		std::array<std::vector<double>,3> c;
+		FaceAdvectingVelocity(g, u, a, c, pool);
+		std::array<Extension,3> ext{{Extension::Constant, Extension::Constant, Extension::Constant}};
+		ext[a] = Extension::Linear;
+		const std::array<const std::vector<double>*,3> cp{{&c[0], &c[1], &c[2]}};
+		std::vector<double> rate;
+		UpwindAdvectionRhs(d, g.h, u.u[a], cp, ext, rate, pool);
+		const std::vector<double>& f = u.u[a];
+		std::vector<double>& o = out.u[a];
+		const std::size_t strides[3] = {1, std::size_t(d[0]), std::size_t(d[0])*std::size_t(d[1])};
+		ForRows(pool, FaceRows(g, a), RowGrain(d[0]), [&](std::size_t r0, std::size_t r1) {
+			for (std::size_t r = r0; r < r1; ++r) {
+				const int j = int(r % std::size_t(d[1])), k = int(r/std::size_t(d[1]));
+				for (int i = 0; i < d[0]; ++i) {
+					const std::size_t id = Index(d, i, j, k);
+					const int idx[3] = {i, j, k};
+					// The upwind cell of the face: one step against the advecting velocity
+					// on each axis (none where it is zero or the step leaves the array).
+					std::ptrdiff_t step[3] = {0, 0, 0};
+					for (int b = 0; b < 3; ++b) {
+						const double v = c[b][id];
+						const int to = v > 0 ? idx[b] - 1 : v < 0 ? idx[b] + 1 : idx[b];
+						if (to >= 0 && to < d[b] && to != idx[b]) step[b] = (to - idx[b])*std::ptrdiff_t(strides[b]);
+					}
+					double lo = f[id], hi = f[id];
+					for (int m = 1; m < 8; ++m) {
+						const std::ptrdiff_t off = ((m & 1) ? step[0] : 0) + ((m & 2) ? step[1] : 0) + ((m & 4) ? step[2] : 0);
+						const double x = f[std::size_t(std::ptrdiff_t(id) + off)];
+						lo = std::min(lo, x);
+						hi = std::max(hi, x);
+					}
+					o[id] = std::min(hi, std::max(lo, f[id] + dt*rate[id]));
+				}
+			}
+		});
+	}
+}
+
 void AdvectFieldAlong(const Grid& g, const MacField& f, const MacField& v, double dt, MomentumScheme scheme, MacField& out, Pool* pool)
 {
 	out.Resize(g);
@@ -479,19 +523,19 @@ void AdvectFieldAlong(const Grid& g, const MacField& f, const MacField& v, doubl
 void AdvectVelocity(const Grid& g, const MacField& u, double dt, MomentumScheme scheme, MacField& out, Pool* pool)
 {
 	if (scheme != MomentumScheme::Weno5) { AdvectFieldAlong(g, u, u, dt, scheme, out, pool); return; }
-	// SSP-RK3 of u_t = -(u . grad) u.
+	// SSP-RK3 of u_t = -(u . grad) u from limited forward-Euler stages (each
+	// stage and so their convex combinations keep every component within
+	// the range of its upwind values).
 	out.Resize(g);
-	MacField s1, s2, rate;
-	s1.Resize(g); s2.Resize(g);
-	VelocityAdvectionRate(g, u, rate, pool);
+	MacField s1, s2, e;
+	LimitedAdvectionStage(g, u, dt, s1, pool);
+	LimitedAdvectionStage(g, s1, dt, e, pool);
+	s2.Resize(g);
 	for (int a = 0; a < 3; ++a) if (g.n[a] > 1)
-		for (std::size_t c = 0; c < s1.u[a].size(); ++c) s1.u[a][c] = u.u[a][c] + dt*rate.u[a][c];
-	VelocityAdvectionRate(g, s1, rate, pool);
+		for (std::size_t c = 0; c < s2.u[a].size(); ++c) s2.u[a][c] = 0.75*u.u[a][c] + 0.25*e.u[a][c];
+	LimitedAdvectionStage(g, s2, dt, e, pool);
 	for (int a = 0; a < 3; ++a) if (g.n[a] > 1)
-		for (std::size_t c = 0; c < s2.u[a].size(); ++c) s2.u[a][c] = 0.75*u.u[a][c] + 0.25*(s1.u[a][c] + dt*rate.u[a][c]);
-	VelocityAdvectionRate(g, s2, rate, pool);
-	for (int a = 0; a < 3; ++a) if (g.n[a] > 1)
-		for (std::size_t c = 0; c < out.u[a].size(); ++c) out.u[a][c] = u.u[a][c]/3 + 2.0/3.0*(s2.u[a][c] + dt*rate.u[a][c]);
+		for (std::size_t c = 0; c < out.u[a].size(); ++c) out.u[a][c] = u.u[a][c]/3 + 2.0/3.0*e.u[a][c];
 }
 
 // ------------------------------------------------------------------ projection
@@ -726,16 +770,17 @@ bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std
 					const bool hasL = idx[a] > 0, hasR = idx[a] < N[a];
 					const std::size_t cl = hasL ? g.C(lo[0], lo[1], lo[2]) : 0, cr = hasR ? g.C(idx[0], idx[1], idx[2]) : 0;
 					const bool aL = hasL && active[cl], aR = hasR && active[cr];
-					if (aL && aR) { u.u[a][f] -= q[cr] - q[cl]; valid[a][f] = 1; }
+					const std::uint8_t transported = A >= options.minValidFraction;
+					if (aL && aR) { u.u[a][f] -= q[cr] - q[cl]; valid[a][f] = transported; }
 					else if (aL) {
 						const double theta = hasR ? std::min(1.0, std::max(options.thetaMin, phi[cl]/(phi[cl] - phi[cr])))
 							: std::min(0.5, std::max(options.thetaMin, -phi[cl]/g.h));
 						u.u[a][f] += q[cl]/theta;
-						valid[a][f] = 1;
+						valid[a][f] = transported;
 					} else if (aR) {
 						const double theta = std::min(1.0, std::max(options.thetaMin, phi[cr]/(phi[cr] - phi[cl])));
 						u.u[a][f] -= q[cr]/theta;
-						valid[a][f] = 1;
+						valid[a][f] = transported;
 					}
 				}
 			}

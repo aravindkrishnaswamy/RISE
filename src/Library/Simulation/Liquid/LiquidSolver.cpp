@@ -31,7 +31,7 @@ using namespace Liquid;
 
 constexpr std::size_t CodecBudget = std::size_t(16) << 30;
 constexpr std::size_t InputBudget = std::size_t(256) << 20;
-constexpr const char* SolverVersion = "m7a.1";
+constexpr const char* SolverVersion = "m7a.2";
 constexpr const char* StateMagic = "RISELIQ1";
 constexpr const char* StateFormat = "liquid.mac.state.v1";
 constexpr const char* SurfaceOutput = "surface";
@@ -284,7 +284,7 @@ V NumericsValue(const SolverOptions& o)
 	return V::MapValue({{"cfl", V::Float(o.cfl)}, {"extrapolation_layers", V::Unsigned(std::uint64_t(o.extrapolationLayers))},
 		{"interface_extrapolation_layers", V::Unsigned(std::uint64_t(o.interfaceExtrapolationLayers))},
 		{"linear_extrapolation_layers", V::Unsigned(std::uint64_t(o.linearExtrapolationLayers))},
-		{"min_face_fraction", V::Float(o.minFaceFraction)}, {"speed_limit", V::Float(o.speedLimit)},
+		{"min_face_fraction", V::Float(o.minFaceFraction)}, {"min_transport_fraction", V::Float(o.minTransportFraction)}, {"speed_limit", V::Float(o.speedLimit)},
 		{"momentum", V::String(MomentumName(o.momentum))}, {"momentum_stages", V::Unsigned(std::uint64_t(o.momentumStages))},
 		{"particles", V::Bool(o.particles)}, {"particles_per_cell", V::Unsigned(std::uint64_t(o.particle.perCell))},
 		{"pressure_tolerance", V::Float(o.pressure.tolerance)}, {"reinit", V::String(ReinitName(o.reinit))},
@@ -309,7 +309,9 @@ const CaseSpec Cases[] = {
 	{"slosh-n20", "3-D rectangular tank 1 x 0.6, depth 0.5, 20 cells across, 2 periods: max |omega error| / omega of modes (1,0), (0,1)", 6.9e-3},
 	{"collapse-n32", "early-time column collapse, 32 cells per height: max |a - a_series| / g at least H/4 from the corner", 1.6e-3},
 	{"order-collapse", "early-time column collapse, 16 -> 32: max(0, 1.8 - observed order)", 0.2},
-	{"taylor-green-n32", "Taylor-Green vortex, closed box, 32 x 32, T = 2: rms face velocity error / max speed", 3.7e-4},
+	{"solid-collapse-n32", "early-time collapse against two cut-cell solid planes rotated 0.35 rad off the grid, 32 cells per height: max |a - a_series| / g at least H/4 from the corner", 1.8e-2},
+	{"solid-pressure-n32", "same: max |p - p_series| / (rho g H) in the column", 2.0e-4},
+	{"taylor-green-n32", "Taylor-Green vortex, closed box, 32 x 32, T = 2: rms face velocity error / max speed", 3.8e-4},
 	{"order-taylor-green", "Taylor-Green, 16 -> 32: max(0, 1.8 - observed order)", 0.2},
 	{"volume-correction-n32", "sloshing ka = 0.1, 32 cells, 10 periods: mean |volume-correction shift| / h", 1.5e-4}};
 
@@ -363,6 +365,11 @@ std::vector<EvidenceCase> ComputeEvidence(const SolverOptions& options, unsigned
 		error["collapse-n32"] = c32.maxFar;
 		const double order = std::log(c16.maxFar/c32.maxFar)/std::log(2.0);
 		error["order-collapse"] = std::isfinite(order) ? std::max(0.0, 1.8 - order) : 1.0;
+	}
+	{
+		const SolidCollapseResult c = RunSolidCollapse(32, 0.35, {{0.8123, 0.1789, 0}}, options, &pool);
+		error["solid-collapse-n32"] = c.maxFar;
+		error["solid-pressure-n32"] = c.pressure;
 	}
 	{
 		const TaylorGreenResult t16 = RunTaylorGreen(16, 2.0, options, &pool), t32 = RunTaylorGreen(32, 2.0, options, &pool);
@@ -603,7 +610,8 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		o.waveCfl = p.Real("wave_cfl", 0.5);
 		o.pressure.tolerance = p.Real("pressure_tolerance", 1e-8);
 		o.pressure.thetaMin = p.Real("theta_min", 1e-3);
-		o.minFaceFraction = p.Real("min_face_fraction", 0.5);
+		o.minFaceFraction = p.Real("min_face_fraction", 0.0);
+		o.minTransportFraction = p.Real("min_transport_fraction", 0.25);
 		o.speedLimit = p.Real("speed_limit", 3.0);
 		o.extrapolationLayers = int(p.Count("extrapolation_layers", 6, 1, 64));
 		o.interfaceExtrapolationLayers = int(p.Count("interface_extrapolation_layers", 4, 1, 64));
@@ -614,6 +622,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		if (!(o.pressure.thetaMin > 0 && o.pressure.thetaMin < 0.5)) return p.Bad("theta_min must be in (0, 1/2)");
 		if (!(o.reinitThreshold >= 0)) return p.Bad("reinit_threshold must not be negative");
 		if (!(o.minFaceFraction >= 0 && o.minFaceFraction < 1)) return p.Bad("min_face_fraction must be in [0, 1)");
+		if (!(o.minTransportFraction >= 0 && o.minTransportFraction <= 1)) return p.Bad("min_transport_fraction must be in [0, 1]");
 		if (!(o.speedLimit >= 0)) return p.Bad("speed_limit must not be negative");
 	}
 	const bool fields = p.Bool("publish_fields", false);
@@ -693,8 +702,10 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	candidate.evidence.scope = "Single-phase inviscid incompressible liquid with a free surface (p = 0, no surface tension) "
 		"in a box with free-slip walls and static solids, on a uniform staggered grid: certified on canonical problems "
 		"(interface transport, hydrostatic rest with a tilted surface and an immersed solid, linear standing waves at finite and "
-		"infinite depth, rectangular-tank sloshing, the early-time collapse of a column, a Taylor-Green vortex, volume "
-		"correction), second order on the smooth ones; it does not bound the error of a given bake and does not cover "
+		"infinite depth, rectangular-tank sloshing, the early-time collapse of a column against the box walls and against "
+		"cut-cell solid planes rotated off the grid, a Taylor-Green vortex, volume correction), second order on the smooth "
+		"ones except next to cut-cell solids (pressure about second order, velocity about first order on the faces beside "
+		"the cut cells); it does not bound the error of a given bake and does not cover "
 		"spray, thin sheets or any feature below about two cells, moving solids, viscosity, surface tension, or the accuracy "
 		"of large-deformation flows (the interface is advanced with the step-start velocity, first order in time for "
 		"nonlinear transport).";
@@ -789,7 +800,11 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 				stop_ = false;
 				return Done(result, AdvanceResult::Status::Stopped);
 			}
-			if (progress && !progress->Report(s_.t, end, std::string())) return Done(result, AdvanceResult::Status::Stopped);
+			// The safeguard's count (StepStats::clamped totals of this run; zero in the
+			// robustness sweep since m7a.2) in the progress detail, as cloth reports its solver counts.
+			if (progress && !progress->Report(s_.t, end, "steps " + std::to_string(model_.steps) + ", clamped faces " +
+				std::to_string(model_.clampedFaces) + " in " + std::to_string(model_.clampedSteps) + " steps"))
+				return Done(result, AdvanceResult::Status::Stopped);
 			const double tn = s_.segJ + 1 == s_.segN ? s_.segTarget :
 				s_.segStart + (s_.segTarget - s_.segStart)*static_cast<double>(s_.segJ + 1)/static_cast<double>(s_.segN);
 			StepStats stats;
