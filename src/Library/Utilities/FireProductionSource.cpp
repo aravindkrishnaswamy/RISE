@@ -359,6 +359,8 @@ namespace RISE
 				const double volume=std::pow(static_cast<double>(request.shape.cellWidthM),3.0);
 				std::vector<double> cellVolume(cells,volume);
 				std::vector<MethaneSourcePacket> packets;RadiationEscapeFactor factor;
+				const bool floorRadiation=fireCase.derived.floorEmissivity>0.0;
+				MethaneFloorRadiationSources floorSources;
 				if(!BuildFrozenMethaneSourcePackets(sourceBeginning,reactions,cellVolume,
 					fireCase.derived.pilotAmbientTemperatureK,
 					fireCase.derived.referenceHeatReleaseRateW,
@@ -366,11 +368,10 @@ namespace RISE
 					fuel,fuel,opacity,packets,factor,error,request.workerCount,!inertPlume,
 					MethaneSootRadiativeFractionCapSetting(),MethaneSootSheetOxidationSetting(),0,
 					MethaneSootSelfAbsorptionSetting(),request.shape.nx,request.shape.ny,
-					request.shape.nz))return false;
+					request.shape.nz,floorRadiation?&floorSources:nullptr))return false;
 				// r270: the radiatively adiabatic floor returns its convective flux
 				// to the first gas layer as a frozen energy dose, q/dz, before the
 				// expansion target is derived from the packet.
-				const bool floorRadiation=fireCase.derived.floorEmissivity>0.0;
 				const std::size_t floorFaces=request.shape.nx*request.shape.ny;
 				std::vector<double> floorHeating,floorIrradiance,floorWall,floorFlux;
 				if(!floorRadiation){
@@ -381,13 +382,18 @@ namespace RISE
 					if(request.floorAbsorbingFaceMask.size()!=floorFaces||
 						request.floorTangentialSpeedMPerS.size()!=floorFaces)return Fail(error,
 						"production canonical source floor radiation inputs are malformed");
-					std::vector<double> emission(cells);
-					for(std::size_t cell=0u;cell<cells;++cell)
-						emission[cell]=packets[cell].radiativeCoolingWPerM3;
+					std::vector<double> emission=std::move(floorSources.gasExchangeWPerM3);
+					if(emission.empty()){
+						emission.resize(cells);
+						for(std::size_t cell=0u;cell<cells;++cell)
+							emission[cell]=packets[cell].radiativeCoolingWPerM3;
+					}
 					const double width=static_cast<double>(request.shape.cellWidthM);
 					if(!ComputeFloorIrradianceWPerM2(request.shape.nx,request.shape.ny,
 						request.shape.nz,width,emission,request.workerCount,floorIrradiance,error))
 						return false;
+					for(std::size_t face=0;face<floorSources.downwardSootWPerM2.size();++face)
+						floorIrradiance[face]+=floorSources.downwardSootWPerM2[face];
 					floorHeating.assign(cells,0.0);floorWall.assign(floorFaces,0.0);
 					floorFlux.assign(floorFaces,0.0);
 					std::vector<unsigned char> faceFailed(floorFaces,0u);

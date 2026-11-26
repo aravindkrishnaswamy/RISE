@@ -318,6 +318,18 @@ double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
 			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK));
 }
 
+float RISE::FireCase::ProductionScalarVremanOverride()
+{
+	static const float coefficient=[](){
+		const char* text=std::getenv("RISE_FIRE_SCALAR_VREMAN_CV");
+		if(!text||!*text)return -1.0f;
+		char* end=nullptr;
+		const float value=std::strtof(text,&end);
+		return *end=='\0'&&std::isfinite(value)&&value>=0.0f?value:-1.0f;
+	}();
+	return coefficient;
+}
+
 double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
 	const double reducedGravity,const double diffusivity,const double previous)
 {

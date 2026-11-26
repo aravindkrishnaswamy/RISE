@@ -60,7 +60,7 @@ namespace RISE
 		bool hostMemoryRetentionRED=false;
 	};
 
-	//! One accepted step seen by FireRunPersistenceOptions::acceptedStepRendezvous
+	//! One accepted step (or the time-zero frame) seen by FireRunPersistenceOptions::acceptedStepRendezvous
 	//! (simulation M2 track C).  Valid only during the call; `values` and
 	//! `checkpoint` refer to the driver's live state.
 	struct FireRunStepRendezvous
@@ -77,7 +77,8 @@ namespace RISE
 		//! Serializes the current accepted state exactly as SaveMethaneRunCheckpoint
 		//! (version 13) would write it, without recording a checkpoint step.  It
 		//! may be called from another thread while the driver thread is blocked
-		//! inside the rendezvous, and only then.
+		//! inside the rendezvous, and only then. Null for the time-zero frame; the
+		//! initial state can be regenerated from the configuration.
 		const std::function<bool(RISECBOR64::Bytes&,std::string&)>* checkpoint=nullptr;
 	};
 

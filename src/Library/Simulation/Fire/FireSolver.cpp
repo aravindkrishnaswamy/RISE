@@ -824,11 +824,15 @@ bool FireSolver::Restore(const Bytes& checkpoint,std::string& error)
 	if (size!=fireBytes || RISECBOR64::SHA256Hex(checkpoint.data(),fireBytes)!=digest)
 		return Fail(error,"fire solver checkpoint state digest mismatch");
 	if (kind=="initial") {
-		if (fireBytes!=0 || next!=0) return Fail(error,"invalid initial fire solver checkpoint");
+		if (fireBytes!=0 || steps!=0 || time!=0.0 || (next!=0 && !(originS_==0.0 && next==1)))
+			return Fail(error,"invalid initial fire solver checkpoint");
 		// Nothing was accepted yet: begin the run again from an empty directory.
 		std::error_code ec;
 		for (const auto& entry : fs::directory_iterator(side_,ec)) fs::remove_all(entry.path(),ec);
-		return Start(error);
+		if (!Start(error)) return false;
+		std::lock_guard<std::mutex> lock(mutex_);
+		next_=static_cast<std::int64_t>(next);
+		return true;
 	}
 	if (kind!="running" || fireBytes==0 || next>frames_) return Fail(error,"invalid fire solver checkpoint state");
 	if (!RISECBOR64::Encode(*t.Find("values"),supplement_,&error)) return false;
@@ -858,6 +862,8 @@ bool FireSolver::OnStep(const FireRun::FireRunStepRendezvous& step)
 	time_=step.simulationTimeS;
 	steps_=step.acceptedSteps;
 	if (abandon_) return false;
+	// Rebuilding from the seed recreates the legacy file. The cache already owns this frame.
+	if (step.framePublished && step.acceptedSteps==0 && next_==1) return true;
 	if (!step.framePublished && !(stop_.load() && !step.lastStep)) return true;
 	parked_=&step;
 	parkedFrame_=step.framePublished;
@@ -1033,7 +1039,8 @@ bool FireSolver::Checkpoint(Bytes& state,std::string& error)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	state.clear();
-	if (phase_==Phase::Ready && !restored_) return AppendTrailer(state,"initial",V::MapValue({}),0,error);
+	if ((phase_==Phase::Ready && !restored_) || (phase_==Phase::Parked && steps_==0))
+		return AppendTrailer(state,"initial",V::MapValue({}),0,error);
 	if (phase_==Phase::Ready) {
 		// Restored but not advanced yet: the staged bytes are the state.
 		std::ifstream in(side_/restoreName,std::ios::binary);

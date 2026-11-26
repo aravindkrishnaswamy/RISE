@@ -1142,6 +1142,26 @@
 				transport,FireStateProducerPrecision::Binary64,evaluations,error,workerCount);
 		}
 
+		// Match the resident WALE invariant, including the dilatation of reacting cells.
+		inline double WallEddyViscosity3D(const double g[3][3],const double dx)
+		{
+			double strain[3][3],rotation[3][3],s2=0.0,o2=0.0;
+			for(unsigned i=0;i<3;++i)for(unsigned j=0;j<3;++j){
+				strain[i][j]=0.5*(g[i][j]+g[j][i]);
+				rotation[i][j]=0.5*(g[i][j]-g[j][i]);
+				s2+=strain[i][j]*strain[i][j];
+				o2+=rotation[i][j]*rotation[i][j];
+			}
+			double invariant=0.0;
+			for(unsigned i=0;i<3;++i)for(unsigned j=0;j<3;++j)
+				for(unsigned k=0;k<3;++k)for(unsigned l=0;l<3;++l)
+					invariant+=strain[i][k]*strain[k][j]*rotation[j][l]*rotation[l][i];
+			const double sd2=std::max(0.0,(s2*s2+o2*o2)/6.0+(2.0/3.0)*s2*o2+2.0*invariant);
+			const double denominator=std::pow(s2,2.5)+std::pow(sd2,1.25);
+			const double width=0.60*dx;
+			return denominator>0.0?width*width*std::pow(sd2,1.5)/denominator:0.0;
+		}
+
 		inline bool BuildOpenStageTransportEvaluations3D(
 			const PeriodicMACShape& shape,
 			const std::vector<ConservativeVector>& state,
@@ -1156,7 +1176,10 @@
 			std::string* error=0,
 			const unsigned int workerCount=1u,
 			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0,
-			const bool compactDiagonal=false
+			const bool compactDiagonal=false,
+			const float scalarVremanOverride=-1.0f,
+			const bool nearWallWale=false,
+			std::vector<double>* configuredStepDiffusivities=0
 			)
 		{
 			const std::size_t count=shape.CellCount();
@@ -1174,6 +1197,11 @@
 					faceVelocity.component[component][OpenUpperFaceForCell3D(shape,cell,component)]);
 			}
 			evaluations.assign(count,CellTransportEvaluation());
+			const bool configured=configuredStepDiffusivities&&!dns&&(nearWallWale||scalarVremanOverride>=0.0f);
+			if(configuredStepDiffusivities){
+				if(configured)configuredStepDiffusivities->assign(count,0.0);
+				else configuredStepDiffusivities->clear();
+			}
 			const double widths[3]={shape.cellWidthM,shape.cellWidthM,shape.cellWidthM};
 			auto boundaryKind=[&](const unsigned int side,const std::size_t x,
 				const std::size_t y,const std::size_t z){
@@ -1237,12 +1265,38 @@
 					}
 				}
 				std::string cellError;
-				const bool evaluated=molecularEvaluations?
-					EvaluateCellTransportFromMolecular((*molecularEvaluations)[cell],gradient,
-						widths,dns,transport,evaluations[cell],&cellError):
-					EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
-						transport,producerPrecision,evaluations[cell],&cellError);
-				if(!evaluated){
+				CellMolecularTransportEvaluation molecular;
+				if(molecularEvaluations)molecular=(*molecularEvaluations)[cell];
+				else if(!EvaluateCellMolecularTransport(physical,thermochemistry,transport,
+					producerPrecision,molecular,&cellError)){
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;}
+				CellTransportEvaluation& evaluation=evaluations[cell];
+				if(!EvaluateCellTransportFromMolecular(molecular,gradient,widths,dns,transport,
+					evaluation,&cellError)){
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;}
+				if(!configured)continue;
+				// These coefficients bound the explicit update. The chemistry mixing
+				// model deliberately keeps its independent transport record.
+				const std::size_t xyz[]={cell%shape.nx,(cell/shape.nx)%shape.ny,cell/(shape.nx*shape.ny)};
+				const std::size_t extent[]={shape.nx,shape.ny,shape.nz};
+				bool wall=false;
+				if(nearWallWale)for(unsigned axis=0;axis<3;++axis)
+					wall=wall||(xyz[axis]==0&&boundary.kind[2*axis]==AdiabaticWallBoundary3D)||
+						(xyz[axis]+1==extent[axis]&&boundary.kind[2*axis+1]==AdiabaticWallBoundary3D);
+				const double momentumEddy=wall?WallEddyViscosity3D(gradient,shape.cellWidthM):
+					evaluation.eddyViscosityM2PerS;
+				double scalarEddy=momentumEddy;
+				if(scalarVremanOverride==0.0f)scalarEddy=0.0;
+				else if(!wall&&scalarVremanOverride>0.0f)
+					scalarEddy*=static_cast<double>(scalarVremanOverride)/transport.VremanCv();
+				const double molecularD=evaluation.molecularDiffusivityM2PerS;
+				const double diffusivity=std::max({
+					molecularD+scalarEddy/transport.TurbulentSchmidt(),
+					molecularD+scalarEddy/transport.TurbulentPrandtl(),
+					evaluation.molecularViscosityPaS/molecular.gasDensityKGPerM3+momentumEddy});
+				(*configuredStepDiffusivities)[cell]=diffusivity;
+				if(!std::isfinite(diffusivity)){
+					cellError="fire solver configured transport overflowed";
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				}

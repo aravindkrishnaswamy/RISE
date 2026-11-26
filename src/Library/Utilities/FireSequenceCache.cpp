@@ -384,7 +384,8 @@ bool FireSequenceManifest::AttachSolverCache(const std::shared_ptr<Simulation::C
 	const std::string& directory,std::string& error)
 {
 	const auto& d=snap->Description();
-	if(d.producerVersion!=FireMethaneSolverVersion) return Fail(error,"unsupported fire solver cache version");
+	// Version 1 uses the same grid and receipt formats and remains playable.
+	if(d.producerVersion!="1" && d.producerVersion!=FireMethaneSolverVersion) return Fail(error,"unsupported fire solver cache version");
 	const auto digest=RISECBOR64::SHA256Hex(d.physicalRecords);
 	if(!envelopeDigest_.empty() && digest!=envelopeDigest_)
 		return Fail(error,"native cache source changed; reopen the simulation");

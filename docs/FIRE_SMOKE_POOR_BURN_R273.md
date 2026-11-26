@@ -573,7 +573,7 @@ Mean of 23.97–24.90 s (16 frames), same frames as the control and run A.
   `ComputeMethaneSootColumnDeposit` sends a sixth along ±x, ±y, ±z; every cell crossed absorbs `1 − exp(−κ dx)` of
   what arrives. The deposit is added as a frozen energy dose after the implicit loss, from the emission realised at
   the end-of-step temperature, so absorbers gain exactly what emitters lost. The packet's radiative cooling is the
-  net (it can be negative); the floor irradiance and the run's radiative fraction therefore see only what escapes.
+  net (it can be negative), so the run's radiative fraction counts escaping power. The floor combines optically thin gas irradiance with the downward soot flux that leaves each column after absorption.
 - Same limits as §6.6 otherwise: soot column only, six directions, black cold domain edges, Planck mean.
 - Tests: the sweep returns exactly what the column escape withholds; on two cells the hot one loses more, the
   cooler one gains, the ledger closes. All ten fire test programs pass.

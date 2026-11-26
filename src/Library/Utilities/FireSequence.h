@@ -31,7 +31,7 @@ namespace RISE
 		// envelope without a frame list (LoadFrameTemplate); fire_medium reads
 		// such a cache directly (AttachCache).
 		constexpr const char* FireMethaneSolverId = "fire.methane";
-		constexpr const char* FireMethaneSolverVersion = "1";
+		constexpr const char* FireMethaneSolverVersion = "2";
 		constexpr const char* FireMethaneFrameReceiptFormat = "rise.fire.methane.frame.v1";
 
 		bool CurrentRendererBuildIdentity(

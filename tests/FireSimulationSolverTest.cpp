@@ -3146,6 +3146,54 @@ int main()
 	Check(wallLES&&openLES&&lesBoundaryDifference>0.0,
 		"V2 open LES/Vreman transport consumes boundary-aware wall and pressure-open velocity ghosts");
 
+	// Linear stagnation flow, dx=1: g=diag(1,-1,0) in the centre and over the
+	// central wall face, giving unit-coefficient Vreman viscosity 1/sqrt(2).
+	{
+		OpenMACField3D strainVelocity;
+		for(unsigned axis=0;axis<3;++axis){
+			strainVelocity.component[axis].assign(OpenMACFaceCount3D(compatibilityShape,axis),0.0);
+			for(std::size_t z=0;z<3u+(axis==2);++z)
+				for(std::size_t y=0;y<3u+(axis==1);++y)
+					for(std::size_t x=0;x<3u+(axis==0);++x)
+						strainVelocity.component[axis][OpenMACFaceIndex3D(compatibilityShape,axis,x,y,z)]=
+							axis==0?static_cast<double>(x)-1.5:(axis==1?1.5-static_cast<double>(y):0.0);
+		}
+		const std::vector<double> temperature(compatibilityShape.CellCount(),800.0);
+		const std::size_t middle=13u,bed=4u;
+		OpenBoundaryConfig3D boundary=lesOpenBoundary;
+		boundary.kind[4]=AdiabaticWallBoundary3D;
+		std::vector<double> stepD,defaultStepD;
+		std::vector<CellTransportEvaluation> base,changed;
+		const bool baseOK=BuildOpenStageTransportEvaluations3D(compatibilityShape,shearState,temperature,
+			strainVelocity,boundary,false,thermochemistry,transport,FireStateProducerPrecision::Binary64,
+			base,&error,1u,nullptr,true,-1.0f,false,&defaultStepD);
+		bool matches=baseOK&&defaultStepD.empty();
+		for(const float cv:{0.7f,0.0f}){
+			const bool ok=BuildOpenStageTransportEvaluations3D(compatibilityShape,shearState,temperature,
+				strainVelocity,boundary,false,thermochemistry,transport,FireStateProducerPrecision::Binary64,
+				changed,&error,1u,nullptr,true,cv,true,&stepD);
+			if(!ok||!baseOK||stepD.size()!=compatibilityShape.CellCount()){matches=false;continue;}
+			for(const std::size_t cell:{middle,bed}){
+				const bool wall=cell==bed;
+				const double wale=0.36*std::pow(2.0/3.0,1.5)/
+					(std::pow(2.0,2.5)+std::pow(2.0/3.0,1.25));
+				const double momentumEddy=wall?wale:transport.VremanCv()/std::sqrt(2.0);
+				const double scalarEddy=cv==0.0f?0.0:(wall?wale:cv/std::sqrt(2.0));
+				const auto& b=base[cell];
+				const double expected=std::max({
+					b.molecularDiffusivityM2PerS+scalarEddy/transport.TurbulentSchmidt(),
+					b.molecularDiffusivityM2PerS+scalarEddy/transport.TurbulentPrandtl(),
+					b.molecularViscosityPaS/ownerPhysical.GasDensity()+momentumEddy});
+				matches=matches&&Near(stepD[cell],expected,1.0e-12)&&
+					Near(FireCase::SelectTimeStepS(1.0,0.0,0.0,stepD[cell],0.0),1.0/(8.0*expected),1.0e-12)&&
+					changed[cell].totalDiffusivityM2PerS==b.totalDiffusivityM2PerS&&
+					changed[cell].eddyViscosityM2PerS==b.eddyViscosityM2PerS;
+			}
+		}
+		Check(matches,"scalar override bounds the explicit timestep in the interior and WALE wall layer "
+			"while chemistry retains its transport coefficients");
+	}
+
 	// The same owning open flux path must admit CH4 supplied by a masked bed;
 	// exact-zero canonicalization applies only when no boundary is a source.
 	OpenFluxPair3D maskedOwnerFlux;
@@ -5682,6 +5730,18 @@ int main()
 		sootStep.primaryEligible=true;sootStep.sootOxidationEnabled=true;
 		const MethaneCellState sootyHot=ProductRichMixtureLineState(fuel,thermochemistry,0.055,1500.0);
 		const MethaneCellState sootyWarm=ProductRichMixtureLineState(fuel,thermochemistry,0.055,600.0);
+		// Burn suspended carbon with primary combustion disabled. The energy
+		// inferred from carbon loss must appear in whole-fire HRR, while the
+		// exported gas reaction stays dark.
+		MethaneReactionStep burnoutStep=sootStep;
+		burnoutStep.primaryEligible=false;
+		MethaneSourcePacket burnout;
+		const bool burnoutOK=BuildMethaneReactionPacket(sootyHot,fuel,burnoutStep,burnout,&error);
+		const double carbonLoss=-burnout.constituentDelta[MethaneCarbon];
+		Check(burnoutOK && carbonLoss>0.0 && burnout.gasHeatReleaseWPerM3==0.0 &&
+			Near(burnout.TotalHeatReleaseWPerM3()*burnoutStep.deltaTimeS,
+				carbonLoss*fuel.SootHeatReleaseJPerKGCarbon(),2.0e-15),
+			"total chemical heat includes pure soot oxidation with zero gas reaction");
 		const std::vector<MethaneCellState> sootCells={sootyHot,sootyWarm};
 		const std::vector<MethaneReactionStep> sootSteps={sootStep,sootStep};
 		const std::vector<double> sootVolumes={1.0,2.0};
@@ -5862,6 +5922,27 @@ int main()
 				sootOnlyCooling>=0.5*MethaneSootExchangeWPerM3(sootCoefficientHot,sootOnlyEnd.temperatureK,300.0)*(1.0-1.0e-12)&&
 				sootOnlyEnd.constituent==sootyHot.constituent,
 				"r273 separate soot weight: with no gas weight the implicit sink is the weighted soot law, bracketed by its end values");
+			// Cool fully burned lean methane/air after extinction with no remaining soot.
+			const double burnedFraction=0.01;
+			std::array<double,MethaneSpeciesCount> products={};
+			for(std::size_t species=0;species<products.size();++species)
+				products[species]=(1.0-burnedFraction)*fuel.AmbientMassFractions()[species]+
+					burnedFraction*(fuel.InjectedMassFractions()[species]+fuel.PrimaryReactionDelta()[species]);
+			const MethaneCellState hotProducts=StateAtTemperature(products,burnedFraction,1000.0,thermochemistry);
+			MethaneReactionStep coolingStep;
+			coolingStep.deltaTimeS=0.001;coolingStep.mixingTimeS=1.0;
+			std::vector<MethaneSourcePacket> gasPackets,absorptionPackets;
+			RadiationEscapeFactor coolingFactor;
+			bool cleanCooling=BuildFrozenMethaneSourcePackets({hotProducts},{coolingStep},{1.0},300.0,600.0,
+				chi,false,fuel,thermochemistry,opacity,gasPackets,coolingFactor,&error,1u,true,-1.0,0,0,0)&&
+				gasPackets[0].gasHeatReleaseWPerM3==0.0&&gasPackets[0].radiativeCoolingWPerM3>0.0;
+			for(int mode=1;mode<=2;++mode){
+				cleanCooling=cleanCooling&&BuildFrozenMethaneSourcePackets({hotProducts},{coolingStep},{1.0},
+					300.0,600.0,chi,false,fuel,thermochemistry,opacity,absorptionPackets,coolingFactor,
+					&error,1u,true,1.0,0,0,mode,1u,1u,1u)&&
+					absorptionPackets[0].sensibleEnergyDeltaJPerM3==gasPackets[0].sensibleEnergyDeltaJPerM3;
+			}
+			Check(cleanCooling,"soot-free hot products cool at the gas-only rate in both self-absorption modes");
 			// Grid pass on two unit cells (a 2x1x1 grid, 1 m cells).
 			const std::vector<double> unitVolumes={1.0,1.0};
 			double gasOnly=0.0,sootThin=0.0,sootEscaping=0.0,unitHeat=0.0;bool unitOracle=true;
@@ -5955,11 +6036,21 @@ int main()
 				!ComputeMethaneSootColumnDeposit(1u,1u,2u,0.5,{0.0,1.0},{1.0,-1.0},ignoredDeposit)&&
 				!ComputeMethaneSootColumnDeposit(1u,1u,2u,0.5,{0.0,1.0},{1.0},ignoredDeposit),
 				"r273 six-flux soot deposit absorbs the slab's share behind a slab and returns exactly what the column escape withholds");
+			// Same slab placed below or above the emitter; only the former can shade the floor.
+			std::vector<double> belowFloor,aboveFloor;
+			const bool floorSweep=ComputeMethaneSootColumnDeposit(1,1,3,0.5,
+				{slab/0.5,0.0,0.0},{0.0,6.0,0.0},slabDeposit,&error,&belowFloor)&&
+				ComputeMethaneSootColumnDeposit(1,1,3,0.5,
+				{0.0,0.0,slab/0.5},{0.0,6.0,0.0},slabDeposit,&error,&aboveFloor);
+			Check(floorSweep&&belowFloor.size()==1&&aboveFloor.size()==1&&
+				Near(belowFloor[0],0.5*std::exp(-slab),1.0e-15)&&aboveFloor[0]==0.5,
+				"only soot between the emitter and floor attenuates the downward face flux");
+			MethaneFloorRadiationSources depositFloor;
 			std::vector<MethaneSourcePacket> unitDeposit;RadiationEscapeFactor unitDepositFactor;
 			double unitDepositApplied=0.0,unitDepositCooling=0.0;
 			const bool unitDepositBuilt=unitBuilt&&BuildFrozenMethaneSourcePackets(sootCells,sootSteps,
 				unitVolumes,300.0,600.0,chi,false,fuel,thermochemistry,opacity,unitDeposit,
-				unitDepositFactor,&error,1u,true,1.0,0,&unitDepositApplied,2,2u,1u,1u);
+				unitDepositFactor,&error,1u,true,1.0,0,&unitDepositApplied,2,2u,1u,1u,&depositFloor);
 			if(!unitDepositBuilt)std::printf("r273 deposit diagnostic: %s\n",error.c_str());
 			bool unitDepositChemistry=unitDepositBuilt;
 			for(std::size_t cell=0;unitDepositBuilt&&cell<2u;++cell){
@@ -5967,6 +6058,18 @@ int main()
 				unitDepositChemistry=unitDepositChemistry&&
 					unitDeposit[cell].constituentDelta==unitOff[cell].constituentDelta;
 			}
+			// One z layer: each column sends a sixth of its leaving soot to the floor.
+			// Gas exchange plus leaving soot less lateral deposit must close the cell's ledger.
+			bool floorLedger=unitDepositBuilt&&depositFloor.gasExchangeWPerM3.size()==2&&
+				depositFloor.downwardSootWPerM2.size()==2;
+			for(std::size_t cell=0;floorLedger&&cell<2;++cell){
+				const double downward=depositFloor.downwardSootWPerM2[cell];
+				const double lateralDeposit=depositFloor.downwardSootWPerM2[1-cell]*
+					-std::expm1(-unitKappa[cell]);
+				floorLedger=downward>0.0&&Near(unitDeposit[cell].radiativeCoolingWPerM3,
+					depositFloor.gasExchangeWPerM3[cell]+6.0*downward-lateralDeposit,1.0e-7);
+			}
+			Check(floorLedger,"floor receives directional soot and gas exchange before inter-cell deposition");
 			const bool unitDepositOK=unitDepositChemistry&&unitDepositApplied==unitSelfApplied&&
 				unitDepositFactor.accepted==unitSelfFactor.accepted&&
 				unitDeposit[0].radiativeCoolingWPerM3>unitSelf[0].radiativeCoolingWPerM3&&

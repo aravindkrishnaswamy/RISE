@@ -16,6 +16,9 @@ namespace RISE
 
 	namespace FireCase
 	{
+		// Negative means the transport record supplies the scalar coefficient.
+		float ProductionScalarVremanOverride();
+
 		struct EnvelopeKnot { double timeS=0.0, value=0.0; };
 		struct AuthoredV1
 		{

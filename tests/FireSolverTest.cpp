@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -490,6 +491,70 @@ void CheckBake(const fs::path& root, const fs::path& cache)
 #endif
 }
 
+// The bound is one binary64 ULP below the third nominal output. The binary32
+// event step may round across that time; the schedule must still have two entries.
+void CheckFrameClockBoundaries(const fs::path& root)
+{
+	const auto parameters = root/"clock.json";
+	WriteText(parameters, "{\"tier\":6,\"frame_origin_s\":0,\"end_time_s\":0.12499999999999999}");
+	const auto cache = root/"clock", resumed = root/"clock-resumed";
+	const int code = Bake(parameters, cache, root/"clock.log");
+	Check(code == WorkerFinished, "zero-origin bake ends just before the third scheduled frame", ReadText(root/"clock.log"));
+	if (code != WorkerFinished) return;
+	CacheSnapshot snap;
+	std::string error;
+	Check(CacheSnapshot::Open(cache, budget, snap, error) && snap.Complete() && snap.Entries().size() == 2 &&
+		snap.Entries()[0].time == 0.0 && snap.Entries()[1].time >= 0.0625 &&
+		snap.Entries()[1].time <= std::nextafter(0.0625f, 1.0f) &&
+		!fs::exists(cache/"legacy"/"checkpoints"/"frame_00002.vdb"),
+		"initial frame is at zero and outward step rounding never publishes the excluded frame", error);
+	Implementation::FireSequenceManifest native;
+	Implementation::FireSequencePreparedFrame initial;
+	bool ambient = native.LoadPlaybackFile((cache/"manifest.cbor").string(), error) && native.LoadFrame(0, initial, error);
+	for (const auto* name : {"temperature", "reaction", "velocity", "carbon"}) {
+		const auto channel = initial.channels.find(name);
+		const double expected = std::strcmp(name, "temperature") == 0 ? 300.0 : 0.0;
+		ambient = ambient && channel != initial.channels.end() && !channel->second.values.empty() &&
+			std::all_of(channel->second.values.begin(), channel->second.values.end(),
+				[expected](double value) { return value == expected; });
+	}
+	Check(ambient, "all initial voxels are 300 K gas at rest with zero heat release and soot", error);
+#if defined(RISE_ENABLE_OPENVDB)
+	FireRun::MethaneRunCheckpoint finalState;
+	Check(FireRun::LoadMethaneRunCheckpoint(cache/"legacy"/"production_final.checkpoint", finalState, error) &&
+		finalState.simulationTimeS >= std::nextafter(0.125, 0.0) &&
+		finalState.simulationTimeS <= std::nextafter(0.125f, 1.0f),
+		"the final state reaches the requested window end within binary32 event rounding", error);
+#endif
+	const int stopped = Bake(parameters, resumed, root/"clock-stop.log", {"--stop-after-frames", "1"});
+	Check(stopped == WorkerStopped, "checkpoint immediately after the initial frame", ReadText(root/"clock-stop.log"));
+	if (stopped != WorkerStopped) return;
+	const int continued = Run({"--worker", "resume", resumed.string()}, {}, root/"clock-resume.log");
+	Check(continued == WorkerFinished && Sealed(resumed) == Sealed(cache) &&
+		LegacyFrames(resumed/"legacy") == LegacyFrames(cache/"legacy"),
+		"resuming at the time-zero frame reproduces both frames without duplicating the initial one",
+		ReadText(root/"clock-resume.log"));
+
+	struct WindowCase { const char* label; const char* end; std::size_t count; };
+	for (const WindowCase edge : {WindowCase{"early", "0.03", 1}, WindowCase{"exact", "0.125", 3},
+			WindowCase{"above", "0.12500000000000003", 3}}) {
+		const auto edgeCache = root/(std::string("clock-") + edge.label);
+		const auto log = root/(std::string("clock-") + edge.label + ".log");
+		WriteText(parameters, std::string("{\"tier\":6,\"frame_origin_s\":0,\"end_time_s\":") + edge.end + "}");
+		const int edgeCode = Bake(parameters, edgeCache, log);
+		CacheSnapshot edgeSnapshot;
+		bool correct = edgeCode == WorkerFinished && CacheSnapshot::Open(edgeCache, budget, edgeSnapshot, error) &&
+			edgeSnapshot.Complete() && edgeSnapshot.Entries().size() == edge.count;
+		for (std::size_t index = 0; correct && index < edge.count; ++index) {
+			const float scheduled = static_cast<float>(index) * 0.0625f;
+			const double actual = edgeSnapshot.Entries()[index].time;
+			correct = actual >= scheduled && actual <= std::nextafter(scheduled, 1.0f);
+		}
+		Check(correct, std::string("zero-origin window has the scheduled frames at end ") + edge.end,
+			error + ReadText(log));
+	}
+}
+
 void BakeAndResume(const fs::path& root, bool extended)
 {
 	const auto parameters = root/"window.json";
@@ -613,7 +678,10 @@ int main(int argc, char** argv)
 	try {
 		fs::create_directories(root);
 		Configuration(root, capability.available);
-		if (capability.available) BakeAndResume(root, extended);
+		if (capability.available) {
+			CheckFrameClockBoundaries(root);
+			BakeAndResume(root, extended);
+		}
 		else std::cout << "SKIP: fire bakes need a Metal device (" << capability.structuredError << ")\n";
 	} catch (const std::exception& e) {
 		++failures;

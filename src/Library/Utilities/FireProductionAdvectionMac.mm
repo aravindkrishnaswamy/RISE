@@ -650,9 +650,7 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 			parameters.turbulentSchmidt=static_cast<float>(transport.TurbulentSchmidt());
 			// r271 diagnostic (opt-in RISE_FIRE_SCALAR_VREMAN_CV=<C_v>=0): overrides the scalar (heat/species)
 			// Vreman coefficient, 0 switching scalar SGS diffusion off. Unset keeps the transport record's C_v.
-			static const float scalarVremanOverride=[](){const char* value=std::getenv("RISE_FIRE_SCALAR_VREMAN_CV");
-				if(!value||!*value)return -1.0f;char* end=nullptr;const float parsed=std::strtof(value,&end);
-				return end&&*end=='\0'&&std::isfinite(parsed)&&parsed>=0.0f?parsed:-1.0f;}();
+			const float scalarVremanOverride=FireCase::ProductionScalarVremanOverride();
 			parameters.vremanCoefficient=scalarVremanOverride>=0.0f?scalarVremanOverride:
 				static_cast<float>(transport.VremanCv());
 			parameters.thermochemistryIdentity=ResidentRecordIdentity(thermochemistry.RecordId());

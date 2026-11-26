@@ -3856,16 +3856,19 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
 			FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),packets,escape,&error,8u))return 102;
 		double heatReleaseW=0.0,maximumHeatReleaseWPerM3=0.0,
-			fuelConsumptionKGPerS=0.0;
+			fuelConsumptionKGPerS=0.0,netCarbonConsumptionKGPerS=0.0;
 		for(MethaneSourcePacket& packet:packets){
 			RepresentMethaneSourcePacketBinary32(packet);
 			if(!CertifiedBinary32SourcePacket(packet,fuel))return 103;
 			maximumHeatReleaseWPerM3=std::max(maximumHeatReleaseWPerM3,
-				packet.gasHeatReleaseWPerM3);
-			heatReleaseW+=packet.gasHeatReleaseWPerM3*cellVolume;
+				packet.TotalHeatReleaseWPerM3());
+			heatReleaseW+=packet.TotalHeatReleaseWPerM3()*cellVolume;
 			fuelConsumptionKGPerS+=-packet.constituentDelta[MethaneCH4]*cellVolume/step;
+			netCarbonConsumptionKGPerS+=-packet.constituentDelta[MethaneCarbon]*cellVolume/step;
 		}
 		const double consumptionHeatReleaseW=fuelConsumptionKGPerS*fuel.LowerHeatingValueJPerKG();
+		const double chemicalLedgerW=consumptionHeatReleaseW+
+			netCarbonConsumptionKGPerS*fuel.SootHeatReleaseJPerKGCarbon();
 		// This is a retained-state, last-accepted-dt probe, not a replay of the
 		// next attempted step.  Keep its two-path localization out of production.
 		RISE::FireProductionFrozenMethaneSourceRequest sourceProbe;
@@ -4029,8 +4032,9 @@ static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
 			<<"source_probe_realized_HRR_W "<<heatReleaseW<<"\n"
 			<<"source_probe_fuel_consumption_kg_per_s "<<fuelConsumptionKGPerS<<"\n"
 			<<"source_probe_consumption_times_LHV_W "<<consumptionHeatReleaseW<<"\n"
+			<<"source_probe_chemical_ledger_W "<<chemicalLedgerW<<"\n"
 			<<"source_probe_HRR_relative_ledger_error "<<std::fabs(heatReleaseW-
-				consumptionHeatReleaseW)/std::max(1.0,heatReleaseW)<<"\n"
+				chemicalLedgerW)/std::max(1.0,heatReleaseW)<<"\n"
 			<<"production_wall_history_samples "<<checkpoint.values.productionWallHistoryMS.size()<<"\n"
 			<<"format13_per_step_cost_histories_persisted "
 				<<(wallHistoryPersisted&&deviceHistoryPersisted?"true":"false")<<"\n"
@@ -19280,6 +19284,8 @@ int main(int argc,char** argv)
 		methaneFrameNext.statisticsBoundaryObserved&&
 		methaneFrameNext.firstStatisticsStepStartS==methaneFrameNext.statisticsStartS),
 		"capstone timestep event-splits exactly at 5*t_ft before accumulating empirical rows");
+	const bool allFuelHeatReleased=RISE::FireSim::MethaneGrossSootYieldKGPerKGFuel(
+		FireSimulationMethaneRecord::PhysicalV1())==0.0;
 	const double integratedFuelEnergy=methaneFrameNext.integratedFuelConsumptionKG*
 		FireSimulationMethaneRecord::PhysicalV1().LowerHeatingValueJPerKG();
 	Check(!capstoneArtifactRun||capstoneValidationOnly||(methaneFrameNext.probeTimeS.size()>=64u&&
@@ -19291,9 +19297,9 @@ int main(int argc,char** argv)
 			methaneFrameNext.puffingFrequencyHz>=30.0),
 		"capstone exports thirty measured puffing periods and matches 1.5/sqrt(D) within 20 percent");
 	Check(!capstoneArtifactRun||capstoneValidationOnly||(methaneFrameNext.integratedHeatReleaseJ>0.0&&
-		std::fabs(methaneFrameNext.integratedHeatReleaseJ-integratedFuelEnergy)<=
-			2.0e-10*methaneFrameNext.integratedHeatReleaseJ),
-		"capstone statistics-window HRR equals fuel consumption times record LHV");
+		(!allFuelHeatReleased||std::fabs(methaneFrameNext.integratedHeatReleaseJ-integratedFuelEnergy)<=
+			2.0e-10*methaneFrameNext.integratedHeatReleaseJ)),
+		"capstone integrates positive heat release and closes the fuel-LHV ledger for zero soot yield");
 	Check(!capstoneArtifactRun||capstoneValidationOnly||(
 		std::fabs(methaneFrameNext.integratedRadiativeFraction-0.20)<=0.02&&
 		methaneFrameNext.integratedRadiativeFraction>=0.07&&
@@ -19787,10 +19793,13 @@ int main(int argc,char** argv)
 				<< "mccaffrey_observation=time_averaged_above_reaction_tip_NBSIR_79_1910_Table_1_33_kW_absolute_T_and_u\n"
 				<< "hrr_status=capstone_tier10_evaluated\n"
 				<< "realized_HRR_W=" << methaneFrameNext.realizedHeatReleaseW << "\n"
-				<< "fuel_consumption_times_LHV_W=" << hrrFromFuelW << "\n"
-				<< "HRR_relative_ledger_error=" << std::fabs(methaneFrameNext.realizedHeatReleaseW-
-					hrrFromFuelW)/std::max(1.0,methaneFrameNext.realizedHeatReleaseW) << "\n"
-				<< "radiative_fraction_status=capstone_tier10_evaluated\n"
+				<< "fuel_consumption_times_LHV_W=" << hrrFromFuelW << "\n";
+			if(allFuelHeatReleased)
+				report << "HRR_relative_ledger_error=" << std::fabs(methaneFrameNext.realizedHeatReleaseW-
+					hrrFromFuelW)/std::max(1.0,methaneFrameNext.realizedHeatReleaseW) << "\n";
+			else
+				report << "HRR_ledger_status=fuel_only_reference_excludes_carbon_storage\n";
+			report << "radiative_fraction_status=capstone_tier10_evaluated\n"
 				<< "declared_chi_r=" << methaneFrameNext.effectiveRadiativeFraction << "\n"
 				<< "realized_step_radiative_fraction=" << methaneFrameNext.realizedRadiativeFraction << "\n"
 				<< "statistics_integrated_heat_release_J=" << methaneFrameNext.integratedHeatReleaseJ << "\n"

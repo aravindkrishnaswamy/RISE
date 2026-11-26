@@ -2320,7 +2320,8 @@ namespace RISE
 		if(persistence.generalResume&&persistence.temporalSnapshotCadenceS>0.0)
 			nextTemporalSnapshotS=nextTemporalSnapshotS+static_cast<double>(temporalSnapshotIndex)*
 				persistence.temporalSnapshotCadenceS;
-		else if(persistence.temporalSnapshotCadenceS>0.0&&simulationTimeS>=nextTemporalSnapshotS)
+		else if(persistence.temporalSnapshotCadenceS>0.0&&simulationTimeS>=nextTemporalSnapshotS&&
+			!(simulationTimeS==0.0&&temporalSnapshotIndex==0u&&nextTemporalSnapshotS==0.0))
 			nextTemporalSnapshotS+=persistence.temporalSnapshotCadenceS*(1.0+
 				std::floor((simulationTimeS-nextTemporalSnapshotS)/
 					persistence.temporalSnapshotCadenceS));
@@ -2335,6 +2336,8 @@ namespace RISE
 					packets[cell].gasHeatReleaseWPerM3);
 				values.carbon[cell]=static_cast<float>(std::max(0.0,
 					states[cell].constituent[MethaneCarbon]));
+				// The initial gas is at rest. The CPU path first produces MAC velocities on step one.
+				if(acceptedSteps==0u){values.velocity[cell]={};continue;}
 				for(unsigned int axis=0u;axis<3u;++axis){
 					const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
 					const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
@@ -2460,6 +2463,20 @@ namespace RISE
 		const double windowEndTimeS=persistence.windowEndTimeS>0.0?persistence.windowEndTimeS:
 			(persistence.windowS>0.0?simulationTimeS+persistence.windowS:
 			std::numeric_limits<double>::infinity());
+		// Frame zero at a zero origin is the initialized state, before ignition or transport.
+		if(!persistence.temporalSnapshotDirectory.empty()&&persistence.temporalSnapshotCadenceS>0.0&&
+			temporalSnapshotIndex==0u&&simulationTimeS==0.0&&nextTemporalSnapshotS==0.0){
+			if(!writeTemporalFrame()){values.structuredError=error;return values;}
+			nextTemporalSnapshotS=persistence.temporalSnapshotCadenceS;
+			if(persistence.acceptedStepRendezvous){
+				FireRunStepRendezvous initial;
+				initial.framePublished=true;
+				initial.values=&values;
+				if(!persistence.acceptedStepRendezvous(initial)){
+					values.structuredError="run abandoned by its host";return values;
+				}
+			}
+		}
 		bool cooperativeStopObserved=false;
 		while(advancedOK&&!productionOnsetStopReached&&
 			(!persistence.projectedHeunCostDiagnostic||acceptedSteps<3u)&&
@@ -2505,12 +2522,15 @@ namespace RISE
 				advanced.velocityMPerS.component[axis].empty()?momentum.component[axis]:
 				advanced.velocityMPerS.component[axis];
 			std::vector<CellTransportEvaluation> cellTransportEvaluations;
+			std::vector<double> configuredStepDiffusivities;
 			advancedOK=BuildOpenStageTransportEvaluations3D(shape,currentConservative,
 				currentTemperature,currentVelocity,config.openBoundary,config.dns,fuel,
 				FireSimulationTransportRecord::OpenV1(),config.transport.producerPrecision,
 				cellTransportEvaluations,&error,workerCount,0,
-				// r271: mixing time and step control see the same nu_t as the Metal transport.
-				persistence.productionMetal&&FireProductionForceMetalCompactViscousStencil());
+				// Match the resident transport stencil. Scalar overrides affect the diffusion bound only.
+				persistence.productionMetal&&FireProductionForceMetalCompactViscousStencil(),
+				persistence.productionMetal?FireCase::ProductionScalarVremanOverride():-1.0f,
+				persistence.productionMetal&&FireProductionForceMetalNearWallWale(),&configuredStepDiffusivities);
 			if(!advancedOK) break;
 			solverPhase="timestep control";
 			profileTransportMS=std::chrono::duration<double,std::milli>(
@@ -2537,11 +2557,12 @@ namespace RISE
 						controlFailureMessage[worker]=cellError;break;
 					}
 					const double gasDensity=states[cell].GasDensity();
-					workerDiffusivity[worker]=std::max({workerDiffusivity[worker],
+					const double cellDiffusivity=configuredStepDiffusivities.empty()?std::max({
 						cellTransport.totalDiffusivityM2PerS,
 						cellTransport.effectiveViscosityPaS/gasDensity,
 						cellTransport.effectiveConductivityWPerMK/
-							(gasDensity*cellTransport.gasCpJPerKGK)});
+							(gasDensity*cellTransport.gasCpJPerKGK)}):configuredStepDiffusivities[cell];
+					workerDiffusivity[worker]=std::max(workerDiffusivity[worker],cellDiffusivity);
 					workerGravity[worker]=std::max(workerGravity[worker],
 						std::max(0.0,9.80665*(ambient.GasDensity()-gasDensity)/gasDensity));
 				}
@@ -2591,8 +2612,21 @@ namespace RISE
 			if((!persistence.temporalSnapshotDirectory.empty()||
 				(persistence.r225RefusalDiagnostic&&
 				 persistence.isolatedExpectedCheckpointDigest==R226CheckpointSHA))&&
-				persistence.temporalSnapshotCadenceS>0.0)
+				persistence.temporalSnapshotCadenceS>0.0&&
+				(persistence.windowEndTimeS==0.0||nextTemporalSnapshotS<=windowEndTimeS))
+			{
+				const double unconstrainedByFrame=eventStep;
 				limitToEvent(nextTemporalSnapshotS);
+				// If the frame and end differ by less than one represented time-step
+				// increment, land on both in one step. Otherwise an exactly hit frame
+				// can leave a sub-roundoff extra step before the window end.
+				if(persistence.windowEndTimeS>nextTemporalSnapshotS&&
+					simulationTimeS+eventStep>=nextTemporalSnapshotS&&simulationTimeS+eventStep<windowEndTimeS&&
+					simulationTimeS+std::nextafter(static_cast<float>(eventStep),
+						std::numeric_limits<float>::infinity())>=windowEndTimeS)
+					eventStep=unconstrainedByFrame;
+			}
+			if(persistence.windowEndTimeS>0.0)limitToEvent(windowEndTimeS);
 			limitToEvent(targetTimeS);
 			if(reportCapstoneProgress&&acceptedSteps<4u)std::fprintf(stderr,
 				"capstone event-step=%0.9g pilot_ceiling=%0.9g ramp_end=%0.9g\n",
@@ -4132,7 +4166,7 @@ namespace RISE
 				double stepFuelConsumptionKGPerS=0.0,centerlineHeatReleaseW=0.0;
 				for(const MethaneSourcePacket& acceptedPacket:packets) {
 					values.pilotEnergyJ+=acceptedPacket.pilotEnergyDeltaJPerM3*cellVolume;
-					stepHeatReleaseW+=acceptedPacket.gasHeatReleaseWPerM3*cellVolume;
+					stepHeatReleaseW+=acceptedPacket.TotalHeatReleaseWPerM3()*cellVolume;
 					stepRadiativeLossW+=acceptedPacket.radiativeCoolingWPerM3*cellVolume;
 					stepFuelConsumptionKGPerS+=-acceptedPacket.constituentDelta[MethaneCH4]*
 						cellVolume/reaction.deltaTimeS;
@@ -4144,7 +4178,7 @@ namespace RISE
 				for(std::size_t z=0;z<shape.nz;++z)for(std::size_t cy=0;cy<centerYCount;++cy)
 					for(std::size_t cx=0;cx<centerXCount;++cx){const std::size_t center=
 						centerXIndex[cx]+shape.nx*(centerYIndex[cy]+shape.ny*z);
-						centerlineHeatReleaseW+=packets[center].gasHeatReleaseWPerM3*cellVolume/
+						centerlineHeatReleaseW+=packets[center].TotalHeatReleaseWPerM3()*cellVolume/
 							centerSampleCount;}
 				const double stepEndS=simulationTimeS+reaction.deltaTimeS;
 				// The r271 inert plume never ignites.
@@ -4201,7 +4235,7 @@ namespace RISE
 						values.stationProbeVerticalVelocityMPerS.push_back(stationVelocityMPerS);
 						for(std::size_t y=0;y<shape.ny;++y)for(std::size_t x=0;x<shape.nx;++x){
 							const std::size_t planeCell=x+shape.nx*(y+shape.ny*z);
-							planeHeatReleaseIntegral[z]+=packets[planeCell].gasHeatReleaseWPerM3*
+							planeHeatReleaseIntegral[z]+=packets[planeCell].TotalHeatReleaseWPerM3()*
 								cellVolume*statisticsDuration;
 						}
 					}
@@ -4267,6 +4301,7 @@ namespace RISE
 				const bool temporalSnapshotDue=
 					!persistence.temporalSnapshotDirectory.empty()&&
 					persistence.temporalSnapshotCadenceS>0.0&&
+					(persistence.windowEndTimeS==0.0||nextTemporalSnapshotS<=windowEndTimeS)&&
 					simulationTimeS>=nextTemporalSnapshotS;
 				const bool finalCheckpointDue=(!moreWork||hostMemoryStop||(persistence.finalCheckpointAtWindowEnd&&
 					simulationTimeS>=windowEndTimeS))&&!persistence.finalCheckpointPath.empty();
@@ -4485,7 +4520,7 @@ namespace RISE
 				}
 				values.velocity[cell]=velocity;
 				if(!packets.empty()) {
-					values.realizedHeatReleaseW+=packets[cell].gasHeatReleaseWPerM3*cellVolume;
+					values.realizedHeatReleaseW+=packets[cell].TotalHeatReleaseWPerM3()*cellVolume;
 					values.fuelConsumptionKGPerS+=-packets[cell].constituentDelta[MethaneCH4]*
 						cellVolume/reaction.deltaTimeS;
 				}
