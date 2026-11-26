@@ -68,7 +68,9 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   findings of the third review on drafts 6 and 3 (fourteen new P1s, the leaf
   selector ruling, measured Cycles differences) and the owner's decisions;
   the designs carry an "After round 3" block and are not redrafted
-- [LIGHTS.md](LIGHTS.md): emitter and light-sampling architecture
+- [LIGHTS.md](LIGHTS.md): emitter and light-sampling architecture;
+  [ENVIRONMENT_SAMPLING.md](ENVIRONMENT_SAMPLING.md) records environment proposal
+  coordinates, PDFs, power and ownership contracts
 - [MIS_HEURISTICS.md](MIS_HEURISTICS.md): PT/BDPT/VCM/MLT MIS choices and
   subsurface-jump partitions
 - [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md): $\eta^2$

@@ -59,12 +59,16 @@ Two consequences of these defaults that bite contributors:
 
 ## 3. The environment map is a light too
 
-An HDR environment radiance map registered via `radiance_map` (on a
-rasterizer chunk or as a per-object override) is sampled by
-[`EnvironmentSampler`](../src/Library/Rendering/EnvironmentSampler.h)
-— a Lambert-cylindrical 2D importance sampler over the map. It hangs
-off `LightSampler::SetEnvironmentSampler` and participates in NEE
-through the same evaluation path as the explicit lights.
+The scene's global environment radiance map is sampled by
+[`EnvironmentSampler`](../src/Library/Rendering/EnvironmentSampler.h), attached
+through `LightSampler::SetEnvironmentSampler`. Its RGB proposal uses equal-area
+azimuth/z cells and participates in NEE with the same density queried by MIS.
+Distinct per-object radiance-map overrides do not gain a global NEE partner.
+An explicit spectral source domain currently uses a uniform world-sphere
+proposal evaluated through the actual NM map. See
+[environment sampling](ENVIRONMENT_SAMPLING.md) for mapping, power, lifetime and
+numeric contracts, and [spectral source proposals](SPECTRAL_SOURCE_PROPOSALS.md)
+for the separately scoped spectral preparation capability.
 
 ## 4. `LuminaryManager` — the area-light registry
 

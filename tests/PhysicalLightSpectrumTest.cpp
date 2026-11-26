@@ -7,6 +7,7 @@
 #include "../src/Library/Lights/PointLight.h"
 #include "../src/Library/Lights/SpotLight.h"
 #include "../src/Library/Lights/DirectionalLight.h"
+#include "../src/Library/Lights/AmbientLight.h"
 #include "../src/Library/Lights/PhysicalLightSpectrum.h"
 #include "../src/Library/Objects/SnapshotLeafClone.h"
 #include "../src/Library/SceneEditor/LightIntrospection.h"
@@ -23,6 +24,7 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <utility>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -485,6 +487,69 @@ void SelectedPhysicalProductControls() {
     }
     bsdf->release();shader->release();objects->release();lights->release();scene->release();
 }
+// Unknown derived lights follow the documented shared snapshot policy: exact
+// object identity preserves overrides, and the acquired reference owns lifetime.
+template<class Base> class SnapshotOverrideLight final: public Base {
+    unsigned int& destroyed;
+public:
+    template<class... Args> SnapshotOverrideLight(unsigned int& count,Args&&... args)
+        : Base(std::forward<Args>(args)...),destroyed(count) {}
+    ~SnapshotOverrideLight() override {++destroyed;}
+    RISEPel emittedRadiance(const Vector3&) const override {return RISEPel(37,41,43);}
+    Scalar emittedRadianceNM(const Vector3&,Scalar) const override {return 37;}
+};
+void SnapshotLightPolicyControls() {
+    const double wavelengths[]={1100,1300},samples[]={4,4};
+    const auto spectrum=PhysicalLightSpectrum::Create(wavelengths,samples,2,"zero");
+    for(int kind=0;kind<4;++kind) {
+        unsigned int destroyed=0;
+        ILightPriv* original=kind==0 ? static_cast<ILightPriv*>(new SnapshotOverrideLight<PointLight>(destroyed,1,RISEPel(0,0,0),false,spectrum)) :
+            kind==1 ? static_cast<ILightPriv*>(new SnapshotOverrideLight<SpotLight>(destroyed,1,Point3(0,0,-1),.4,.8,RISEPel(0,0,0),false,spectrum)) :
+            kind==2 ? static_cast<ILightPriv*>(new SnapshotOverrideLight<DirectionalLight>(destroyed,1,RISEPel(0,0,0),Vector3(0,0,1),spectrum)) :
+            static_cast<ILightPriv*>(new SnapshotOverrideLight<AmbientLight>(destroyed,1,RISEPel(1,1,1)));
+        Check(original->refcount()==1,"custom light starts with one owned reference");
+        const ILight* snapshot=CloneLightForSnapshot(original);
+        Check(snapshot==original,"snapshot retains exact custom light identity [physical-snapshot-subclass]");
+        Check(original->refcount()==2,"unknown light snapshot acquires exactly one reference");
+        original->release();
+        Check(destroyed==0,"snapshot keeps custom light alive after live owner releases");
+        if(snapshot) {
+            Check(snapshot->refcount()==1,"snapshot owns remaining custom light reference");
+            const RISEPel rgb=snapshot->emittedRadiance(Vector3(0,0,-1));
+            Near(rgb.r,37,"snapshot preserves derived red emission");Near(rgb.g,41,"snapshot preserves derived green emission");Near(rgb.b,43,"snapshot preserves derived blue emission");
+            Near(snapshot->emittedRadianceNM(Vector3(0,0,-1),1200),37,"snapshot preserves derived NM emission instead of stored physical SPD");
+            snapshot->release();
+        }
+        Check(destroyed==1,"last snapshot reference destroys custom light exactly once");
+    }
+    for(int kind=0;kind<3;++kind) {
+        ILightPriv* original=nullptr;
+        const bool ok=kind==0 ? RISE_API_CreatePhysicalPointOmniLight(&original,2,wavelengths,samples,"zero",2,false) :
+            kind==1 ? RISE_API_CreatePhysicalPointSpotLight(&original,2,wavelengths,samples,"zero",2,Point3(0,0,2),Point3(0,0,0),.4,.8,false) :
+            RISE_API_CreatePhysicalDirectionalLight(&original,2,wavelengths,samples,"zero",2,Vector3(0,0,1));
+        Check(ok&&original,"ordinary physical snapshot fixture");if(!original) continue;
+        const auto authored=GetPhysicalLightSpectrum(*original);
+        const ILight* snapshot=CloneLightForSnapshot(original);
+        Check(snapshot&&snapshot!=original,"exact built-in physical light still gets independent snapshot");
+        Check(original->refcount()==1,"ordinary light clone does not retain mutable live light");
+        original->release();
+        if(snapshot) {
+            Check(snapshot->refcount()==1&&GetPhysicalLightSpectrum(*snapshot)==authored,"independent built-in snapshot retains immutable spectrum");
+            Near(snapshot->emittedRadianceNM(Vector3(0,0,-1),1200),8,"ordinary physical snapshot emission survives live owner destruction");
+            snapshot->release();
+        }
+    }
+    ILightPriv* ambient=nullptr;RISE_API_CreateAmbientLight(&ambient,2,RISEPel(.2,.3,.4));
+    const ILight* snapshot=CloneLightForSnapshot(ambient);
+    Check(snapshot&&snapshot!=ambient,"exact built-in ambient still gets independent snapshot");
+    if(snapshot) {
+        const Vector3 direction(0,0,1);
+        Near(snapshot->emittedRadiance(direction).r,ambient->emittedRadiance(direction).r,"ordinary ambient RGB snapshot unchanged");
+        Near(snapshot->emittedRadianceNM(direction,500),ambient->emittedRadianceNM(direction,500),"ordinary ambient NM snapshot unchanged");
+        snapshot->release();
+    }
+    ambient->release();
+}
 void SceneControls() {
     const char* kinds[] = {"omni_light","spot_light","directional_light"};
     const char* extra[] = {"position 0 0 2\n","position 0 0 2\ntarget 0 0 0\ninner 20\nouter 40\n","direction 0 0 1\n"};
@@ -557,4 +622,4 @@ void SceneControls() {
     }
 }
 }
-int main() { SourceControls(); DeltaControls(); PhysicalRuntimeControls(); ScaledSourceReviewControls(); PhysicalRangeReviewControls();SelectedPhysicalProductControls(); SceneControls(); std::printf("PhysicalLightSpectrumTest: %d failures\n",failures); return failures ? 1 : 0; }
+int main() { SourceControls(); DeltaControls(); PhysicalRuntimeControls(); ScaledSourceReviewControls(); PhysicalRangeReviewControls();SelectedPhysicalProductControls(); SnapshotLightPolicyControls(); SceneControls(); std::printf("PhysicalLightSpectrumTest: %d failures\n",failures); return failures ? 1 : 0; }

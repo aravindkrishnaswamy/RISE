@@ -1465,17 +1465,37 @@ void LightSampler::RecomputeEnvSelectProbability()
         }
         return;
     }
-	if( bEnvExists ) {
-		const Scalar discArea = PI * cachedSceneRadius * cachedSceneRadius;
-		const Scalar envWeight = pEnvSampler->TotalLuminance() * discArea;
-		const Scalar aliasWeight = static_cast<Scalar>(
-			aliasTable.TotalWeight() );
-		const Scalar totalWeight = envWeight + aliasWeight;
-		cachedEnvSelectProb = ( totalWeight > 0 ) ?
-			( envWeight / totalWeight ) : Scalar( 0 );
-	} else {
-		cachedEnvSelectProb = Scalar( 0 );
-	}
+    const Scalar aliasWeight = static_cast<Scalar>(aliasTable.TotalWeight());
+    if (!RISE::IsFiniteDouble(aliasWeight) || aliasWeight < 0)
+        throw std::invalid_argument("legacy finite-light power proxy is nonfinite or negative");
+    if (bEnvExists) {
+        const Scalar angularPower = pEnvSampler->TotalLuminance();
+        if (!RISE::IsFiniteDouble(angularPower) || !(angularPower > 0) ||
+            !RISE::IsFiniteDouble(cachedSceneRadius))
+            throw std::invalid_argument("legacy environment power/radius proxy is invalid");
+        if (!(aliasWeight > 0)) { cachedEnvSelectProb = 1; return; }
+        // Power products and the final sum can exceed Scalar even though their
+        // ratio is ordinary. Form log masses and a stable logistic ratio.
+        const Scalar logEnvironment = std::log(angularPower)+std::log(PI)+2*std::log(cachedSceneRadius);
+        const Scalar logFinite = std::log(aliasWeight);
+        Scalar probability;
+        if (logEnvironment >= logFinite) {
+            probability = 1/(1+std::exp(logFinite-logEnvironment));
+        } else {
+            const Scalar relative = std::exp(logEnvironment-logFinite);
+            probability = relative/(1+relative);
+        }
+        // Legacy roots reuse/remap the class draw, unlike the independently
+        // drawn spectral-domain conditional. Refuse ratios outside the known
+        // two-Sobol-cell class range instead of rounding a live class to 0/1
+        // or silently changing the authored power-ratio proposal.
+        const Scalar floor = SpectralSourceDomain::MinimumSourceProbability();
+        if (probability < floor || probability > 1-floor)
+            throw std::invalid_argument("legacy mixed-light root ratio exceeds the supported 32-bit Sobol class range");
+        cachedEnvSelectProb = probability;
+    } else {
+        cachedEnvSelectProb = 0;
+    }
 }
 
 //////////////////////////////////////////////////////////////////////

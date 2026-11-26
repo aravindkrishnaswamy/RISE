@@ -6,6 +6,7 @@
 
 #include "pch.h"
 #include "SnapshotLeafClone.h"
+#include <typeinfo>
 
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/ILog.h"
@@ -233,7 +234,11 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 		}
 	};
 
-	if( const PointLight* m = dynamic_cast<const PointLight*>( light ) ) {
+    // Reconstruct exact built-ins only. A derived light may override RGB/NM
+    // emission or other virtual behavior not represented by these accessors;
+    // rebuilding its base would slice it instead of preserving the source.
+	if( typeid(*light) == typeid(PointLight) ) {
+        const auto* m = dynamic_cast<const PointLight*>(light);
 		ILightPriv* clone = 0;
 		clone = new PointLight( m->emissionEnergy(), m->emissionColor(),
 			m->CanGeneratePhotons(), m->GetPhysicalSpectrum() );
@@ -242,7 +247,8 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 			return Restore::Place( clone, *m );
 		}
 	}
-	else if( const SpotLight* m = dynamic_cast<const SpotLight*>( light ) ) {
+	else if( typeid(*light) == typeid(SpotLight) ) {
+        const auto* m = dynamic_cast<const SpotLight*>(light);
 		ILightPriv* clone = 0;
 		clone = new SpotLight( m->emissionEnergy(), m->emissionTarget(),
 			m->emissionInnerAngle(), m->emissionOuterAngle(), m->emissionColor(),
@@ -255,7 +261,8 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 			return Restore::Place( clone, *m );
 		}
 	}
-	else if( const DirectionalLight* m = dynamic_cast<const DirectionalLight*>( light ) ) {
+	else if( typeid(*light) == typeid(DirectionalLight) ) {
+        const auto* m = dynamic_cast<const DirectionalLight*>(light);
 		ILightPriv* clone = 0;
 		clone = new DirectionalLight( m->emissionEnergy(), m->emissionColor(),
 			m->emissionDirection(), m->GetPhysicalSpectrum() );
@@ -264,7 +271,8 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 			return clone;
 		}
 	}
-	else if( const AmbientLight* m = dynamic_cast<const AmbientLight*>( light ) ) {
+	else if( typeid(*light) == typeid(AmbientLight) ) {
+        const auto* m = dynamic_cast<const AmbientLight*>(light);
 		ILightPriv* clone = 0;
 		RISE_API_CreateAmbientLight( &clone, m->emissionEnergy(), m->emissionColor() );
 		if( clone ) {
@@ -273,7 +281,8 @@ const ILight* RISE::Implementation::CloneLightForSnapshot( const ILight* light )
 		}
 	}
 
-	// Unknown out-of-tree ILight type: no factory to rebuild it.  Addref so
+	// Unknown out-of-tree ILight type (including built-in subclasses): no
+    // faithful factory to rebuild its virtual behavior. Addref so
 	// the snapshot keeps it alive; an in-place edit of such a light would
 	// bleed (documented residual, same policy as the baked materials).
 	light->addref();

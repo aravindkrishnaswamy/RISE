@@ -170,6 +170,9 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 		e.shared = elem;
 		e.animated = true;
 		e.typed = 0;
+        // The light clone methods below nonvirtually copy their base class.
+        // Exact built-ins can use them; unknown derived lights must keep
+        // their overrides through the serial path instead of being sliced.
 		if( Object* o = dynamic_cast<Object*>( elem ) ) {
 			if( const char* why = ObjectRefusal( o ) ) {
 				return Fail::Out( f, reason, std::string( "a keyframed object is " ) + why );
@@ -211,22 +214,26 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 				f->camera = c;
 			}
 			continue;
-		} else if( PointLight* l = dynamic_cast<PointLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(PointLight) ) {
+            auto* l = dynamic_cast<PointLight*>(elem);
 			e.kind = kPointLight;
 			e.typed = static_cast<const PointLight*>( l );
-		} else if( SpotLight* l = dynamic_cast<SpotLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(SpotLight) ) {
+            auto* l = dynamic_cast<SpotLight*>(elem);
 			e.kind = kSpotLight;
 			e.typed = static_cast<const SpotLight*>( l );
-		} else if( DirectionalLight* l = dynamic_cast<DirectionalLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(DirectionalLight) ) {
+            auto* l = dynamic_cast<DirectionalLight*>(elem);
 			e.kind = kDirectionalLight;
 			e.typed = static_cast<const DirectionalLight*>( l );
-		} else if( AmbientLight* l = dynamic_cast<AmbientLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(AmbientLight) ) {
+            auto* l = dynamic_cast<AmbientLight*>(elem);
 			e.kind = kAmbientLight;
 			e.typed = static_cast<const AmbientLight*>( l );
 		} else {
 			std::vector<String> params;
 			pAnimator->GetActiveAnimatedParameters( elem, params );
-			std::string why = std::string( "a keyframed " ) + typeid( *elem ).name();
+			std::string why = std::string(dynamic_cast<ILightPriv*>(elem) ? "a keyframed custom light " : "a keyframed ") + typeid(*elem).name();
 			if( !params.empty() ) {
 				why = why + " ('" + std::string( params[0].c_str() ) + "')";
 			}
