@@ -186,6 +186,10 @@ class MeasurementCLI(unittest.TestCase):
         self.assertEqual(a["estimates"]["escaped_reflectance"]["mean"], 0)
         self.assertEqual(a["estimates"]["unresolved_live_weight"]["mean"], 1)
         self.assertEqual(a["estimates"]["accounted_weight"]["mean"], 1)
+        for cell in a["exit_distribution"]["joint_cells"]:
+            self.assertEqual(cell["all_returns"]["mean"], 0)
+            self.assertEqual(cell["all_returns"]["standard_error"], 0)
+            self.assertEqual(cell["all_returns"]["history_count"], 50)
         self.assertEqual(sum(v["count"] for v in a["outcomes"].values()), 50)
         # Partial weighted histories preserve both already-absorbed and live power.
         w = self.run_case(specimen(200), **{"--estimator": "weighted", "--max-transitions": "1"})
@@ -265,7 +269,7 @@ class MeasurementCLI(unittest.TestCase):
     def test_complex_full_child_counters_and_provenance(self):
         p = specimen();p["layers"][1]["particles"] = active_complex()
         a = self.run_case(p, **{"--complex-layout": "explicit-pack-v1", "--post-scatter": "discard", "--histories": "500"})
-        self.assertEqual(a["measurement_version"], "hylios-forward-measure-v4")
+        self.assertEqual(a["measurement_version"], "hylios-forward-measure-v5")
         self.assertEqual(a["complex_layout_policy"], "hylios_complex_explicit_pack_v1")
         self.assertEqual(a["explicit_cli_options"]["--complex-layout"], "explicit-pack-v1")
         convention = a["complex_layout_convention"]
@@ -410,6 +414,131 @@ class MeasurementCLI(unittest.TestCase):
         delta_discard = self.run_case(source, **dict(common, **{"--post-scatter": "discard"}))
         for key in ("outcomes", "aggregate_counters", "estimates", "random_draw_count"):
             self.assertEqual(delta_diagnostic[key], delta_discard[key], key)
+
+    def test_incidence_controls_conventions_and_atomic_validation(self):
+        normal = self.run_case()
+        explicit = self.run_case(**{"--incident-polar-deg": "0", "--incident-azimuth-deg": "473"})
+        for key in ("outcomes", "aggregate_counters", "surface_boundary_counters", "estimates", "random_draw_count", "exit_distribution"):
+            self.assertEqual(normal[key], explicit[key], key)
+        self.assertEqual(normal["incoming_travel_direction"], [0, 0, 1])
+        self.assertEqual(normal["incident_source_direction"], [0, 0, -1])
+        self.assertFalse(explicit["incident_azimuth_defined"])
+        self.assertEqual(explicit["incident_source_azimuth_degrees"], 0)
+        oblique = self.run_case(**{"--incident-polar-deg": "30", "--incident-azimuth-deg": "-90"})
+        self.assertEqual(oblique["incident_source_azimuth_degrees"], 270)
+        for source, travel in zip(oblique["incident_source_direction"], oblique["incoming_travel_direction"]):
+            self.assertEqual(source, -travel)
+        self.assertAlmostEqual(oblique["incident_source_direction"][1], -.5, places=14)
+        self.assertAlmostEqual(oblique["incident_source_direction"][2], -math.sqrt(.75), places=14)
+        for option, value in (("--incident-polar-deg", "-1"), ("--incident-polar-deg", "90"),
+                              ("--incident-polar-deg", "nan"), ("--incident-polar-deg", "inf"),
+                              ("--incident-azimuth-deg", "nan"), ("--incident-azimuth-deg", "inf")):
+            self.reject_case(specimen(), "incident", **{option: value})
+
+    def test_oblique_specular_bin_mapping_and_unknown_measure(self):
+        value = specimen()
+        for layer in value["layers"]:
+            layer["real_refractive_index"] = [1.5, 1.5]
+        a = self.run_case(value, **{"--incident-polar-deg": "30", "--incident-azimuth-deg": "22.5",
+                                    "--histories": "1", "--max-transitions": "1", "--seed": "48"})
+        self.assertEqual(a["outcomes"]["external_reflection"]["count"], 1)
+        h = a["exit_distribution"]
+        nonzero = [c for c in h["joint_cells"] if c["all_returns"]["mean"]>0]
+        self.assertEqual(len(nonzero), 1)
+        cell = nonzero[0]
+        # Source azimuth22.5 maps to the planar mirror's outgoing202.5,
+        # not22.5. cos30 belongs to [.75,.875); reflection exits at radius0.
+        self.assertEqual((cell["radial_bin"], cell["azimuth_bin"], cell["cosine_bin"]), (0, 4, 6))
+        self.assertEqual(cell["all_returns"]["mean"], 1)
+        self.assertEqual(cell["external_reflection"]["mean"], 1)
+        self.assertEqual(cell["subsurface_return"]["mean"], 0)
+        self.assertTrue(all(c[channel]["standard_error"] is None for c in h["joint_cells"]
+                            for channel in ("all_returns", "external_reflection", "subsurface_return")))
+        self.assertFalse(h["conditional_on_escape"])
+        self.assertFalse(h["is_density"])
+        self.assertFalse(h["continuous_pdf_available"])
+        self.assertFalse(h["production_bake_available"])
+        self.assertIn("unclassified", h["angular_measure_classification"])
+
+    def test_joint_diffuse_bottom_analytic_control_and_measures(self):
+        n = 10000
+        a = self.run_case(**{"--histories": str(n)})
+        h = a["exit_distribution"];radial = h["radial_edges_m"]
+        phis, mus = h["outgoing_azimuth_edges_rad"], h["outgoing_cosine_edges"]
+        depth = .006
+        self.assertEqual(len(h["joint_cells"]), 512)
+        self.assertEqual(h["nonzero_cell_updates"], 2*n)
+        for cell in h["joint_cells"]:
+            r, p, m = cell["radial_bin"], cell["azimuth_bin"], cell["cosine_bin"]
+            low = 0 if r==len(radial)-1 else depth/math.hypot(depth, radial[r+1])
+            high = depth/math.hypot(depth, radial[r])
+            lo, hi = max(low, mus[m]), min(high, mus[m+1])
+            expected = max(0, (hi-lo)*(hi+lo))*(phis[p+1]-phis[p])/(2*math.pi)
+            observed = cell["all_returns"]["mean"]
+            tolerance = 5*math.sqrt(expected*(1-expected)/n)+64*math.ulp(1.)
+            self.assertLessEqual(abs(observed-expected), tolerance, (r, p, m, observed, expected))
+            self.assertEqual(cell["all_returns"]["history_count"], n)
+            self.assertEqual(cell["all_returns"], cell["subsurface_return"])
+            self.assertEqual(cell["external_reflection"]["mean"], 0)
+            self.assertAlmostEqual(cell["all_returns"]["standard_error"], math.sqrt(observed*(1-observed)/(n-1)), places=14)
+            if r==len(radial)-1:
+                self.assertIsNone(cell["annular_area_m2"])
+                self.assertIsNone(cell["area_solid_angle_m2_sr"])
+        self.assertAlmostEqual(sum(c["all_returns"]["mean"] for c in h["joint_cells"]), 1, places=14)
+        expected_tail = depth*depth/(depth*depth+radial[-1]*radial[-1])
+        tail = h["radial_marginal"][-1]["all_returns"]
+        self.assertLessEqual(abs(tail["mean"]-expected_tail), 5*math.sqrt(expected_tail*(1-expected_tail)/n))
+        for marginal in h["angular_marginal"]:
+            p, m = marginal["azimuth_bin"], marginal["cosine_bin"]
+            selected = [c for c in h["joint_cells"] if c["azimuth_bin"]==p and c["cosine_bin"]==m]
+            self.assertAlmostEqual(sum(c["all_returns"]["mean"] for c in selected), marginal["all_returns"]["mean"], places=14)
+        angular_cells = [c for c in h["joint_cells"] if c["radial_bin"]==0]
+        self.assertAlmostEqual(sum(c["solid_angle_sr"] for c in angular_cells), 2*math.pi, places=13)
+        self.assertAlmostEqual(sum(c["projected_angle_measure_sr"] for c in angular_cells), math.pi, places=13)
+
+    def test_oblique_bottom_law_rotation_and_uncropped_overflow(self):
+        baseline = self.run_case(**{"--histories": "1000"})
+        grazing = self.run_case(**{"--histories": "1000", "--incident-polar-deg": "89", "--incident-azimuth-deg": "37"})
+        # In an equal-index transparent slab the bottom samples the same global
+        # cosine law with the same RNG stream, regardless of incoming direction.
+        self.assertEqual(baseline["exit_distribution"]["angular_marginal"], grazing["exit_distribution"]["angular_marginal"])
+        self.assertGreater(grazing["exit_distribution"]["radial_marginal"][-1]["all_returns"]["mean"], .9)
+        self.assertEqual(grazing["estimates"]["escaped_reflectance"]["mean"], 1)
+        self.assertAlmostEqual(sum(c["all_returns"]["mean"] for c in grazing["exit_distribution"]["joint_cells"]), 1, places=14)
+        left = self.run_case(**{"--histories": "8000", "--incident-polar-deg": "45", "--incident-azimuth-deg": "0", "--seed": "1234"})
+        right = self.run_case(**{"--histories": "8000", "--incident-polar-deg": "45", "--incident-azimuth-deg": "90", "--seed": "10001234"})
+        by_index = {(c["radial_bin"], c["azimuth_bin"], c["cosine_bin"]): c for c in right["exit_distribution"]["joint_cells"]}
+        for c in left["exit_distribution"]["joint_cells"]:
+            other = by_index[c["radial_bin"], (c["azimuth_bin"]+2)%8, c["cosine_bin"]]
+            x, y = c["all_returns"], other["all_returns"]
+            self.assertLessEqual(abs(x["mean"]-y["mean"]), 5*math.hypot(x["standard_error"], y["standard_error"])+64*math.ulp(1.))
+
+    def test_sparse_histogram_matches_independent_dense_seeded_replay(self):
+        def dense(values):
+            mean = m2 = 0.
+            for count, x in enumerate(values, 1):
+                delta = x-mean;mean += delta/count;m2 += delta*(x-mean)
+            return mean, math.sqrt(m2/len(values)/(len(values)-1))
+        channels = ("all_returns", "external_reflection", "subsurface_return")
+        for roulette in ("0", "2"):
+            options = {"--histories": "32", "--estimator": "weighted", "--roulette-target": roulette, "--seed": "1234"}
+            whole = self.run_case(specimen(20), **options)
+            observations = []
+            for history in range(32):
+                one = self.run_case(specimen(20), **dict(options, **{"--histories": "1", "--seed": str(1234+history)}))
+                observations.append(one["exit_distribution"]["joint_cells"])
+            if roulette!="0":
+                self.assertTrue(any(sum(c["all_returns"]["sum_weight"] for c in one)>1 for one in observations), "weighted/RR fixture actually exercises return weight above one")
+            for index, cell in enumerate(whole["exit_distribution"]["joint_cells"]):
+                for channel in channels:
+                    values = [one[index][channel]["sum_weight"] for one in observations]
+                    mean, error = dense(values);actual = cell[channel]
+                    self.assertAlmostEqual(actual["mean"], mean, delta=512*math.ulp(1.)*max(1, abs(mean)))
+                    self.assertAlmostEqual(actual["standard_error"], error, delta=512*math.ulp(1.)*max(1, abs(error)))
+                    self.assertEqual(actual["history_count"], 32)
+                    self.assertEqual(actual["nonzero_history_count"], sum(x>0 for x in values))
+            for channel, estimate in (("all_returns", "escaped_reflectance"), ("external_reflection", "external_reflection"), ("subsurface_return", "subsurface_return")):
+                self.assertAlmostEqual(sum(c[channel]["mean"] for c in whole["exit_distribution"]["joint_cells"]), whole["estimates"][estimate]["mean"], places=13)
 
     def test_cli_budget_and_explicit_boundary_preflight(self):
         for changes, message in [({"--boundary": None}, "required option"), ({"--boundary": "folded"}, "only explicit"),
@@ -594,6 +723,10 @@ class MeasurementCLI(unittest.TestCase):
         self.assertEqual(process.returncode, 130, (out, err))
         value = json.loads(self.output.read_text())
         self.assertEqual(value["initial_history_count"], 1000000)
+        self.assertEqual(value["exit_distribution"]["nonzero_cell_updates"], 2*(value["outcomes"]["external_reflection"]["count"]+value["outcomes"]["subsurface_return"]["count"]))
+        for cell in value["exit_distribution"]["joint_cells"]:
+            self.assertEqual(cell["all_returns"]["history_count"], 1000000)
+        self.assertAlmostEqual(sum(c["all_returns"]["mean"] for c in value["exit_distribution"]["joint_cells"]), value["estimates"]["escaped_reflectance"]["mean"], places=13)
         cancelled = value["outcomes"]["cancelled"]
         self.assertGreater(cancelled["count"], 0)
         self.assertEqual(cancelled["terminal_live_weight"], cancelled["count"])

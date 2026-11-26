@@ -167,8 +167,9 @@ complex layout retain their separate strict contracts. See
 [HYLIOS_MEASUREMENT.md](HYLIOS_MEASUREMENT.md) for source lists and test commands.
 No shared archive relink is required for these gates.
 
-The current CLI launches normal incidence and publishes scalar power/counters;
-angle sweeps and outgoing histograms are separate increments. Implementing this
+Measurement v5 adds explicit fixed source-direction controls and all-incident joint
+exit-cell masses; see [HYLIOS_MEASUREMENT_DISTRIBUTIONS.md](HYLIOS_MEASUREMENT_DISTRIBUTIONS.md).
+The boundary law itself is unchanged. Implementing this
 forward boundary does not establish a reciprocal renderer boundary or adjoint.
 The input-data approximation labels and the other selected clean-room transport
 interpretations remain separate from boundary implementation correctness.

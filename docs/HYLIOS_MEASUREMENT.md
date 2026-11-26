@@ -100,9 +100,8 @@ Optional inputs have named, reported values rather than hidden kernel defaults:
 The rate is computed from those reported fiber inputs at the selected wavelength.
 These are the publication's separately named fiber parameter convention, not
 covert physiological inputs selected by the kernel. Every explicit CLI option is
-also retained verbatim. Fiber fraction 0 disables that clock. No incident-angle or
-spatial-light source is implemented: all histories launch at local origin with
-normal inward direction (0,0,1), recorded in the result.
+also retained verbatim. Fiber fraction 0 disables that clock. All histories launch at local origin along the selected fixed incident direction.
+Normal incidence remains the default. No spatially extended source or incident-cell jitter is implemented.
 
 For an explicitly resolved complex specimen, select its construction:
 
@@ -116,6 +115,34 @@ For an explicitly resolved complex specimen, select its construction:
 The history/transition limits are caller work budgets. A 256-proposal child restart
 is construction work, not absorption; packing is not guaranteed for arbitrary
 inputs. Inspect unresolved power and layout counters before interpreting a run.
+
+## Incident directions and joint exit cells
+
+Optional `--incident-polar-deg` (default 0, finite [0,90)) and
+`--incident-azimuth-deg` (default 0, finite modulo 360) select the outward source
+direction. Kernel incoming travel is its negative. Normal incidence canonicalizes
+azimuth zero and retains the exact previous launch. Actual source/travel vectors,
+angles, frame and fixed-direction experiment rule are recorded. This is one
+source direction per measurement, not an incident-cell average.
+
+```sh
+./bin/tools/hylios_measure --specimen resolved-s3.json --wavelength-nm 550 \
+  --incident-polar-deg 30 --incident-azimuth-deg 90 \
+  --placement null --post-scatter discard --complex-layout explicit-pack-v1 \
+  --boundary hylios2015 --histories 1000 --max-transitions 100000 --seed 55000001 \
+  --output measurement-s3-oblique.json
+```
+
+`exit_distribution` records 512 fixed radius/azimuth/cosine cells, separate
+combined/external/subsurface weighted masses, per-cell all-incident SE, exact
+axes/measures, radial overflow and marginals derived from the same joint
+observations. No finite detector crop or escape-conditioned normalization is
+applied. Scaled sparse Welford moments merge missing zero histories analytically;
+scalar summaries share this stable implementation. Cells may contain atoms and
+are explicitly not finite PDFs, BSDFs or production bakes. Angular lineage is
+unavailable, not guessed from terminal names or rounded directions. Full measure,
+range and oracle details are in
+[HYLIOS_MEASUREMENT_DISTRIBUTIONS.md](HYLIOS_MEASUREMENT_DISTRIBUTIONS.md).
 
 ## Scientific scope and unresolved histories
 
@@ -162,7 +189,7 @@ wording; it does not claim a persistent packed medium or author-code equivalence
 Both variants count inward draws in `inwardPostExitEvents`. Data approximation
 labels are separate from the recorded transport interpretation. At the exact
 zero-angle endpoint, both policies produce identical physical histories and RNG
-consumption. The report schema is `hylios-forward-measure-v4`.
+consumption. The report schema is `hylios-forward-measure-v5`.
 For HyLIoS boundary selection, zero fold is the exact smooth delta. Positive
 source folds must lie in the explicit binary64 working interval
 [sqrt(epsilon),1/sqrt(epsilon)]; unsupported values fail before histories.
@@ -268,7 +295,7 @@ RISE_HYLIOS_MEASURE=/absolute/path/to/hylios_measure \
 
 Tests default to repository `bin/tools/hylios_measure` (`hylios_measure.exe` on
 Windows). `RISE_HYLIOS_MEASURE` selects another binary without consuming unittest
-arguments. A missing binary explicitly skips the twenty-three contracts with the build
+arguments. A missing binary explicitly skips the twenty-eight contracts with the build
 command. Standard unittest discovery, test selection and flags remain available.
 
 A strict standalone POSIX build reads sources directly and avoids shared-archive
@@ -311,6 +338,8 @@ one-child full-envelope exact event counts, successful five-child physical paths
 construction-only budget accounting, visible empty-complex Beer/bottom quadrature,
 macro Fresnel mass under rejected normal proposals, exact zero-fold smooth parity,
 pinned reflected-proposal budgets, authored-fold validation and in-sampler cancellation,
+oblique source/mirror conventions, joint diffuse-bottom quadrature, rotation, uncropped
+overflow and independent dense-versus-sparse weighted bin moments,
 schema/unit/shape/nonfinite rejection,
 source labels and byte-hash preservation, deterministic seeded replay, atomic
 failure preservation and concurrent unique publication. No render is invoked.
@@ -340,7 +369,7 @@ Pop-Location
 python tools/test_hylios_measure.py -v
 ```
 
-The two POSIX SIGINT contracts are skipped on Windows; the other twenty-one CLI contracts
+The two POSIX SIGINT contracts are skipped on Windows; the other twenty-six CLI contracts
 have no POSIX-specific invocation requirement. Their Windows implementation
 remains unverified here.
 
@@ -381,7 +410,7 @@ validated.
 
 ## Full-suite pinned-fixture runtime
 
-The measurement CLI's twenty-three contracts and the HyLIoS binaries can be tested
+The measurement CLI's twenty-eight contracts and the HyLIoS binaries can be tested
 directly with the commands above. The repository-wide `run_all_tests.sh` also
 checks unrelated committed fire records before applying its test filter.
 
@@ -595,10 +624,11 @@ approximate spectra/composition and selected clean-room transport rules. At only
 100 histories, smooth/fold differences and preset ordering do not establish
 statistical significance or convergence; changed random consumption also means
 identical seeds are not an independently validated paired estimator. No
-comparison to author code or measured skin is inferred. Incidence studies,
-outgoing histograms and any adjoint/renderer boundary remain separate increments.
+comparison to author code or measured skin is inferred. At that v4 milestone, incidence studies and
+outgoing histograms remained separate increments. Any adjoint/renderer boundary
+still requires its own derivation and gates.
 
-The complete 23-contract CLI suite passes strict, ASan/UBSan and mixed full LTO.
+The complete 23-contract CLI suite at that v4 milestone passed strict, ASan/UBSan and mixed full LTO.
 A temporary mutation omitting boundary work from the cap was observed RED in the
 reflected-proposal budget contract (five proposals occurred with cap1), while the
 implemented guard is GREEN. An additional weighted cap2 control preserves
@@ -606,3 +636,17 @@ exp(-.2) live power plus 1-exp(-.2) prior host absorption across the new caller
 work accounting. Invalid used variate and numerical-boundary paths are defensive
 adapter diagnostics; the production SplitMix64 source emits only valid uniforms,
 while boundary-unit tests directly exercise invalid variates.
+
+
+## Version 5 statistics scope
+
+Version 5 adds the recorded source direction and joint exit masses, leaving
+transport/boundary budget and cancellation rules unchanged. The standalone
+`HyLIoSMeasurementStatisticsTest` directly tests the production private helpers
+with independent dense and analytic references, including huge denominators,
+weighted scales, exact cell boundaries and range failures. Scalar and binned
+means/SE now share scaled Welford moments; scalar final rounding can differ from
+the v4 online implementation. This fixes its tiny-positive-variance underflow
+without changing physical histories or RNG. The v3/v4 experiments above remain
+historical evidence for their recorded binary identities, not a v5 convergence
+or angular-lineage claim.

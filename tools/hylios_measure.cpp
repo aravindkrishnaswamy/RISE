@@ -37,7 +37,8 @@
 using namespace RISE::HyLIoS;
 using J = RISE::Agent::JsonValue;
 namespace {
-constexpr const char *MeasurementVersion = "hylios-forward-measure-v4";
+constexpr const char *MeasurementVersion = "hylios-forward-measure-v5";
+constexpr double MeasurementPi=3.141592653589793238462643383279502884;
 volatile std::sig_atomic_t interrupted = 0;
 void Signal(int) {
     interrupted = 1;
@@ -236,6 +237,7 @@ double Real(const std::string &s, const std::string &label, double minimum = 0,
 }
 struct Options {
     std::string specimen, output, placement, postScatter, complexLayout, boundary, seedText, estimator = "analog";
+    double incidentPolar=0,incidentAzimuth=0;
     double wavelength = 0, roulette = 0, fiberRadius = 1e-7, fiberFraction = .22,
            fiberEta = 1.5 / 1.33, exteriorIOR = 1;
     std::uint64_t histories = 0, maxTransitions = 0, seed = 0;
@@ -244,7 +246,7 @@ struct Options {
 void Usage() {
     std::cout << "hylios_measure --specimen FILE --wavelength-nm N --placement fixed|null "
                  "--post-scatter diagnostic|discard --boundary smooth|hylios2015 --histories N --max-transitions N --seed U64 --output FILE\n"
-                 "  [--complex-layout explicit-pack-v1] [--estimator analog|weighted] [--roulette-target N] [--exterior-ior N]\n"
+                 "  [--incident-polar-deg N] [--incident-azimuth-deg N] [--complex-layout explicit-pack-v1] [--estimator analog|weighted] [--roulette-target N] [--exterior-ior N]\n"
                  "  [--fiber-radius-m N] [--fiber-volume-fraction N] [--fiber-relative-ior N]\n"
                  "Forward particle/complex transport supports explicit smooth or hylios2015 boundary selection; adjoint sampling is not "
                  "supported.\n";
@@ -259,6 +261,8 @@ Options Parse(int argc, char **argv) {
     }
     const std::set<std::string> allowed = {"--specimen",
                                            "--wavelength-nm",
+                                           "--incident-polar-deg",
+                                           "--incident-azimuth-deg",
                                            "--placement",
                                            "--post-scatter",
                                            "--complex-layout",
@@ -296,6 +300,14 @@ Options Parse(int argc, char **argv) {
     Require(o.boundary == "smooth" || o.boundary == "hylios2015",
             "only explicit --boundary smooth or hylios2015 is implemented");
     o.wavelength = Real(flags.at("--wavelength-nm"), "wavelength", 0, true);
+    if(flags.count("--incident-polar-deg")) o.incidentPolar=Real(flags.at("--incident-polar-deg"),"incident-polar-deg");
+    Require(o.incidentPolar<90,"incident-polar-deg must be in [0,90)");
+    if(flags.count("--incident-azimuth-deg")) {
+        o.incidentAzimuth=std::fmod(Real(flags.at("--incident-azimuth-deg"),"incident-azimuth-deg",-std::numeric_limits<double>::max()),360.);
+        if(o.incidentAzimuth<0) o.incidentAzimuth+=360;
+        if(o.incidentAzimuth==360) o.incidentAzimuth=0;
+    }
+    if(o.incidentPolar==0) o.incidentAzimuth=0; // exact normal launch and canonical pole azimuth
     o.histories = Integer(flags.at("--histories"), "histories", 10000000);
     o.maxTransitions = Integer(flags.at("--max-transitions"), "max-transitions", 10000000);
     Require(o.histories <= 10000000000ULL / o.maxTransitions,
@@ -545,27 +557,6 @@ struct Random : RISE::ISampler {
         return {Get1D(), Get1D()};
     }
 };
-struct Moments {
-    std::uint64_t n = 0;
-    double mean = 0, m2 = 0;
-    void Add(double v) {
-        ++n;
-        const double delta = v - mean;
-        mean += delta / static_cast<double>(n);
-        m2 += delta * (v - mean);
-        Require(std::isfinite(mean) && std::isfinite(m2), "measurement moments overflow");
-    }
-    J Json() const {
-        J j = J::MakeObject();
-        Put(j, "mean", mean);
-        j.set("standard_error",
-              n > 1 ? Num(std::sqrt(std::max(0., m2) /
-                                    (static_cast<double>(n) * static_cast<double>(n - 1))))
-                    : J::MakeNull());
-        Put(j, "history_count", static_cast<double>(n));
-        return j;
-    }
-};
 std::string Outcome(ForwardTermination t) {
     switch (t) {
     case ForwardTermination::ExternalReflection:
@@ -610,6 +601,298 @@ J Array(const std::array<double, 6> &a) {
         j.push_back(Num(v));
     return j;
 }
+// Nonzero observations are scaled by their running maximum. This is Welford,
+// not a subtraction of squared sums: squared tiny/large physical weights never
+// have to fit binary64. Zeros are merged analytically only at publication.
+struct SparseSummary {
+    double sumWeight=0,mean=0;
+    std::optional<double> standardError;
+    std::uint64_t nonzeroCount=0;
+};
+// Volatile materialization pins these binary64 operations even when the caller
+// TU is built with reassociation. No rounded absolute mean feeds variance.
+double RoundedMomentSum(double a,double b) {volatile double value=a+b;return value;}
+double RoundedMomentDifference(double a,double b) {volatile double value=a-b;return value;}
+double RoundedMomentQuotient(double a,double b) {volatile double value=a/b;return value;}
+double RoundedMomentProduct(double a,double b) {volatile double value=a*b;return value;}
+// All primitive rounding nodes are materialized so reassociation in the caller
+// cannot erase a residual. The pair is a compensated value, not wider hardware FP.
+struct MomentPair {double high=0,low=0;};
+MomentPair MomentTwoSum(double a,double b) {
+    const double sum=RoundedMomentSum(a,b),bv=RoundedMomentDifference(sum,a);
+    const double error=RoundedMomentSum(RoundedMomentDifference(a,RoundedMomentDifference(sum,bv)),RoundedMomentDifference(b,bv));
+    return {sum,error};
+}
+MomentPair MomentAdd(MomentPair a,MomentPair b) {
+    const auto first=MomentTwoSum(a.high,b.high);
+    return MomentTwoSum(first.high,RoundedMomentSum(first.low,RoundedMomentSum(a.low,b.low)));
+}
+MomentPair MomentSubtract(MomentPair a,MomentPair b) {return MomentAdd(a,{-b.high,-b.low});}
+MomentPair MomentMultiply(MomentPair a,MomentPair b) {
+    const double product=RoundedMomentProduct(a.high,b.high);
+    double error=std::fma(a.high,b.high,-product);
+    error=RoundedMomentSum(error,RoundedMomentProduct(a.high,b.low));
+    error=RoundedMomentSum(error,RoundedMomentProduct(a.low,b.high));
+    error=RoundedMomentSum(error,RoundedMomentProduct(a.low,b.low));
+    return MomentTwoSum(product,error);
+}
+MomentPair MomentDivide(MomentPair a,MomentPair b) {
+    const double first=RoundedMomentQuotient(a.high,b.high);
+    const auto residual=MomentSubtract(a,MomentMultiply({first,0},b));
+    const double second=RoundedMomentQuotient(RoundedMomentSum(residual.high,residual.low),b.high);
+    return MomentTwoSum(first,second);
+}
+MomentPair MomentCount(std::uint64_t value) {
+    return MomentTwoSum(static_cast<double>(value>>32)*0x1p32,static_cast<double>(value&0xffffffffULL));
+}
+double MomentValue(MomentPair value) {return RoundedMomentSum(value.high,value.low);}
+bool FiniteMoment(MomentPair value) {return std::isfinite(value.high)&&std::isfinite(value.low);}
+class SparseMoments {
+public:
+    std::uint64_t Count() const { return count_; }
+    void Observe(double x) {
+        Require(std::isfinite(x)&&x>=0,"measurement moment weight must be finite and nonnegative");
+        if(x==0) return;
+        Require(count_!=std::numeric_limits<std::uint64_t>::max(),"measurement moment count overflow");
+        if(count_==0) {maximum_=minimum_=origin_=x;positiveMean_={1,0};count_=1;return;}
+        if(x==maximum_&&x==minimum_) {++count_;return;}
+        const auto next=MomentCount(count_+1);
+        if(x>maximum_) {
+            positiveMean_=MomentMultiply(positiveMean_,MomentDivide({maximum_,0},{x,0}));maximum_=x;
+        }
+        minimum_=std::min(minimum_,x);
+        const auto positiveDelta=MomentSubtract(MomentDivide({x,0},{maximum_,0}),positiveMean_);
+        positiveMean_=MomentAdd(positiveMean_,MomentDivide(positiveDelta,next));
+        const double nextRange=RoundedMomentDifference(maximum_,minimum_);
+        if(nextRange>range_) {
+            const auto ratio=MomentDivide({range_,0},{nextRange,0});
+            meanOffset_=MomentMultiply(meanOffset_,ratio);
+            m2_=MomentMultiply(MomentMultiply(m2_,ratio),ratio);range_=nextRange;
+        }
+        if(range_>0) {
+            const auto centered=MomentSubtract({x,0},{origin_,0});
+            const auto value=MomentDivide(centered,{range_,0});
+            const auto delta=MomentSubtract(value,meanOffset_);
+            meanOffset_=MomentAdd(meanOffset_,MomentDivide(delta,next));
+            const auto increment=MomentMultiply(MomentMultiply(delta,delta),MomentDivide(MomentCount(count_),next));
+            m2_=MomentAdd(m2_,increment);
+        }
+        ++count_;
+        Require(FiniteMoment(positiveMean_)&&MomentValue(positiveMean_)>0&&FiniteMoment(meanOffset_)&&
+            FiniteMoment(m2_)&&MomentValue(m2_)>=0,"measurement centered moment range failure");
+    }
+    // Each group's own nonnegative fraction is used for its positive mean.
+    // Subtraction-form blending loses a rare large contribution when a tiny
+    // positive group dominates. Centered offsets and M2 retain their residuals.
+    void MergeNonzero(const SparseMoments& other) {
+        if(other.count_==0) return;
+        if(count_==0) {*this=other;return;}
+        Require(other.count_<=std::numeric_limits<std::uint64_t>::max()-count_,"measurement merged count overflow");
+        const auto combined=count_+other.count_;
+        const double maximum=std::max(maximum_,other.maximum_),minimum=std::min(minimum_,other.minimum_);
+        const auto fractionA=MomentDivide(MomentCount(count_),MomentCount(combined));
+        const auto fractionB=MomentDivide(MomentCount(other.count_),MomentCount(combined));
+        const auto positiveA=MomentMultiply(positiveMean_,MomentDivide({maximum_,0},{maximum,0}));
+        const auto positiveB=MomentMultiply(other.positiveMean_,MomentDivide({other.maximum_,0},{maximum,0}));
+        const auto positiveMean=MomentAdd(MomentMultiply(positiveA,fractionA),MomentMultiply(positiveB,fractionB));
+        const double range=RoundedMomentDifference(maximum,minimum);
+        MomentPair meanOffset,m2;
+        if(range>0) {
+            const auto ratioA=MomentDivide({range_,0},{range,0}),ratioB=MomentDivide({other.range_,0},{range,0});
+            const auto meanA=MomentMultiply(meanOffset_,ratioA);
+            const auto meanB=MomentAdd(MomentDivide(MomentSubtract({other.origin_,0},{origin_,0}),{range,0}),
+                MomentMultiply(other.meanOffset_,ratioB));
+            const auto delta=MomentSubtract(meanB,meanA);
+            meanOffset=MomentAdd(meanA,MomentMultiply(delta,fractionB));
+            const auto cross=MomentMultiply(MomentMultiply(delta,delta),MomentMultiply(MomentCount(count_),fractionB));
+            m2=MomentAdd(MomentAdd(MomentMultiply(MomentMultiply(m2_,ratioA),ratioA),
+                MomentMultiply(MomentMultiply(other.m2_,ratioB),ratioB)),cross);
+        }
+        Require(FiniteMoment(positiveMean)&&MomentValue(positiveMean)>0&&FiniteMoment(meanOffset)&&
+            FiniteMoment(m2)&&MomentValue(m2)>=0,"measurement merged centered moment range failure");
+        maximum_=maximum;minimum_=minimum;positiveMean_=positiveMean;range_=range;meanOffset_=meanOffset;m2_=m2;count_=combined;
+    }
+    SparseSummary Summary(std::uint64_t total) const {
+        Require(total>0&&total>=count_,"measurement denominator must cover all nonzero histories");
+        SparseSummary result;result.nonzeroCount=count_;
+        if(total>1) result.standardError=0;
+        if(count_==0) return result;
+        const auto n=MomentCount(total),nz=MomentCount(count_);
+        result.sumWeight=ScaleProduct(MomentMultiply(positiveMean_,nz),"measurement sum weight outside binary64 range");
+        result.mean=ScaleProduct(MomentMultiply(positiveMean_,MomentDivide(nz,n)),"measurement mean outside binary64 range");
+        if(total>1) {
+            const auto zeroFraction=MomentDivide(MomentCount(total-count_),n);
+            const auto rangeRatio=MomentDivide({range_,0},{maximum_,0});
+            const auto nonzeroM2=MomentMultiply(MomentMultiply(m2_,rangeRatio),rangeRatio);
+            const auto zeroM2=MomentMultiply(MomentMultiply(positiveMean_,positiveMean_),MomentMultiply(nz,zeroFraction));
+            const auto variance=MomentDivide(MomentDivide(MomentAdd(nonzeroM2,zeroM2),n),MomentCount(total-1));
+            result.standardError=ScaleProduct({std::sqrt(MomentValue(variance)),0},"measurement standard error outside binary64 range");
+        }
+        return result;
+    }
+private:
+    std::uint64_t count_=0;
+    double maximum_=0,minimum_=0,origin_=0,range_=0;
+    MomentPair positiveMean_,meanOffset_,m2_;
+    double ScaleProduct(MomentPair value,const char* message) const {
+        volatile double product=maximum_*value.high;
+        Require(std::isfinite(product),message);
+        const double error=RoundedMomentSum(std::fma(maximum_,value.high,-product),RoundedMomentProduct(maximum_,value.low));
+        const double result=RoundedMomentSum(product,error);
+        Require(std::isfinite(result)&&(MomentValue(value)==0||result>0),message);return result;
+    }
+};
+
+// All scalar channels and histogram cells use the same nonnegative moments;
+// otherwise tiny physical weights could have a representable SE but an
+// unrepresentable squared-weight variance in a second implementation.
+struct Moments {
+    std::uint64_t n=0;
+    SparseMoments values;
+    void Add(double x) {
+        Require(n!=std::numeric_limits<std::uint64_t>::max(),"measurement history count overflow");
+        values.Observe(x);++n;
+    }
+    SparseSummary Summary() const {return values.Summary(n);}
+    J Json() const {
+        const auto summary=Summary();J result=J::MakeObject();
+        Put(result,"mean",summary.mean);
+        result.set("standard_error",summary.standardError ? Num(*summary.standardError):J::MakeNull());
+        Put(result,"history_count",static_cast<double>(n));return result;
+    }
+};
+constexpr std::size_t ExitRadialBins=8,ExitAzimuthBins=8,ExitCosineBins=8;
+constexpr std::size_t ExitCellCount=ExitRadialBins*ExitAzimuthBins*ExitCosineBins;
+constexpr std::array<double,ExitRadialBins> ExitRadialEdges{{0,.0001,.0005,.001,.002,.005,.01,.02}};
+std::array<double,ExitAzimuthBins+1> ExitPhiEdges() {
+    std::array<double,ExitAzimuthBins+1> edges{};
+    for(std::size_t i=0;i<edges.size();++i) edges[i]=2*MeasurementPi*static_cast<double>(i)/ExitAzimuthBins;
+    return edges;
+}
+std::array<double,ExitCosineBins+1> ExitMuEdges() {
+    std::array<double,ExitCosineBins+1> edges{};
+    for(std::size_t i=0;i<edges.size();++i) edges[i]=static_cast<double>(i)/ExitCosineBins;
+    return edges;
+}
+template<std::size_t N> J NumberArray(const std::array<double,N>& values) {
+    J result=J::MakeArray();for(double x:values) result.push_back(Num(x));return result;
+}
+template<std::size_t N> std::size_t FiniteCell(double value,const std::array<double,N>& edges,bool includeUpper=false) {
+    Require(std::isfinite(value)&&value>=edges.front()&&value<=edges.back(),"exit histogram angular coordinate outside domain");
+    if(value==edges.back()) {
+        Require(includeUpper,"exit histogram upper angular endpoint is excluded");return N-2;
+    }
+    return static_cast<std::size_t>(std::upper_bound(edges.begin(),edges.end(),value)-edges.begin()-1);
+}
+struct ExitCell {std::size_t radial,azimuth,cosine;bool radiusUnrepresentable;};
+ExitCell LocateExit(SlabVector position,SlabVector direction) {
+    Require(std::isfinite(position.x)&&std::isfinite(position.y)&&std::isfinite(position.z),"exit histogram position is nonfinite");
+    Require(std::isfinite(direction.x)&&std::isfinite(direction.y)&&std::isfinite(direction.z)&&direction.z<=0,"exit histogram direction is not exterior");
+    const double length=std::hypot(direction.x,direction.y,direction.z);
+    Require(std::isfinite(length)&&length>0,"exit histogram direction has unsupported norm");
+    const double mu=-direction.z/length;
+    const auto muEdges=ExitMuEdges();const auto phiEdges=ExitPhiEdges();
+    double angle=direction.x==0&&direction.y==0 ? 0:std::atan2(direction.y,direction.x);
+    const bool negativeAngle=angle<0;
+    if(negativeAngle) angle+=2*MeasurementPi;
+    // An original negative angle may round to 2pi after wrapping. It still
+    // approaches the periodic seam from below, so belongs in the final bin.
+    const auto azimuth=negativeAngle&&angle==2*MeasurementPi ? ExitAzimuthBins-1:FiniteCell(angle,phiEdges);
+    const double radius=std::hypot(position.x,position.y);
+    const bool unrepresentable=!std::isfinite(radius);
+    std::size_t radial=ExitRadialBins-1;
+    if(!unrepresentable&&radius<ExitRadialEdges.back())
+        radial=static_cast<std::size_t>(std::upper_bound(ExitRadialEdges.begin(),ExitRadialEdges.end(),radius)-ExitRadialEdges.begin()-1);
+    return {radial,azimuth,FiniteCell(mu,muEdges,true),unrepresentable};
+}
+std::size_t ExitIndex(std::size_t radius,std::size_t phi,std::size_t mu) {
+    Require(radius<ExitRadialBins&&phi<ExitAzimuthBins&&mu<ExitCosineBins,"exit histogram cell index outside grid");
+    return (radius*ExitAzimuthBins+phi)*ExitCosineBins+mu;
+}
+J SparseJson(const SparseMoments& moments,std::uint64_t total) {
+    const auto summary=moments.Summary(total);J result=J::MakeObject();
+    Put(result,"sum_weight",summary.sumWeight);Put(result,"mean",summary.mean);
+    result.set("standard_error",summary.standardError ? Num(*summary.standardError):J::MakeNull());
+    Put(result,"history_count",static_cast<double>(total));
+    Put(result,"nonzero_history_count",static_cast<double>(summary.nonzeroCount));return result;
+}
+class ExitHistogram {
+public:
+    void Observe(SlabVector position,SlabVector direction,double weight,bool external) {
+        Require(std::isfinite(weight)&&weight>=0,"exit histogram weight must be finite and nonnegative");
+        if(weight==0) return;
+        const auto cell=LocateExit(position,direction);const auto index=ExitIndex(cell.radial,cell.azimuth,cell.cosine);
+        cells_[0][index].Observe(weight);cells_[external ? 1:2][index].Observe(weight);nonzeroCellUpdates_+=2;
+        if(cell.radiusUnrepresentable) ++unrepresentableRadiusCount_;
+    }
+    J Json(std::uint64_t total) const {
+        J result=J::MakeObject();
+        result.set("version",Str("hylios_exit_radius_azimuth_cosine_cells_v1"));
+        result.set("normalization",Str("all incident histories, including absorbed, unresolved, roulette-killed and unstarted-cancelled zeros"));
+        Put(result,"history_count",static_cast<double>(total));
+        Put(result,"nonzero_cell_updates",static_cast<double>(nonzeroCellUpdates_));
+        result.set("statistics_accumulation",Str("scaled nonzero Welford; two joint-cell updates per positive terminal escape, missing zero histories merged at publication; marginals merge disjoint joint observations"));
+        result.set("conditional_on_escape",Bool(false));result.set("is_density",Bool(false));
+        result.set("angular_measure_classification",Str("unclassified mixture; angular atoms may be present; no lineage inferred from terminal name or rounded direction"));
+        result.set("continuous_pdf_available",Bool(false));result.set("production_bake_available",Bool(false));
+        result.set("axis_order",Str("radius, outgoing azimuth, outgoing cosine; cosine index varies fastest"));
+        result.set("cell_mass_measure",Str("returned physical energy per incident history in a radial annulus and outgoing angular cell; exit-position azimuth integrated out"));
+        result.set("interval_convention",Str("lower inclusive, upper exclusive; cosine 1 included in last cell; radial last bin is unbounded overflow"));
+        result.set("azimuth_convention",Str("atan2(outgoing.y,outgoing.x) from global +x toward +y, wrapped [0,2pi); exact pole x=y=0 uses phi=0"));
+        result.set("cosine_convention",Str("outward macro normal (0,0,-1); mu=-direction.z/hypot(direction), removing only stored unit-length rounding"));
+        result.set("radial_edges_m",NumberArray(ExitRadialEdges));
+        const auto phiEdges=ExitPhiEdges();const auto muEdges=ExitMuEdges();
+        result.set("outgoing_azimuth_edges_rad",NumberArray(phiEdges));result.set("outgoing_cosine_edges",NumberArray(muEdges));
+        Put(result,"radial_bin_count",ExitRadialBins);Put(result,"azimuth_bin_count",ExitAzimuthBins);Put(result,"cosine_bin_count",ExitCosineBins);
+        J overflow=J::MakeObject();Put(overflow,"index",ExitRadialBins-1);Put(overflow,"lower_edge_m",ExitRadialEdges.back());
+        overflow.set("upper_edge_m",J::MakeNull());overflow.set("includes_unrepresentable_finite_position_radius",Bool(true));
+        result.set("radial_overflow",overflow);Put(result,"unrepresentable_radius_history_count",static_cast<double>(unrepresentableRadiusCount_));
+        result.set("density_caution",Str("masses are not finite PDFs or BSDF values; finite cell measures do not classify atomic or singular components; overflow has no finite radial measure"));
+        J joint=J::MakeArray();
+        std::array<std::array<SparseMoments,ExitAzimuthBins*ExitCosineBins>,3> angular{};
+        std::array<std::array<SparseMoments,ExitRadialBins>,3> radial{};
+        for(std::size_t r=0;r<ExitRadialBins;++r) for(std::size_t p=0;p<ExitAzimuthBins;++p) for(std::size_t m=0;m<ExitCosineBins;++m) {
+            const auto index=ExitIndex(r,p,m);J cell=J::MakeObject();
+            Put(cell,"index",index);Put(cell,"radial_bin",r);Put(cell,"azimuth_bin",p);Put(cell,"cosine_bin",m);
+            const double dphi=phiEdges[p+1]-phiEdges[p],dmu=muEdges[m+1]-muEdges[m];
+            Put(cell,"solid_angle_sr",dmu*dphi);
+            Put(cell,"projected_angle_measure_sr",.5*dmu*(muEdges[m+1]+muEdges[m])*dphi);
+            if(r+1<ExitRadialEdges.size()) {
+                const double width=ExitRadialEdges[r+1]-ExitRadialEdges[r];
+                const double area=MeasurementPi*width*(ExitRadialEdges[r+1]+ExitRadialEdges[r]);
+                Put(cell,"radial_width_m",width);Put(cell,"annular_area_m2",area);Put(cell,"area_solid_angle_m2_sr",area*dmu*dphi);
+            } else {
+                cell.set("radial_width_m",J::MakeNull());cell.set("annular_area_m2",J::MakeNull());cell.set("area_solid_angle_m2_sr",J::MakeNull());
+            }
+            AddChannels(cell,cells_,index,total);
+            for(std::size_t channel=0;channel<3;++channel) {
+                angular[channel][p*ExitCosineBins+m].MergeNonzero(cells_[channel][index]);
+                radial[channel][r].MergeNonzero(cells_[channel][index]);
+            }
+            joint.push_back(cell);
+        }
+        result.set("joint_cells",joint);J angularJson=J::MakeArray(),radialJson=J::MakeArray();
+        for(std::size_t p=0;p<ExitAzimuthBins;++p) for(std::size_t m=0;m<ExitCosineBins;++m) {
+            J cell=J::MakeObject();Put(cell,"azimuth_bin",p);Put(cell,"cosine_bin",m);
+            AddChannels(cell,angular,p*ExitCosineBins+m,total);angularJson.push_back(cell);
+        }
+        for(std::size_t r=0;r<ExitRadialBins;++r) {
+            J cell=J::MakeObject();Put(cell,"radial_bin",r);AddChannels(cell,radial,r,total);radialJson.push_back(cell);
+        }
+        result.set("angular_marginal",angularJson);result.set("radial_marginal",radialJson);
+        result.set("uncertainty_interpretation",Str("per-bin sample standard error of realised terminal escaped contribution over all incident histories; unresolved future response is not resolved by this SE"));
+        return result;
+    }
+private:
+    std::array<std::array<SparseMoments,ExitCellCount>,3> cells_{};
+    std::uint64_t unrepresentableRadiusCount_=0,nonzeroCellUpdates_=0;
+    template<std::size_t N> static void AddChannels(J& cell,const std::array<std::array<SparseMoments,N>,3>& moments,std::size_t index,std::uint64_t total) {
+        cell.set("all_returns",SparseJson(moments[0][index],total));
+        cell.set("external_reflection",SparseJson(moments[1][index],total));
+        cell.set("subsurface_return",SparseJson(moments[2][index],total));
+    }
+};
+
 struct SurfaceWork {
     std::uint64_t workUnits=0, branchAttempts=0, normalProposalAttempts=0, normalRejections=0;
     std::uint64_t exteriorReflectionBranches=0, exteriorTransmissionBranches=0;
@@ -693,6 +976,7 @@ struct Aggregate {
     std::array<double, 6> hostAbs{}, particleAbs{}, layerPath{}, hostPath{}, particlePath{};
     Moments reflectance, external, subsurface, absorption, unresolved, accounted;
     std::array<Moments, 6> hostLayerAbsorption, particleLayerAbsorption;
+    ExitHistogram exits;
     std::uint64_t draws = 0,callerWork=0;
     void Add(const ForwardState &s, std::uint64_t randomDraws,const SurfaceWork& surface,
              ForwardTermination boundaryDiagnostic) {
@@ -705,6 +989,7 @@ struct Aggregate {
         ADD_SURFACE(budgetStops);ADD_SURFACE(cancellations);ADD_SURFACE(invalidSamples);ADD_SURFACE(numericalFailures);
 #undef ADD_SURFACE
         const auto outcome = Outcome(term);
+        if(Escaped(term)) exits.Observe(s.Position(),s.Direction(),s.Weight(),term==ForwardTermination::ExternalReflection);
         ++counts[outcome];
         if (term == ForwardTermination::NumericalFailure) {
             const auto detail = s.FailureDetail();
@@ -789,9 +1074,14 @@ J Measure(const Options &o, const Resolved &r) {
     if(o.boundary=="hylios2015") surfaceLaw.emplace(r.surfaceFoldAspect);
     bool boundaryProgressAnnounced=false;
     Aggregate aggregate;
+    const double theta=o.incidentPolar*MeasurementPi/180,phi=o.incidentAzimuth*MeasurementPi/180;
+    const SlabVector incoming=o.incidentPolar==0 ? SlabVector{0,0,1} :
+        SlabVector{-std::sin(theta)*std::cos(phi),-std::sin(theta)*std::sin(phi),std::cos(theta)};
+    SlabVector actualLaunch=incoming;
     for (std::uint64_t history = 0; history < o.histories; ++history) {
         Random rng(o.seed + history);
-        auto s = kernel.Begin({0, 0, 0}, {0, 0, 1});
+        auto s = kernel.Begin({0, 0, 0}, incoming);
+        if(history==0) actualLaunch=s.Direction();
         SurfaceWork surface;
         ForwardTermination boundaryDiagnostic=ForwardTermination::None;
         if(surfaceLaw) boundaryDiagnostic=RunFoldBoundaryHistory(kernel,*surfaceLaw,s,rng,o.maxTransitions,surface,boundaryProgressAnnounced);
@@ -876,7 +1166,14 @@ J Measure(const Options &o, const Resolved &r) {
     output.set("estimator", Str(o.estimator));
     Put(output, "roulette_target", o.roulette);
     Put(output, "exterior_ior", o.exteriorIOR);
-    output.set("incident_direction", Str("normal incidence (0,0,1) at local origin"));
+    output.set("incident_measurement_rule",Str("one fixed outward-source direction per measurement; no incident-cell jitter or averaging"));
+    output.set("incident_direction",Str("incoming travel is opposite outward source wi; launch at local origin; source polar from outward (0,0,-1), azimuth +x toward +y"));
+    Put(output,"incident_polar_degrees",o.incidentPolar);Put(output,"incident_source_azimuth_degrees",o.incidentAzimuth);
+    output.set("incident_azimuth_defined",Bool(o.incidentPolar!=0));
+    output.set("incident_source_direction",NumberArray(std::array<double,3>{{-actualLaunch.x,-actualLaunch.y,-actualLaunch.z}}));
+    output.set("incoming_travel_direction",NumberArray(std::array<double,3>{{actualLaunch.x,actualLaunch.y,actualLaunch.z}}));
+    output.set("direction_frame",Str("global +x/+y azimuth with +x cross +y=+z inward; outward macro normal is -z; do not treat incoming travel as outward source wi"));
+    output.set("exit_distribution",aggregate.exits.Json(o.histories));
     output.set("explicit_cli_options", o.explicitOptions);
     output.set("seed_u64", Str(std::to_string(o.seed)));
     output.set(
@@ -933,7 +1230,7 @@ J Measure(const Options &o, const Resolved &r) {
     estimates.set("unresolved_live_weight", aggregate.unresolved.Json());
     estimates.set("accounted_weight", aggregate.accounted.Json());
     Put(estimates, "escaped_plus_unresolved_mean",
-        aggregate.reflectance.mean + aggregate.unresolved.mean);
+        aggregate.reflectance.Summary().mean + aggregate.unresolved.Summary().mean);
     estimates.set(
         "bound_interpretation",
         Str("remaining expected physical escaped power conditional on history lies in [0,live "
