@@ -13,13 +13,23 @@ using namespace RISE::HyLIoS;
 
 namespace {
 int failures = 0;
-void Check(bool ok, const char* label) { if (!ok) { ++failures; std::cerr << "FAIL: " << label << '\n'; } }
-bool Near(double a, double b, double tol = 1e-12) { return std::abs(a-b) <= tol * std::max({1.0, std::abs(a), std::abs(b)}); }
+void Check(bool ok, const char* label) { if (!ok) { ++failures; std::cerr << "FAIL: " << label << '\n'; } else { std::cout << "ok: " << label << '\n'; } }
+bool Near(double a, double b, double tol = 1e-12) { return std::isfinite(a) && std::isfinite(b) && std::abs(a-b) <= tol * std::max({1.0, std::abs(a), std::abs(b)}); }
 template<class F> void Throws(F f, const char* label) { try { f(); Check(false, label); } catch (const std::exception&) {} }
 Provenance Synthetic() { Provenance p; p.availability=Availability::Verified; p.source="TEST ONLY: synthetic analytic control"; p.sourceQuantity="synthetic coefficient"; p.sourceUnits="m^-1"; p.transformation="TEST ONLY: direct literal values"; p.checksum="TEST ONLY: in-test values"; p.uncertainty="TEST ONLY: exact analytic controls"; p.redistribution="not applicable; synthetic test data"; p.label="TEST ONLY: synthetic two-point curve"; p.measuredWavelengthRange="400..600 nm (synthetic)"; p.interpolationRationale="test exercises declared policy, not a fitted dataset"; return p; }
 }
 
 int main() {
+	Check(!Near(std::numeric_limits<double>::infinity(), 1.0), "comparison rejects nonfinite actual value");
+	Check(!Near(1.0, std::numeric_limits<double>::infinity()), "comparison rejects nonfinite expected value");
+	const double subnormal = std::numeric_limits<double>::denorm_min();
+	for (const auto quantity : {Quantity::AbsorptionPerMetre, Quantity::RefractiveIndex}) {
+		auto constant = SpectralCurve::Create(quantity, Interpolation::Linear, {{1, subnormal}, {2, subnormal}}, Synthetic());
+		Check(constant.Evaluate(1.5) == subnormal, "interpolation preserves constant subnormal [review-r1-interpolation]");
+	}
+	auto extremes = SpectralCurve::Create(Quantity::AbsorptionPerMetre, Interpolation::Linear, {{1e-100,0},{1e300,1e300}}, Synthetic());
+	// Here value/span is one to double precision, so value(x) = x - x0.
+	Check(Near(extremes.Evaluate(1e-99)/9e-100, 1.0), "interpolation retains recoverable tiny ratio [review-r1-interpolation]");
 	// Exact endpoints and linear midpoint oracle; synthetic data are not physiological defaults.
 	auto linear = SpectralCurve::Create(Quantity::AbsorptionPerMetre, Interpolation::Linear,
 		{{400, 2}, {600, 6}}, Synthetic());

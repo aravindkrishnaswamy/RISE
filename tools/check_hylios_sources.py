@@ -156,6 +156,16 @@ def validate(presets: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
     author_ids = {item["id"] for item in manifest["author_data_index"]["items"]}
     require({"keratin_abs", "dna_abs", "uro_acid_abs", "water_absorption", "lipid_absorption"} <= author_ids,
             "author numeric data inventory incomplete")
+    water = {item["id"]: item for item in manifest["author_water_data_index"]["items"]}
+    hale = water["hale_querry_water_real_ior"]
+    require(hale["files"] == ["water/water2_n.m"],
+            "Hale–Querry must use its script; riW2.txt is the IAPWS filename collision")
+    require(water["iapws_water_real_ior"]["reported_range_nm"] == [200, 1100],
+            "IAPWS candidate coverage must remain 200–1100 nm")
+    require(hale["reported_range_nm"] == [200, 2500],
+            "Hale–Querry candidate coverage must remain 200–2500 nm")
+    require(any(item.get("file") == "water/riW2.txt" for item in hale.get("excluded_artifacts", [])),
+            "Hale–Querry filename collision must remain documented")
     return ["Source-table transcription schema and exact Table III values validated.",
             "source values remain in original units; conversion helper is independently unit-tested.",
             "Coverage certification and unresolved axis/data blockers remain explicit."]

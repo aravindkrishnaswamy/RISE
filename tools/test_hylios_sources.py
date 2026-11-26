@@ -11,6 +11,14 @@ from check_hylios_sources import MANIFEST, PRESETS, convert_source_value, valida
 
 
 class HyLIoSSourceEvidenceTest(unittest.TestCase):
+    def test_rejects_water_filename_collision(self):
+        changed = copy.deepcopy(self.manifest)
+        hale = next(x for x in changed["author_water_data_index"]["items"]
+                    if x["id"] == "hale_querry_water_real_ior")
+        hale["files"].append("water/riW2.txt")
+        with self.assertRaisesRegex(ValueError, "IAPWS filename collision"):
+            validate(self.presets, changed)
+
     def test_rejects_wrong_source_basis(self):
         changed = copy.deepcopy(self.presets)
         changed["table_iii_fields"]["melanosome_dimensions_um"]["unit"] = "m"

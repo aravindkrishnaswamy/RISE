@@ -16,6 +16,17 @@ void RequireNonnegative(double x, const char* what) {
 	RequireFinite(x, what);
 	if (x < 0.0) throw std::invalid_argument(std::string(what) + " must be nonnegative");
 }
+
+// A wavelength ratio may underflow even when its product with a coefficient
+// is representable. Keep exponents separate until the complete expression.
+double ScaledProductQuotient(double value, double numerator, double denominator) {
+	if (value == 0.0 || numerator == 0.0) return 0.0;
+	int ve = 0, ne = 0, de = 0;
+	const double vm = std::frexp(value, &ve);
+	const double nm = std::frexp(numerator, &ne);
+	const double dm = std::frexp(denominator, &de);
+	return std::ldexp((vm * nm) / dm, ve + ne - de);
+}
 }
 
 SpectralCurve::SpectralCurve(Quantity q, Interpolation i, std::vector<Sample> s, Provenance p)
@@ -56,10 +67,17 @@ double SpectralCurve::Evaluate(double wavelengthNm) const {
 	if (upper != samples_.end() && wavelengthNm == upper->wavelengthNm) return upper->value;
 	if (upper == samples_.begin() || upper == samples_.end()) throw std::logic_error("validated spectral interpolation interval was not found");
 	const auto& a = *(upper - 1); const auto& b = *upper;
-	const double t = (wavelengthNm-a.wavelengthNm)/(b.wavelengthNm-a.wavelengthNm);
-	double result;
-	if (interpolation_ == Interpolation::Linear) result = (1.0-t)*a.value + t*b.value;
-	else result = std::exp(std::log(a.value) + t*(std::log(b.value)-std::log(a.value)));
+	const double left = wavelengthNm - a.wavelengthNm;
+	const double right = b.wavelengthNm - wavelengthNm;
+	const double span = b.wavelengthNm - a.wavelengthNm;
+	const double av = interpolation_ == Interpolation::Linear ? a.value : std::log(a.value);
+	const double bv = interpolation_ == Interpolation::Linear ? b.value : std::log(b.value);
+	// Use the nearer endpoint to avoid cancellation of a nonnegative value.
+	// Equal endpoints remain exact, including constant subnormal curves.
+	const double interpolated = left <= right
+		? av + ScaledProductQuotient(bv - av, left, span)
+		: bv + ScaledProductQuotient(av - bv, right, span);
+	const double result = interpolation_ == Interpolation::Linear ? interpolated : std::exp(interpolated);
 	if (!std::isfinite(result)) throw std::overflow_error("spectral interpolation overflowed");
 	return result;
 }

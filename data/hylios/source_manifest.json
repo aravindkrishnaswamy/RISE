@@ -534,19 +534,24 @@
       {
         "id": "hale_querry_water_real_ior",
         "files": [
-          "water/water2_n.m",
-          "water/riW2.txt"
+          "water/water2_n.m"
         ],
         "sha256": [
-          "ef4b8b77e910612c59af10acc470152c560f73f59845402577bccc6df55be280",
-          "6efe55fb9f51c5751d6af1b4673e444f0d273c8079a86bd78d39c30c962fe901"
+          "ef4b8b77e910612c59af10acc470152c560f73f59845402577bccc6df55be280"
         ],
         "quantity": "real refractive index of water, linearly interpolated",
         "reported_range_nm": [
           200,
           2500
         ],
-        "source": "Hale and Querry 1973; index explicitly says linearly interpolated"
+        "source": "Hale and Querry 1973; index explicitly says linearly interpolated",
+        "excluded_artifacts": [
+          {
+            "file": "water/riW2.txt",
+            "sha256": "6efe55fb9f51c5751d6af1b4673e444f0d273c8079a86bd78d39c30c962fe901",
+            "reason": "Filename collision: downloaded riW2.txt is IAPWS (200\u20131100 nm, n(200 nm)=1.426), not Hale\u2013Querry. water2_n.m is the Hale\u2013Querry candidate (n(200 nm)=1.3960). Do not import the text artifact for this source."
+          }
+        ]
       },
       {
         "id": "hale_querry_water_extinction",
