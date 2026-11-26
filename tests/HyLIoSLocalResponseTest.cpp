@@ -707,6 +707,176 @@ void MirrorCellBoundaryAndCanonicalWrap()
     }
     Check(HyLIoSLocalResponse::FromDirection({1,-0.0,1}).phi==0,"exact signed-zero axis remains canonical zero");
 }
+void SupportedProposalAnalytic()
+{
+    LocalResponseDefinition d;
+    d.incident={{0,.2,1},{0,.7,LocalResponseTwoPi}};
+    d.outgoing={{0,.1,1},{0,1.1,LocalResponseTwoPi}};
+    d.wavelengthNm={500,700};
+    const double masses[2][4][4]={
+        {{.3,.1,0,.04},{.1,.5,.05,.02},{.6,0,.02,.02},{.2,.1,.3,.04}},
+        {{.05,0,.2,.1},{.3,.05,0,.2},{0,.6,.1,.02},{.5,.02,.02,0}}};
+    for (const auto& wavelength:masses)
+        for (const auto& row:wavelength)
+            for (std::size_t j=0;j<4;++j) d.continuous.push_back(row[j]/ReferenceArea(d.outgoing,j));
+    d.mirror={.02,.03,.04,.05, .1,0,.15,.2};
+    const auto core=HyLIoSLocalResponse::Create(d);
+    const auto p=HyLIoSSupportedCameraProposal::Create(core,{32});
+    for (double nm:{500.,std::nextafter(500.,700.),600.,std::nextafter(700.,500.),700.}) {
+        const double dl=nm-500, dh=700-nm;
+        const bool primaryLo=dl<=dh;
+        const double minority=std::min(dl,dh)/(dl+dh);
+        const auto physical=[&](double a,double b) { return primaryLo ? std::fma(minority,b-a,a) : std::fma(minority,a-b,b); };
+        for (std::size_t j=0;j<4;++j) {
+            const auto wo=Centre(d.outgoing,j);
+            double expectation=0, reference=0, integratedPdf=0;
+            for (std::size_t i=0;i<4;++i) {
+                const double f0=masses[0][i][j]/ReferenceArea(d.outgoing,j);
+                const double f1=masses[1][i][j]/ReferenceArea(d.outgoing,j);
+                const double f=physical(f0,f1);
+                const double area=ReferenceArea(d.incident,i);
+                const auto sample=p->SampleCameraNM(wo,nm,0,i,0,0xffffffffU);
+                Check(sample.event==LocalResponseSample::Event::Continuous,"supported proposal emits continuous zero-weight draws too");
+                Check(core->IncidentCell(sample.incident)==i,"supported midpoint endpoints preserve selected cell");
+                Near(sample.eventProbability,.5,"supported continuous branch has exact half probability");
+                Near(sample.weight,8*area*f,"supported continuous weight uses interpolated nonsymmetric physical F");
+                Near(sample.pdf,std::sqrt(sample.incident.t)/(8*area),"supported PDF uses actual uniform cell law");
+                Near(p->CameraPdfNM(sample.incident,wo,nm),sample.pdf,"supported NEE PDF equals continuation subdensity");
+                expectation+=sample.weight/8;
+                reference+=area*f;
+                const auto np=d.incident.phiEdges.size()-1, ti=i/np, pi=i%np;
+                const double mu0=std::sqrt(d.incident.tEdges[ti]),mu1=std::sqrt(d.incident.tEdges[ti+1]);
+                const double mu=(mu0+mu1)/2;
+                integratedPdf+=p->CameraPdfNM({mu*mu,Centre(d.incident,i).phi},wo,nm)*(mu1-mu0)*
+                    (d.incident.phiEdges[pi+1]-d.incident.phiEdges[pi]);
+                // Independent nonconstant incident radiance per cell.
+                expectation+=(i+1)*sample.weight/8;
+                reference+=(i+1)*area*f;
+            }
+            Near(integratedPdf,.5,"supported continuous PDF integrates to exact branch probability");
+            const auto inverse=HyLIoSLocalResponse::PlanarMirror(wo);
+            const auto i=core->IncidentCell(inverse);
+            const double atom=physical(d.mirror[i],d.mirror[4+i]);
+            const auto sample=p->SampleCameraNM(wo,nm,1,0,0,0);
+            Near(sample.weight,2*atom,"supported mirror weight uses inverse-map incident coefficient");
+            Near(sample.pdf,0,"supported mirror event is delta");
+            Near(sample.eventProbability,.5,"supported mirror branch always has exact half probability");
+            Near(sample.incident.t,inverse.t,"supported mirror follows actual polar query");
+            Near(sample.incident.phi,inverse.phi,"supported mirror follows actual azimuth query");
+            Near(p->CameraPdfNM(inverse,wo,nm),std::sqrt(inverse.t)/(8*ReferenceArea(d.incident,i)),
+                "supported NEE at mirror direction keeps continuous subdensity");
+            Near(expectation+.5*sample.weight,reference+atom,"supported independent transpose expectation with variable incident radiance");
+        }
+    }
+    Check(core->CameraContinuousMassNM(Centre(d.outgoing,0),500)>1,"supported proposal permits transpose columns above one");
+}
+
+void SupportedEndpointClosure()
+{
+    LocalResponseDefinition d;
+    d.incident={{0,1},{0,1,LocalResponseTwoPi}};
+    d.outgoing={{0,1},{0,LocalResponseTwoPi}};
+    d.wavelengthNm={500,700}; d.continuous={0,.1,.2,0}; d.mirror={.4,0,0,.5};
+    const auto core=HyLIoSLocalResponse::Create(d);
+    const auto p=HyLIoSSupportedCameraProposal::Create(core,{32});
+    const LocalResponsePoint wo{.3,2};
+    const double near=std::nextafter(500.,700.);
+#ifdef HYLIOS_PROVE_OLD_PROPOSAL
+    try { core->RequireSamplingSupport(wo,near,{32}); }
+    catch (const std::exception&) { Check(false,"supported-domain-closure old latent node fails nextafter wavelength"); return; }
+#else
+    const auto rare=p->SampleCameraNM(wo,near,0,0,0,0);
+    Check(rare.weight>0,"supported-domain-closure tiny minority retains physical support without latent selection");
+#endif
+    for (double nm:{500.,near,600.,std::nextafter(700.,500.),700.})
+        for (auto outgoing:std::vector<LocalResponsePoint>{{std::numeric_limits<double>::denorm_min(),0},{1,0},{.2,1},{.2,5}})
+            for (unsigned event:{0U,1U}) for (std::size_t cell:{std::size_t{0},std::size_t{1}})
+                for (std::uint64_t word:{std::uint64_t{0},std::uint64_t{0xffffffffU}}) {
+                    const auto s=p->SampleCameraNM(outgoing,nm,event,cell,word,word);
+                    Check(std::isfinite(s.weight) && s.weight>=0,"supported entire-domain probes produce finite physical weights");
+                    Check(event==1 || (s.pdf>0 && std::isfinite(s.pdf)),"supported entire-domain probes retain positive continuous PDF");
+                }
+    for (const auto& values:std::vector<std::vector<double>>{{0,0},{0,.8},{.1,0}}) {
+        auto uniform=d; uniform.wavelengthNm={500}; uniform.continuous.assign(2,values[0]); uniform.mirror.assign(2,values[1]);
+        const auto proposal=HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(uniform),{32});
+        for (unsigned event:{0U,1U}) {
+            const auto s=proposal->SampleCameraNM(wo,500,event,0,0,0);
+            Check(s.event==(event==0 ? LocalResponseSample::Event::Continuous : LocalResponseSample::Event::PlanarMirror),
+                "supported zero physical events preserve constant proposal branches");
+            if (values[event]==0) Near(s.weight,0,"supported zero physical contribution has legitimate zero weight");
+        }
+    }
+    auto subnormal=d; subnormal.wavelengthNm={500};
+    const double unit=std::numeric_limits<double>::denorm_min();
+    subnormal.continuous.assign(2,16*unit);subnormal.mirror.assign(2,16*unit);
+    const auto small=HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(subnormal),{32});
+    Near(small->SampleCameraNM(wo,500,0,0,0,0).weight,32*unit,
+        "supported scaled arithmetic retains representable constant subnormal continuous weights");
+    Near(small->SampleCameraNM(wo,500,1,0,0,0).weight,32*unit,
+        "supported scaled arithmetic retains representable constant subnormal mirror weights");
+    Near(p->CameraPdfNM({std::numeric_limits<double>::denorm_min(),0},wo,500),
+        std::sqrt(std::numeric_limits<double>::denorm_min())/2,"supported grazing NEE PDF remains representable");
+    std::cout<<"ok: supported-domain-closure endpoint and zero-component controls\n";
+}
+
+void SupportedPreparationRefusalsAndIntegerGrid()
+{
+    auto d=Uniform(.1,.2); // Six incident cells: cannot have exact uniform power-of-two word PMF.
+    Throws<std::domain_error>([&]{HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(d),{32});},
+        "supported nonpower2 grid explicitly refused before shading");
+    d.incident={{0,.25,1},{0,2,LocalResponseTwoPi}};
+    d.continuous.assign(16,.1/LocalResponsePi);d.mirror.assign(4,.2);
+    const auto p=HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(d),{4});
+    std::size_t counts[4]={};
+    double polarMean[4]={},azimuthMean[4]={};
+    for (unsigned event=0;event<2;++event)
+        for (std::size_t cell=0;cell<4;++cell)
+            for (std::uint64_t u=0;u<16;++u) for (std::uint64_t v=0;v<16;++v) {
+                const auto s=p->SampleCameraNM({.4,2},500,event,cell,u,v);
+                Near(s.eventProbability,.5,"supported integer event selection matches declared probability");
+                if (event!=0) continue;
+                const auto selected=p->Response().IncidentCell(s.incident);
+                ++counts[selected];polarMean[selected]+=s.incident.t;azimuthMean[selected]+=s.incident.phi;
+            }
+    for (std::size_t i=0;i<4;++i) {
+        Check(counts[i]==256,"supported exact integer enumeration gives every cell equal PMF");
+        Near(polarMean[i]/256,Centre(d.incident,i).t,"supported full midpoint polar grid has analytic mean");
+        Near(azimuthMean[i]/256,Centre(d.incident,i).phi,"supported full midpoint azimuth grid has analytic mean");
+    }
+    auto maximum=d;maximum.incident={{0,1},{0}};maximum.outgoing={{0,1},{0,LocalResponseTwoPi}};
+    for (std::size_t i=1;i<=65536;++i) maximum.incident.phiEdges.push_back(LocalResponseTwoPi*static_cast<double>(i)/65536);
+    maximum.continuous.assign(65536,0);maximum.mirror.assign(65536,0);
+    const auto largest=HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(maximum),{8});
+    const auto last=largest->SampleCameraNM({.4,2},500,0,65535,255,255);
+    Check(largest->Response().IncidentCell(last.incident)==65535,
+        "supported default maximum cell cardinality has finite integer and midpoint support");
+    Throws<std::invalid_argument>([&]{p->SampleCameraNM({.4,2},500,2,0,0,0);},"supported invalid event word rejected");
+    Throws<std::invalid_argument>([&]{p->SampleCameraNM({.4,2},500,0,4,0,0);},"supported invalid cell word rejected");
+    Throws<std::invalid_argument>([&]{p->SampleCameraNM({.4,2},500,0,0,16,0);},"supported invalid midpoint word rejected");
+    Throws<std::out_of_range>([&]{p->CameraPdfNM({.4,2},{.4,2},499);},"supported NEE enforces optical coverage");
+    Throws<std::invalid_argument>([]{HyLIoSSupportedCameraProposal::Create({}, {32});},"supported null response rejected");
+    auto tiny=d;tiny.incident={{0,1},{0,0x1p-1020,LocalResponseTwoPi}};
+    tiny.continuous.assign(8,0);tiny.mirror.assign(2,0);
+    // The tiny cell's midpoint grid resolves at one bit, but its inverse-area
+    // PDF exceeds the conservative scalar envelope: numeric preflight must fail.
+    tiny.incident.phiEdges[1]=0x1p-1024;
+    Throws<std::domain_error>([&]{HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(tiny),{1});},
+        "supported tiny-area PDF overflow refused during preparation");
+    tiny.incident.phiEdges[1]=4*std::numeric_limits<double>::denorm_min();
+    Throws<std::domain_error>([&]{HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(tiny),{32});},
+        "supported unresolvable within-cell midpoint grid refused during preparation");
+    auto vanishing=d;vanishing.wavelengthNm={500,700};vanishing.continuous.assign(32,0);
+    vanishing.mirror.assign(8,0);vanishing.mirror[4]=std::numeric_limits<double>::denorm_min();
+    Throws<std::domain_error>([&]{HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(vanishing),{32});},
+        "supported positive spectral weight underflow refused over entire interval");
+    auto extreme=d;extreme.wavelengthNm={std::numeric_limits<double>::denorm_min(),std::numeric_limits<double>::max()};
+    extreme.continuous.assign(32,0);extreme.mirror.assign(8,0);
+    Throws<std::domain_error>([&]{HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(extreme),{32});},
+        "supported unrepresentable spectral coordinate refused over entire interval");
+    Throws<std::domain_error>([&]{HyLIoSSupportedCameraProposal::Create(HyLIoSLocalResponse::Create(d),{52});},
+        "supported excessive midpoint cardinality refused by actual grid resolution");
+}
+
 } // namespace
 
 int main()
@@ -716,6 +886,7 @@ int main()
         EmptyAndBoundaries(); InvalidAndBudgets(); TinyPositiveAndFiniteSamplingSupport(); SubnormalScaleInvariantProposal();
         ExactForwardPassivityAndSplitInvariance();
         MirrorCellBoundaryAndCanonicalWrap();
+        SupportedProposalAnalytic(); SupportedEndpointClosure(); SupportedPreparationRefusalsAndIntegerGrid();
     } catch (const std::exception& e) { ++failures; std::cerr<<"Unexpected exception: "<<e.what()<<'\n'; }
     if (failures) { std::cerr<<failures<<" failed checks\n"; return 1; }
     std::cout<<"HyLIoS local response analytic/control checks passed\n";

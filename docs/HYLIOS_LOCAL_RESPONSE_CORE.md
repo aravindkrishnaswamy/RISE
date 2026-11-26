@@ -159,8 +159,9 @@ preparation layer must establish closure over its complete possible query
 domain and refuse unsupported domains before shading. In particular, a
 nonredundant angular support that appears at a spectral node can become too
 small for a finite proposal grid immediately next to that node, while physical
-evaluation remains valid there. This core does not solve whole-domain closure
-or supply a lower-bounded support-preserving alternative proposal. This
+evaluation remains valid there. The original `HyLIoSLocalResponse` sampling API does not solve whole-domain
+closure. The separate supported proposal described below supplies that numeric
+closure for explicitly accepted domains. The original sampling API’s
 discrete-interval preflight also does not prove scalar output representability
 for all eventual query/random-draw combinations; preparation must close both
 requirements before using the core in a renderer.
@@ -200,8 +201,8 @@ A future MC bake needs independent uncertainty, unfinished-history accounting,
 atom lineage, and encoding-error policies. Very ill-scaled positive normalized
 CDF intervals that underflow or disappear in cumulative addition are rejected.
 Query interpolation and PDF arithmetic can also throw `overflow_error` for
-unrepresentable combinations; preparation must constrain future production
-assets accordingly. No silent loss of positive support is intentional.
+unrepresentable combinations; the separate supported proposal’s preparation rejects unsupported domains
+before its shading calls. No silent loss of positive support is intentional.
 
 `EstimateStorage` performs checked integer addition/multiplication and enforces
 configurable dimension, coefficient-cardinality and storage limits before the
@@ -266,7 +267,143 @@ floating-point override is attached to this core.
 Before promotion, focused standalone gates passed strict warning-as-error,
 ASan/UBSan and production `-O3 -ffast-math -fno-finite-math-only -flto` builds.
 Those gates validate this numeric core and its synthetic controls; they do not
-establish calibrated assets, a renderer adapter, whole-domain sampling closure,
-or cross-platform release readiness. Independent numeric/API reviews covered
+establish calibrated assets, a renderer adapter, whole-domain sampling closure
+for the original proposal, or cross-platform release readiness. Independent numeric/API reviews covered
 the promoted behavior; the integration still requires the repository's build
 and warning gates.
+
+
+## Supported camera proposal v1
+
+`HyLIoSSupportedCameraProposal` is an additional immutable numeric API with tag
+`hylios_supported_camera_uniform_cells_v1`. It preserves the old representation,
+evaluation API and mass-weighted sampler. It supplies a preparation certificate
+for **the complete supplied closed wavelength interval and every valid outward
+outgoing direction**, rather than certifying a finite mesh of queries. It is
+not a material, an asset loader, a shared HWSS proposal or renderer integration.
+
+The new proposal selects a continuous event or the exact planar mirror event
+with constant probability `1/2`, including events with zero physical
+contribution. On the continuous branch it selects one incident cell uniformly
+and then uses a uniform projected-angle draw in that cell. For incident cell
+`i`, with `N` incident cells and represented projected area `A_i`, it returns
+
+```
+q_continuous(wi|wo,lambda) = mu_i / (2*N*A_i)
+weight_continuous = 2*N*A_i*F_ij(lambda)
+p_mirror = 1/2
+weight_mirror = 2*d(S^-1(wo),lambda)
+```
+
+The PDF is the complete continuous solid-angle **sub-density**. The mirror
+sample has zero scalar PDF. A PDF query at the mirror direction still returns
+the continuous sub-density. This is the PDF a future NEE competitor must use.
+No physical table value is floored, no physical column is normalized, no
+reciprocity is assumed, and the weight is generally **not** the old `C+D`.
+For arbitrary incident radiance, the expectation is the independent sum of
+`A_i*F_ij*L_i` and `d(S^-1 wo)*L(S^-1 wo)`. Thus columns larger than one require
+no special case. Zero coefficients return a selected event with zero weight;
+they do not remove proposal support or produce `Event::None`.
+
+There is no latent spectral draw. Physical interpolation uses the original
+near-endpoint coordinate and scaled arithmetic. Consequently an arbitrarily
+small but representable minority contribution cannot disappear through a tiny
+selector interval. Representable constant subnormal weights remain supported;
+a zero-to-positive spectral law whose positive sample weight can fall below
+the scalar output range is explicitly refused at preparation.
+
+### Finite random input contract
+
+Every random input is an independent **uniform integer**, with its actual
+range specified by the API: `event` in `[0,2)`, `cell` in `[0,N)`, and each
+within-cell word in `[0,2^bits)`. Event zero denotes continuous. `N` must be a
+power of two; preparation explicitly refuses other cardinalities. This avoids
+pretending that `floor(N*k/2^b)` is exactly uniform when `N` does not divide the
+selector grid. A renderer adapter can obtain the cell index from exactly
+`log2(N)` random bits. No integer rejection loop or floating selector CDF is
+hidden in the API. The default maximum cardinality, 65,536, needs 16 cell bits
+and is exercised by the test. Outgoing grid cardinality has no such power-of-
+two restriction because it is queried rather than selected.
+
+The two within-cell words map to exact binary64 midpoints
+`(k+1/2)/2^bits`, where the accepted argument range is 1 through 52 bits.
+Preparation additionally checks actual cell resolution; the upper allowed bit
+argument alone does not imply support. It requires each axis width times
+`2^-bits` to be at least four binary64 ulps at its upper endpoint, and checks
+the extreme midpoint images strictly inside the endpoints. Sampling uses one
+FMA with the represented width. The four-ulp bound exceeds the combined width
+rounding and FMA endpoint errors, so all midpoint images remain interior and
+adjacent midpoint words do not merge. No query-time clamp repairs a bad cell.
+The same grid can therefore be supported at 32 bits and refused at 52 bits.
+
+This is a finite midpoint quadrature approximation to uniform projected
+sampling, as in ordinary finite random rendering; it does not claim a truly
+continuous RNG or exact integration of arbitrary radiance by a finite set.
+The selector PMFs are exactly the declared `1/2` and `1/N`. The displayed
+solid-angle density is the continuous proposal represented by the finite
+within-cell mapping, with the existing represented-area arithmetic convention.
+The caller remains responsible for uniformity and independence of its integer
+words. Simply reinterpreting a correlated or nonuniform generator as uniform
+words is outside this contract.
+
+### Whole-domain numeric certificate
+
+Preparation checks every axis interval and every nodal continuous and mirror
+coefficient, including every adjacent spectral pair. There is no wavelength or
+outgoing-direction sampling mesh. Positive binary64 wavelength spacing is
+nondecreasing, so an interior wavelength is separated from either endpoint by
+at least the spacing immediately above the lower node. The rounded span times
+four provides a conservative denominator bound for a lower envelope on the
+core’s computed minority interpolation coordinate. Preparation requires this
+lower envelope to be normal binary64. This restriction is conservative and
+can refuse extremely wide wavelength ranges even for a constant response;
+there is no claim that every mathematically valid optical table is supported.
+
+For each adjacent pair, positive-to-positive convex coefficients are bounded
+below by the smaller endpoint, while a zero-to-positive coefficient is bounded
+below by the positive endpoint times that minority envelope. The maximum is
+bounded by the larger endpoint. These bounds are multiplied by each cell’s
+`2*N*A_i`, or by two for the atom, using retained scale. Factor-two outer
+numeric envelopes exceed normalized rounding error and must fit the positive
+binary64 scalar output range. This can conservatively refuse borderline
+representable outputs; it does not alter any physical coefficient or weight.
+Nodal endpoints are included. Every inverse mirror lookup is covered because
+all incident atom cells are checked, independently of the outgoing grid.
+
+For the PDF, the lower polar cosine over valid binary64 queries is
+`sqrt(denorm_min)` and the upper is one. The same retained-scale checks bound
+`mu/(2*N*A_i)` over this entire domain. Tiny areas that cause overflowing PDFs,
+unresolvable midpoint grids, and spectral laws with underflowing positive
+weights therefore fail with `domain_error` during preparation. Invalid draw
+ranges still fail with `invalid_argument`; a query outside optical coverage
+fails with `out_of_range`. These guarantees concern canonical `(t,phi)` API
+queries and samples; they do not certify arbitrary downstream Cartesian
+round-trip precision, MIS arithmetic, renderer SPF compensation or asset error.
+
+### Cost and gates
+
+The prepared wrapper shares ownership of the original immutable response; it
+does not copy its table or construct another CDF. Additional logical retained
+storage is exactly `sizeof(HyLIoSSupportedCameraProposal)` (shared pointer plus
+precision field and padding), excluding its shared-pointer control block and
+allocator overhead. The original response’s full table, CDF and existing
+`Storage()` accounting remain present. Preparation traverses all incident axis
+edges, incident areas and the wavelength/incident/outgoing table, with constant
+additional working storage. It costs linear work in those payloads; it is not
+an amortized free check. Queries allocate no buffers and perform the original
+wavelength/angular binary searches, then a fixed amount of scaled arithmetic.
+Continuous samples use the provided cell index directly. No compression,
+throughput or renderer performance claim is made.
+
+The added controls use an independent nonsymmetric unequal-area table with
+columns above one, physical transpose expectations under nonconstant incident
+radiance, solid-angle PDF integration, zero-component and completely dark
+laws, exact endpoint and `nextafter` queries, inverse-map atom coefficients,
+NEE PDF queries at the atom, near-grazing scalar PDFs, constant subnormal
+weights, integer enumeration with exact selector PMFs and midpoint means,
+default maximum cell cardinality, non-power-of-two refusal, unresolved
+midpoints, tiny-area PDF overflow, positive spectral-weight underflow and
+extreme spectral-coordinate refusal. The original core controls remain in the
+same executable. A private old-proposal RED configuration runs the near-node
+support requirement through the original latent-node sampler and fails with
+`FAIL: supported-domain-closure`; the supported proposal passes that control.

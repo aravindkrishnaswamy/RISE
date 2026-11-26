@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace RISE::HyLIoS {
 
 inline constexpr const char* LocalResponseVersion = "hylios_local_projected_cells_v1";
+inline constexpr const char* SupportedCameraProposalVersion = "hylios_supported_camera_uniform_cells_v1";
 inline constexpr double LocalResponsePi = 3.141592653589793238462643383279502884;
 inline constexpr double LocalResponseTwoPi = 2.0 * LocalResponsePi;
 
@@ -64,9 +66,11 @@ struct LocalResponseSample {
 };
 
 // Synthetic/pure numeric response core only. No loader, oracle bake, material,
-// visible guide, semantic asset key or render preparation is supplied here.
+// visible guide, semantic asset key or renderer material adapter is supplied here.
 // Construction validates every nodal forward row; columns may exceed one.
 // All published methods are const; the object owns private copies of its input.
+class HyLIoSSupportedCameraProposal;
+
 class HyLIoSLocalResponse final {
 public:
     static LocalResponseStorage EstimateStorage(std::size_t wavelengthCount,
@@ -115,6 +119,7 @@ public:
     HyLIoSLocalResponse(const HyLIoSLocalResponse&) = delete;
     HyLIoSLocalResponse& operator=(const HyLIoSLocalResponse&) = delete;
 private:
+    friend class HyLIoSSupportedCameraProposal;
     struct Scaled { double value; int exponent; };
     struct SpectralBracket { std::size_t lo, hi; double minority; bool primaryLo; };
     struct CameraMixture { std::size_t j; Scaled c0,c1,c,d,z; bool sameColumn; };
@@ -153,6 +158,31 @@ private:
     std::vector<double> minimumCellProbability_;
     // Exact binary proportionality of adjacent physical F columns, not a fit.
     std::vector<unsigned char> sameAdjacentColumn_;
+};
+
+// Prepared, separate proposal; physical coefficients and the original API stay
+// unchanged. Certifies the complete optical interval and every outward wo.
+// Preparation conservatively refuses unsupported numeric/finite-grid domains.
+// Incident cell count must be a power of two. Each draw is an independent
+// uniform integer: event in [0,2), cell in [0,N), and u/v in [0,2^bits).
+// u/v map to exact binary midpoint variates (k+1/2)/2^bits, bits in [1,52].
+class HyLIoSSupportedCameraProposal final {
+public:
+    static std::shared_ptr<const HyLIoSSupportedCameraProposal> Create(
+        std::shared_ptr<const HyLIoSLocalResponse>, LocalResponseSamplingGrid);
+    // Complete continuous solid-angle sub-density mu/(2*N*A_i), including at
+    // the mirror direction and when the physical continuous response is zero.
+    double CameraPdfNM(LocalResponsePoint wi, LocalResponsePoint wo, double nm) const;
+    // event=0 is continuous, event=1 is mirror. Both have probability 1/2 even
+    // at zero physical contribution. Weights are 2*N*A_i*F and 2*d(S^-1 wo).
+    LocalResponseSample SampleCameraNM(LocalResponsePoint wo, double nm,
+        unsigned event, std::size_t cell, std::uint64_t u, std::uint64_t v) const;
+    const HyLIoSLocalResponse& Response() const noexcept { return *response_; }
+    unsigned PrecisionBits() const noexcept { return bits_; }
+private:
+    HyLIoSSupportedCameraProposal(std::shared_ptr<const HyLIoSLocalResponse>, unsigned);
+    std::shared_ptr<const HyLIoSLocalResponse> response_;
+    unsigned bits_;
 };
 
 } // namespace RISE::HyLIoS

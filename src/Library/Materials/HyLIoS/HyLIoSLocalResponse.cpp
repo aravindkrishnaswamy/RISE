@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace RISE::HyLIoS {
 namespace {
@@ -753,6 +754,133 @@ LocalResponseSample HyLIoSLocalResponse::SampleCameraNM(LocalResponsePoint wo, d
         result.event=LocalResponseSample::Event::PlanarMirror;
         result.incident=PlanarMirror(wo);
         result.eventProbability=RatioScaled(mixture.d,mixture.z);
+    }
+    return result;
+}
+
+std::shared_ptr<const HyLIoSSupportedCameraProposal> HyLIoSSupportedCameraProposal::Create(
+    std::shared_ptr<const HyLIoSLocalResponse> response, LocalResponseSamplingGrid grid)
+{
+    if (!response) throw std::invalid_argument("HyLIoS supported proposal requires a response");
+    if (grid.precisionBits==0 || grid.precisionBits>52)
+        throw std::invalid_argument("HyLIoS supported proposal midpoint grid needs 1..52 bits");
+    return std::shared_ptr<const HyLIoSSupportedCameraProposal>(
+        new HyLIoSSupportedCameraProposal(std::move(response),grid.precisionBits));
+}
+
+HyLIoSSupportedCameraProposal::HyLIoSSupportedCameraProposal(
+    std::shared_ptr<const HyLIoSLocalResponse> response, unsigned bits)
+    : response_(std::move(response)), bits_(bits)
+{
+    using Core=HyLIoSLocalResponse;
+    const auto& r=*response_;
+    const auto n=r.storage_.incidentCells;
+    if ((n&(n-1))!=0)
+        throw std::domain_error("HyLIoS supported proposal requires a power-of-two incident cell count");
+    const double count=static_cast<double>(n);
+    const double step=std::scalbn(1.0,-static_cast<int>(bits_));
+    // Midpoint gaps must exceed four ulps at the upper edge. A rounded width,
+    // one multiplication and one addition/FMA then cannot merge adjacent
+    // midpoint samples or move an extreme midpoint to a cell endpoint.
+    for (const auto* edges:{&r.incident_.tEdges,&r.incident_.phiEdges}) {
+        for (std::size_t k=0;k+1<edges->size();++k) {
+            const double a=(*edges)[k], b=(*edges)[k+1], width=b-a;
+            const auto gap=Core::TimesScaled(Core::MakeScaled(width),step);
+            const auto error=Core::TimesScaled(Core::MakeScaled(std::nextafter(b,
+                std::numeric_limits<double>::infinity())-b),4);
+            if (Core::LessScaled(gap,error) || !(std::fma(.5*step,width,a)>a) ||
+                !(std::fma(1-.5*step,width,a)<b))
+                throw std::domain_error("HyLIoS supported proposal cell cannot resolve midpoint sampling grid");
+        }
+    }
+    const auto minimum=Core::MakeScaled(std::numeric_limits<double>::denorm_min());
+    const auto maximum=Core::MakeScaled(std::numeric_limits<double>::max());
+    auto representable=[&](Core::Scaled low, Core::Scaled high) {
+        // Factor-two outer envelopes deliberately exceed the accumulated
+        // normalized binary64 rounding errors; they do not change the law.
+        if ((low.value>0 && Core::LessScaled(Core::TimesScaled(low,.5),minimum)) ||
+            Core::LessScaled(maximum,Core::TimesScaled(high,2)))
+            throw std::domain_error("HyLIoS supported proposal scalar output range is unsupported");
+    };
+    for (std::size_t i=0;i<n;++i) {
+        const auto denominator=Core::TimesScaled(r.incidentAreas_[i],2*count);
+        const auto reciprocal=Core::MakeScaled(1/denominator.value,-denominator.exponent);
+        representable(Core::TimesScaled(reciprocal,std::sqrt(std::numeric_limits<double>::denorm_min())),reciprocal);
+    }
+    for (std::size_t l=0;l<r.wavelengths_.size();++l) {
+        double minority=1;
+        if (l+1<r.wavelengths_.size()) {
+            const double lo=r.wavelengths_[l], hi=r.wavelengths_[l+1];
+            // Positive binary64 spacing never decreases. Every interior query
+            // is at least this far from either endpoint. The computed sum of
+            // distances is below twice the rounded span. Another factor two
+            // leaves a lower envelope for the rounded interpolation minority.
+            const auto span=Core::TimesScaled(Core::MakeScaled(hi-lo),4);
+            const auto spacing=Core::MakeScaled(std::nextafter(lo,hi)-lo);
+            const auto lower=Core::MakeScaled(spacing.value/span.value,spacing.exponent-span.exponent);
+            if (Core::LessScaled(lower,Core::MakeScaled(std::numeric_limits<double>::min())))
+                throw std::domain_error("HyLIoS supported proposal spectral coordinate range is unsupported");
+            minority=Core::Physical(lower);
+        }
+        auto coefficient=[&](double a, double b, Core::Scaled scale) {
+            const double high=std::max(a,b);
+            if (high==0) return;
+            const auto upper=Core::TimesScaled(scale,high);
+            const auto lower=a>0 && b>0 ? Core::TimesScaled(scale,std::min(a,b)) :
+                Core::TimesScaled(Core::TimesScaled(scale,high),minority);
+            representable(lower,upper);
+        };
+        const std::size_t next=std::min(l+1,r.wavelengths_.size()-1);
+        for (std::size_t i=0;i<n;++i) {
+            coefficient(r.mirror_[l*n+i],r.mirror_[next*n+i],Core::MakeScaled(2));
+            const auto scale=Core::TimesScaled(r.incidentAreas_[i],2*count);
+            for (std::size_t j=0;j<r.storage_.outgoingCells;++j)
+                coefficient(r.F(l,i,j),r.F(next,i,j),scale);
+        }
+    }
+}
+
+double HyLIoSSupportedCameraProposal::CameraPdfNM(LocalResponsePoint wi,
+    LocalResponsePoint wo, double nm) const
+{
+    using Core=HyLIoSLocalResponse;
+    const auto& r=*response_;
+    r.RequireCoverage(nm,nm);
+    Core::CanonicalPoint(wo);
+    wi=Core::CanonicalPoint(wi);
+    const auto denominator=Core::TimesScaled(r.incidentAreas_[r.IncidentCell(wi)],
+        2*static_cast<double>(r.storage_.incidentCells));
+    return Core::RatioScaled(Core::MakeScaled(std::sqrt(wi.t)),denominator);
+}
+
+LocalResponseSample HyLIoSSupportedCameraProposal::SampleCameraNM(LocalResponsePoint wo,
+    double nm, unsigned event, std::size_t cell, std::uint64_t u, std::uint64_t v) const
+{
+    using Core=HyLIoSLocalResponse;
+    const auto& r=*response_;
+    const std::uint64_t cardinality=std::uint64_t{1}<<bits_;
+    if (event>1 || cell>=r.storage_.incidentCells || u>=cardinality || v>=cardinality)
+        throw std::invalid_argument("HyLIoS supported proposal integer draw outside declared range");
+    const auto s=r.Bracket(nm);
+    wo=Core::CanonicalPoint(wo);
+    LocalResponseSample result;
+    result.eventProbability=.5;
+    if (event==0) {
+        const double ut=std::scalbn(static_cast<double>(u)+.5,-static_cast<int>(bits_));
+        const double vp=std::scalbn(static_cast<double>(v)+.5,-static_cast<int>(bits_));
+        const auto np=r.incident_.phiEdges.size()-1, ti=cell/np, pi=cell%np;
+        result.incident={std::fma(ut,r.incident_.tEdges[ti+1]-r.incident_.tEdges[ti],r.incident_.tEdges[ti]),
+            std::fma(vp,r.incident_.phiEdges[pi+1]-r.incident_.phiEdges[pi],r.incident_.phiEdges[pi])};
+        result.event=LocalResponseSample::Event::Continuous;
+        result.pdf=CameraPdfNM(result.incident,wo,nm);
+        const auto j=r.OutgoingCell(wo);
+        const auto f=Core::InterpolateScaled(Core::MakeScaled(r.F(s.lo,cell,j)),Core::MakeScaled(r.F(s.hi,cell,j)),s);
+        result.weight=Core::Physical(Core::MultiplyScaled(f,Core::TimesScaled(r.incidentAreas_[cell],
+            2*static_cast<double>(r.storage_.incidentCells))));
+    } else {
+        result.event=LocalResponseSample::Event::PlanarMirror;
+        result.incident=Core::PlanarMirror(wo);
+        result.weight=Core::Physical(Core::TimesScaled(r.Mirror(wo,s),2));
     }
     return result;
 }
