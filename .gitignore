@@ -150,3 +150,4 @@ evals/.secrets.env
 
 # agent test suites write transient preview frames into the repo root (AgentProposeRender/AgentViewModeRender); never commit them
 fro_temp_*.png
+extlib/oidn/source
