@@ -79,8 +79,8 @@ public:
 				{{"angular_velocity", "angular velocity", "rad/s", 3}, {"orientation", "orientation", "1", 4},
 				 {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""},
 			{"body_mass_properties", "rigid body mass properties", "kg", "field.v1", false, "",
-				{{"center_of_mass", "position", "m", 3}, {"inertia", "moment of inertia", "kg m^2", 9},
-				 {"mass", "mass", "kg", 1}}, ""},
+				{{"center_of_mass", "position", "m", 3}, {"external_force", "force", "N", 3},
+				 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, ""},
 			{"body_load", "body load", "N", "field.v1", true, "load",
 				{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, ""}};
 		auto& caps = c.capabilities;

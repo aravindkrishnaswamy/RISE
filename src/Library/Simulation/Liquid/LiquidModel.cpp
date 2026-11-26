@@ -239,6 +239,26 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	if (options.minFaceFraction > 0)
 		for (int a = 0; a < 3; ++a) for (double& f : fraction[a]) if (f < options.minFaceFraction) f = 0;
 	CellOpenFractions(g, solidNodes, openCells, pool);
+	// Rigid bodies (m7b): the static data above is kept, and the bodies' cut
+	// cells are rebuilt from their poses at every step (LiquidBodies.h).
+	bodies = setup.bodies;
+	bodyImpulse.assign(bodies.size(), Vec6{{0, 0, 0, 0, 0, 0}});
+	bodyAccumulated = bodyImpulse;
+	wallImpulse = {{0, 0, 0}};
+	if (!bodies.empty()) {
+		for (LiquidBody& b : bodies) if (b.motion == BodyMotion::Prescribed) {
+			V3 x, v, w;
+			Quat q;
+			b.PrescribedAt(0, x, q, v, w);
+			b.state.x = x; b.state.q = q; b.state.v = v;
+			const V3 wb = Rigid::ApplyT(Rigid::QMatrix(q), w);
+			for (int a = 0; a < 3; ++a) b.state.pi[std::size_t(a)] = b.state.moments[std::size_t(a)]*wb[std::size_t(a)];
+		}
+		geometry_.Initialize(g, solidNodes, fraction, openCells, setup.openTop, band);
+		geometry_.Update(bodies, solidNodes, fraction, openCells, pool);
+		solidVelocity_.Resize(g);
+		enclosedMark_.assign(g.Cells(), 0);
+	}
 	LiquidCells(g, setup.liquid, phi, pool);
 	// phi is not extrapolated into solids: the velocity is (closed faces are
 	// extrapolated from the liquid's), so the level set inside a solid's
@@ -252,8 +272,8 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	steps = 0;
 	time_ = 0;
 	clampedFaces = clampedSteps = 0;
-	PressureStats stats;
-	if (!Project(g, phi, fraction, nullptr, FinalPressure(), {}, u, q_, valid, stats, pool, error)) return false;
+	if (!bodies.empty()) ExtrapolateEnclosed();
+	if (!ProjectState(error)) return false;
 	targetVolume_ = Volume();
 	if (options_.particles) particles.Seed(g, phi, options_.particle, 0, pool);
 	else particles = MarkerParticles();
@@ -282,7 +302,7 @@ double LiquidModel::MaxSpeed() const
 
 double LiquidModel::Volume() const
 {
-	return LiquidVolume(setup_.grid, phi, setup_.solids.empty() ? nullptr : &openCells, pool_.get());
+	return LiquidVolume(setup_.grid, phi, HasSolids() ? &openCells : nullptr, pool_.get());
 }
 
 double LiquidModel::MaxStep(double segment) const
@@ -291,7 +311,7 @@ double LiquidModel::MaxStep(double segment) const
 	const double gn = std::sqrt(setup_.gravity[0]*setup_.gravity[0] + setup_.gravity[1]*setup_.gravity[1] +
 		setup_.gravity[2]*setup_.gravity[2]);
 	double dt = std::numeric_limits<double>::infinity();
-	const double speed = MaxSpeed() + gn*segment;
+	const double speed = (bodies.empty() ? MaxSpeed() : std::max(MaxSpeed(), BodySpeed())) + gn*segment;
 	if (speed > 0) dt = std::min(dt, options_.cfl*g.h/speed);
 	if (gn > 0 && depth_ > 0) dt = std::min(dt, options_.waveCfl*g.h/std::sqrt(gn*depth_));
 	return dt;
@@ -307,7 +327,19 @@ PressureOptions LiquidModel::FinalPressure() const
 bool LiquidModel::ProjectState(std::string& error)
 {
 	PressureStats stats;
-	return Project(setup_.grid, phi, fraction, nullptr, FinalPressure(), {}, u, q_, valid, stats, pool_.get(), error);
+	if (bodies.empty()) return Project(setup_.grid, phi, fraction, nullptr, FinalPressure(), {}, u, q_, valid, stats, pool_.get(), error);
+	// The bodies' current velocities as boundary conditions (kinematic: an impulsive start of the liquid);
+	// bodyImpulse receives the impulse rho h^3 J q the liquid exerts on each.
+	geometry_.SolidVelocity(BodyVelocities(), solidVelocity_);
+	if (!Project(setup_.grid, phi, fraction, &solidVelocity_, FinalPressure(), {}, u, q_, valid, stats, pool_.get(), error)) return false;
+	std::vector<std::uint8_t> active;
+	ActiveCells(setup_.grid, phi, fraction, active, pool_.get());
+	for (std::size_t i = 0; i < bodies.size(); ++i) {
+		BodyCoupling c(setup_.grid, geometry_.Faces()[i], bodies[i], setup_.density, false);
+		c.Begin(active);
+		bodyImpulse[i] = c.Measure(q_);
+	}
+	return true;
 }
 
 bool LiquidModel::SetLevelSet(std::vector<double> levelSet, std::string& error)
@@ -344,7 +376,8 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	stats.dt = dt;
 	const Grid& g = setup_.grid;
 	Pool* pool = pool_.get();
-	const bool solids = !setup_.solids.empty();
+	const bool hasBodies = !bodies.empty();
+	const bool solids = HasSolids();
 	const std::vector<double>* open = solids ? &openCells : nullptr;
 	double t0 = Now();
 	// Two extrapolations of the step-start velocity: for the interface
@@ -375,6 +408,30 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	t0 = Now();
 	stats.levelSet += t0 - t1;
 	t1 = t0;
+	// Bodies (m7b): new poses (drifted with the step-start velocity, as the
+	// interface), the cut cells rebuilt there, the level set in the cells
+	// they enclose extrapolated from the liquid around them, and marker
+	// particles inside them removed.
+	if (hasBodies) {
+		MoveBodies(dt);
+		geometry_.Update(bodies, solidNodes, fraction, openCells, pool);
+		ExtrapolateEnclosed();
+		if (options_.particles) {
+			auto& ps = particles.Particles();
+			std::vector<Rigid::M3> R;
+			for (const LiquidBody& b : bodies) R.push_back(Rigid::QMatrix(b.state.q));
+			ps.erase(std::remove_if(ps.begin(), ps.end(), [&](const MarkerParticles::Particle& p) {
+				for (std::size_t i = 0; i < bodies.size(); ++i) {
+					const V3 d{{p.x[0] - bodies[i].state.x[0], p.x[1] - bodies[i].state.x[1], p.x[2] - bodies[i].state.x[2]}};
+					if (bodies[i].shape.Distance(Rigid::ApplyT(R[i], d)) < 0) return true;
+				}
+				return false;
+			}), ps.end());
+		}
+		t0 = Now();
+		stats.bodies += t0 - t1;
+		t1 = t0;
+	}
 	const MacField un = u;   // the extrapolated step-start velocity (advected below)
 	if (options_.particles) stats.escaped = particles.Correct(g, phi, pool);
 	t0 = Now();
@@ -414,11 +471,33 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// (replaced by extrapolation before the next step transports them); the
 	// first stage's keeps every updated face for the second stage.
 	PressureOptions po = options_.momentumStages <= 1 ? FinalPressure() : options_.pressure;
-	if (!Project(g, phi, fraction, nullptr, po, {}, s1, q_, valid, stats.pressure, pool, error)) return false;
+	// Bodies: predicted velocities w* (free degrees of freedom gain dt F_ext / m).
+	std::vector<Vec6> w0, w1star, impulse1, impulse2;
+	if (hasBodies) {
+		w0 = BodyVelocities();
+		w1star = w0;
+		for (std::size_t i = 0; i < bodies.size(); ++i) {
+			const LiquidBody& b = bodies[i];
+			if (!b.Coupled()) continue;
+			for (int a = 0; a < 3; ++a) if (b.free[std::size_t(a)]) w1star[i][std::size_t(a)] += dt*b.externalForce[std::size_t(a)]/b.state.mass;
+		}
+		if (!ProjectBodies(s1, po, w1star, impulse1, stats.pressure, error)) return false;
+	} else if (!Project(g, phi, fraction, nullptr, po, {}, s1, q_, valid, stats.pressure, pool, error)) return false;
 	t1 = Now();
 	stats.project += t1 - t0;
-	if (options_.momentumStages <= 1) u = std::move(s1);
-	else {
+	if (options_.momentumStages <= 1) {
+		u = std::move(s1);
+		if (hasBodies)
+			for (std::size_t i = 0; i < bodies.size(); ++i) {
+				bodyImpulse[i] = impulse1[i];
+				if (!bodies[i].Coupled()) continue;
+				BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
+				const Vec6 dw = c.InverseMass(impulse1[i]);
+				Vec6 w = w1star[i];
+				for (int m = 0; m < 6; ++m) w[std::size_t(m)] += dw[std::size_t(m)];
+				SetBodyVelocity(i, w);
+			}
+	} else {
 		ExtrapolateVelocity(g, s1, valid, options_.extrapolationLayers, 0, pool);
 		MacField s2;
 		if (weno) {
@@ -442,7 +521,31 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		po = FinalPressure();
 		po.warmStart = true;
 		PressureStats second;
-		if (!Project(g, phi, fraction, nullptr, po, {}, s2, q_, valid, second, pool, error)) return false;
+		if (hasBodies) {
+			// Heun: w*2 = w*1 + M^-1 I1 / 2 for coupled bodies (the midpoint scheme: w*1).
+			std::vector<Vec6> w2star = w1star;
+			for (std::size_t i = 0; i < bodies.size(); ++i) {
+				if (!bodies[i].Coupled() || !weno) continue;
+				BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
+				Vec6 half = impulse1[i];
+				for (double& x : half) x *= 0.5;
+				const Vec6 dw = c.InverseMass(half);
+				for (int m = 0; m < 6; ++m) w2star[i][std::size_t(m)] += dw[std::size_t(m)];
+			}
+			if (!ProjectBodies(s2, po, w2star, impulse2, second, error)) return false;
+			// The step's impulse: I1 / 2 + I2 (Heun) or I2 (midpoint); new velocities w*2 + M^-1 I2.
+			for (std::size_t i = 0; i < bodies.size(); ++i) {
+				Vec6 I = impulse2[i];
+				if (weno) for (int m = 0; m < 6; ++m) I[std::size_t(m)] += 0.5*impulse1[i][std::size_t(m)];
+				bodyImpulse[i] = I;
+				if (!bodies[i].Coupled()) continue;
+				BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
+				const Vec6 dw = c.InverseMass(impulse2[i]);
+				Vec6 w = w2star[i];
+				for (int m = 0; m < 6; ++m) w[std::size_t(m)] += dw[std::size_t(m)];
+				SetBodyVelocity(i, w);
+			}
+		} else if (!Project(g, phi, fraction, nullptr, po, {}, s2, q_, valid, second, pool, error)) return false;
 		if (weno) for (std::size_t c = 0; c < q_.size(); ++c) q_[c] += 0.5*q1[c];
 		stats.pressure.iterations += second.iterations;
 		stats.pressure.residual = std::max(stats.pressure.residual, second.residual);
@@ -477,8 +580,255 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	}
 	lastDt_ = dt;
 	++steps;
+	if (hasBodies) {
+		for (std::size_t i = 0; i < bodies.size(); ++i)
+			for (int m = 0; m < 6; ++m) bodyAccumulated[i][std::size_t(m)] += bodyImpulse[i][std::size_t(m)];
+		if (audit) AuditWalls();
+	}
+	time_ += dt;
 	stats.project += Now() - t1;
 	return true;
+}
+
+// ------------------------------------------------------------------ bodies (m7b)
+
+void LiquidModel::ResetBodyImpulses()
+{
+	bodyAccumulated.assign(bodies.size(), Vec6{{0, 0, 0, 0, 0, 0}});
+}
+
+double LiquidModel::BodySpeed() const
+{
+	double s = 0;
+	for (const LiquidBody& b : bodies) {
+		if (b.motion == BodyMotion::Prescribed) {
+			double v = 0, a = 0, w = 0;
+			for (int k = 0; k < 3; ++k) {
+				v += b.v0[std::size_t(k)]*b.v0[std::size_t(k)];
+				a += b.amplitude[std::size_t(k)]*b.amplitude[std::size_t(k)];
+				w += b.spin[std::size_t(k)]*b.spin[std::size_t(k)];
+			}
+			s = std::max(s, std::sqrt(v) + std::sqrt(a)*2*3.14159265358979323846*b.frequency + std::sqrt(w)*b.shape.BoundingRadius());
+		} else s = std::max(s, b.SurfaceSpeed());
+	}
+	return s;
+}
+
+std::vector<Vec6> LiquidModel::BodyVelocities() const
+{
+	std::vector<Vec6> w(bodies.size());
+	for (std::size_t i = 0; i < bodies.size(); ++i) {
+		const V3 om = bodies[i].Omega();
+		w[i] = {{bodies[i].state.v[0], bodies[i].state.v[1], bodies[i].state.v[2], om[0], om[1], om[2]}};
+	}
+	return w;
+}
+
+void LiquidModel::SetBodyVelocity(std::size_t i, const Vec6& w)
+{
+	LiquidBody& b = bodies[i];
+	for (int a = 0; a < 3; ++a) b.state.v[std::size_t(a)] = w[std::size_t(a)];
+	if (!b.free[3]) { b.state.pi = {{0, 0, 0}}; return; }
+	const V3 wb = Rigid::ApplyT(Rigid::QMatrix(b.state.q), V3{{w[3], w[4], w[5]}});
+	for (int a = 0; a < 3; ++a) b.state.pi[std::size_t(a)] = b.state.moments[std::size_t(a)]*wb[std::size_t(a)];
+}
+
+void LiquidModel::MoveBodies(double dt)
+{
+	for (LiquidBody& b : bodies) {
+		if (b.motion == BodyMotion::Prescribed) {
+			V3 x, v, w;
+			Quat q;
+			b.PrescribedAt(time_ + dt, x, q, v, w);
+			b.state.x = x; b.state.q = q; b.state.v = v;
+			const V3 wb = Rigid::ApplyT(Rigid::QMatrix(q), w);
+			for (int a = 0; a < 3; ++a) b.state.pi[std::size_t(a)] = b.state.moments[std::size_t(a)]*wb[std::size_t(a)];
+			continue;
+		}
+		for (int a = 0; a < 3; ++a) b.state.x[std::size_t(a)] += dt*b.state.v[std::size_t(a)];
+		if (b.Coupled()) {
+			if (b.free[3]) Rigid::FreeRotation(b.state, dt);
+			continue;
+		}
+		// A kinematic port body: a constant angular velocity over the step.
+		const V3 w = b.Omega();
+		const double rate = std::sqrt(w[0]*w[0] + w[1]*w[1] + w[2]*w[2]);
+		if (rate > 0) {
+			const double half = 0.5*rate*dt, k = std::sin(half)/rate;
+			b.state.q = Rigid::QMul(Quat{{std::cos(half), w[0]*k, w[1]*k, w[2]*k}}, b.state.q);
+			Rigid::QNormalize(b.state.q);
+			const V3 wb = Rigid::ApplyT(Rigid::QMatrix(b.state.q), w);
+			for (int a = 0; a < 3; ++a) b.state.pi[std::size_t(a)] = b.state.moments[std::size_t(a)]*wb[std::size_t(a)];
+		}
+	}
+}
+
+void LiquidModel::UpdateBodyGeometry(bool extrapolate)
+{
+	if (bodies.empty()) return;
+	geometry_.Update(bodies, solidNodes, fraction, openCells, pool_.get());
+	if (extrapolate) ExtrapolateEnclosed();
+}
+
+void LiquidModel::ExtrapolateEnclosed()
+{
+	// Cells a body encloses (every face closed) take no part in the pressure
+	// solve, but the level-set stencils read them, and the body's motion
+	// carries their values into the cut cells beside it.  Each takes the
+	// liquid's level set extended from outside the body along its normal: at
+	// x_o = x + (1.5 h - d) n (d < 0 the body's distance, n its outward
+	// normal), phi_o + (x - x_o) . grad phi_o, the correction limited to
+	// |x - x_o| (exact for a plane; the trilinear stencil at x_o lies outside
+	// the enclosed cells).  Left as advected, the inside of a moving body
+	// turned the liquid under it into air within a few steps
+	// (docs/SIMULATION_M7B_RESULTS.md section 3).
+	const Grid& g = setup_.grid;
+	const auto& E = geometry_.EnclosedCells();
+	if (E.empty()) return;
+	const std::vector<double> old = phi;
+	std::vector<Rigid::M3> R;
+	for (const LiquidBody& b : bodies) R.push_back(Rigid::QMatrix(b.state.q));
+	auto distance = [&](std::size_t i, const V3& p) {
+		const V3 d{{p[0] - bodies[i].state.x[0], p[1] - bodies[i].state.x[1], p[2] - bodies[i].state.x[2]}};
+		return bodies[i].shape.Distance(Rigid::ApplyT(R[i], d));
+	};
+	ForRows(pool_.get(), E.size(), 64, [&](std::size_t e0, std::size_t e1) {
+		for (std::size_t e = e0; e < e1; ++e) {
+			const std::size_t c = E[e];
+			const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+				int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+			const V3 x = g.CellCentre(idx[0], idx[1], idx[2]);
+			std::size_t best = 0;
+			double d = 1e300;
+			for (std::size_t i = 0; i < bodies.size(); ++i) { const double di = distance(i, x); if (di < d) { d = di; best = i; } }
+			if (!(d < 0)) continue;
+			V3 n;
+			const double eps = 1e-3*g.h;
+			for (int a = 0; a < 3; ++a) {
+				V3 p = x, q = x;
+				p[std::size_t(a)] += eps; q[std::size_t(a)] -= eps;
+				n[std::size_t(a)] = (distance(best, p) - distance(best, q))/(2*eps);
+			}
+			const double len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+			if (!(len > 0)) continue;
+			for (double& v : n) v /= len;
+			const double reach = 1.5*g.h - d;
+			const V3 xo{{x[0] + reach*n[0], x[1] + reach*n[1], x[2] + reach*n[2]}};
+			const double po = SampleCells(g, old, xo);
+			double slope = 0;
+			for (int a = 0; a < 3; ++a) {
+				if (g.n[a] == 1) continue;
+				V3 p = xo, q = xo;
+				p[std::size_t(a)] += 0.5*g.h; q[std::size_t(a)] -= 0.5*g.h;
+				slope += (x[std::size_t(a)] - xo[std::size_t(a)])*(SampleCells(g, old, p) - SampleCells(g, old, q))/g.h;
+			}
+			phi[c] = po + std::min(reach, std::max(-reach, slope));
+		}
+	});
+}
+
+bool LiquidModel::ProjectBodies(MacField& s, const PressureOptions& po, const std::vector<Vec6>& wStar, std::vector<Vec6>& impulse,
+	PressureStats& stats, std::string& error)
+{
+	const Grid& g = setup_.grid;
+	Pool* pool = pool_.get();
+	geometry_.SolidVelocity(wStar, solidVelocity_);
+	std::vector<std::unique_ptr<BodyCoupling>> couplings;
+	std::vector<IPressureCoupling*> coupled;
+	bool kinematic = false;
+	for (std::size_t i = 0; i < bodies.size(); ++i) {
+		couplings.emplace_back(new BodyCoupling(g, geometry_.Faces()[i], bodies[i], setup_.density, bodies[i].Coupled()));
+		if (bodies[i].Coupled()) coupled.push_back(couplings.back().get());
+		else kinematic = true;
+	}
+	if (!Project(g, phi, fraction, &solidVelocity_, po, coupled, s, q_, valid, stats, pool, error)) return false;
+	std::vector<std::uint8_t> active;
+	if (kinematic) ActiveCells(g, phi, fraction, active, pool);
+	impulse.assign(bodies.size(), Vec6{{0, 0, 0, 0, 0, 0}});
+	for (std::size_t i = 0; i < bodies.size(); ++i) {
+		if (bodies[i].Coupled()) impulse[i] = couplings[i]->Impulse();
+		else { couplings[i]->Begin(active); impulse[i] = couplings[i]->Measure(q_); }
+	}
+	return true;
+}
+
+void LiquidModel::AuditWalls()
+{
+	// The impulse on the liquid from the closed parts of the faces of its cells
+	// that belong to the walls and static solids: -rho h^3 sum_c q_c sum_f s (1 - A) e_a.
+	const Grid& g = setup_.grid;
+	std::array<std::vector<std::size_t>,3> bodyFaces;
+	for (const auto& list : geometry_.Faces()) for (const BodyFace& f : list) bodyFaces[f.axis].push_back(f.face);
+	for (auto& v : bodyFaces) std::sort(v.begin(), v.end());
+	std::vector<std::uint8_t> active;
+	ActiveCells(g, phi, fraction, active, pool_.get());
+	V3 sum{{0, 0, 0}};
+	for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < g.n[1]; ++j) for (int i = 0; i < g.n[0]; ++i) {
+		const std::size_t c = g.C(i, j, k);
+		if (!active[c]) continue;
+		const int idx[3] = {i, j, k};
+		for (int a = 0; a < 3; ++a) for (int side = 0; side < 2; ++side) {
+			int f3[3] = {idx[0], idx[1], idx[2]};
+			f3[a] += side;
+			const std::size_t f = g.F(a, f3[0], f3[1], f3[2]);
+			if (std::binary_search(bodyFaces[a].begin(), bodyFaces[a].end(), f)) continue;
+			const double closed = 1 - fraction[a][f];
+			if (closed == 0) continue;
+			sum[std::size_t(a)] -= (side ? 1.0 : -1.0)*closed*q_[c];
+		}
+	}
+	const double scale = setup_.density*g.h*g.h*g.h;
+	for (double& x : sum) x *= scale;
+	wallImpulse = sum;
+}
+
+V3 LiquidModel::FluidMomentum() const
+{
+	V3 p{{0, 0, 0}};
+	const Grid& g = setup_.grid;
+	for (int a = 0; a < 3; ++a) {
+		if (g.n[a] == 1) continue;
+		double s = 0;
+		const auto d = g.FaceDims(a);
+		for (int k = 0; k < d[2]; ++k) for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+			const int idx[3] = {i, j, k};
+			if (idx[a] == 0 || idx[a] == g.n[a]) continue;
+			const std::size_t f = g.F(a, i, j, k);
+			const double A = fraction[a][f];
+			if (!(A > 0)) continue;
+			int lo[3] = {i, j, k};
+			--lo[a];
+			const double pl = phi[g.C(lo[0], lo[1], lo[2])], pr = phi[g.C(i, j, k)];
+			double w = 0;
+			if (pl < 0 && pr < 0) w = A;
+			else if (pl < 0) w = A*std::min(1.0, std::max(options_.pressure.thetaMin, pl/(pl - pr)));
+			else if (pr < 0) w = A*std::min(1.0, std::max(options_.pressure.thetaMin, pr/(pr - pl)));
+			s += w*u.u[a][f];
+		}
+		p[std::size_t(a)] = s*setup_.density*g.h*g.h*g.h;
+	}
+	return p;
+}
+
+double LiquidModel::FluidMass(int axis) const
+{
+	const Grid& g = setup_.grid;
+	double s = 0;
+	const auto d = g.FaceDims(axis);
+	for (int k = 0; k < d[2]; ++k) for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
+		const int idx[3] = {i, j, k};
+		if (idx[axis] == 0 || idx[axis] == g.n[axis]) continue;
+		const std::size_t f = g.F(axis, i, j, k);
+		const double A = fraction[axis][f];
+		if (!(A > 0)) continue;
+		int lo[3] = {i, j, k};
+		--lo[axis];
+		const double pl = phi[g.C(lo[0], lo[1], lo[2])], pr = phi[g.C(i, j, k)];
+		if (pl < 0 && pr < 0) s += A;
+		else if (pl < 0) s += A*std::min(1.0, std::max(options_.pressure.thetaMin, pl/(pl - pr)));
+		else if (pr < 0) s += A*std::min(1.0, std::max(options_.pressure.thetaMin, pr/(pr - pl)));
+	}
+	return s*setup_.density*g.h*g.h*g.h;
 }
 
 // ------------------------------------------------------------------ outputs
@@ -499,7 +849,7 @@ bool LiquidModel::Surface(MeshFrame& frame, std::string& error) const
 	Pool* pool = pool_.get();
 	const std::array<int,3> d{{g.n[0] + 2, g.n[1] + 2, g.n[2] + 2}};
 	std::vector<double> f(std::size_t(d[0])*std::size_t(d[1])*std::size_t(d[2]));
-	const bool solids = !setup_.solids.empty();
+	const bool solids = HasSolids();
 	// Interior: phi with the solids carved out half a cell inside their surface;
 	// the ghost layer |phi| of the nearest cell closes the surface on the walls.
 	ForRows(pool, std::size_t(d[1])*std::size_t(d[2]), RowGrain(d[0]), [&](std::size_t r0, std::size_t r1) {

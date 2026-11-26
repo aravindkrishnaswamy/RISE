@@ -130,8 +130,9 @@ int main()
 		const PortDeclaration* mass = nullptr;
 		for (const auto& p : d.ports) if (p.name == "body_mass_properties") mass = &p;
 		Check(mass && mass->offers && mass->codec == "field.v1" && mass->output.empty() && mass->domain == TransformBodyDomain({"body"}) &&
-			mass->channels.size() == 3 && mass->channels[0].name == "center_of_mass" && mass->channels[1].components == 9 &&
-			mass->channels[2].name == "mass" && mass->channels[2].units == "kg", "rigid.bodies declares body_mass_properties");
+			mass->channels.size() == 4 && mass->channels[0].name == "center_of_mass" && mass->channels[1].name == "external_force" &&
+			mass->channels[1].units == "N" && mass->channels[2].components == 9 &&
+			mass->channels[3].name == "mass" && mass->channels[3].units == "kg", "rigid.bodies declares body_mass_properties");
 		PortRelay relay;
 		class Null final : public IFrameSink {
 		public:
@@ -149,10 +150,12 @@ int main()
 			"the mass properties are offered at the start time (and hold)", error);
 		const auto f32 = [](std::uint32_t b) { float x; std::memcpy(&x, &b, 4); return double(x); };
 		const double I = 0.4*MS*0.1*0.1;   // solid sphere
-		Check(f.count == 1 && f32(f.channels[2].values[0]) == MS && std::fabs(f32(f.channels[1].values[0]) - I) < 1e-7 &&
-			f32(f.channels[1].values[1]) == 0 && f32(f.channels[1].values[4]) == f32(f.channels[1].values[0]) &&
+		Check(f.count == 1 && f32(f.channels[3].values[0]) == MS && std::fabs(f32(f.channels[2].values[0]) - I) < 1e-7 &&
+			f32(f.channels[2].values[1]) == 0 && f32(f.channels[2].values[4]) == f32(f.channels[2].values[0]) &&
 			f32(f.channels[0].values[0]) == 0, "mass, body-frame inertia (diagonal) and centre of mass",
-			std::to_string(f32(f.channels[1].values[0])));
+			std::to_string(f32(f.channels[2].values[0])));
+		Check(f32(f.channels[1].values[0]) == 0 && f32(f.channels[1].values[1]) == static_cast<float>(-MS*G) &&
+			f32(f.channels[1].values[2]) == 0, "the external force (m g) the body solver applies besides body_load (M7b)");
 	}
 
 	// ---------------------------------------------------------------- staggered vs owned implicit

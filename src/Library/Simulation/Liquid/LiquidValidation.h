@@ -158,6 +158,119 @@ extern const int MartinMoyceSquareCount;
 struct VolumeResult { double drift = 0, driftPerPeriod = 0, meanShift = 0, maxShift = 0, seconds = 0; };
 VolumeResult RunVolumeConservation(int cells, double periods, bool correction, const SolverOptions& options, Pool* pool);
 
+// ------------------------------------------------------------------ rigid bodies (m7b: case 9 and added mass)
+
+//! A body for the cases below: mass m, the moments of its shape, at x, at
+//! rest, gravity g as its external force (Dynamic).
+LiquidBody MakeBody(const BodyShape& shape, BodyMotion motion, double mass, const V3& x, const V3& gravity);
+
+//! Added mass of an impulsive start in potential flow.  A body at the centre
+//! of a concentric container of radius b (a static cut-cell solid: the
+//! complement of a circle or sphere) full of liquid at rest is set moving at
+//! V = 1 m/s along x; the single (kinematic) projection gives the body the
+//! impulse -m_a V.  2-D: a circular cylinder of radius a along z in a slab one
+//! cell thick, m_a = rho pi a^2 (b^2 + a^2) / (b^2 - a^2) per unit length; 3-D:
+//! a sphere, m_a = (rho V / 2) (b^3 + 2 a^3) / (b^3 - a^3) (both derived in
+//! docs/SIMULATION_M7B_RESULTS.md section 4).  The box is [0, 1]^d, the centre
+//! offset from the grid by `shift` cells along each axis; `cells` per unit.
+struct AddedMassResult { double added = 0, exact = 0, error = 0, seconds = 0; int iterations = 0, steps = 0; double sideForce = 0; };
+AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, double shift, const SolverOptions& options, Pool* pool);
+//! The same container in 2-D with the cylinder in prescribed oscillation
+//! x = x0 + X sin(w t): the force's Fourier sine coefficient over `periods`
+//! periods against m_a X w^2 (the nonlinear terms are O((X / b)^2) and
+//! cancel by symmetry at the centre to first order); `error` relative.
+AddedMassResult RunAddedMassOscillation(int cells, double a, double b, double amplitude, double frequency, double periods,
+	const SolverOptions& options, Pool* pool);
+
+//! Bobbing reference: the lowest symmetric natural frequency of linear
+//! potential flow for a 2-D box of width w and draft d floating (density
+//! ratio = draft / height) in a tank of width L with still depth D, the box
+//! spanning the tank but for two gaps of (L - w) / 2.  Per frequency, Laplace
+//! with Neumann walls and box sides, unit heave velocity on the box bottom,
+//! and phi_y = (omega^2 / g) phi on the gap surfaces, solved by MINRES on a
+//! cell-centred 5-point grid of `cells` across the half tank (the box edges
+//! on grid lines; symmetric about the centre); omega is the root of
+//! omega^2 (m + rho A(omega)) = rho g w, A = the integral of phi over the box
+//! bottom (secant).  An independent check of the solver (a different
+//! discretisation of the linear problem), not a closed form; its own
+//! convergence is reported.
+double BoxHeaveFrequency(double L, double w, double D, double d, int cells);
+//! The long-wave (manometer) estimate of the same frequency: plug flow in the
+//! gaps and lubrication-like flow under the box (an order-of-magnitude model).
+double BoxHeaveManometer(double L, double w, double D, double d);
+//! Bobbing in the solver: the box (height 2 d, density ratio 0.5, heave only)
+//! released `offset` m below equilibrium at rest in a tank [0, L] x [0, 1]
+//! filled to D, 2-D, `cells` across L; the frequency from the upward
+//! crossings of the mean over `periods` periods of the reference.
+struct BobResult { double omega = 0, decay = 0, seconds = 0; int steps = 0, crossings = 0; };
+BobResult RunBoxBobbing(int cells, double L, double w, double D, double d, double offset, double periods,
+	const SolverOptions& options, Pool* pool);
+
+//! A heavy body released from rest at the centre of the concentric container
+//! of RunAddedMassImpulse, full of liquid, under gravity (coupled in the
+//! pressure solve): the initial acceleration (the first step's velocity / dt)
+//! against (m - rho V) g / (m + m_a) with the container's exact m_a, and its
+//! descent over `duration` against the constant-added-mass ODE (valid while
+//! the offset stays small against b - a).
+struct SinkResult { double acceleration = 0, exact = 0, error = 0, drop = 0, dropModel = 0, seconds = 0; int steps = 0, maxIterations = 0; };
+SinkResult RunHeavySinking(int cells, bool threeD, double ratio, double duration, const SolverOptions& options, Pool* pool);
+
+//! Archimedes: the submerged depth d of a floating sphere (3-D) or of a
+//! horizontal circular cylinder (2-D) of radius R at density ratio `ratio`
+//! (cap volume pi d^2 (3R - d) / 3 = ratio 4/3 pi R^3; segment area
+//! R^2 acos(1 - d/R) - (R - d) sqrt(2 R d - d^2) = ratio pi R^2).
+double FloatingDepth(bool threeD, double R, double ratio);
+
+//! Floating statics: a sphere (3-D) or cylinder (2-D, axis z) of radius R =
+//! 0.15 in a tank [0, 1]^d filled to y = eta = 0.5 at rest, the body held at
+//! height y (kinematic, at rest): the net vertical force F(y) = buoyancy -
+//! m g after one projection; the discrete equilibrium y* (F = 0, secant);
+//! offset = (y* - y_exact) / R, y_exact = eta + R - d; imbalance = F(y_exact)
+//! / (m g).  The body's centre is offset from the grid by `shift` cells in x
+//! and z (0: on a node, symmetric).
+struct FloatStatics { double offset = 0, imbalance = 0, yExact = 0, yDiscrete = 0, seconds = 0; int solves = 0; };
+FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shift, const SolverOptions& options, Pool* pool);
+
+//! Floating dynamics: the same tank with the body Dynamic (coupled in the
+//! pressure solve), released at rest `start` R above (+) or below its
+//! exact equilibrium, rotation and horizontal motion locked unless `free`;
+//! run `duration` s.  Reported: the mean height over the run against the
+//! equilibrium (the exact one, the liquid level corrected for the volume
+//! the release displaced), the largest excursion / the initial one (> 1
+//! would mean growth: the added-mass instability of a staggered exchange),
+//! the dominant period (zero crossings of y - mean), the solver's largest
+//! PCG iteration count, and the momentum audit of the run: the body's
+//! momentum change minus gravity's impulse against the liquid's impulse
+//! on it (its own sum; round-off), and the liquid + body vertical momentum
+//! change minus the impulses of gravity and of the walls, / the impulse of
+//! gravity on liquid and body (and / that on the body).
+struct FloatDynamics {
+	double meanOffset = 0;     // (mean y - y_eq) / R
+	double growth = 0;         // max |y - ybar| / |y(0) - ybar|, ybar the mean over whole periods
+	double lateGrowth = 0;     // the same over the second half of the run
+	double period = 0;         // s
+	double maxSpeed = 0;       // max body speed (m/s)
+	double bodyAudit = 0;      // |m dv - m g T - sum impulses| / (m g T)
+	double totalAudit = 0;     // |dP_total - G - W| / ((M + m) g T), M the liquid's mass
+	double totalAuditBody = 0; // the same / (m g T)
+	double yEq = 0, seconds = 0;
+	int steps = 0, maxIterations = 0;
+	bool finite = true;
+	std::vector<double> t, y;  // the trajectory
+};
+FloatDynamics RunFloatingDynamics(int cells, bool threeD, double ratio, double start, double duration, bool free,
+	const SolverOptions& options, Pool* pool);
+
+//! The neutral body at rest: a sphere (3-D) or cylinder (2-D) with the
+//! discrete neutral mass rho V_y (V_y the volume its closed y-faces give, the
+//! volume the pressure's buoyancy sees) fully submerged in still liquid,
+//! free in all degrees of freedom, centred on a grid node; run `duration`:
+//! the largest body speed and liquid speed / sqrt(g h) (zero to the solver's
+//! tolerance), and the same with the exact mass rho V: the body's mean
+//! acceleration / g (the discrete buoyancy error).
+struct NeutralResult { double bodySpeed = 0, liquidSpeed = 0, exactMassAcceleration = 0, volumeError = 0, seconds = 0; int steps = 0; };
+NeutralResult RunNeutralBody(int cells, bool threeD, double duration, const SolverOptions& options, Pool* pool);
+
 } } }
 
 #endif

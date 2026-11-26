@@ -144,6 +144,15 @@ codec, the rigid-body solver `rigid.bodies`, two-way cloth ↔ rigid coupling wi
 (implicit: 5e-8 relative), one-way fire → cloth from a fire cache, `simulation_group` / `port_source` /
 `rigid_simulation` / `transform_source` scene syntax, group bakes as one job. [M6 results](SIMULATION_M6_RESULTS.md).
 
+2026-11-26: **M7 in progress.** M7a (in review): `liquid.mac`, a free-surface liquid on a staggered grid with
+cut-cell static solids, predictive from computed evidence on canonical problems ([M7a results](SIMULATION_M7A_RESULTS.md)).
+M7b (in review): rigid bodies in the liquid's pressure solve (each body's six degrees of freedom solved with the
+pressure in one symmetric positive-definite system), dynamic, prescribed or following `rigid.bodies` through an
+owned implicit group exchange; validated by added mass in concentric containers, Archimedes at density ratios 0.1,
+0.5 and 0.9 (second order), a neutral body at rest, and a bobbing frequency against an independent potential-flow
+solve; stable at light density ratios where the staggered exchange diverges; contact inside the liquid, thin gaps
+and small bodies stay preview ([M7b results](SIMULATION_M7B_RESULTS.md)). Next: viscosity and surface tension.
+
 ## 6. Rules that hold throughout
 
 - The certified fire path stays byte-identical unless a change is explicitly a physics change with its own note.

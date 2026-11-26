@@ -75,6 +75,8 @@ IORStackSeedingRegressionTest	wide:3	7	2.5 cores (measured)
 InfinitePlaneLuminaireTest	pool	5
 IntermediateCompositionTest	wide:3	2	2.7 cores (measured)
 LayeredWhiteFurnaceTest	pool	8
+LiquidRigidTest	wide:5	8	5 cores mean (38 s cpu / 7.5 s real, solver pools of 8-16 threads; measured alone)
+LiquidRigidValidationTest	wide:3	35	2.9 cores mean (102 s cpu / 35 s real, 8-thread pool; measured alone)
 LiquidSolverTest	wide:3	20	2.2 cores mean (44 s cpu / 20 s real, solver pool of 16 threads; measured alone)
 LiquidValidationTest	wide:4	34	3.6 cores mean (124 s user / 34 s real, 8-thread pool; measured alone)
 LuminarySamplerAreaTest	wide:4	19	multi-threaded renders (D/F/P)

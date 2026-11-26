@@ -540,29 +540,16 @@ void AdvectVelocity(const Grid& g, const MacField& u, double dt, MomentumScheme 
 
 // ------------------------------------------------------------------ projection
 
-bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
-	const MacField* solid, const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings,
-	MacField& u, std::vector<double>& q, FaceMask& valid, PressureStats& stats, Pool* pool, std::string& error)
+void ActiveCells(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	std::vector<std::uint8_t>& active, Pool* pool)
 {
-	const double start = Now();
-	stats = PressureStats();
-	const std::size_t n = g.Cells();
 	const auto& N = g.n;
-	const std::size_t strides[3] = {1, std::size_t(N[0]), std::size_t(N[0])*std::size_t(N[1])};
-	auto faceOf = [&](int a, int i, int j, int k, int side) {   // face of cell (i,j,k) on its minus (0) / plus (1) side
+	active.assign(g.Cells(), 0);
+	auto faceOf = [&](int a, int i, int j, int k, int side) {
 		int f[3] = {i, j, k};
 		f[a] += side;
 		return g.F(a, f[0], f[1], f[2]);
 	};
-	Level fine;
-	fine.n = N;
-	fine.active.assign(n, 0);
-	fine.diag.assign(n, 0.0);
-	for (int a = 0; a < 3; ++a) { fine.w[a].assign(n, 0.0); fine.open[a].assign(n, 0.0); }
-	if (options.openTop) fine.top.assign(n, 0.0);
-	std::vector<std::uint8_t> dirichlet(n, 0);
-	std::vector<double> b(n, 0.0);
-	// Active cells: liquid with an open face.
 	ForRows(pool, RowsOf(N), RowGrain(N[0]), [&](std::size_t r0, std::size_t r1) {
 		for (std::size_t r = r0; r < r1; ++r) {
 			const int j = int(r % std::size_t(N[1])), k = int(r/std::size_t(N[1]));
@@ -572,10 +559,36 @@ bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std
 				bool open = false;
 				for (int a = 0; a < 3 && !open; ++a)
 					for (int s = 0; s < 2; ++s) if (fraction[a][faceOf(a, i, j, k, s)] > 0) { open = true; break; }
-				fine.active[c] = open;
+				active[c] = open;
 			}
 		}
 	});
+}
+
+namespace {
+// The fine level, the right-hand side and the Dirichlet flags of Project's system.
+void Assemble(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	const MacField* solid, const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings,
+	const MacField& u, Level& fine, std::vector<double>& b, std::vector<std::uint8_t>& dirichlet, Pool* pool)
+{
+	const std::size_t n = g.Cells();
+	const auto& N = g.n;
+	const std::size_t strides[3] = {1, std::size_t(N[0]), std::size_t(N[0])*std::size_t(N[1])};
+	auto faceOf = [&](int a, int i, int j, int k, int side) {   // face of cell (i,j,k) on its minus (0) / plus (1) side
+		int f[3] = {i, j, k};
+		f[a] += side;
+		return g.F(a, f[0], f[1], f[2]);
+	};
+	fine.n = N;
+	fine.active.assign(n, 0);
+	fine.diag.assign(n, 0.0);
+	for (int a = 0; a < 3; ++a) { fine.w[a].assign(n, 0.0); fine.open[a].assign(n, 0.0); }
+	if (options.openTop) fine.top.assign(n, 0.0);
+	dirichlet.assign(n, 0);
+	b.assign(n, 0.0);
+	// Active cells: liquid with an open face.
+	ActiveCells(g, phi, fraction, fine.active, pool);
+	for (IPressureCoupling* coupling : couplings) coupling->Begin(fine.active);
 	// Couplings, ghost-fluid diagonal terms and the right-hand side.
 	ForRows(pool, RowsOf(N), RowGrain(N[0]), [&](std::size_t r0, std::size_t r1) {
 		for (std::size_t r = r0; r < r1; ++r) {
@@ -619,6 +632,22 @@ bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std
 		}
 	});
 	for (const IPressureCoupling* coupling : couplings) coupling->AddRhs(b);
+}
+} // namespace
+
+bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	const MacField* solid, const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings,
+	MacField& u, std::vector<double>& q, FaceMask& valid, PressureStats& stats, Pool* pool, std::string& error)
+{
+	const double start = Now();
+	stats = PressureStats();
+	const std::size_t n = g.Cells();
+	const auto& N = g.n;
+	const std::size_t strides[3] = {1, std::size_t(N[0]), std::size_t(N[0])*std::size_t(N[1])};
+	Level fine;
+	std::vector<std::uint8_t> dirichlet;
+	std::vector<double> b;
+	Assemble(g, phi, fraction, solid, options, couplings, u, fine, b, dirichlet, pool);
 	double mark = Now();
 	stats.assemble = mark - start;
 	std::size_t unknowns = 0;
@@ -789,6 +818,25 @@ bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std
 	stats.update = Now() - mark;
 	stats.seconds = Now() - start;
 	return true;
+}
+
+void ApplyPressureOperator(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings, const std::vector<double>& x,
+	std::vector<double>& y, std::vector<std::uint8_t>& active, Pool* pool)
+{
+	Level fine;
+	std::vector<std::uint8_t> dirichlet;
+	std::vector<double> b;
+	MacField u;
+	u.Resize(g);
+	Assemble(g, phi, fraction, nullptr, options, couplings, u, fine, b, dirichlet, pool);
+	fine.Ranges();
+	Multigrid mg;
+	mg.pool = pool;
+	y.assign(g.Cells(), 0.0);
+	mg.Apply(fine, x, y);
+	for (const IPressureCoupling* coupling : couplings) coupling->ApplyAdd(x, y);
+	active = fine.active;
 }
 
 } } }

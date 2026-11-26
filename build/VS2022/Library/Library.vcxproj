@@ -642,6 +642,9 @@
     <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidFlow.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidBodies.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
@@ -1332,6 +1335,7 @@
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidGrid.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidLevelSet.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidFlow.h" />
+    <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidBodies.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidModel.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidValidation.h" />
     <ClInclude Include="..\..\..\src\Library\Simulation\Liquid\LiquidSolver.h" />

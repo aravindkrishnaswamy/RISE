@@ -97,7 +97,11 @@ bake is on the order of 7 hours; 128³ is about 16 times cheaper. A first protot
 1. Grid, level set, advection; case 1.
 2. Free-surface pressure solve; cases 2–7.
 3. Static cut-cell solids; outputs; dam break (case 8).
-4. Rigid bodies in the pressure solve; case 9.
+4. Rigid bodies in the pressure solve; case 9. *Done (M7b, 2026-11-26; [results](SIMULATION_M7B_RESULTS.md)): the
+   coupled solve, the owned exchange with `rigid.bodies`, case 9 with added-mass and bobbing references. The
+   density-ratio limit of §2's staggered exchange was not measured as a threshold; a ratio-0.5 floating cylinder
+   diverges with it and is stable in the coupled solve. Face fractions beside bodies are control-volume
+   fractions (area fractions gave a staircase buoyancy).*
 5. Viscosity and surface tension; cases 10–11.
 6. Checkpoint, rollback and thread-invariance tests; scene chunk `liquid_simulation`.
 7. Cloth as a moving boundary (`preview`).

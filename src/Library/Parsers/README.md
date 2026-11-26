@@ -344,6 +344,32 @@ liquid_simulation
 simulated_mesh_geometry { name water  source pool.surface }
 ```
 
+Rigid bodies (M7b, docs/SIMULATION_M7B_RESULTS.md) move with the liquid in its pressure solve: `body <name>
+sphere r | box sx sy sz | cylinder r h` (body frame at the centre of mass, cylinder axis z) then `motion dynamic`
+(default: the liquid integrates it; `density d` or `mass m`, `lock <xyzr>`), `motion prescribed` (`velocity`,
+`spin`, `amplitude ax ay az`, `frequency f`, `phase p`) or `motion port` (follows `rigid.bodies` in a group;
+`coupling implicit|staggered`), and `at x y z`, `orientation w x y z`, `velocity`, `spin`.  The bodies are published
+as `<simulation>.bodies` (transform.v1).  With `rigid.bodies` owning contact, the liquid owns the exchange
+(sample: `scenes/Tests/Simulation/liquid_rigid_bodies.RISEscene`):
+
+```text
+rigid_simulation { name drop  frames 61  body buoy sphere 0.07 density 300 at -0.2 0.45 0  plane 0 0 0 0 1 0 }
+liquid_simulation { name pool  frames 61  liquid fill 0.3  body buoy sphere 0.07 motion port at -0.2 0.45 0 }
+simulation_group
+{
+    name            tank
+    members         pool
+    members         drop
+    connect         drop.body_state -> pool.body_state
+    connect         drop.body_mass_properties -> pool.body_mass_properties
+    connect         pool.body_load -> drop.body_load
+    order           gauss-seidel
+    member_order    pool drop
+    owned           pool drop                 # the liquid solves drop's bodies inside its step
+}
+standard_object { name buoy ... transform_source drop.bodies[buoy] }
+```
+
 ## Coupling (M6)
 
 docs/SIMULATION_M6_RESULTS.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and

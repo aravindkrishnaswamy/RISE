@@ -6888,6 +6888,7 @@ namespace RISE
 					};
 					list( "members" );
 					list( "connect" );
+					if( !bag.GetRepeatable( "owned" ).empty() ) list( "owned" );
 					for( const char* key : { "policy", "order", "member_order", "on_non_convergence" } )
 						if( bag.Has( key ) ) m.emplace_back( key, RISECBOR64::Value::String( bag.GetString( key ) ) );
 					for( const char* key : { "macro_step", "tolerance", "relaxation", "minimum_macro_step", "absolute_tolerance" } )
@@ -6916,6 +6917,10 @@ namespace RISE
 						  p.description = "A port connection: `<member>.<offered port> -> <member>.<accepted port> [via <adapter> "
 							"[key=value ...]] [aux <member>.<port>]` (adapters: unit_scale, field_relabel, rigid_surface, "
 							"aerodynamic_drag, contact_reaction)"; }
+						{ auto& p = P(); p.name = "owned"; p.kind = ValueKind::String; p.repeatable = true;
+						  p.description = "M7b: an owned implicit exchange `<owner> <partner> [<partner> ...]`: the owner (a liquid with "
+							"rigid bodies) solves its partners' motion inside its own step and every connection between them is "
+							"exchanged once per macro step, the owner first (needs gauss-seidel; e.g. `owned pool drop`)"; }
 						{ auto& p = P(); p.name = "policy"; p.kind = ValueKind::Enum; p.enumValues = { "staggered", "implicit" };
 						  p.defaultValueHint = "staggered";
 						  p.description = "staggered: one exchange per macro step (preview); implicit: sub-iterate each step to the tolerance (needs rollback; can be predictive)"; }

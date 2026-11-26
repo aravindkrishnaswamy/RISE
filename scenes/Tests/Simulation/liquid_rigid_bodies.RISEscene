@@ -1,0 +1,262 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           liquid_rigid_bodies.RISEscene                                                           #
+#   Description:    Simulation M7b: rigid bodies in the liquid's pressure solve.  Three bodies are dropped   #
+#                   into a tank 0.8 x 0.6 x 0.5 m filled to 0.3 m: a sphere of density 300 kg/m^3 (floats   #
+#                   high), a cube of 700 (floats low) and a sphere of 2500 (sinks).  `rigid_simulation drop` #
+#                   integrates them and owns their contact with the tank (planes, preview);                 #
+#                   `liquid_simulation pool` carries the same bodies as `motion port` and solves their six  #
+#                   degrees of freedom with the liquid in one pressure system.  `simulation_group tank`     #
+#                   makes the liquid the owner of the exchange (`owned pool drop`): per macro step it reads  #
+#                   the bodies' state and mass properties and returns the force and torque that, held by    #
+#                   rigid.bodies, give each body the impulse the coupled solve gave it.  The bodies render  #
+#                   by `transform_source drop.bodies[<name>]`; the surface (`pool.surface`) as water.        #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> tank       (one process; caches/pool, caches/drop) #
+#                   bin/tools/rise_sim status <this scene>                                                  #
+#   Render:         scripts/simulation_m7b_bodies.sh  (a private copy under ~/.cache/rise-m7b; path         #
+#                   tracing; frames to rendered/simulation_m7/)                                             #
+#                                                                                                           #
+#   Frames:         1/30 s apart over 2 s (61 frames); 64 cells along x (1.25 cm cells).  Positions are      #
+#                   metres, y up.  Label: preview (the rigid contact with the tank is an impulse model).    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.75 0.8 0.9
+}
+
+uniformcolor_painter
+{
+	name			stone
+	color			0.55 0.5 0.45
+}
+
+uniformcolor_painter
+{
+	name			wall
+	color			0.7 0.72 0.75
+}
+
+uniformcolor_painter
+{
+	name			yellow
+	color			0.9 0.7 0.1
+}
+
+uniformcolor_painter
+{
+	name			wood
+	color			0.6 0.35 0.15
+}
+
+uniformcolor_painter
+{
+	name			iron
+	color			0.15 0.15 0.18
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		stone
+}
+
+lambertian_material
+{
+	name			mat_wall
+	reflectance		wall
+}
+
+lambertian_material
+{
+	name			mat_buoy
+	reflectance		yellow
+}
+
+lambertian_material
+{
+	name			mat_crate
+	reflectance		wood
+}
+
+lambertian_material
+{
+	name			mat_anchor
+	reflectance		iron
+}
+
+dielectric_material
+{
+	name				water
+	tau					0.92 0.97 0.99
+	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+pinhole_camera
+{
+	location		0.75 0.85 1.35
+	lookat			0 0.18 0
+	up				0 1 0
+	fov				42.0
+}
+
+rigid_simulation
+{
+	name			drop
+	frames			61
+	body			buoy sphere 0.07 density 300 at -0.2 0.45 0.02
+	body			crate box 0.11 0.11 0.11 density 700 at 0.04 0.5 -0.03
+	body			anchor sphere 0.05 density 2500 at 0.23 0.48 0.05
+	plane			0 0 0 0 1 0 restitution 0.1 friction 0.5
+	plane			-0.4 0 0 1 0 0 restitution 0.1 friction 0.5
+	plane			0.4 0 0 -1 0 0 restitution 0.1 friction 0.5
+	plane			0 0 -0.25 0 0 1 restitution 0.1 friction 0.5
+	plane			0 0 0.25 0 0 -1 restitution 0.1 friction 0.5
+}
+
+liquid_simulation
+{
+	name			pool
+	frames			61
+	domain_min		-0.4 0 -0.25
+	domain_size		0.8 0.6 0.5
+	resolution		64
+	liquid			fill 0.3
+	body			buoy sphere 0.07 motion port at -0.2 0.45 0.02
+	body			crate box 0.11 0.11 0.11 motion port at 0.04 0.5 -0.03
+	body			anchor sphere 0.05 motion port at 0.23 0.48 0.05
+}
+
+simulation_group
+{
+	name			tank
+	members			pool
+	members			drop
+	connect			drop.body_state -> pool.body_state
+	connect			drop.body_mass_properties -> pool.body_mass_properties
+	connect			pool.body_load -> drop.body_load
+	policy			staggered
+	order			gauss-seidel
+	member_order	pool drop
+	owned			pool drop
+}
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			pool.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		water
+}
+
+sphere_geometry
+{
+	name			geo_buoy
+	radius			0.07
+}
+
+standard_object
+{
+	name			buoy
+	geometry		geo_buoy
+	material		mat_buoy
+	position		-0.2 0.45 0.02
+	transform_source	drop.bodies[buoy]
+}
+
+box_geometry
+{
+	name			geo_crate
+	width			0.11
+	height			0.11
+	depth			0.11
+}
+
+standard_object
+{
+	name			crate
+	geometry		geo_crate
+	material		mat_crate
+	position		0.04 0.5 -0.03
+	transform_source	drop.bodies[crate]
+}
+
+sphere_geometry
+{
+	name			geo_anchor
+	radius			0.05
+}
+
+standard_object
+{
+	name			anchor
+	geometry		geo_anchor
+	material		mat_anchor
+	position		0.23 0.48 0.05
+	transform_source	drop.bodies[anchor]
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-2.0 -0.001 -2.0
+	ptb				 2.0 -0.001 -2.0
+	ptc				 2.0 -0.001  2.0
+	ptd				-2.0 -0.001  2.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+clippedplane_geometry
+{
+	name			geo_back
+	pta				-2.0 -0.001 -0.252
+	ptb				-2.0  2.0   -0.252
+	ptc				 2.0  2.0   -0.252
+	ptd				 2.0 -0.001 -0.252
+}
+
+standard_object
+{
+	name			back_wall
+	geometry		geo_back
+	material		mat_wall
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.3 -1 -0.5
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.7
+	radiance_background	TRUE
+}

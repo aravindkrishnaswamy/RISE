@@ -661,6 +661,11 @@ bool SimulationGroup::Configure(const GroupPolicy& policy, const ISceneInputs& i
 		const bool haveEvidence = ownedOnly ? true : CouplingEvidence(kind, coupled, why) && EffectiveFidelity(coupled) == "predictive";
 		if (!undeclared.empty())
 			m.couplingLimit = "the owned exchange on " + undeclared + " is not declared by its owner as an implicit joint solve";
+		// M7b: an owned exchange is implicit through the owner's solve, but the
+		// member's results still depend on every member upstream of it (a partner
+		// whose own model is preview, e.g. rigid.bodies with plane contact, makes
+		// the coupled members preview too; the M7 prerequisites omitted this).
+		else if (ownedOnly && !membersPredictive) m.couplingLimit = "a member of the coupling is not predictive";
 		else if (ownedOnly) { /* implicit through the owner's solve */ }
 		else if (!implicit) m.couplingLimit = "explicit staggered coupling is first order in the macro step and lags one partner by a step";
 		else if (!(policy.convergenceTolerance > 0 && policy.convergenceTolerance <= kPredictiveCouplingTolerance))

@@ -16,6 +16,15 @@
 //       the shift is reported);
 //    6. add gravity; project with the new interface (ghost-fluid free
 //       surface, cut-cell solids).
+//  Rigid bodies (m7b, LiquidBodies.h): after step 2 every body moves to its
+//  pose at the step's end (dynamic and coupled bodies drift with their
+//  step-start velocity, as the interface does), its cut cells are rebuilt and
+//  the level set in the cells it encloses is extended from the liquid; each
+//  projection of step 6 solves the coupled bodies' velocities with the
+//  pressure (their predicted velocities w* = w + dt F_ext / m in the
+//  right-hand side, rho h^3 J^T M^-1 J in the operator; Heun's second stage
+//  starts from w* + M^-1 I1 / 2), so the linearised body-surface coupling is
+//  symplectic Euler as well.
 //  With the interface advanced by the old velocity and the velocity by the
 //  new interface, the linearised free-surface coupling is the symplectic
 //  Euler scheme: no amplitude error, phase error O((omega dt)^2).
@@ -36,6 +45,7 @@
 #ifndef RISE_SIMULATION_LIQUID_MODEL_H
 #define RISE_SIMULATION_LIQUID_MODEL_H
 
+#include "LiquidBodies.h"
 #include "LiquidFlow.h"
 #include "LiquidLevelSet.h"
 #include "../SimulationGrid.h"
@@ -78,6 +88,9 @@ struct LiquidSetup {
 	std::vector<Shape> solids;        // static
 	std::vector<Shape> liquid;        // initial liquid (union)
 	V3 initialVelocity{{0, 0, 0}};
+	//! Rigid bodies (m7b, LiquidBodies.h): their initial state (mass and
+	//! moments set; a Dynamic body's externalForce is m g).
+	std::vector<LiquidBody> bodies;
 };
 
 struct StepStats {
@@ -89,7 +102,7 @@ struct StepStats {
 	std::size_t clamped = 0;          // valid faces whose speed the safeguard limited this step
 	// Wall seconds per phase: extrapolation, level set (advection + reinit +
 	// volume), particles, momentum advection, pressure (assembly + solve + update).
-	double extrapolate = 0, levelSet = 0, particles = 0, momentum = 0, project = 0;
+	double extrapolate = 0, levelSet = 0, particles = 0, momentum = 0, project = 0, bodies = 0;
 };
 
 class LiquidModel {
@@ -109,6 +122,8 @@ public:
 	//! `after` (may be empty) is called after every step with the time.
 	bool Run(double duration, double segment, const std::function<void(double, const StepStats&)>& after, std::string& error);
 	double Time() const { return time_; }
+	//! The time a step starts at (prescribed bodies; Step advances it by dt).
+	void SetTime(double t) { time_ = t; }
 	void SetThreads(unsigned threads);
 
 	const Grid& GridSpec() const { return setup_.grid; }
@@ -131,6 +146,29 @@ public:
 	std::uint64_t steps = 0;
 	double targetVolume_ = 0;
 	MarkerParticles particles;
+	//! Rigid bodies (m7b): the current state; the hydrodynamic impulse of the
+	//! last step and accumulated since ResetBodyImpulses (force and torque
+	//! about the centre of mass, times time: N s, N m s).
+	std::vector<LiquidBody> bodies;
+	std::vector<Vec6> bodyImpulse, bodyAccumulated;
+	void ResetBodyImpulses();
+	//! Momentum audit (m7b): when set, each step stores the impulse the walls
+	//! and static solids exerted on the liquid through the pressure.
+	bool audit = false;
+	V3 wallImpulse{{0, 0, 0}};
+	//! The liquid's discrete momentum rho h^3 sum_f w_f u_f per axis, w_f the
+	//! projection's kinetic-energy weight (A between liquid cells, A theta to
+	//! the air), on valid faces.
+	V3 FluidMomentum() const;
+	//! The liquid's mass the same weights give (rho h^3 sum_f w_f over the faces of `axis`).
+	double FluidMass(int axis) const;
+	const BodyGeometry& Geometry() const { return geometry_; }
+	//! Rebuilds the solid geometry from the bodies' current poses (after a
+	//! pose was set from outside: a port, with `extrapolate` the level set in
+	//! the cells they now enclose; a restored state, without: phi is restored).
+	void UpdateBodyGeometry(bool extrapolate);
+	//! The speed bound the time step uses for the bodies.
+	double BodySpeed() const;
 
 	// Static data derived from the setup.
 	std::vector<double> solidNodes, openCells;
@@ -152,6 +190,23 @@ private:
 	//! The velocity the outputs sample: u with its invalid faces extrapolated
 	//! as for the interface (the field the next step moves the surface with).
 	MacField OutputVelocity() const;
+	//! Bodies: poses at the end of a step of length dt (Dynamic and coupled
+	//! Port bodies drift with their step-start velocity; prescribed ones
+	//! follow their motion; kinematic Port bodies their port velocity).
+	void MoveBodies(double dt);
+	//! The level set in cells a body encloses, extrapolated from the others.
+	void ExtrapolateEnclosed();
+	//! One projection with the bodies: their predicted velocities wStar,
+	//! impulses out (coupled bodies in the solve, kinematic ones measured).
+	bool ProjectBodies(MacField& s, const PressureOptions& po, const std::vector<Vec6>& wStar, std::vector<Vec6>& impulse,
+		PressureStats& stats, std::string& error);
+	std::vector<Vec6> BodyVelocities() const;
+	void SetBodyVelocity(std::size_t i, const Vec6& w);
+	void AuditWalls();
+	bool HasSolids() const { return !setup_.solids.empty() || !bodies.empty(); }
+	BodyGeometry geometry_;
+	MacField solidVelocity_;
+	std::vector<std::uint8_t> enclosedMark_;
 	LiquidSetup setup_;
 	SolverOptions options_;
 	std::unique_ptr<Pool> pool_;

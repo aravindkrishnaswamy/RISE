@@ -222,7 +222,7 @@ void Description()
 		Check(actual && Encoded(*actual) == Encoded(expected), "schema default of " + p.name + " (" + p.defaultText + ") is the solver's");
 	}
 	for (const auto& m : plain.effectiveParameters.GetMap())
-		Check(FindSchemaParameter(schema, m.first) || m.first == "liquid" || m.first == "solids",
+		Check(FindSchemaParameter(schema, m.first) || m.first == "liquid" || m.first == "solids" || m.first == "bodies",
 			"effective parameter " + m.first + " is described by the schema");
 	for (const auto& p : schema.parameters) {
 		if (p.type != SchemaType::Enum) continue;

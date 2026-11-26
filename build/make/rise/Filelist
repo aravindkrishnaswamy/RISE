@@ -138,6 +138,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Simulation/Liquid/LiquidGrid.cpp	\
 	$(PATHLIBRARY)Simulation/Liquid/LiquidLevelSet.cpp	\
 	$(PATHLIBRARY)Simulation/Liquid/LiquidFlow.cpp	\
+	$(PATHLIBRARY)Simulation/Liquid/LiquidBodies.cpp	\
 	$(PATHLIBRARY)Simulation/Liquid/LiquidModel.cpp	\
 	$(PATHLIBRARY)Simulation/Liquid/LiquidValidation.cpp	\
 	$(PATHLIBRARY)Simulation/Liquid/LiquidSolver.cpp	\

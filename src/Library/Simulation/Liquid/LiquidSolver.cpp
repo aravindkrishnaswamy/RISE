@@ -10,9 +10,11 @@
 #include "LiquidSolver.h"
 #include "LiquidModel.h"
 #include "LiquidValidation.h"
+#include "../SimulationField.h"
 #include "../SimulationGrid.h"
 #include "../SimulationMesh.h"
 #include "../SimulationPoints.h"
+#include "../SimulationTransform.h"
 
 #include <algorithm>
 #include <atomic>
@@ -31,13 +33,18 @@ using namespace Liquid;
 
 constexpr std::size_t CodecBudget = std::size_t(16) << 30;
 constexpr std::size_t InputBudget = std::size_t(256) << 20;
-constexpr const char* SolverVersion = "m7a.2";
+constexpr const char* SolverVersion = "m7b.1";
 constexpr const char* StateMagic = "RISELIQ1";
 constexpr const char* StateFormat = "liquid.mac.state.v1";
 constexpr const char* SurfaceOutput = "surface";
 constexpr const char* FieldsOutput = "fields";
 constexpr const char* ParticlesOutput = "particles";
 constexpr const char* FieldsPort = "fields";
+// M7b: rigid bodies.
+constexpr const char* BodiesOutput = "bodies";
+constexpr const char* StatePort = "body_state";
+constexpr const char* MassPort = "body_mass_properties";
+constexpr const char* LoadPort = "body_load";
 constexpr std::size_t InteractiveCells = 32768;   // 32^3: interactive below this size
 
 bool Fail(std::string& error, const std::string& message) { error = message; return false; }
@@ -259,6 +266,100 @@ bool ParseSolid(const V& item, const ISceneInputs& inputs, std::vector<std::stri
 	return true;
 }
 
+// A rigid body (m7b; LiquidBodies.h): {name, shape: sphere | box | cylinder
+// (body frame, centred at the centre of mass; cylinder axis z), motion:
+// dynamic | prescribed | port, position, orientation (w, x, y, z), velocity,
+// angular_velocity; dynamic: density or mass, free [x, y, z, rotation];
+// prescribed: amplitude, frequency, phase (x(t) = position + velocity t +
+// amplitude sin(2 pi frequency t + phase), a constant angular velocity);
+// port: coupling implicit | staggered (the pose and twist from
+// rigid.bodies' body_state; the initial state must equal rigid.bodies')}.
+bool ParseBody(const V& item, const V3& gravity, LiquidBody& b, V& effective, std::string& error)
+{
+	Reader r(item, "body", error);
+	b.name = r.Text("name", "");
+	if (b.name.empty() || b.name.find('\0') != std::string::npos || !RISECBOR64::IsUTF8NFC(b.name))
+		return r.Bad("a body needs a nonempty NFC name");
+	const std::string shape = r.Text("shape", "sphere", {"sphere", "box", "cylinder"});
+	if (shape == "sphere") {
+		b.shape.type = BodyShape::Type::Sphere;
+		b.shape.radius = r.Real("radius", 0.1);
+		if (!(b.shape.radius > 0)) return r.Bad("radius must be positive");
+	} else if (shape == "box") {
+		b.shape.type = BodyShape::Type::Box;
+		b.shape.size = r.Vector("size", {{0.2, 0.2, 0.2}});
+		if (!(b.shape.size[0] > 0 && b.shape.size[1] > 0 && b.shape.size[2] > 0)) return r.Bad("a box size must be positive on every axis");
+	} else {
+		b.shape.type = BodyShape::Type::Cylinder;
+		b.shape.radius = r.Real("radius", 0.1);
+		b.shape.height = r.Real("height", 0.2);
+		if (!(b.shape.radius > 0) || !(b.shape.height > 0)) return r.Bad("cylinder radius and height must be positive");
+	}
+	const std::string motion = r.Text("motion", "dynamic", {"dynamic", "prescribed", "port"});
+	b.motion = motion == "dynamic" ? BodyMotion::Dynamic : motion == "prescribed" ? BodyMotion::Prescribed : BodyMotion::Port;
+	const V3 position = r.Vector("position", {{0, 0, 0}});
+	Quat q{{1, 0, 0, 0}};
+	if (const V* v = r.Raw("orientation")) {
+		std::vector<double> xs;
+		if (!Numbers(v, xs) || xs.size() != 4) return r.Bad("orientation must be an array of 4 finite numbers (w, x, y, z)");
+		for (int k = 0; k < 4; ++k) q[std::size_t(k)] = xs[std::size_t(k)];
+	}
+	if (!CanonicalQuaternion(q)) return r.Bad("orientation must be a nonzero quaternion (w, x, y, z)");
+	r.out.emplace_back("orientation", V::ArrayValue({V::Float(q[0]), V::Float(q[1]), V::Float(q[2]), V::Float(q[3])}));
+	const V3 velocity = r.Vector("velocity", {{0, 0, 0}});
+	const V3 omega = r.Vector("angular_velocity", {{0, 0, 0}});
+	double mass = 1;
+	if (b.motion == BodyMotion::Dynamic) {
+		if (r.Has("mass")) {
+			if (r.Has("density")) return r.Bad("give density or mass, not both");
+			mass = r.Real("mass", 1.0);
+		} else mass = r.Real("density", 1000.0)*b.shape.Volume();
+		if (!(mass > 0)) return r.Bad("density and mass must be positive");
+		bool all = true;
+		if (const V* v = r.Raw("free")) {
+			if (v->GetType() != V::Array || v->GetArray().size() != 4) return r.Bad("free must be 4 booleans (x, y, z, rotation)");
+			for (std::size_t k = 0; k < 4; ++k) {
+				const V& e = v->GetArray()[k];
+				if (e.GetType() != V::Boolean) return r.Bad("free must be 4 booleans (x, y, z, rotation)");
+				b.free[k] = e.GetBoolean();
+				all = all && b.free[k];
+			}
+		}
+		r.out.emplace_back("free", V::ArrayValue({V::Bool(b.free[0]), V::Bool(b.free[1]), V::Bool(b.free[2]), V::Bool(b.free[3])}));
+		(void)all;
+	} else if (b.motion == BodyMotion::Prescribed) {
+		b.amplitude = r.Vector("amplitude", {{0, 0, 0}});
+		b.frequency = r.Real("frequency", 0.0);
+		b.phase = r.Real("phase", 0.0);
+		if (!(b.frequency >= 0)) return r.Bad("frequency must not be negative");
+	} else {
+		b.staggered = r.Text("coupling", "implicit", {"implicit", "staggered"}) == "staggered";
+	}
+	if (!r.Finish()) return false;
+	b.state.mass = mass;
+	b.state.moments = b.shape.Moments(mass);
+	b.state.x = position;
+	b.state.q = q;
+	b.state.v = velocity;
+	for (int a = 0; a < 3; ++a) if (b.motion == BodyMotion::Dynamic && !b.free[std::size_t(a)]) b.state.v[std::size_t(a)] = 0;
+	const V3 wb = Rigid::ApplyT(Rigid::QMatrix(q), omega);
+	for (int a = 0; a < 3; ++a) b.state.pi[std::size_t(a)] = (b.motion == BodyMotion::Dynamic && !b.free[3]) ? 0.0 :
+		b.state.moments[std::size_t(a)]*wb[std::size_t(a)];
+	b.x0 = position;
+	b.v0 = velocity;
+	b.q0 = q;
+	b.spin = omega;
+	for (int a = 0; a < 3; ++a) b.externalForce[std::size_t(a)] = b.motion == BodyMotion::Dynamic ? mass*gravity[std::size_t(a)] : 0.0;
+	effective = V::MapValue(r.out);
+	return true;
+}
+
+const char* MotionName(const LiquidBody& b)
+{
+	return b.motion == BodyMotion::Dynamic ? "dynamic" : b.motion == BodyMotion::Prescribed ? "prescribed" :
+		b.staggered ? "port-staggered" : "port-implicit";
+}
+
 const char* MomentumName(MomentumScheme m)
 {
 	return m == MomentumScheme::Weno5 ? "weno5" : m == MomentumScheme::MacCormack ? "maccormack" : "semi_lagrangian";
@@ -396,6 +497,71 @@ std::vector<EvidenceCase> ComputeEvidence(const SolverOptions& options, unsigned
 	return cases;
 }
 
+// M7b: the rigid-body cases (computed only when the configuration has bodies).
+// Tolerances: 1.25 x the error observed with the default numerics, rounded
+// up (docs/SIMULATION_M7B_RESULTS.md section 5); the neutral body at the
+// solver's tolerance level; the impulse audit at round-off.
+const CaseSpec BodyCases[] = {
+	{"added-mass-cylinder-n64", "impulsive start of a circular cylinder (radius 0.15) in a concentric cut-cell container (radius 0.4), 2-D, 64 cells: |m_a / (rho pi a^2 (b^2 + a^2) / (b^2 - a^2)) - 1|", 2.6e-3},
+	{"added-mass-sphere-n32", "impulsive start of a sphere (radius 0.15) in a concentric spherical container (radius 0.4), 32^3: |m_a / ((rho V / 2) (b^3 + 2 a^3) / (b^3 - a^3)) - 1|", 2.8e-2},
+	{"added-mass-oscillation-n32", "the cylinder in prescribed oscillation (amplitude 0.01, 2 Hz, 2 periods; moving cut cells), 2-D, 32 cells: |sine coefficient of the force / (m_a X w^2) - 1|", 1.5e-2},
+	{"archimedes-0.1-n32", "floating sphere, density ratio 0.1, 32^3: |discrete equilibrium height - Archimedes| / R", 1.4e-2},
+	{"archimedes-0.5-n32", "floating sphere, density ratio 0.5, 32^3: |discrete equilibrium height - Archimedes| / R", 5.0e-4},
+	{"archimedes-0.9-n32", "floating sphere, density ratio 0.9, 32^3: |discrete equilibrium height - Archimedes| / R", 1.2e-2},
+	{"neutral-rest-n32", "a discretely neutral cylinder (mass rho V_y) at rest in still liquid, 2-D, 32 cells, 1 s, free in all degrees of freedom: max body and liquid speed / sqrt(g h)", 1e-7},
+	{"light-float-n32", "a floating cylinder of density ratio 0.1 released 0.1 R above equilibrium, coupled in the pressure solve, 2-D, 32 cells, 3 s: max |y - mean| over the second half / the initial offset from the mean (no growth)", 0.76},
+	{"momentum-audit-n32", "the same run: |change of liquid + body vertical momentum - gravity's and the walls' impulses| / (gravity's impulse on liquid and body)", 2.2e-6},
+	{"body-impulse-n32", "the same run: |m dv - m g T - the liquid's impulses on the body| / (m g T)", 1e-12}};
+
+std::vector<EvidenceCase> ComputeBodyEvidence(const SolverOptions& options, unsigned threads)
+{
+	static std::mutex mutex;
+	static std::map<std::string, std::vector<EvidenceCase>> memo;
+	Bytes key;
+	std::string ignored;
+	RISECBOR64::Encode(NumericsValue(options), key, &ignored);
+	const std::string digest = RISECBOR64::SHA256Hex(key);
+	{
+		std::lock_guard<std::mutex> hold(mutex);
+		const auto it = memo.find(digest);
+		if (it != memo.end()) return it->second;
+	}
+	Pool pool(threads);
+	std::map<std::string, double> error;
+	error["added-mass-cylinder-n64"] = std::fabs(RunAddedMassImpulse(64, false, 0.15, 0.4, 0.37, options, &pool).error);
+	error["added-mass-sphere-n32"] = std::fabs(RunAddedMassImpulse(32, true, 0.15, 0.4, 0.37, options, &pool).error);
+	error["added-mass-oscillation-n32"] = std::fabs(RunAddedMassOscillation(32, 0.15, 0.4, 0.01, 2.0, 2, options, &pool).error);
+	error["archimedes-0.1-n32"] = std::fabs(RunFloatingStatics(32, true, 0.1, 0.37, options, &pool).offset);
+	error["archimedes-0.5-n32"] = std::fabs(RunFloatingStatics(32, true, 0.5, 0.37, options, &pool).offset);
+	error["archimedes-0.9-n32"] = std::fabs(RunFloatingStatics(32, true, 0.9, 0.37, options, &pool).offset);
+	{
+		const NeutralResult n = RunNeutralBody(32, false, 1.0, options, &pool);
+		error["neutral-rest-n32"] = std::max(n.bodySpeed, n.liquidSpeed);
+	}
+	{
+		const FloatDynamics f = RunFloatingDynamics(32, false, 0.1, 0.1, 3.0, false, options, &pool);
+		error["light-float-n32"] = f.finite ? f.lateGrowth : 1e300;
+		error["momentum-audit-n32"] = f.finite ? f.totalAudit : 1e300;
+		error["body-impulse-n32"] = f.finite ? f.bodyAudit : 1e300;
+	}
+	std::vector<EvidenceCase> cases;
+	for (const CaseSpec& spec : BodyCases) {
+		EvidenceCase c;
+		c.id = spec.id;
+		c.description = spec.description;
+		c.tolerance = spec.tolerance;
+		c.error = error[spec.id];
+		c.passed = std::isfinite(c.error) && c.error <= c.tolerance;
+		const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
+			{"numerics", NumericsValue(options)}, {"bodies", V::String("coupled pressure solve (m7b)")}});
+		c.digest = EvidenceDigest(c.id, configuration, c.error, c.tolerance, c.passed);
+		cases.push_back(c);
+	}
+	std::lock_guard<std::mutex> hold(mutex);
+	memo[digest] = cases;
+	return cases;
+}
+
 // ------------------------------------------------------------------ checkpoint streams
 
 class StreamWriter {
@@ -495,7 +661,64 @@ struct LiquidToken final : SolverStateToken {
 	double lastDt = 0, targetVolume = 0;
 	std::uint64_t steps = 0, nextId = 0;
 	std::vector<MarkerParticles::Particle> particles;
+	// M7b: bodies and the open port exchange.
+	std::vector<LiquidBody> bodies;
+	std::vector<Vec6> accumulated;
+	bool macroOpen = false;
+	double macroStart = 0;
+	std::vector<std::string> portNames;
+	std::uint64_t contacts = 0;
 };
+
+// The pack of a body's state in checkpoints: x (3), q (4), v (3), pi (3), mass,
+// moments (3), external force (3), the accumulated impulse (6).
+constexpr std::size_t BodyDoubles = 26;
+void PackBody(const LiquidBody& b, const Vec6& acc, std::vector<double>& out)
+{
+	const Rigid::Body& s = b.state;
+	out.insert(out.end(), s.x.begin(), s.x.end());
+	out.insert(out.end(), s.q.begin(), s.q.end());
+	out.insert(out.end(), s.v.begin(), s.v.end());
+	out.insert(out.end(), s.pi.begin(), s.pi.end());
+	out.push_back(s.mass);
+	out.insert(out.end(), s.moments.begin(), s.moments.end());
+	out.insert(out.end(), b.externalForce.begin(), b.externalForce.end());
+	out.insert(out.end(), acc.begin(), acc.end());
+}
+void UnpackBody(const double* p, LiquidBody& b, Vec6& acc)
+{
+	Rigid::Body& s = b.state;
+	for (int k = 0; k < 3; ++k) s.x[std::size_t(k)] = p[k];
+	for (int k = 0; k < 4; ++k) s.q[std::size_t(k)] = p[3 + k];
+	for (int k = 0; k < 3; ++k) s.v[std::size_t(k)] = p[7 + k];
+	for (int k = 0; k < 3; ++k) s.pi[std::size_t(k)] = p[10 + k];
+	s.mass = p[13];
+	for (int k = 0; k < 3; ++k) s.moments[std::size_t(k)] = p[14 + k];
+	for (int k = 0; k < 3; ++k) b.externalForce[std::size_t(k)] = p[17 + k];
+	for (int k = 0; k < 6; ++k) acc[std::size_t(k)] = p[20 + k];
+}
+Bytes DoublesBytes(const std::vector<double>& v)
+{
+	Bytes out(8*v.size());
+	for (std::size_t i = 0; i < v.size(); ++i) {
+		std::uint64_t w;
+		std::memcpy(&w, &v[i], 8);
+		for (int b = 0; b < 8; ++b) out[8*i + std::size_t(b)] = std::uint8_t(w >> (8*b));
+	}
+	return out;
+}
+bool BytesDoubles(const V* value, std::size_t count, std::vector<double>& v)
+{
+	if (!value || value->GetType() != V::ByteString || value->GetBytes().size() != 8*count) return false;
+	const auto& b = value->GetBytes();
+	v.assign(count, 0);
+	for (std::size_t i = 0; i < count; ++i) {
+		std::uint64_t w = 0;
+		for (int k = 0; k < 8; ++k) w |= std::uint64_t(b[8*i + std::size_t(k)]) << (8*k);
+		std::memcpy(&v[i], &w, 8);
+	}
+	return true;
+}
 
 class LiquidSolver final : public ISimulationSolver {
 public:
@@ -521,6 +744,14 @@ private:
 	}
 	bool Publish(IFrameSink& sink, IPortExchange* ports, AdvanceResult& result, std::string& error);
 	bool OfferFields(IPortExchange* ports, std::string& error);
+	// M7b: port bodies (pose and twist from rigid.bodies at each macro start;
+	// the hydrodynamic impulse over the step offered as a held load).
+	bool AcceptBodies(IPortExchange* ports, std::string& error);
+	bool OfferLoads(IPortExchange* ports, double time, double span, std::string& error);
+	bool EncodeBodies(double time, std::shared_ptr<const Bytes>& payload, std::string& error) const;
+	//! Inelastic contact of the bodies the liquid integrates (dynamic and coupled port
+	//! bodies) with the domain walls (preview; not offered: rigid.bodies owns contact).
+	void WallContact(double dt);
 
 	bool configured_ = false, started_ = false;
 	LiquidSetup setup_;
@@ -532,6 +763,11 @@ private:
 	LiquidModel model_;
 	Segment s_;
 	std::atomic<bool> stop_{false};
+	bool portBodies_ = false, implicitPorts_ = false;
+	bool macroOpen_ = false;
+	double macroStart_ = 0;
+	std::vector<std::string> portNames_;
+	std::uint64_t contacts_ = 0;
 };
 
 bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, SolverDescription& d, std::string& error)
@@ -593,6 +829,20 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		}
 		p.out.emplace_back("solids", V::ArrayValue(out));
 	}
+	{
+		V::Values out;
+		if (const V* list = p.Raw("bodies")) {
+			if (list->GetType() != V::Array) return p.Bad("bodies must be an array");
+			for (const V& item : list->GetArray()) {
+				LiquidBody b;
+				V eff;
+				if (!ParseBody(item, setup.gravity, b, eff, error)) return false;
+				setup.bodies.push_back(std::move(b));
+				out.push_back(eff);
+			}
+		}
+		p.out.emplace_back("bodies", V::ArrayValue(out));
+	}
 	SolverOptions o;
 	{
 		const std::string m = p.Text("momentum", "weno5", {"weno5", "maccormack", "semi_lagrangian"});
@@ -636,6 +886,9 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	if (!(rate > 0)) return Fail(error, "frame_rate must be positive");
 	if (!(setup.density > 0)) return Fail(error, "density must be positive");
 	if (setup.grid.Cells() > (std::size_t(1) << 31)) return Fail(error, "the grid is too large");
+	for (std::size_t i = 0; i < setup.bodies.size(); ++i)
+		for (std::size_t j = 0; j < i; ++j)
+			if (setup.bodies[i].name == setup.bodies[j].name) return Fail(error, "body names must be unique: " + setup.bodies[i].name);
 	candidate.effectiveParameters = V::MapValue(p.out);
 	setup_ = setup;
 	options_ = o;
@@ -644,6 +897,10 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	interval_ = 1/rate;
 	publishFields_ = fields;
 	publishParticles_ = particlesOut;
+	portBodies_ = implicitPorts_ = false;
+	for (const LiquidBody& b : setup.bodies) if (b.motion == BodyMotion::Port) portBodies_ = true;
+	implicitPorts_ = portBodies_;
+	for (const LiquidBody& b : setup.bodies) if (b.motion == BodyMotion::Port && b.staggered) implicitPorts_ = false;
 	configured_ = true;
 
 	candidate.solverId = LiquidSolverId;
@@ -657,6 +914,8 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		{"velocity", "m/s", "f32x3"}}});
 	if (particlesOut) candidate.cache.outputs.push_back({ParticlesOutput, "points.v1", {{"position", "m", "f32x3"},
 		{"radius", "m", "f32"}, {"sign", "1", "f32"}, {"velocity", "m/s", "f32x3"}}});
+	if (!setup.bodies.empty()) candidate.cache.outputs.push_back({BodiesOutput, TransformCodec, {{"angular_velocity", "rad/s", "f64x3"},
+		{"orientation", "1", "f64x4"}, {"position", "m", "f64x3"}, {"velocity", "m/s", "f64x3"}}});
 	candidate.inputs = sceneNames;
 	{
 		Bytes records;
@@ -669,6 +928,17 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	if (fields)
 		candidate.ports = {{FieldsPort, "liquid fields", "m", "grid.v1", true, FieldsOutput,
 			{{"phi", "signed distance", "m", 1}, {"pressure", "pressure", "Pa", 1}, {"velocity", "velocity", "m/s", 3}}, ""}};
+	// M7b: bodies that follow rigid.bodies (their declarations match its ports).
+	if (portBodies_) {
+		candidate.ports.push_back({StatePort, "rigid body state", "m", TransformCodec, false, "",
+			{{"angular_velocity", "angular velocity", "rad/s", 3}, {"orientation", "orientation", "1", 4},
+			 {"position", "position", "m", 3}, {"velocity", "velocity", "m/s", 3}}, ""});
+		candidate.ports.push_back({MassPort, "rigid body mass properties", "kg", "field.v1", false, "",
+			{{"center_of_mass", "position", "m", 3}, {"external_force", "force", "N", 3},
+			 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, ""});
+		candidate.ports.push_back({LoadPort, "body load", "N", "field.v1", true, "",
+			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, ""});
+	}
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17; `threads` does not change results"}};
 	const std::size_t cells = setup.grid.Cells();
@@ -677,6 +947,8 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	caps.threadCountInvariant = true;
 	caps.modes = {"bake"};
 	caps.backend = "cpu";
+	// M7b: the coupled pressure solve is the implicit exchange for port bodies.
+	if (implicitPorts_) caps.ownedImplicitPorts = {LoadPort, MassPort, StatePort};
 	// Measured (docs/SIMULATION_M7A_RESULTS.md section 8): peak RSS 356 bytes per cell at
 	// 128^3 (a dam break; 565 at 64^3 with the fixed part), particles about 140 bytes
 	// per cell at 16 per band cell, the fields output 48; declared with a 25% margin.
@@ -692,6 +964,9 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		const double speed = std::max(std::sqrt(2*gn*depth), 1e-3);
 		const double steps = std::max(speed/(o.cfl*setup.grid.h), gn > 0 ? std::sqrt(gn*depth)/(o.waveCfl*setup.grid.h) : 0.0);
 		caps.costEstimate = 1.2e-7*double(cells)*steps*(o.particles ? 1.05 : 1.0);
+		// M7b: measured at 128^3, 16 threads (docs/SIMULATION_M7B_RESULTS.md section 10): one coupled
+		// body +35%, four +55%, eight +77% per step (more at 64^3).
+		if (!setup.bodies.empty()) caps.costEstimate *= 1.3 + 0.06*double(setup.bodies.size());
 	}
 	const bool solids = !setup.solids.empty();
 	candidate.evidence.fidelity = "predictive";
@@ -710,7 +985,76 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		"of large-deformation flows (the interface is advanced with the step-start velocity, first order in time for "
 		"nonlinear transport).";
 	candidate.evidence.cases = ComputeEvidence(o, threads);
-	if (!solids) candidate.notes.push_back("no solids: the domain walls (free slip) only");
+	if (!solids && setup.bodies.empty()) candidate.notes.push_back("no solids: the domain walls (free slip) only");
+	if (!setup.bodies.empty()) {
+		// M7b: rigid bodies in the pressure solve.
+		std::vector<std::string> motions;
+		for (const LiquidBody& b : setup.bodies) motions.push_back(MotionName(b));
+		std::sort(motions.begin(), motions.end());
+		motions.erase(std::unique(motions.begin(), motions.end()), motions.end());
+		candidate.evidence.conditions.push_back({"bodies", motions});
+		std::sort(candidate.evidence.conditions.begin(), candidate.evidence.conditions.end(),
+			[](const auto& a, const auto& b) { return a.first < b.first; });
+		candidate.evidence.scope = "Single-phase inviscid incompressible liquid with a free surface (p = 0, no surface tension) "
+			"in a box with free-slip walls, static solids and rigid bodies (sphere, box, cylinder) whose six degrees of freedom are "
+			"solved with the liquid in one symmetric pressure system (dynamic or rigid.bodies-driven bodies) or that move on a "
+			"prescribed path, on a uniform staggered grid: certified on canonical problems (those of the liquid alone, and the "
+			"added mass of an impulsively started and of an oscillating cylinder and an impulsively started sphere in concentric "
+			"containers, Archimedes equilibrium of floating spheres at density ratios 0.1, 0.5 and 0.9, a neutral body at rest, "
+			"a light floating body's stability and its momentum audit); it does not bound the error of a given bake and does not "
+			"cover contact of a body with another body or with a wall inside the liquid, gaps between a body and a wall, a "
+			"static solid or another body below about two cells, bodies smaller than about four cells, spray, thin sheets or any "
+			"feature below about two cells, viscosity, surface tension, or the accuracy of large-deformation flows (first order "
+			"in time for nonlinear transport; velocities beside cut cells, moving or static, about first order).";
+		const auto body = ComputeBodyEvidence(o, threads);
+		candidate.evidence.cases.insert(candidate.evidence.cases.end(), body.begin(), body.end());
+		// Configurations outside the scope: preview.
+		const Grid& g = setup.grid;
+		std::string limit;
+		for (std::size_t i = 0; i < setup.bodies.size() && limit.empty(); ++i) {
+			const LiquidBody& b = setup.bodies[i];
+			if (b.shape.SmallestExtent() < 4*g.h)
+				limit = "body " + b.name + " is smaller than four cells (" + std::to_string(b.shape.SmallestExtent()/g.h) + ")";
+		}
+		for (std::size_t i = 0; i < setup.bodies.size() && limit.empty(); ++i) {
+			// The clearance at the start: the smallest body distance at nodes on a wall (not
+			// across a one-cell axis, not the open top), inside a static analytic solid or
+			// inside another body, near the body.
+			const LiquidBody& b = setup.bodies[i];
+			const Rigid::M3 Rb = Rigid::QMatrix(b.state.q);
+			auto dist = [&](const LiquidBody& c, const Rigid::M3& R, const V3& x) {
+				const V3 d{{x[0] - c.state.x[0], x[1] - c.state.x[1], x[2] - c.state.x[2]}};
+				return c.shape.Distance(Rigid::ApplyT(R, d));
+			};
+			const double reach = b.shape.BoundingRadius() + 3*g.h;
+			int lo[3], hi[3];
+			for (int a = 0; a < 3; ++a) {
+				lo[a] = std::max(0, int(std::floor((b.state.x[std::size_t(a)] - reach - g.origin[std::size_t(a)])/g.h)));
+				hi[a] = std::min(g.n[a], int(std::ceil((b.state.x[std::size_t(a)] + reach - g.origin[std::size_t(a)])/g.h)));
+			}
+			double clearance = 1e300;
+			for (int k = lo[2]; k <= hi[2]; ++k) for (int j = lo[1]; j <= hi[1]; ++j) for (int ii = lo[0]; ii <= hi[0]; ++ii) {
+				const int idx[3] = {ii, j, k};
+				const V3 x = g.Node(ii, j, k);
+				bool obstacle = false;
+				for (int a = 0; a < 3 && !obstacle; ++a)
+					if (g.n[a] > 1 && (idx[a] == 0 || idx[a] == g.n[a]) && !(a == 1 && idx[a] == g.n[a] && setup.openTop)) obstacle = true;
+				for (const Shape& sh : setup.solids) if (!obstacle && sh.type != Shape::Type::Mesh && sh.Distance(x) <= 0) obstacle = true;
+				for (std::size_t q = 0; q < setup.bodies.size() && !obstacle; ++q)
+					if (q != i && dist(setup.bodies[q], Rigid::QMatrix(setup.bodies[q].state.q), x) <= 0) obstacle = true;
+				if (obstacle) clearance = std::min(clearance, dist(b, Rb, x));
+			}
+			if (clearance < 2*g.h)
+				limit = "body " + b.name + " starts within two cells of a wall, a solid or another body (" + std::to_string(std::max(0.0, clearance)/g.h) + " cells)";
+		}
+		if (!limit.empty()) {
+			candidate.evidence.fidelity = "preview";
+			caps.fidelityLimit = limit;
+			candidate.notes.push_back("bodies: " + limit + " (outside the certified scope)");
+		}
+		candidate.notes.push_back("rigid bodies: contact with walls or other bodies inside the liquid is not covered (preview); "
+			"bodies the liquid integrates stop inelastically at the domain walls");
+	}
 	d = std::move(candidate);
 	return true;
 }
@@ -721,8 +1065,169 @@ bool LiquidSolver::Start(std::string& error)
 	if (!model_.Initialize(setup_, options_, threads_, error)) return false;
 	s_ = Segment();
 	s_.finished = count_ == 0;
+	macroOpen_ = false;
+	macroStart_ = 0;
+	portNames_.clear();
+	contacts_ = 0;
 	started_ = true;
 	return true;
+}
+
+bool LiquidSolver::EncodeBodies(double time, std::shared_ptr<const Bytes>& payload, std::string& error) const
+{
+	TransformFrame f;
+	f.time = time;
+	for (const LiquidBody& b : model_.bodies) {
+		TransformBody tb;
+		tb.name = b.name;
+		tb.position = b.state.x;
+		Quat q = b.state.q;
+		CanonicalQuaternion(q);
+		tb.orientation = q;
+		tb.velocity = b.state.v;
+		tb.angularVelocity = b.Omega();
+		f.bodies.push_back(tb);
+	}
+	std::sort(f.bodies.begin(), f.bodies.end(), [](const TransformBody& a, const TransformBody& b) { return a.name < b.name; });
+	auto bytes = std::make_shared<Bytes>();
+	if (!EncodeTransforms(f, CodecBudget, *bytes, error)) return false;
+	payload = std::move(bytes);
+	return true;
+}
+
+bool LiquidSolver::AcceptBodies(IPortExchange* ports, std::string& error)
+{
+	std::shared_ptr<const Bytes> bytes;
+	if (ports->Accept(StatePort, s_.t, bytes, error) != PortStatus::Ready)
+		return Fail(error, "a port body needs rigid.bodies' body_state connected to " + std::string(StatePort) + ": " + error);
+	TransformFrame f;
+	if (!DecodeTransforms(*bytes, CodecBudget, f, error)) return false;
+	portNames_.clear();
+	for (const auto& tb : f.bodies) portNames_.push_back(tb.name);
+	FieldFrame mf;
+	const bool haveMass = [&]() {
+		std::shared_ptr<const Bytes> mb;
+		std::string why;
+		const PortStatus st = ports->Accept(MassPort, s_.t, mb, why);
+		return st == PortStatus::Ready && DecodeField(*mb, CodecBudget, mf, why);
+	}();
+	if (implicitPorts_ && !haveMass) return Fail(error, "an implicitly coupled port body needs rigid.bodies' body_mass_properties");
+	if (haveMass && (mf.domain != TransformBodyDomain(portNames_) || mf.count != portNames_.size()))
+		return Fail(error, "body_mass_properties is not over body_state's bodies");
+	const FieldChannel *mass = nullptr, *inertia = nullptr, *external = nullptr;
+	if (haveMass)
+		for (const auto& c : mf.channels) {
+			if (c.name == "mass" && c.components == 1) mass = &c;
+			else if (c.name == "inertia" && c.components == 9) inertia = &c;
+			else if (c.name == "external_force" && c.components == 3) external = &c;
+		}
+	if (implicitPorts_ && (!mass || !inertia || !external))
+		return Fail(error, "body_mass_properties needs mass, inertia and external_force (rigid.bodies m6.1 with the m7b channel)");
+	for (LiquidBody& b : model_.bodies) {
+		if (b.motion != BodyMotion::Port) continue;
+		const auto it = std::find(portNames_.begin(), portNames_.end(), b.name);
+		if (it == portNames_.end()) return Fail(error, "body_state has no body named " + b.name);
+		const std::size_t k = std::size_t(it - portNames_.begin());
+		const TransformBody& tb = f.bodies[k];
+		if (s_.t == 0) {
+			// The liquid's initial state of the body must be rigid.bodies'.
+			double dx = 0, dv = 0;
+			for (int a = 0; a < 3; ++a) {
+				dx = std::max(dx, std::fabs(tb.position[std::size_t(a)] - b.state.x[std::size_t(a)]));
+				dv = std::max(dv, std::fabs(tb.velocity[std::size_t(a)] - b.state.v[std::size_t(a)]));
+			}
+			Quat q = b.state.q;
+			CanonicalQuaternion(q);
+			double dq = 0;
+			for (int a = 0; a < 4; ++a) dq = std::max(dq, std::fabs(tb.orientation[std::size_t(a)] - q[std::size_t(a)]));
+			if (dx > 1e-6 || dv > 1e-6 || dq > 1e-6)
+				return Fail(error, "liquid body " + b.name + " does not start where rigid.bodies has it (position, orientation and velocity must match)");
+		}
+		if (mass) {
+			b.state.mass = FromF32(mass->values[k]);
+			for (int a = 0; a < 3; ++a) b.state.moments[std::size_t(a)] = FromF32(inertia->values[9*k + 4*std::size_t(a)]);
+			if (external) for (int a = 0; a < 3; ++a) b.externalForce[std::size_t(a)] = FromF32(external->values[3*k + std::size_t(a)]);
+			if (!(b.state.mass > 0) || !(b.state.moments[0] > 0 && b.state.moments[1] > 0 && b.state.moments[2] > 0))
+				return Fail(error, "body " + b.name + " has an invalid mass or inertia");
+		}
+		b.state.x = tb.position;
+		b.state.q = tb.orientation;
+		b.state.v = tb.velocity;
+		const V3 wb = Rigid::ApplyT(Rigid::QMatrix(b.state.q), tb.angularVelocity);
+		for (int a = 0; a < 3; ++a) b.state.pi[std::size_t(a)] = b.state.moments[std::size_t(a)]*wb[std::size_t(a)];
+	}
+	model_.UpdateBodyGeometry(true);
+	return true;
+}
+
+// body_load over body_state's bodies: the liquid's mean force and torque (about
+// the centre of mass; no point channel) over the macro step, which, held by
+// rigid.bodies, gives the body the impulse the coupled solve gave it.
+bool LiquidSolver::OfferLoads(IPortExchange* ports, double time, double span, std::string& error)
+{
+	FieldFrame f;
+	f.domain = TransformBodyDomain(portNames_);
+	f.count = static_cast<std::uint32_t>(portNames_.size());
+	FieldChannel force{"force", "N", 3, {}}, torque{"torque", "N m", 3, {}};
+	const auto bits = [](double x) { const float v = static_cast<float>(x); std::uint32_t b; std::memcpy(&b, &v, 4); return b; };
+	for (const std::string& name : portNames_) {
+		Vec6 load{{0, 0, 0, 0, 0, 0}};
+		for (std::size_t i = 0; i < model_.bodies.size(); ++i)
+			if (model_.bodies[i].name == name && model_.bodies[i].motion == BodyMotion::Port && span > 0)
+				for (int m = 0; m < 6; ++m) load[std::size_t(m)] = model_.bodyAccumulated[i][std::size_t(m)]/span;
+		for (int a = 0; a < 3; ++a) { force.values.push_back(bits(load[std::size_t(a)])); torque.values.push_back(bits(load[std::size_t(3 + a)])); }
+	}
+	f.channels = {force, torque};
+	auto bytes = std::make_shared<Bytes>();
+	if (!EncodeField(f, CodecBudget, *bytes, error)) return false;
+	return ports->Offer(LoadPort, time, bytes, error);
+}
+
+void LiquidSolver::WallContact(double dt)
+{
+	// Bodies the liquid integrates stop at the domain walls: sequential
+	// impulses (restitution 0, friction 0.3) at their support points
+	// (rigid.bodies' plane contact), counted; not part of the validated model.
+	const Grid& g = model_.GridSpec();
+	std::vector<Rigid::Plane> planes;
+	for (int a = 0; a < 3; ++a) {
+		if (g.n[a] == 1) continue;
+		for (int side = 0; side < 2; ++side) {
+			if (a == 1 && side == 1 && setup_.openTop) continue;
+			Rigid::Plane p;
+			p.point = g.origin;
+			p.point[std::size_t(a)] += side ? g.n[a]*g.h : 0.0;
+			p.normal = {{0, 0, 0}};
+			p.normal[std::size_t(a)] = side ? -1.0 : 1.0;
+			p.restitution = 0;
+			p.friction = 0.3;
+			planes.push_back(p);
+		}
+	}
+	for (LiquidBody& b : model_.bodies) {
+		// Coupled port bodies too: rigid.bodies owns their contact, but inside the macro
+		// step the liquid's own copy must not pass through a wall (it squeezed the liquid
+		// between them and returned a spurious impulse that the contact then doubled).
+		if (!b.Coupled()) continue;
+		if (b.state.support.empty() && !b.state.sphere) {
+			Rigid::Shape rs;
+			rs.type = b.shape.type == BodyShape::Type::Sphere ? Rigid::Shape::Type::Sphere :
+				b.shape.type == BodyShape::Type::Box ? Rigid::Shape::Type::Box : Rigid::Shape::Type::Cylinder;
+			rs.size = b.shape.size;
+			rs.radius = b.shape.radius;
+			rs.height = b.shape.height;
+			Rigid::ShapeSupportPoints(rs, b.state.support);
+			b.state.sphere = rs.type == Rigid::Shape::Type::Sphere;
+			b.state.radius = b.shape.radius;
+		}
+		const Rigid::V3 v0 = b.state.v;
+		const int n = Rigid::ResolvePlanes(b.state, planes, setup_.gravity, dt);
+		if (n) {
+			contacts_ += std::uint64_t(n);
+			for (int a = 0; a < 3; ++a) if (!b.free[std::size_t(a)]) b.state.v[std::size_t(a)] = v0[std::size_t(a)];
+			if (!b.free[3]) b.state.pi = {{0, 0, 0}};
+		}
+	}
 }
 
 bool LiquidSolver::OfferFields(IPortExchange* ports, std::string& error)
@@ -762,6 +1267,11 @@ bool LiquidSolver::Publish(IFrameSink& sink, IPortExchange* ports, AdvanceResult
 		if (!sink.Publish(index, ParticlesOutput, s_.t, bytes, {}, error)) return false;
 		++result.framesPublished;
 	}
+	if (!model_.bodies.empty()) {
+		std::shared_ptr<const Bytes> bytes;
+		if (!EncodeBodies(s_.t, bytes, error) || !sink.Publish(index, BodiesOutput, s_.t, bytes, {}, error)) return false;
+		++result.framesPublished;
+	}
 	return true;
 }
 
@@ -774,6 +1284,23 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 	if (macro && (!std::isfinite(request.macroEnd) || request.macroEnd < s_.t)) return Fail(error, "macro end lies in the past");
 	const double end = static_cast<double>(count_ ? count_ - 1 : 0)*interval_;
 	bool offered = false;
+	// M7b: port bodies follow rigid.bodies through a group: their state at each
+	// macro step's start, the liquid's impulse on them offered at its end.
+	if (portBodies_ && (!macro || !ports))
+		return Fail(error, "the liquid's port bodies follow rigid.bodies: run it in a simulation_group (the liquid owning the exchange)");
+	if (portBodies_ && !macroOpen_ && s_.t < request.macroEnd && !s_.finished) {
+		if (!AcceptBodies(ports, error)) return false;
+		model_.ResetBodyImpulses();
+		macroOpen_ = true;
+		macroStart_ = s_.t;
+	}
+	auto closeMacro = [&]() {
+		if (!portBodies_ || s_.t != request.macroEnd) return true;
+		const double span = macroOpen_ ? s_.t - macroStart_ : 0.0;
+		macroOpen_ = false;
+		if (portNames_.empty()) return true;   // nothing accepted yet (the start): no load
+		return OfferLoads(ports, s_.t, span, error);
+	};
 	for (;;) {
 		while (!s_.finished && s_.t == OutputTime(s_.next)) {
 			if (!Publish(sink, ports, result, error)) return false;
@@ -781,9 +1308,13 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			if (++s_.next == count_) s_.finished = true;
 			if (!macro) return Done(result, AdvanceResult::Status::Advanced);
 		}
-		if (s_.finished) return Done(result, AdvanceResult::Status::Finished);
+		if (s_.finished) {
+			if (!closeMacro()) return false;
+			return Done(result, AdvanceResult::Status::Finished);
+		}
 		if (macro && s_.t == request.macroEnd && s_.segN == 0) {
 			if (!offered && !OfferFields(ports, error)) return false;
+			if (!closeMacro()) return false;
 			return Done(result, AdvanceResult::Status::Advanced);
 		}
 		if (s_.segN == 0) {
@@ -803,12 +1334,15 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			// The safeguard's count (StepStats::clamped totals of this run; zero in the
 			// robustness sweep since m7a.2) in the progress detail, as cloth reports its solver counts.
 			if (progress && !progress->Report(s_.t, end, "steps " + std::to_string(model_.steps) + ", clamped faces " +
-				std::to_string(model_.clampedFaces) + " in " + std::to_string(model_.clampedSteps) + " steps"))
+				std::to_string(model_.clampedFaces) + " in " + std::to_string(model_.clampedSteps) + " steps" +
+				(model_.bodies.empty() ? std::string() : ", body wall contacts " + std::to_string(contacts_))))
 				return Done(result, AdvanceResult::Status::Stopped);
 			const double tn = s_.segJ + 1 == s_.segN ? s_.segTarget :
 				s_.segStart + (s_.segTarget - s_.segStart)*static_cast<double>(s_.segJ + 1)/static_cast<double>(s_.segN);
 			StepStats stats;
+			model_.SetTime(s_.t);
 			if (!model_.Step(tn - s_.t, stats, error)) return false;
+			if (!model_.bodies.empty()) WallContact(tn - s_.t);
 			s_.t = tn;
 			++s_.segJ;
 		}
@@ -830,6 +1364,18 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 		{"lastDt", V::Float(model_.lastDt_)}, {"targetVolume", V::Float(model_.targetVolume_)},
 		{"cells", V::ArrayValue({V::Unsigned(std::uint64_t(g.n[0])), V::Unsigned(std::uint64_t(g.n[1])), V::Unsigned(std::uint64_t(g.n[2]))})},
 		{"particles", V::Unsigned(ps.size())}, {"nextId", V::Unsigned(model_.particles.NextId())}};
+	if (!model_.bodies.empty()) {
+		// M7b: the bodies' state and the open port exchange (only when there are bodies).
+		std::vector<double> packed;
+		for (std::size_t i = 0; i < model_.bodies.size(); ++i) PackBody(model_.bodies[i], model_.bodyAccumulated[i], packed);
+		V::Values names;
+		for (const auto& n : portNames_) names.push_back(V::String(n));
+		m.emplace_back("bodies", V::BytesValue(DoublesBytes(packed)));
+		m.emplace_back("macroOpen", V::Bool(macroOpen_));
+		m.emplace_back("macroStart", V::Float(macroStart_));
+		m.emplace_back("portNames", V::ArrayValue(names));
+		m.emplace_back("contacts", V::Unsigned(contacts_));
+	}
 	Bytes header;
 	if (!RISECBOR64::Encode(V::MapValue(m), header, &error)) return false;
 	StreamWriter w(sink);
@@ -877,6 +1423,21 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 		if (c.GetType() != V::UnsignedInteger || c.GetIntegerArgument() != std::uint64_t(setup_.grid.n[a]))
 			return Fail(error, "the liquid checkpoint is for another grid");
 	}
+	std::vector<double> packed;
+	bool macroOpen = false;
+	double macroStart = 0;
+	std::vector<std::string> portNames;
+	std::uint64_t contacts = 0;
+	if (!setup_.bodies.empty()) {
+		const V* names = v.Find("portNames");
+		if (!BytesDoubles(v.Find("bodies"), BodyDoubles*setup_.bodies.size(), packed) || !flag("macroOpen", macroOpen) ||
+			!real("macroStart", macroStart) || !count("contacts", contacts) || !names || names->GetType() != V::Array)
+			return Fail(error, "the liquid checkpoint does not hold the configured bodies");
+		for (const V& n : names->GetArray()) {
+			if (n.GetType() != V::Text) return Fail(error, "invalid liquid checkpoint fields");
+			portNames.push_back(n.GetText());
+		}
+	} else if (v.Find("bodies")) return Fail(error, "the liquid checkpoint holds bodies the configuration does not have");
 	// The static data (solid fractions) come from the configuration.
 	if (!model_.Initialize(setup_, options_, threads_, error)) return false;
 	const Grid& g = model_.GridSpec();
@@ -908,6 +1469,15 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 	model_.targetVolume_ = target;
 	model_.steps = steps;
 	model_.particles.SetState(std::move(ps), nextId, options_.particle);
+	if (!setup_.bodies.empty()) {
+		for (std::size_t i = 0; i < model_.bodies.size(); ++i) UnpackBody(&packed[BodyDoubles*i], model_.bodies[i], model_.bodyAccumulated[i]);
+		model_.UpdateBodyGeometry(false);
+		model_.SetTime(seg.t);
+	}
+	macroOpen_ = macroOpen;
+	macroStart_ = macroStart;
+	portNames_ = std::move(portNames);
+	contacts_ = contacts;
 	s_ = seg;
 	started_ = true;
 	return true;
@@ -942,6 +1512,12 @@ bool LiquidSolver::SaveState(std::shared_ptr<const SolverStateToken>& token, std
 	t->steps = model_.steps;
 	t->nextId = model_.particles.NextId();
 	t->particles = model_.particles.Particles();
+	t->bodies = model_.bodies;
+	t->accumulated = model_.bodyAccumulated;
+	t->macroOpen = macroOpen_;
+	t->macroStart = macroStart_;
+	t->portNames = portNames_;
+	t->contacts = contacts_;
 	token = std::move(t);
 	return true;
 }
@@ -959,6 +1535,16 @@ bool LiquidSolver::RestoreState(const SolverStateToken& token, std::string& erro
 	model_.targetVolume_ = t->targetVolume;
 	model_.steps = t->steps;
 	model_.particles.SetState(t->particles, t->nextId, options_.particle);
+	if (!t->bodies.empty()) {
+		model_.bodies = t->bodies;
+		model_.bodyAccumulated = t->accumulated;
+		model_.UpdateBodyGeometry(false);
+		model_.SetTime(t->seg.t);
+	}
+	macroOpen_ = t->macroOpen;
+	macroStart_ = t->macroStart;
+	portNames_ = t->portNames;
+	contacts_ = t->contacts;
 	return true;
 }
 } // namespace

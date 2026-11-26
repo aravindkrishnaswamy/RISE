@@ -135,6 +135,7 @@ struct Shape {
 	Type type = Type::Sphere;
 	V3 point{{0, 0, 0}}, axis{{0, 1, 0}}, lo{{0, 0, 0}}, hi{{0, 0, 0}};
 	double radius = 0, height = 0;
+	bool invert = false;   // the complement (m7b validation: the inside of a container); analytic shapes only
 	// Mesh (world space): flat xyz array and triangles.
 	std::vector<double> vertices;
 	std::vector<std::uint32_t> triangles;
@@ -160,9 +161,13 @@ void SolidNodes(const Grid& g, const std::vector<Shape>& shapes, double band, st
 //! axis `openAxis` when `openTop` (fraction from the solid as inside).
 void FaceFractions(const Grid& g, const std::vector<double>& nodes, bool openTop, int openAxis,
 	std::array<std::vector<double>,3>& fraction, Pool* pool);
+//! The open fraction of one face (i, j, k) of axis a, as FaceFractions computes it.
+double FaceFraction(const Grid& g, const std::vector<double>& nodes, int a, int i, int j, int k, bool openTop, int openAxis);
 //! Open fraction of each cell, clamp(1/2 + phi_s(centre)/h, 0, 1) with
 //! phi_s(centre) the mean of its eight nodes.
 void CellOpenFractions(const Grid& g, const std::vector<double>& nodes, std::vector<double>& open, Pool* pool);
+//! The open fraction of one cell, as CellOpenFractions computes it.
+double CellOpenFraction(const Grid& g, const std::vector<double>& nodes, int i, int j, int k);
 //! Fraction of a triangle where the linear interpolant of a, b, c is > 0.
 double TrianglePositiveFraction(double a, double b, double c);
 

@@ -729,4 +729,574 @@ VolumeResult RunVolumeConservation(int cells, double periods, bool correction, c
 	return r;
 }
 
+// ------------------------------------------------------------------ rigid bodies (m7b)
+
+LiquidBody MakeBody(const BodyShape& shape, BodyMotion motion, double mass, const V3& x, const V3& gravity)
+{
+	LiquidBody b;
+	b.name = "body";
+	b.shape = shape;
+	b.motion = motion;
+	b.state.mass = mass;
+	b.state.moments = shape.Moments(mass);
+	b.state.x = x;
+	b.x0 = x;
+	for (int a = 0; a < 3; ++a) b.externalForce[std::size_t(a)] = mass*gravity[std::size_t(a)];
+	return b;
+}
+
+namespace {
+// The unit box [0, 1]^d: 3-D n^3, 2-D n x n x 1 with the slab centred on z = 0.
+LiquidSetup UnitBox(int n, bool threeD)
+{
+	LiquidSetup s;
+	s.grid.n = {{n, n, threeD ? n : 1}};
+	s.grid.h = 1.0/n;
+	s.grid.origin = {{0, 0, threeD ? 0.0 : -0.5/n}};
+	return s;
+}
+// A sphere (3-D) or a cylinder along z through the slab (2-D), radius R.
+BodyShape RoundBody(bool threeD, double R, double h)
+{
+	BodyShape b;
+	b.type = threeD ? BodyShape::Type::Sphere : BodyShape::Type::Cylinder;
+	b.radius = R;
+	b.height = 4*h;   // beyond the slab: its caps never cut a face
+	return b;
+}
+double RoundVolume(bool threeD, double R, double h) { return threeD ? 4.0/3.0*Pi*R*R*R : Pi*R*R*h; }
+// Submerged volume of a round body of radius R whose lowest point is `depth` below the surface.
+double Submerged(bool threeD, double R, double h, double depth)
+{
+	const double d = std::min(2*R, std::max(0.0, depth));
+	if (threeD) return Pi*d*d*(3*R - d)/3;
+	return h*(R*R*std::acos(1 - d/R) - (R - d)*std::sqrt(std::max(0.0, 2*R*d - d*d)));
+}
+} // namespace
+
+AddedMassResult RunAddedMassImpulse(int cells, bool threeD, double a, double b, double shift, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	AddedMassResult r;
+	LiquidSetup s = UnitBox(cells, threeD);
+	const double h = s.grid.h, rho = s.density, V = 1;
+	s.gravity = {{0, 0, 0}};
+	const V3 c{{0.5 + shift*h, 0.5 + shift*h, threeD ? 0.5 + shift*h : 0.0}};
+	Shape container;
+	container.type = threeD ? Shape::Type::Sphere : Shape::Type::Cylinder;
+	container.point = c;
+	container.axis = {{0, 0, 1}};
+	container.radius = b;
+	container.height = 10;
+	container.invert = true;
+	s.solids.push_back(container);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, 2, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	LiquidBody body = MakeBody(RoundBody(threeD, a, h), BodyMotion::Prescribed, 1, c, s.gravity);
+	body.v0 = {{V, 0, 0}};
+	s.bodies.push_back(body);
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.error = 1e300; return r; }
+	r.added = -m.bodyImpulse[0][0]/V;
+	r.sideForce = std::fabs(m.bodyImpulse[0][1])/std::max(1e-300, std::fabs(m.bodyImpulse[0][0]));
+	r.exact = threeD ? 0.5*rho*RoundVolume(true, a, h)*(b*b*b + 2*a*a*a)/(b*b*b - a*a*a) :
+		rho*Pi*a*a*(b*b + a*a)/(b*b - a*a)*h;
+	r.error = r.added/r.exact - 1;
+	r.seconds = Now() - start;
+	return r;
+}
+
+AddedMassResult RunAddedMassOscillation(int cells, double a, double b, double amplitude, double frequency, double periods,
+	const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	AddedMassResult r;
+	LiquidSetup s = UnitBox(cells, false);
+	const double h = s.grid.h, rho = s.density, w = 2*Pi*frequency;
+	s.gravity = {{0, 0, 0}};
+	const V3 c{{0.5, 0.5, 0.0}};
+	Shape container;
+	container.type = Shape::Type::Cylinder;
+	container.point = c;
+	container.axis = {{0, 0, 1}};
+	container.radius = b;
+	container.height = 10;
+	container.invert = true;
+	s.solids.push_back(container);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, 2, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	LiquidBody body = MakeBody(RoundBody(false, a, h), BodyMotion::Prescribed, 1, c, s.gravity);
+	body.amplitude = {{amplitude, 0, 0}};
+	body.frequency = frequency;
+	s.bodies.push_back(body);
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.error = 1e300; return r; }
+	r.exact = rho*Pi*a*a*(b*b + a*a)/(b*b - a*a)*h;
+	const double T = periods/frequency;
+	double sine = 0, cosine = 0;
+	if (!m.Run(T, 1/(40*frequency), [&](double t, const StepStats& st) {
+		const double tm = t - 0.5*st.dt;
+		const double F = m.bodyImpulse[0][0];   // the step's impulse: F dt
+		sine += F*std::sin(w*tm);
+		cosine += F*std::cos(w*tm);
+		r.iterations = std::max(r.iterations, st.pressure.iterations);
+		++r.steps;
+	}, error)) { r.error = 1e300; return r; }
+	sine *= 2/T;
+	cosine *= 2/T;
+	r.added = sine/(amplitude*w*w);
+	r.sideForce = std::fabs(cosine)/std::max(1e-300, std::fabs(sine));
+	r.error = r.added/r.exact - 1;
+	r.seconds = Now() - start;
+	return r;
+}
+
+SinkResult RunHeavySinking(int cells, bool threeD, double ratio, double duration, const SolverOptions& options, Pool* pool)
+{
+	const double begin = Now();
+	SinkResult r;
+	const double a = 0.15, b = 0.4;
+	LiquidSetup s = UnitBox(cells, threeD);
+	const double h = s.grid.h, rho = s.density, g = 9.81;
+	const V3 c{{0.5, 0.5, threeD ? 0.5 : 0.0}};
+	Shape container;
+	container.type = threeD ? Shape::Type::Sphere : Shape::Type::Cylinder;
+	container.point = c;
+	container.axis = {{0, 0, 1}};
+	container.radius = b;
+	container.height = 10;
+	container.invert = true;
+	s.solids.push_back(container);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, 2, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	const double V = RoundVolume(threeD, a, h), mass = ratio*rho*V;
+	LiquidBody body = MakeBody(RoundBody(threeD, a, h), BodyMotion::Dynamic, mass, c, s.gravity);
+	body.free = {{false, true, false, false}};
+	s.bodies.push_back(body);
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, o, pool ? pool->Threads() : 1, error)) { r.error = 1e300; return r; }
+	const double ma = threeD ? 0.5*rho*V*(b*b*b + 2*a*a*a)/(b*b*b - a*a*a) : rho*Pi*a*a*(b*b + a*a)/(b*b - a*a)*h;
+	r.exact = -(mass - rho*V)*g/(mass + ma);
+	bool first = true;
+	if (!m.Run(duration, 1.0/30, [&](double, const StepStats& st) {
+		if (first) { r.acceleration = m.bodies[0].state.v[1]/st.dt; first = false; }
+		r.maxIterations = std::max(r.maxIterations, st.pressure.iterations);
+		++r.steps;
+	}, error)) { r.error = 1e300; return r; }
+	r.error = r.acceleration/r.exact - 1;
+	r.drop = m.bodies[0].state.x[1] - c[1];
+	r.dropModel = 0.5*r.exact*duration*duration;
+	r.seconds = Now() - begin;
+	return r;
+}
+
+// ------------------------------------------------------------------ bobbing (m7b)
+
+namespace {
+// The half-tank potential problem of BoxHeaveFrequency: A(kappa), kappa = omega^2 / g.
+double BoxHeaveIntegral(double L, double boxWidth, double D, double d, int cells, double kappa)
+{
+	const double delta = 0.5*L/cells;
+	const int nx = cells, ny = static_cast<int>(std::lround(D/delta));
+	const int bx = static_cast<int>(std::lround(0.5*boxWidth/delta)), by = static_cast<int>(std::lround((D - d)/delta));
+	// Fluid cells: all but the box [0, bx) x [by, ny).
+	auto fluid = [&](int i, int j) { return i >= 0 && i < nx && j >= 0 && j < ny && !(i < bx && j >= by); };
+	std::vector<int> id(std::size_t(nx)*std::size_t(ny), -1);
+	int n = 0;
+	for (int j = 0; j < ny; ++j) for (int i = 0; i < nx; ++i) if (fluid(i, j)) id[std::size_t(i) + std::size_t(nx)*std::size_t(j)] = n++;
+	const double robin = (1 + 0.5*kappa*delta)/(1 - 0.5*kappa*delta);
+	// Operator (symmetric, scaled by delta^2): (K phi)_c = sum over fluid neighbours (phi_c - phi_nb)
+	// + at the free surface (1 - robin) phi_c; rhs: delta (unit flux) under the box bottom.
+	std::vector<double> diag(std::size_t(n), 0.0), rhs(std::size_t(n), 0.0);
+	std::vector<std::array<int,4>> nb(static_cast<std::size_t>(n));
+	for (int j = 0; j < ny; ++j) for (int i = 0; i < nx; ++i) {
+		const int c = id[std::size_t(i) + std::size_t(nx)*std::size_t(j)];
+		if (c < 0) continue;
+		const int di[4] = {-1, 1, 0, 0}, dj[4] = {0, 0, -1, 1};
+		for (int k = 0; k < 4; ++k) {
+			const int ii = i + di[k], jj = j + dj[k];
+			nb[std::size_t(c)][std::size_t(k)] = -1;
+			if (fluid(ii, jj)) { nb[std::size_t(c)][std::size_t(k)] = id[std::size_t(ii) + std::size_t(nx)*std::size_t(jj)]; diag[std::size_t(c)] += 1; continue; }
+			if (k == 3 && jj == ny && i >= bx) { diag[std::size_t(c)] += 1 - robin; continue; }   // free surface
+			if (k == 3 && jj == by && i < bx) rhs[std::size_t(c)] += delta;                       // the box bottom: d phi / dy = 1
+			// other boundaries: Neumann (no term)
+		}
+	}
+	auto apply = [&](const std::vector<double>& x, std::vector<double>& y) {
+		for (int c = 0; c < n; ++c) {
+			double s = diag[std::size_t(c)]*x[std::size_t(c)];
+			for (int k = 0; k < 4; ++k) { const int q = nb[std::size_t(c)][std::size_t(k)]; if (q >= 0) s -= x[std::size_t(q)]; }
+			y[std::size_t(c)] = s;
+		}
+	};
+	// MINRES (Paige and Saunders 1975; the minres.m recurrences) with the
+	// diagonal preconditioner max(1, |diag|): the operator is symmetric and
+	// indefinite (the near-constant mode is negative for kappa > 0).
+	const std::size_t N = std::size_t(n);
+	std::vector<double> x(N, 0.0), r1 = rhs, r2 = rhs, y(N), v(N), wv(N, 0.0), w1(N, 0.0), w2(N, 0.0), M(N);
+	for (std::size_t c = 0; c < N; ++c) M[c] = std::max(1.0, std::fabs(diag[c]));
+	for (std::size_t c = 0; c < N; ++c) y[c] = r1[c]/M[c];
+	double beta1 = 0;
+	for (std::size_t c = 0; c < N; ++c) beta1 += r1[c]*y[c];
+	beta1 = std::sqrt(beta1);
+	double oldb = 0, beta = beta1, dbar = 0, epsln = 0, phibar = beta1, cs = -1, sn = 0;
+	for (int itn = 1; itn <= 400000 && beta1 > 0; ++itn) {
+		const double sc = 1/beta;
+		for (std::size_t c = 0; c < N; ++c) v[c] = sc*y[c];
+		apply(v, y);
+		if (itn >= 2) for (std::size_t c = 0; c < N; ++c) y[c] -= beta/oldb*r1[c];
+		double alfa = 0;
+		for (std::size_t c = 0; c < N; ++c) alfa += v[c]*y[c];
+		for (std::size_t c = 0; c < N; ++c) y[c] -= alfa/beta*r2[c];
+		r1.swap(r2);
+		r2 = y;
+		for (std::size_t c = 0; c < N; ++c) y[c] = r2[c]/M[c];
+		oldb = beta;
+		beta = 0;
+		for (std::size_t c = 0; c < N; ++c) beta += r2[c]*y[c];
+		beta = std::sqrt(std::max(0.0, beta));
+		const double oldeps = epsln;
+		const double dlt = cs*dbar + sn*alfa, gbar = sn*dbar - cs*alfa;
+		epsln = sn*beta;
+		dbar = -cs*beta;
+		const double gamma = std::max(1e-300, std::sqrt(gbar*gbar + beta*beta));
+		cs = gbar/gamma;
+		sn = beta/gamma;
+		const double phi = cs*phibar;
+		phibar = sn*phibar;
+		w1.swap(w2);
+		w2.swap(wv);
+		for (std::size_t c = 0; c < N; ++c) { wv[c] = (v[c] - oldeps*w1[c] - dlt*w2[c])/gamma; x[c] += phi*wv[c]; }
+		if (std::fabs(phibar) < 1e-13*beta1 || beta == 0) break;
+	}
+	// A over the full width: 2 x sum over the cells under the box of phi at the bottom face.
+	double A = 0;
+	for (int i = 0; i < bx; ++i) {
+		const int c = id[std::size_t(i) + std::size_t(nx)*std::size_t(by - 1)];
+		if (c >= 0) A += (x[std::size_t(c)] + 0.5*delta)*delta;
+	}
+	return 2*A;
+}
+} // namespace
+
+double BoxHeaveManometer(double L, double w, double D, double d)
+{
+	const double s = 0.5*(L - w), c = D - d, g = 9.81;
+	const double inertia = w*d + w*w*w/(12*c) + w*w*d/(2*s);   // / rho
+	return std::sqrt(g*w*(1 + w/(2*s))/inertia);
+}
+
+double BoxHeaveFrequency(double L, double w, double D, double d, int cells)
+{
+	const double g = 9.81, m = w*d;   // per unit length / rho
+	auto f = [&](double omega) { const double A = BoxHeaveIntegral(L, w, D, d, cells, omega*omega/g); return omega*omega*(m + A) - g*w; };
+	double w0 = BoxHeaveManometer(L, w, D, d), w1 = 1.05*w0, f0 = f(w0), f1 = f(w1);
+	for (int it = 0; it < 30 && std::fabs(f1) > 1e-12*g*w && f1 != f0; ++it) {
+		const double w2 = w1 - f1*(w1 - w0)/(f1 - f0);
+		w0 = w1; f0 = f1; w1 = w2; f1 = f(w1);
+	}
+	return w1;
+}
+
+BobResult RunBoxBobbing(int cells, double L, double w, double D, double d, double offset, double periods,
+	const SolverOptions& options, Pool* pool)
+{
+	const double begin = Now();
+	BobResult r;
+	const double h = L/cells;
+	LiquidSetup s = Tank2D(cells, static_cast<int>(std::lround(1.0/h)), h);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, D, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	BodyShape box;
+	box.type = BodyShape::Type::Box;
+	box.size = {{w, 2*d, 4*h}};
+	const double mass = s.density*w*d*h;   // density ratio 1/2 in the slab
+	const double yEq = D - d + d;          // the centre: the bottom at D - d
+	LiquidBody b = MakeBody(box, BodyMotion::Dynamic, mass, {{0.5*L, yEq - offset, 0.0}}, s.gravity);
+	b.free = {{false, true, false, false}};
+	s.bodies.push_back(b);
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, options, pool ? pool->Threads() : 1, error)) { r.omega = -1; return r; }
+	const double period = 2*Pi/BoxHeaveManometer(L, w, D, d);
+	std::vector<double> t{0}, y{yEq - offset};
+	if (!m.Run(periods*period, 1.0/30, [&](double time, const StepStats&) { t.push_back(time); y.push_back(m.bodies[0].state.x[1]); ++r.steps; }, error)) {
+		r.omega = -1; return r;
+	}
+	// The frequency: least squares of y = c0 + c1 t + a cos(omega t) + b sin(omega t)
+	// over the run, maximised over omega by golden-section search around the
+	// zero-crossing estimate (crossings of the mean).
+	double mean = 0;
+	for (double v : y) mean += v;
+	mean /= double(y.size());
+	std::vector<double> ups;
+	for (std::size_t k = 1; k < y.size(); ++k)
+		if (y[k - 1] < mean && y[k] >= mean) ups.push_back(t[k - 1] + (mean - y[k - 1])/(y[k] - y[k - 1])*(t[k] - t[k - 1]));
+	r.crossings = int(ups.size());
+	auto fit = [&](double om, double* amp) {
+		// Normal equations of the 4 basis functions (solved by Gaussian elimination).
+		double A[4][5] = {};
+		for (std::size_t k = 0; k < y.size(); ++k) {
+			const double f[4] = {1, t[k], std::cos(om*t[k]), std::sin(om*t[k])};
+			for (int i = 0; i < 4; ++i) { for (int j = 0; j < 4; ++j) A[i][j] += f[i]*f[j]; A[i][4] += f[i]*y[k]; }
+		}
+		for (int i = 0; i < 4; ++i) {
+			int p = i;
+			for (int q = i + 1; q < 4; ++q) if (std::fabs(A[q][i]) > std::fabs(A[p][i])) p = q;
+			for (int j = 0; j < 5; ++j) std::swap(A[i][j], A[p][j]);
+			for (int q = 0; q < 4; ++q) if (q != i) { const double f = A[q][i]/A[i][i]; for (int j = i; j < 5; ++j) A[q][j] -= f*A[i][j]; }
+		}
+		double c[4];
+		for (int i = 0; i < 4; ++i) c[i] = A[i][4]/A[i][i];
+		double res = 0;
+		for (std::size_t k = 0; k < y.size(); ++k) {
+			const double e = y[k] - (c[0] + c[1]*t[k] + c[2]*std::cos(om*t[k]) + c[3]*std::sin(om*t[k]));
+			res += e*e;
+		}
+		if (amp) *amp = std::sqrt(c[2]*c[2] + c[3]*c[3]);
+		return res;
+	};
+	if (ups.size() >= 2) {
+		const double guess = 2*Pi*double(ups.size() - 1)/(ups.back() - ups.front());
+		double lo = 0.8*guess, hi = 1.2*guess;
+		const double gr = 0.5*(std::sqrt(5.0) - 1);
+		double x1 = hi - gr*(hi - lo), x2 = lo + gr*(hi - lo), f1 = fit(x1, nullptr), f2 = fit(x2, nullptr);
+		for (int it = 0; it < 80; ++it) {
+			if (f1 < f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - gr*(hi - lo); f1 = fit(x1, nullptr); }
+			else { lo = x1; x1 = x2; f1 = f2; x2 = lo + gr*(hi - lo); f2 = fit(x2, nullptr); }
+		}
+		r.omega = 0.5*(lo + hi);
+	}
+	// Decay: the amplitude ratio of the last and first full periods.
+	if (ups.size() >= 3) {
+		auto amp = [&](double a, double b2) { double lo2 = 1e300, hi2 = -1e300; for (std::size_t k = 0; k < y.size(); ++k) if (t[k] >= a && t[k] <= b2) { lo2 = std::min(lo2, y[k]); hi2 = std::max(hi2, y[k]); } return hi2 - lo2; };
+		r.decay = amp(ups[ups.size() - 2], ups.back())/amp(ups[0], ups[1]);
+	}
+	r.seconds = Now() - begin;
+	return r;
+}
+
+double FloatingDepth(bool threeD, double R, double ratio)
+{
+	const double target = ratio*RoundVolume(threeD, R, 1);
+	double lo = 0, hi = 2*R;
+	for (int it = 0; it < 200; ++it) {
+		const double mid = 0.5*(lo + hi);
+		if (Submerged(threeD, R, 1, mid) < target) lo = mid; else hi = mid;
+	}
+	return 0.5*(lo + hi);
+}
+
+namespace {
+// The floating tank: [0, 1]^d filled to 0.5, a round body of radius 0.15.
+constexpr double FloatEta = 0.5, FloatR = 0.15;
+LiquidSetup FloatTank(int cells, bool threeD)
+{
+	LiquidSetup s = UnitBox(cells, threeD);
+	Shape fill;
+	fill.type = Shape::Type::Plane;
+	fill.point = {{0, FloatEta, 0}};
+	fill.axis = {{0, 1, 0}};
+	s.liquid.push_back(fill);
+	return s;
+}
+
+// The net vertical force on a kinematic body held at rest at height y (one step of 1e-4 s).
+double HeldForce(int cells, bool threeD, double ratio, double y, double shift, const SolverOptions& options, Pool* pool, bool& ok)
+{
+	LiquidSetup s = FloatTank(cells, threeD);
+	const double h = s.grid.h;
+	const double mass = ratio*s.density*RoundVolume(threeD, FloatR, h);
+	const V3 x{{0.5 + shift*h, y, threeD ? 0.5 + shift*h : 0.0}};
+	s.bodies.push_back(MakeBody(RoundBody(threeD, FloatR, h), BodyMotion::Prescribed, mass, x, s.gravity));
+	SolverOptions o = options;
+	o.particles = false;
+	LiquidModel m;
+	std::string error;
+	StepStats st;
+	const double dt = 1e-4;
+	ok = m.Initialize(s, o, pool ? pool->Threads() : 1, error) && m.Step(dt, st, error);
+	if (!ok) return 0;
+	return m.bodyImpulse[0][1]/dt - mass*9.81;
+}
+} // namespace
+
+FloatStatics RunFloatingStatics(int cells, bool threeD, double ratio, double shift, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	FloatStatics r;
+	const double h = 1.0/cells, R = FloatR;
+	const double mg = ratio*1000*RoundVolume(threeD, R, h)*9.81;
+	r.yExact = FloatEta + R - FloatingDepth(threeD, R, ratio);
+	bool ok = true;
+	double y0 = r.yExact, f0 = HeldForce(cells, threeD, ratio, y0, shift, options, pool, ok);
+	++r.solves;
+	r.imbalance = f0/mg;
+	double y1 = r.yExact + 0.02*R, f1 = HeldForce(cells, threeD, ratio, y1, shift, options, pool, ok);
+	++r.solves;
+	for (int it = 0; it < 12 && ok && std::fabs(f1) > 1e-11*mg && f1 != f0; ++it) {
+		const double y2 = y1 - f1*(y1 - y0)/(f1 - f0);
+		y0 = y1; f0 = f1;
+		y1 = y2;
+		f1 = HeldForce(cells, threeD, ratio, y1, shift, options, pool, ok);
+		++r.solves;
+	}
+	if (!ok) { r.offset = 1e300; return r; }
+	r.yDiscrete = y1;
+	r.offset = (y1 - r.yExact)/R;
+	r.seconds = Now() - start;
+	return r;
+}
+
+FloatDynamics RunFloatingDynamics(int cells, bool threeD, double ratio, double startOffset, double duration, bool free,
+	const SolverOptions& options, Pool* pool)
+{
+	const double begin = Now();
+	FloatDynamics r;
+	LiquidSetup s = FloatTank(cells, threeD);
+	const double h = s.grid.h, R = FloatR, gy = s.gravity[1];
+	const double V = RoundVolume(threeD, R, h), mass = ratio*s.density*V;
+	const double d = FloatingDepth(threeD, R, ratio), yExact = FloatEta + R - d, y0 = yExact + startOffset*R;
+	// The level after the release: the liquid outside the body keeps its volume.
+	const double area = threeD ? 1.0 : h;
+	const double etaFinal = FloatEta + (ratio*V - Submerged(threeD, R, h, FloatEta - (y0 - R)))/area;
+	r.yEq = etaFinal + R - d;
+	const V3 x{{0.5, y0, threeD ? 0.5 : 0.0}};
+	LiquidBody body = MakeBody(RoundBody(threeD, R, h), BodyMotion::Dynamic, mass, x, s.gravity);
+	if (!free) body.free = {{false, true, false, false}};
+	s.bodies.push_back(body);
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, options, pool ? pool->Threads() : 1, error)) { r.finite = false; return r; }
+	m.audit = true;
+	const V3 p0 = m.FluidMomentum();
+	const double v0 = m.bodies[0].state.v[1];
+	double impulses = 0, walls = 0, gravityLiquid = 0, T = 0;
+	r.t.push_back(0);
+	r.y.push_back(y0);
+	if (!m.Run(duration, 1.0/30, [&](double t, const StepStats& st) {
+		impulses += m.bodyImpulse[0][1];
+		walls += m.wallImpulse[1];
+		gravityLiquid += st.dt*gy*m.FluidMass(1);
+		T += st.dt;
+		r.t.push_back(t);
+		r.y.push_back(m.bodies[0].state.x[1]);
+		const auto& v = m.bodies[0].state.v;
+		r.maxSpeed = std::max(r.maxSpeed, std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]));
+		r.maxIterations = std::max(r.maxIterations, st.pressure.iterations);
+		++r.steps;
+	}, error)) { r.finite = false; r.seconds = Now() - begin; return r; }
+	const double mgT = mass*std::fabs(gy)*T;
+	const double dpBody = mass*(m.bodies[0].state.v[1] - v0);
+	r.bodyAudit = std::fabs(dpBody - mass*gy*T - impulses)/mgT;
+	const double dpLiquid = m.FluidMomentum()[1] - p0[1];
+	const double residual = std::fabs(dpLiquid + dpBody - (gravityLiquid + mass*gy*T) - walls);
+	r.totalAuditBody = residual/mgT;
+	r.totalAudit = residual/(std::fabs(gravityLiquid) + mgT);
+	// Mean over whole periods: between the first and last upward crossings of the overall mean.
+	double mean = 0;
+	for (double y : r.y) mean += y;
+	mean /= double(r.y.size());
+	std::vector<double> ups;
+	for (std::size_t k = 1; k < r.y.size(); ++k)
+		if (r.y[k - 1] < mean && r.y[k] >= mean) ups.push_back(r.t[k - 1] + (mean - r.y[k - 1])/(r.y[k] - r.y[k - 1])*(r.t[k] - r.t[k - 1]));
+	if (ups.size() >= 2) {
+		double s2 = 0, w = 0;
+		for (std::size_t k = 1; k < r.y.size(); ++k) {
+			const double tm = 0.5*(r.t[k] + r.t[k - 1]);
+			if (tm < ups.front() || tm > ups.back()) continue;
+			const double dt = r.t[k] - r.t[k - 1];
+			s2 += 0.5*(r.y[k] + r.y[k - 1])*dt;
+			w += dt;
+		}
+		mean = s2/w;
+		r.period = (ups.back() - ups.front())/double(ups.size() - 1);
+	}
+	r.meanOffset = (mean - r.yEq)/R;
+	double worst = 0, late = 0;
+	for (std::size_t k = 0; k < r.y.size(); ++k) {
+		worst = std::max(worst, std::fabs(r.y[k] - mean));
+		if (r.t[k] >= 0.5*duration) late = std::max(late, std::fabs(r.y[k] - mean));
+	}
+	r.growth = worst/std::max(1e-300, std::fabs(y0 - mean));
+	r.lateGrowth = late/std::max(1e-300, std::fabs(y0 - mean));
+	for (double y : r.y) if (!std::isfinite(y)) r.finite = false;
+	r.seconds = Now() - begin;
+	return r;
+}
+
+NeutralResult RunNeutralBody(int cells, bool threeD, double duration, const SolverOptions& options, Pool* pool)
+{
+	const double begin = Now();
+	NeutralResult r;
+	for (int pass = 0; pass < 2; ++pass) {
+		LiquidSetup s = UnitBox(cells, threeD);
+		Shape fill;
+		fill.type = Shape::Type::Plane;
+		fill.point = {{0, 0.9, 0}};
+		fill.axis = {{0, 1, 0}};
+		s.liquid.push_back(fill);
+		const double h = s.grid.h, R = FloatR;
+		const V3 x{{0.5, std::round(0.45*cells)*h, threeD ? 0.5 : 0.0}};
+		const double V = RoundVolume(threeD, R, h);
+		// Pass 0: the discrete neutral mass (from the closed y-faces at this pose); pass 1: rho V.
+		double mass = s.density*V;
+		if (pass == 0) {
+			LiquidSetup probe = s;
+			probe.bodies.push_back(MakeBody(RoundBody(threeD, R, h), BodyMotion::Prescribed, 1, x, s.gravity));
+			LiquidModel pm;
+			std::string e;
+			SolverOptions po = options;
+			po.particles = false;
+			if (!pm.Initialize(probe, po, 1, e)) { r.bodySpeed = 1e300; return r; }
+			double vy = 0;
+			for (const BodyFace& f : pm.Geometry().Faces()[0]) if (f.axis == 1) vy += f.closed;
+			vy *= h*h*h;
+			r.volumeError = vy/V - 1;
+			mass = s.density*vy;
+		}
+		s.bodies.push_back(MakeBody(RoundBody(threeD, R, h), BodyMotion::Dynamic, mass, x, s.gravity));
+		LiquidModel m;
+		std::string error;
+		if (!m.Initialize(s, options, pool ? pool->Threads() : 1, error)) { r.bodySpeed = 1e300; return r; }
+		double T = 0;
+		if (!m.Run(duration, 1.0/30, [&](double, const StepStats& st) {
+			T += st.dt;
+			if (pass == 0) {
+				const auto& v = m.bodies[0].state.v;
+				const V3 w = m.bodies[0].Omega();
+				r.bodySpeed = std::max(r.bodySpeed, std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]) +
+					std::sqrt(w[0]*w[0] + w[1]*w[1] + w[2]*w[2])*R);
+				r.liquidSpeed = std::max(r.liquidSpeed, m.MaxSpeed());
+				++r.steps;
+			}
+		}, error)) { r.bodySpeed = 1e300; return r; }
+		if (pass == 0) { r.bodySpeed /= std::sqrt(9.81*h); r.liquidSpeed /= std::sqrt(9.81*h); }
+		else r.exactMassAcceleration = m.bodies[0].state.v[1]/T/9.81;
+	}
+	r.seconds = Now() - begin;
+	return r;
+}
+
 } } }

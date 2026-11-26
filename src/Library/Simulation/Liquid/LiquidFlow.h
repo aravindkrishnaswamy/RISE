@@ -22,13 +22,13 @@
 //  theta is clamped to [thetaMin, 1].  An open top boundary puts p = 0 on
 //  the boundary face: theta = clamp(-phi_c / h, thetaMin, 1/2).
 //
-//  Rigid bodies (later pass; seam only).  Batty et al. section 4 couple a
+//  Rigid bodies (m7b, LiquidBodies.h).  Batty et al. section 4 couple a
 //  rigid body by appending its six velocity unknowns; eliminating them
-//  gives the symmetric positive semidefinite term J M^-1 J^T added to the
-//  operator, with J the body's face-weighted velocity Jacobian.  The
-//  operator below applies `couplings` (empty in this pass) after the grid
-//  stencil, and the right-hand side is built by the same object, so a body
-//  is one IPressureCoupling; the preconditioner stays the grid's.
+//  gives the symmetric positive semidefinite term rho h^3 J^T M^-1 J added
+//  to the operator, with J the body's face-weighted velocity Jacobian.  The
+//  operator below applies `couplings` after the grid stencil; the body's
+//  predicted velocity enters the right-hand side through the solid face
+//  velocities.  The preconditioner stays the grid's.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -85,17 +85,27 @@ void VelocityAdvectionRate(const Grid& g, const MacField& u, MacField& rate, Poo
 //! smooth flow the bound is inactive except at extrema.
 void LimitedAdvectionStage(const Grid& g, const MacField& u, double dt, MacField& out, Pool* pool);
 
-//! Seam for rigid degrees of freedom in the pressure solve (not used in this pass).
+//! A rigid body's degrees of freedom in the pressure solve (LiquidBodies.h
+//! BodyCoupling): Project calls Begin with the active cells once they are
+//! known, applies every coupling after the grid stencil in the operator,
+//! lets each add to the right-hand side and calls Finish with the solution.
 class IPressureCoupling {
 public:
 	virtual ~IPressureCoupling() = default;
-	//! out += (J M^-1 J^T) q over the cell-centred array.
+	//! The liquid cells of the system (active[c] != 0), before any other call.
+	virtual void Begin(const std::vector<std::uint8_t>& active) { (void)active; }
+	//! out += (J M^-1 J^T) q over the cell-centred array (active cells only).
 	virtual void ApplyAdd(const std::vector<double>& q, std::vector<double>& out) const = 0;
-	//! b += the body's contribution J (prescribed / predicted body velocity).
+	//! b += the body's contribution (a body supplies its velocity through the
+	//! solid face velocities instead, so this may do nothing).
 	virtual void AddRhs(std::vector<double>& b) const = 0;
-	//! After the solve: the body's new velocity from q (and the hydrodynamic load).
+	//! After the solve: the body's impulse from q.
 	virtual void Finish(const std::vector<double>& q) = 0;
 };
+
+//! The cells of the pressure system: liquid (phi < 0) with an open face.
+void ActiveCells(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	std::vector<std::uint8_t>& active, Pool* pool);
 
 struct PressureOptions {
 	double tolerance = 1e-8;     // ||r||_inf <= tolerance ||b||_inf
@@ -135,6 +145,13 @@ struct PressureStats {
 bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
 	const MacField* solid, const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings,
 	MacField& u, std::vector<double>& q, FaceMask& valid, PressureStats& stats, Pool* pool, std::string& error);
+
+//! The operator of Project's system for tests: y = (A + sum of the
+//! couplings' terms) x on the active cells (zero elsewhere), after the same
+//! assembly; `active` receives the cells.  Couplings get Begin first.
+void ApplyPressureOperator(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
+	const PressureOptions& options, const std::vector<IPressureCoupling*>& couplings, const std::vector<double>& x,
+	std::vector<double>& y, std::vector<std::uint8_t>& active, Pool* pool);
 
 } } }
 

@@ -634,8 +634,8 @@ bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, domain_},
 		// M7 prerequisites (additive): offered once, at the start time; constant.
 		{MassPort, "rigid body mass properties", "kg", "field.v1", true, "",
-			{{"center_of_mass", "position", "m", 3}, {"inertia", "moment of inertia", "kg m^2", 9},
-			 {"mass", "mass", "kg", 1}}, domain_}};
+			{{"center_of_mass", "position", "m", 3}, {"external_force", "force", "N", 3},
+			 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, domain_}};
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17, single-threaded"}};
 	caps.interactive = caps.deterministic = caps.resumable = caps.externalMacroStep = caps.rollback = true;
@@ -678,21 +678,26 @@ bool RigidSolver::Start(std::string& error)
 }
 
 // body_mass_properties: field.v1 over the body set; per body the centre of
-// mass in the body frame (the body frame's origin: zero), the inertia tensor in
-// the body frame (the principal axes: diagonal, row-major 3x3) and the mass.
+// mass in the body frame (the body frame's origin: zero), the constant
+// external force this solver applies besides body_load (m g; M7b), the inertia
+// tensor in the body frame (the principal axes: diagonal, row-major 3x3) and
+// the mass.
 bool RigidSolver::OfferMassProperties(IPortExchange* ports, std::string& error) const
 {
 	FieldFrame f;
 	f.domain = domain_;
 	f.count = static_cast<std::uint32_t>(s_.bodies.size());
-	FieldChannel com{"center_of_mass", "m", 3, {}}, inertia{"inertia", "kg m^2", 9, {}}, mass{"mass", "kg", 1, {}};
+	FieldChannel com{"center_of_mass", "m", 3, {}}, external{"external_force", "N", 3, {}}, inertia{"inertia", "kg m^2", 9, {}},
+		mass{"mass", "kg", 1, {}};
 	const auto bits = [](double x) { const float v = static_cast<float>(x); std::uint32_t b; std::memcpy(&b, &v, 4); return b; };
 	for (const Body& b : s_.bodies) {
 		for (int k = 0; k < 3; ++k) com.values.push_back(bits(0));
+		// M7b (additive): the constant load this solver applies besides body_load, m g.
+		for (int k = 0; k < 3; ++k) external.values.push_back(bits(b.mass*gravity_[std::size_t(k)]));
 		for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) inertia.values.push_back(bits(r == c ? b.moments[r] : 0.0));
 		mass.values.push_back(bits(b.mass));
 	}
-	f.channels = {com, inertia, mass};
+	f.channels = {com, external, inertia, mass};
 	auto bytes = std::make_shared<Bytes>();
 	if (!EncodeField(f, CodecBudget, *bytes, error)) return false;
 	return ports->Offer(MassPort, 0, bytes, error);

@@ -153,6 +153,15 @@ bool GroupPolicyOf(const V& m, GroupPolicy& p, std::string& error)
 	p.order = order == "jacobi" ? ExchangeOrder::Jacobi : ExchangeOrder::GaussSeidel;
 	p.macroStep = RealOf(m, "macro_step", 0);
 	p.memberOrder = Tokens(TextOf(m, "member_order", ""));
+	// M7b: `owned <owner> <partner> [<partner> ...]` (GroupPolicy::ownedExchanges).
+	for (const std::string& line : TextList(m.Find("owned"))) {
+		const auto t = Tokens(line);
+		if (t.size() < 2) return Fail(error, "owned names an owner and at least one partner: `" + line + "`");
+		GroupPolicy::OwnedExchange e;
+		e.owner = t[0];
+		e.partners.assign(t.begin() + 1, t.end());
+		p.ownedExchanges.push_back(e);
+	}
 	if (kind == "implicit") {
 		p.subIterations = static_cast<unsigned>(RealOf(m, "sub_iterations", 30));
 		p.convergenceTolerance = RealOf(m, "tolerance", 1e-6);

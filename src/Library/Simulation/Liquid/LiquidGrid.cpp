@@ -199,6 +199,11 @@ void CellVelocity(const Grid& g, const MacField& u, std::array<std::vector<doubl
 
 double Shape::Distance(const V3& x) const
 {
+	if (invert) {
+		Shape s = *this;
+		s.invert = false;
+		return -s.Distance(x);
+	}
 	switch (type) {
 	case Type::Plane: return DotV(Sub(x, point), axis);
 	case Type::Sphere: return NormV(Sub(x, point)) - radius;
@@ -265,41 +270,51 @@ double TrianglePositiveFraction(double a, double b, double c)
 	return 1 - n*n/((n - p1)*(n - p2));
 }
 
+double FaceFraction(const Grid& g, const std::vector<double>& nodes, int a, int i, int j, int k, bool openTop, int openAxis)
+{
+	const int b = (a + 1) % 3, c = (a + 2) % 3;
+	const int idx[3] = {i, j, k};
+	const int along = idx[a];
+	if (along == 0 || along == g.n[a]) {
+		if (!(openTop && a == openAxis && along == g.n[a])) return 0.0;
+	}
+	double v[4];
+	for (int m = 0; m < 4; ++m) {
+		int q[3] = {idx[0], idx[1], idx[2]};
+		if (m == 1 || m == 2) ++q[b];
+		if (m == 2 || m == 3) ++q[c];
+		v[m] = nodes[g.N(q[0], q[1], q[2])];
+		// A solid surface through a node (a box face on a grid plane) is
+		// exact there: round-off of either sign must not open a sliver.
+		if (std::fabs(v[m]) < 1e-9*g.h) v[m] = 0;
+	}
+	// Thin (one-cell) dimensions: the face spans the whole extent.
+	const double centre = 0.25*(v[0] + v[1] + v[2] + v[3]);
+	double f = 0;
+	for (int m = 0; m < 4; ++m) f += TrianglePositiveFraction(centre, v[m], v[(m + 1) % 4]);
+	return 0.25*f;
+}
+
 void FaceFractions(const Grid& g, const std::vector<double>& nodes, bool openTop, int openAxis,
 	std::array<std::vector<double>,3>& fraction, Pool* pool)
 {
 	for (int a = 0; a < 3; ++a) {
 		const auto d = g.FaceDims(a);
 		fraction[a].assign(g.Faces(a), 0.0);
-		const int b = (a + 1) % 3, c = (a + 2) % 3;
 		ForRows(pool, std::size_t(d[1])*std::size_t(d[2]), RowGrain(d[0]), [&](std::size_t r0, std::size_t r1) {
 			for (std::size_t r = r0; r < r1; ++r) {
 				const int j = int(r % std::size_t(d[1])), k = int(r/std::size_t(d[1]));
-				for (int i = 0; i < d[0]; ++i) {
-					const int idx[3] = {i, j, k};
-					const int along = idx[a];
-					if (along == 0 || along == g.n[a]) {
-						if (!(openTop && a == openAxis && along == g.n[a])) continue;
-					}
-					double v[4];
-					for (int m = 0; m < 4; ++m) {
-						int q[3] = {idx[0], idx[1], idx[2]};
-						if (m == 1 || m == 2) ++q[b];
-						if (m == 2 || m == 3) ++q[c];
-						v[m] = nodes[g.N(q[0], q[1], q[2])];
-						// A solid surface through a node (a box face on a grid plane) is
-						// exact there: round-off of either sign must not open a sliver.
-						if (std::fabs(v[m]) < 1e-9*g.h) v[m] = 0;
-					}
-					// Thin (one-cell) dimensions: the face spans the whole extent.
-					const double centre = 0.25*(v[0] + v[1] + v[2] + v[3]);
-					double f = 0;
-					for (int m = 0; m < 4; ++m) f += TrianglePositiveFraction(centre, v[m], v[(m + 1) % 4]);
-					fraction[a][g.F(a, i, j, k)] = 0.25*f;
-				}
+				for (int i = 0; i < d[0]; ++i) fraction[a][g.F(a, i, j, k)] = FaceFraction(g, nodes, a, i, j, k, openTop, openAxis);
 			}
 		});
 	}
+}
+
+double CellOpenFraction(const Grid& g, const std::vector<double>& nodes, int i, int j, int k)
+{
+	double s = 0;
+	for (int m = 0; m < 8; ++m) s += nodes[g.N(i + (m & 1), j + ((m >> 1) & 1), k + ((m >> 2) & 1))];
+	return Clamp(0.5 + 0.125*s/g.h, 0.0, 1.0);
 }
 
 void CellOpenFractions(const Grid& g, const std::vector<double>& nodes, std::vector<double>& open, Pool* pool)
@@ -308,11 +323,7 @@ void CellOpenFractions(const Grid& g, const std::vector<double>& nodes, std::vec
 	ForRows(pool, std::size_t(g.n[1])*std::size_t(g.n[2]), RowGrain(g.n[0]), [&](std::size_t r0, std::size_t r1) {
 		for (std::size_t r = r0; r < r1; ++r) {
 			const int j = int(r % std::size_t(g.n[1])), k = int(r/std::size_t(g.n[1]));
-			for (int i = 0; i < g.n[0]; ++i) {
-				double s = 0;
-				for (int m = 0; m < 8; ++m) s += nodes[g.N(i + (m & 1), j + ((m >> 1) & 1), k + ((m >> 2) & 1))];
-				open[g.C(i, j, k)] = Clamp(0.5 + 0.125*s/g.h, 0.0, 1.0);
-			}
+			for (int i = 0; i < g.n[0]; ++i) open[g.C(i, j, k)] = CellOpenFraction(g, nodes, i, j, k);
 		}
 	});
 }
