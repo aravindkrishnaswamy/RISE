@@ -21,18 +21,32 @@ inline constexpr const char* ForwardDiagnosticPostScatterVersion = "hylios_diagn
 inline constexpr const char* ForwardDiscardPostScatterVersion = "hylios_discard_after_scatter_v1";
 // Ensemble law classification conditional on source direction, not a PDF
 // conditional on realized geometry. Independent of physical transport version.
-inline constexpr const char* ForwardAngularLineageVersion = "hylios_angular_lineage_v1";
+inline constexpr const char* ForwardAngularLineageVersion = "hylios_angular_lineage_v2";
 // UnclassifiedSingular may include continuous/mixed mass; no decomposition is
 // asserted, and a future bake must refuse positive unknown returned mass.
 enum class ForwardAngularClass { KnownPlanarMirrorEligible, AbsolutelyContinuous, UnclassifiedSingular };
 enum class ForwardAngularReason {
     InitialPlanar, UntypedBoundary, FoldReflection, DiffuseBottom, FiberRayleigh,
     ProjectedParticleReflection, ProjectedParticleTransmission,
-    RetainedCurvedReflection, RetainedCurvedTransmission, ReflectedCosine, ExponentialForward
+    RetainedCurvedReflection, RetainedCurvedTransmission, ReflectedCosine, ExponentialForward,
+    ProjectedComplexReflection, ProjectedComplexTransmission,
+    BoundaryPhaseReflection, BoundaryPhaseTransmission, ReflectedCosinePhaseAcquired,
+    PointSourceSphereTransmission, PointSourceLowIndexTransmission
 };
 struct ForwardAngularLineage {
     ForwardAngularClass classification=ForwardAngularClass::KnownPlanarMirrorEligible;
     ForwardAngularReason reason=ForwardAngularReason::InitialPlanar;
+};
+// Sufficient ensemble support certificates in the current autonomous body frame.
+// A bare angular density never implies joint boundary phase density. These are
+// observational proofs, not numeric Jacobian tests or physical sampling controls.
+enum class ForwardAngularFrame { None, IndividualBody, ComplexLayout };
+struct ForwardAngularSupport {
+    ForwardAngularFrame frame=ForwardAngularFrame::None;
+    bool boundaryPhaseAC=false;          // P4: position2 + direction2
+    bool boundaryPositionAreaAC=false;   // Q2: current optical-boundary position
+    bool cosinePointSourceChord=false;   // Fan: fresh accepted cosine chord
+    bool untouchedComplexProjectedBeam=false; // Beam: no nonidentity child map
 };
 enum class ForwardReturnedAtomMap { None, PlanarSameExteriorMirror };
 enum class ForwardOrganization { IndividualSpheroids, UnsupportedComplexes, ExplicitComplexPackV1 };
@@ -85,6 +99,7 @@ public:
     ForwardFailureDetail FailureDetail() const { return failureDetail_; }
     const ForwardCounters& Counters() const { return counters_; }
     const ForwardAngularLineage& AngularLineage() const { return angularLineage_; }
+    const ForwardAngularSupport& AngularSupport() const { return angularSupport_; }
     // In-flight planar eligibility is not returned atomic mass. Only actual
     // exterior returns expose the same-exterior planar mirror map.
     ForwardReturnedAtomMap ReturnedAtomMap() const {
@@ -109,6 +124,7 @@ private:
     ForwardFailureDetail failureDetail_=ForwardFailureDetail::None;
     ForwardCounters counters_{};
     ForwardAngularLineage angularLineage_{};
+    ForwardAngularSupport angularSupport_{};
     std::array<double,6> hostAbsorbed_{},particleAbsorbed_{};
     bool pending_=false,fiberUsed_=false,hasPredecessor_=false;
     std::uint64_t nextToken_=0;
@@ -122,7 +138,7 @@ private:
     ParticleVector complexPoint_{};
     bool complexActive_=false,complexEntryChord_=false;
     // This chord has an independently sampled projected-area normal, conditional
-    // on the incoming history. Retained chords and complex children lack it.
+    // on the incoming history. Retained chords lack it; complex initial beams have a separate certificate.
     bool independentProjectedChord_=false;
     std::size_t activeChild_=ComplexLayout::MaximumChildren, lastExitedChild_=ComplexLayout::MaximumChildren;
 };

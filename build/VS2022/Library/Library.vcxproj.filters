@@ -1206,6 +1206,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\Rasterizer.cpp">
       <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BeautyMoments.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.cpp">
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
     </ClCompile>
@@ -2993,6 +2996,9 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\Rasterizer.h">
       <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\BeautyMoments.h">
+      <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.h">
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>

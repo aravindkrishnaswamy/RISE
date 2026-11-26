@@ -211,9 +211,7 @@ void VCMPelRasterizer::IntegratePixel(
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weightsAccrued = 0;
 	Scalar alphasAccrued = 0;
-	Scalar wMean = 0;
-	Scalar wM2 = 0;
-	unsigned int wN = 0;
+	BeautyMoments moments;
 	uint32_t globalSampleIndex = 0;
 	bool converged = false;
 
@@ -222,9 +220,7 @@ void VCMPelRasterizer::IntegratePixel(
 		colAccrued = px.LoadPelPassInit();
 		weightsAccrued = px.weightSum;
 		alphasAccrued = px.alphaSum;
-		wMean = px.wMean;
-		wM2 = px.wM2;
-		wN = px.wN;
+		moments = px.beautyMoments;
 		globalSampleIndex = px.sampleIndex;
 	}
 
@@ -457,39 +453,20 @@ void VCMPelRasterizer::IntegratePixel(
 			colAccrued = colAccrued + sampleColor * weight;
 			alphasAccrued += sampleAlpha * weight;
 
-			// Welford update on luminance.  Gated on `adaptive` only:
+			// Compensated moment update on luminance.  Gated on `adaptive` only:
 			// progressive multi-pass mode must NOT trigger convergence-
 			// based termination (selection bias on skewed sample
 			// distributions, see BDPTPelRasterizer for full rationale).
 			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue( sampleColor );
-				wN++;
-				const Scalar delta = lum - wMean;
-				wMean += delta / Scalar( wN );
-				const Scalar delta2 = lum - wMean;
-				wM2 += delta * delta2;
+				moments.Add( lum );
 			}
 		}
 
 		// Adaptive convergence check.  Gated on `adaptive` only — see
-		// Welford comment above.
-		if( adaptive && wN >= 32 )
-		{
-			const Scalar variance = wM2 / Scalar( wN - 1 );
-			const Scalar stdError = sqrt( variance / Scalar( wN ) );
-			const Scalar meanAbs = fabs( wMean );
-
-			if( meanAbs > NEARZERO ) {
-				const Scalar confidence = 1.0 - 4.0 / Scalar( wN );
-				const Scalar threshold = adaptiveConfig.maxSamples > 0
-					? adaptiveConfig.threshold
-					: Scalar( 0.01 );
-				if( stdError / meanAbs < threshold * confidence ) {
-					converged = true;
-				}
-			} else if( wM2 < NEARZERO && wN >= 64 ) {
-				converged = true;
-			}
+		// moment-update comment above.
+		if( adaptive && moments.IsConverged( (adaptiveConfig.maxSamples > 0 ? adaptiveConfig.threshold : 0.01), NEARZERO ) ) {
+			converged = true;
 		}
 
 		// Single-pass non-progressive: one batch covers everything.
@@ -504,9 +481,7 @@ void VCMPelRasterizer::IntegratePixel(
 		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weightsAccrued;
 		px.alphaSum = alphasAccrued;
-		px.wMean = wMean;
-		px.wM2 = wM2;
-		px.wN = wN;
+		px.beautyMoments = moments;
 		px.sampleIndex = globalSampleIndex;
 		px.converged = converged;
 	}

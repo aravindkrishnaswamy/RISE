@@ -2,7 +2,7 @@
 //
 //  ProgressiveFilm.h - Per-pixel accumulation buffer for multi-pass
 //    progressive rendering.  Stores running color sums, weights, and
-//    Welford online variance state so that IntegratePixel can resume
+//    compensated online variance state so that IntegratePixel can resume
 //    across passes and converged pixels can be skipped.
 //
 //  Author: Aravind Krishnaswamy
@@ -18,6 +18,7 @@
 #define PROGRESSIVE_FILM_
 
 #include "../Interfaces/IReference.h"
+#include "BeautyMoments.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/CheckedSize.h"
 #include <vector>
@@ -28,9 +29,9 @@ namespace RISE
 	namespace Implementation
 	{
 		// Experiment with alignas(64) to kill false sharing was
-		// found to REGRESS performance significantly (VCM: 28s →
-		// 46s, PT: 9.3s → 13.9s) — likely because the extra 8
-		// bytes per pixel pushes working set beyond L2 for typical
+		// on the historical layout REGRESSED performance (VCM: 28s →
+		// 46s, PT: 9.3s → 13.9s) — likely because alignment padding
+		// increased the working set beyond L2 for typical
 		// scenes, while the actual false-sharing was lower than
 		// predicted since Morton-ordered tiles already keep threads
 		// on separate regions.  Leave natural layout.
@@ -62,10 +63,8 @@ namespace RISE
 			Scalar		weightSum;		///< Weight accumulator (for averaging)
 			Scalar		alphaSum;		///< Alpha accumulator
 
-			// Welford online variance state (luminance-based)
-			Scalar		wMean;
-			Scalar		wM2;
-			uint32_t	wN;				///< Total sample count across all passes
+			// Compensated signed luminance moments, including sticky range failure.
+			BeautyMoments beautyMoments;
 
 			uint32_t	sampleIndex;	///< Next globalSampleIndex for Sobol continuity
 			bool		converged;		///< Pixel has met convergence criterion
@@ -74,9 +73,6 @@ namespace RISE
 			  colorSum( 0, 0, 0 ),
 			  weightSum( 0 ),
 			  alphaSum( 0 ),
-			  wMean( 0 ),
-			  wM2( 0 ),
-			  wN( 0 ),
 			  sampleIndex( 0 ),
 			  converged( false )
 			{}

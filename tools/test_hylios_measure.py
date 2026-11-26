@@ -117,7 +117,7 @@ class MeasurementCLI(unittest.TestCase):
         cases.append(self.run_case(glass, **{"--histories": "2000"}))
         for result in cases:
             law = result["returned_angular_law"]
-            self.assertEqual(law["version"], "hylios_angular_lineage_v1")
+            self.assertEqual(law["version"], "hylios_angular_lineage_v2")
             cells = [law[k] for k in ("planar_same_exterior_mirror", "absolutely_continuous", "unclassified_singular")]
             self.assertAlmostEqual(sum(c["mean"] for c in cells), result["estimates"]["escaped_reflectance"]["mean"])
             self.assertEqual(sum(c["returned_history_count"] for c in cells),
@@ -343,8 +343,12 @@ class MeasurementCLI(unittest.TestCase):
         self.assertGreater(counters["complexChildEntries"], 0)
         self.assertGreater(counters["complexChildReflections"], 0)
         self.assertGreater(sum(a["particle_path_length_m_by_layer"]), 0)
-        self.assertGreater(a["returned_angular_law"]["unclassified_singular"]["mean"], 0)
-        self.assertGreater(a["returned_angular_law"]["unclassified_singular"]["returned_history_count"], 0)
+        # V2 phase certificates close the returned paths in this seeded
+        # visible fixture. This is not a proof that every complex chain is AC;
+        # the scripted coupled-lineage C++ test retains a positive unknown case.
+        self.assertEqual(a["returned_angular_law"]["unclassified_singular"]["mean"], 0)
+        self.assertEqual(a["returned_angular_law"]["unclassified_singular"]["returned_history_count"], 0)
+        self.assertGreater(a["returned_angular_law"]["absolutely_continuous"]["mean"], 0)
         self.assertGreater(sum(a["particle_absorbed_weight_by_layer"]), 0)
         self.assertGreater(sum(a["host_absorbed_weight_by_layer"]), 0)
         self.assertEqual(a["unresolved_history_count"], 0)

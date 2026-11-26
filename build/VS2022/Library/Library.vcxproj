@@ -429,6 +429,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\AutoRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\BeautyMoments.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.cpp" />
@@ -1094,6 +1097,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\HilbertRasterizeSequence.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\LuminaryManager.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\BeautyMoments.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\TimeIndexedMotionBlur.h" />

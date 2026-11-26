@@ -294,9 +294,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 		XYZPel colAccrued( 0, 0, 0 );
 		Scalar weights = 0;
 		Scalar alphas = 0;
-		Scalar wMean = 0;
-		Scalar wM2 = 0;
-		unsigned int wN = 0;
+		BeautyMoments moments;
 
 		uint32_t sampleIndex = 0;
 		bool converged = false;
@@ -306,9 +304,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			colAccrued = px.colorSum;
 			weights = px.weightSum;
 			alphas = px.alphaSum;
-			wMean = px.wMean;
-			wM2 = px.wM2;
-			wN = px.wN;
+			moments = px.beautyMoments;
 			sampleIndex = px.sampleIndex;
 		}
 
@@ -392,38 +388,19 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 					alphas += sampleAlpha * weight;
 				}
 
-				// Welford update gated on `adaptive` only (see
+				// Compensated moment update gated on `adaptive` only (see
 				// BDPTPelRasterizer for the multi-pass selection-bias
 				// rationale).  XYZ.Y is the CIE photometric luminance.
 				if( adaptive ) {
 					const Scalar lum = sampleXYZ.Y;
-					wN++;
-					const Scalar delta = lum - wMean;
-					wMean += delta / Scalar(wN);
-					const Scalar delta2 = lum - wMean;
-					wM2 += delta * delta2;
+					moments.Add( lum );
 				}
 
 				rc.pSampler = 0;
 			}
 
-			if( adaptive && wN >= 32 )
-			{
-				const Scalar variance = wM2 / Scalar(wN - 1);
-				const Scalar stdError = sqrt( variance / Scalar(wN) );
-				const Scalar meanAbs = fabs( wMean );
-
-				if( meanAbs > NEARZERO ) {
-					const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
-					const Scalar threshold = adaptiveConfig.maxSamples > 0
-						? adaptiveConfig.threshold
-						: 0.01;
-					if( stdError / meanAbs < threshold * confidence ) {
-						converged = true;
-					}
-				} else if( wM2 < NEARZERO && wN >= 64 ) {
-					converged = true;
-				}
+			if( adaptive && moments.IsConverged( (adaptiveConfig.maxSamples > 0 ? adaptiveConfig.threshold : 0.01), NEARZERO ) ) {
+				converged = true;
 			}
 		}
 
@@ -432,9 +409,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			px.colorSum = colAccrued;
 			px.weightSum = weights;
 			px.alphaSum = alphas;
-			px.wMean = wMean;
-			px.wM2 = wM2;
-			px.wN = wN;
+			px.beautyMoments = moments;
 			px.sampleIndex = sampleIndex;
 			px.converged = converged;
 		}

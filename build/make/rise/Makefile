@@ -291,6 +291,8 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, 
 # HYLIOS compensated geometry, certified overlap and normalized surface laws require strict arithmetic.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Materials/HyLIoS/, \
 	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o HyLIoSSurfaceBoundary.o)
+# Compensated beauty moments preserve binary64 error-free transforms.
+TEST_SAFE_FP32_OBJS += $(TESTOBJ_DIR)src/Library/Rendering/BeautyMoments.o
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
@@ -598,6 +600,11 @@ $(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.o : $(PATHLIBRARY)Materials/H
 
 $(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp
 	@echo "Compiling (strict surface boundary): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+# Compensated beauty moments must not reassociate error-free transforms.
+$(PATHLIBRARY)Rendering/BeautyMoments.o : $(PATHLIBRARY)Rendering/BeautyMoments.cpp
+	@echo "Compiling (strict beauty moments): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 $(PATHLIBRARY)Utilities/OslNoise.o : $(PATHLIBRARY)Utilities/OslNoise.cpp

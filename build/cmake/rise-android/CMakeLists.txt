@@ -122,6 +122,11 @@ target_compile_options(rise PRIVATE
     -Wno-misleading-indentation
 )
 
+# Compensated beauty moments preserve binary64 error-free transforms.
+set_source_files_properties(
+    "${RISE_LIB}/Rendering/BeautyMoments.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
 # Certified HYLIOS overlap bounds require strict binary64 arithmetic.
 set_source_files_properties(
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSParticleOverlap.cpp"

@@ -32,6 +32,8 @@ implementation backlog is [ROADMAP.md](ROADMAP.md).
   and the load-bearing thread-priority rules
 - [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md): canonical scene-authoring
   semantics and common portability traps
+- [BEAUTY_ADAPTIVE_MOMENTS.md](BEAUTY_ADAPTIVE_MOMENTS.md): compensated beauty
+  luminance moments, adaptive convergence, producer parity, and storage/cost limits
 - [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md): rasterizer and
   integrator selection guide
 - [MATERIALS.md](MATERIALS.md): material, BSDF/SPF, BSSRDF, and phase-function
@@ -176,6 +178,7 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 - [HYLIOS_LOCAL_RESPONSE_CORE.md](HYLIOS_LOCAL_RESPONSE_CORE.md): immutable local
   angular response, nonreciprocal camera transpose and finite-grid sampling
   contracts; synthetic numeric core only, with bake/asset/renderer gates open
+- [HYLIOS_COUPLED_LINEAGE_PROOF.md](HYLIOS_COUPLED_LINEAGE_PROOF.md): coupled position/direction support proofs and their [implemented transition ledger](HYLIOS_COUPLED_LINEAGE_TRANSITIONS.md)
 - [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md): refreshed HyLIoS hyperspectral skin
   implementation design, scientific validation gates, PT integration and spatial
   transport roadmap; [research notes](HYLIOS_RESEARCH_NOTES.md) record sources,

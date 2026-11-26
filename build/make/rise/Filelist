@@ -404,6 +404,7 @@ SRCLIBCAMERA =\
 SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/FileRasterizerOutput.cpp						\
 	$(PATHLIBRARY)Rendering/DisplayTransformWriter.cpp						\
+	$(PATHLIBRARY)Rendering/BeautyMoments.cpp			\
 	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/InteractivePelRasterizer.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\

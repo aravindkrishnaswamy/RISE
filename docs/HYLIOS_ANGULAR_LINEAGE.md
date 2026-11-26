@@ -1,6 +1,6 @@
-# HyLIoS observable angular lineage v1
+# HyLIoS observable angular lineage v2
 
-`hylios_angular_lineage_v1` is observational metadata. Physical model versions,
+`hylios_angular_lineage_v2` is observational metadata. Physical model versions,
 work counters, sampling laws and random draws are unchanged. This is an
 **ensemble law classification**, conditional on the incident source direction;
 it is not an angular PDF conditional on the realized geometry or a realized RNG
@@ -91,33 +91,45 @@ transmitted ensemble direction is therefore AC. The transmitted critical set
 and the projected silhouette have zero measure. Matched indices use the exact
 identity rule instead, including a zero final kick.
 
-An explicit `independentProjectedChord` proof flag is set only on a newly
-accepted individual projected-area chord. It is consumed on that chord's exit
-Fresnel event and cleared for retained chords and complex children. It records
-which mathematical conditional sampling argument applies; it is not inferred
-from counter values or the number of children visited.
+### Coupled position and direction support
 
-### Deliberately unsupported coupled curved maps
+`ForwardState::AngularSupport()` carries sufficient ensemble certificates in
+an individual-body or fixed-complex-layout frame: boundary phase density P4,
+boundary position area density Q2, a fresh cosine point-source chord Fan, and
+an untouched projected complex Beam. They are proof state, not empirical ranks.
+The complete derivation and implemented transitions are recorded in
+[the coupled proof](HYLIOS_COUPLED_LINEAGE_PROOF.md) and
+[the transition ledger](HYLIOS_COUPLED_LINEAGE_TRANSITIONS.md).
 
-After an internal reflected-cosine event the direction is AC, but the later
-exit point and normal depend jointly on that direction and retained geometry.
-The fixed-incoming-normal proof above does not establish the rank of that
-coupled map. An unmatched exit or a retained curved reflection consequently
-marks `UnclassifiedSingular`; a later accepted independent angular law can
-refresh AC. Exact matched-index transmission still preserves its prior class.
+Fresh projected impact and incoming angular AC establish joint P4 after
+marginalizing the impact-dependent world centre. A fresh individual projected
+chord supplies Q2; the untouched complex beam supplies it at its first child.
+A valid reflected cosine with Q2 establishes P4, which subsequent autonomous
+flights and noncritical optical maps preserve. Without Q2, a fresh cosine
+supplies Fan and angular AC; its same-body chord supplies Q2 at the far point.
+Sphere Fan and convex low-index Fan transmission have the narrower proved
+angular-preservation domains detailed in the proof. Matched-index transmission
+remains an exact identity law.
 
-Complex child exit normals depend on retained spatial layouts and traversal.
-This increment does not claim their projected-normal independence. Unmatched
-complex-child refractions and reflections are conservatively unclassified,
-including the exactly coincident full-sphere child/envelope topology. The
-complex envelope adds **no Snell interface**: it is geometric bookkeeping, then
-one final exponential law for a nonempty complex. An empty complex has no child
-optical event and no exponential kick, at any wavelength.
+Accepted geometry and successful optical events acquire support; rejected or
+failed proposals do not. Body completion/discard clears frame support while
+preserving the public angular class. An unresolved diagnostic inward reentry
+retains its last support, without claiming returned density. Physical transport
+branches, random draws, sampled directions, weights and work counts are unchanged.
 
-These conservative dispositions may leave positive unknown return mass at the
-zero-width SWIR endpoint. Production baking remains blocked for that mass until
-a separate coupled-map proof or explicit supported singular representation is
-implemented. A histogram alone cannot discharge this limitation.
+### Remaining unsupported coupled maps
+
+Atom-entered multi-child transmission chains without a sufficient certificate
+remain `UnclassifiedSingular`. Angular AC alone does not justify the next coupled
+child map. Positive returned unknown mass must refuse production baking; a
+histogram cannot supply the missing proof. The complex envelope has no Snell
+interface; it is geometric bookkeeping followed by the configured final kick
+for a nonempty complex. Empty complexes have no child event or final kick.
+
+Retained individual returns and classified zero/one-child complexes now have
+supported proofs, including the coincident full-sphere child/envelope case.
+This does not establish a production-complete SWIR response, reciprocity, a
+microscopic adjoint, or spatial nonlocal transport.
 
 ## Direction frame
 
@@ -133,7 +145,7 @@ No local response bridge or incident-jitter averaging is added in this increment
 ## Verification
 
 The focused test exercises law seams, exact identity limits, intermediate first
-reflection/cosine rejection/acceptance, unknown retained and complex maps,
+reflection/cosine rejection/acceptance, certified retained and unknown multi-child maps,
 independent refreshes, diffuse-bottom and fiber laws, arbitrary untyped boundary
 proposals, zero returns, stop/failure states, and copied/resumed quantum partitions.
 A separate source-linked baseline comparison serializes and compares raw bytes of
@@ -143,3 +155,10 @@ state across 768 histories and 17,974 intermediate/terminal observations. Baseli
 and annotated builds use the same compiler mode; classification metadata is
 excluded from that physical trace; its diagnostic hash is also recorded. Geometry, overlap, layout and surface boundary
 remain strict floating point in mixed full-LTO validation.
+
+V2 adds `HyLIoSCoupledAngularLineageTest`: together the focused controls cover
+5,851 assertions, including all 398 quantum compositions of selected scripted
+trajectories. Strict, ASan/UBSan and mixed full-LTO private gates passed. An
+independent baseline comparison matched all 11,062,496 physical/RNG trace bytes
+within each build mode across 768 histories and 17,974 observed states. This
+establishes observational parity for those controls, not biological validation.

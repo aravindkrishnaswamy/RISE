@@ -276,7 +276,6 @@ void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
     s.particle_=particle;s.predecessor_=particle;s.hasPredecessor_=true;s.predecessorCentreFromPosition_=P(centre);
     s.particlePoint_=hit.chord.entryPointMetres;s.particleExit_=hit.chord.exitPointMetres;s.exitNormal_=hit.chord.exitOutwardNormal;
     s.chordDistance_=hit.chord.chordLengthMetres;++s.counters_.acceptedParticles;
-    s.independentProjectedChord_=o.organization==ForwardOrganization::IndividualSpheroids;
     s.complexLayout_.reset();s.complexActive_=false;s.complexEntryChord_=false;
     if(o.organization==ForwardOrganization::ExplicitComplexPackV1) {
         s.envelope_=particle;s.complexPoint_=hit.chord.entryPointMetres;s.complexActive_=true;s.complexEntryChord_=true;
@@ -285,6 +284,14 @@ void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
         ++s.counters_.acceptedComplexes;
         s.phase_=s.complexLayout_->Complete() ? ForwardPhase::ComplexHostFlight : ForwardPhase::ComplexLayout;
     } else s.phase_=ForwardPhase::ParticleChord;
+    // Fresh projected impact adds two dimensions. Child layout is generated
+    // independently in global coordinates; its fixed-layout disintegration
+    // does not condition on the impact-dependent world envelope centre.
+    const bool complex=o.organization==ForwardOrganization::ExplicitComplexPackV1;
+    const bool phaseAC=s.angularLineage_.classification==ForwardAngularClass::AbsolutelyContinuous;
+    s.angularSupport_={complex ? ForwardAngularFrame::ComplexLayout : ForwardAngularFrame::IndividualBody,
+        phaseAC,!complex||phaseAC,false,complex};
+    s.independentProjectedChord_=!complex;
 }
 void HyLIoSForwardTransport::BuildComplex(ForwardState& s,ISampler& rng) const {
     std::array<double,5> u{};
@@ -362,11 +369,16 @@ void HyLIoSForwardTransport::ComplexHost(ForwardState& s,ISampler& rng) const {
         s.exitNormal_=selectedHit->exitOutwardNormal;s.chordDistance_=selectedHit->chordLengthMetres;
         s.complexPoint_=P(Add(V(child.centreFromEnvelopeMetres),V(s.particlePoint_)));
         ++s.counters_.complexChildEntries;s.phase_=ForwardPhase::ParticleChord;
+        // Bare position/Fan proofs do not cross an unproved host/child chain.
+        s.angularSupport_.boundaryPositionAreaAC=s.angularSupport_.boundaryPhaseAC;
+        s.angularSupport_.cosinePointSourceChord=false;
     } else {
         s.complexPoint_=envelopeExit;s.particle_=s.envelope_;
         s.particlePoint_=s.complexPoint_;s.exitNormal_=envelopeNormal;
         s.perturbationAxis_=s.direction_;s.complexActive_=false;
         ++s.counters_.complexExits;
+        s.angularSupport_.boundaryPositionAreaAC=s.angularSupport_.boundaryPhaseAC||s.angularSupport_.untouchedComplexProjectedBeam;
+        s.angularSupport_.cosinePointSourceChord=false;
         if(children.empty()) FinishForwardScatter(s);
         else s.phase_=ForwardPhase::ForwardPerturbation;
     }
@@ -385,21 +397,48 @@ void HyLIoSForwardTransport::ParticleFlight(ForwardState& s,ISampler& rng) const
     // Absorption precedes the sole Fresnel test. Entry has no extra Fresnel.
     const auto optics=ParticleDielectric(s.direction_,s.exitNormal_,o.realIOR,layers_[static_cast<std::size_t>(s.layer_)].realIOR);
     if(!Draw(rng,u)) {s.termination_=ForwardTermination::InvalidSample;return;}
+    // Commit certificates only after a successful chord and valid Fresnel draw.
+    // A cosine fan supplies area density at its far point by radial projection;
+    // it need not have supplied full phase density at its starting point.
+    const bool phaseAC=s.angularSupport_.boundaryPhaseAC;
+    const bool beam=s.complexActive_&&s.angularSupport_.untouchedComplexProjectedBeam;
+    const bool projected=s.independentProjectedChord_||beam;
+    const bool fan=s.angularSupport_.cosinePointSourceChord;
+    const bool pointAC=phaseAC||projected||fan;
     if(u<optics.reflectance) {
         s.direction_=optics.reflectedDirection;s.perturbationAxis_=s.direction_;
-        s.angularLineage_=s.independentProjectedChord_ ?
-            ForwardAngularLineage{ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ProjectedParticleReflection} :
-            ForwardAngularLineage{ForwardAngularClass::UnclassifiedSingular,ForwardAngularReason::RetainedCurvedReflection};
+        if(phaseAC)
+            s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::BoundaryPhaseReflection};
+        else if(projected)
+            s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,beam ?
+                ForwardAngularReason::ProjectedComplexReflection : ForwardAngularReason::ProjectedParticleReflection};
+        else
+            s.angularLineage_={ForwardAngularClass::UnclassifiedSingular,ForwardAngularReason::RetainedCurvedReflection};
+        s.angularSupport_.boundaryPositionAreaAC=pointAC;
+        s.angularSupport_.cosinePointSourceChord=false;
+        s.angularSupport_.untouchedComplexProjectedBeam=false;
         s.independentProjectedChord_=false;
         s.phase_=ForwardPhase::ReflectedPerturbation;++s.counters_.particleReflections;
         if(s.complexActive_) {++s.counters_.complexChildReflections;s.lastExitedChild_=ComplexLayout::MaximumChildren;}
     } else {
         s.direction_=optics.transmittedDirection;s.perturbationAxis_=s.direction_;
-        // Exact equality is a material-law identity, never a vector comparison.
-        if(o.realIOR!=layers_[static_cast<std::size_t>(s.layer_)].realIOR)
-            s.angularLineage_=s.independentProjectedChord_ ?
-                ForwardAngularLineage{ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ProjectedParticleTransmission} :
-                ForwardAngularLineage{ForwardAngularClass::UnclassifiedSingular,ForwardAngularReason::RetainedCurvedTransmission};
+        // Exact index equality is an identity law, never a vector comparison.
+        if(o.realIOR!=layers_[static_cast<std::size_t>(s.layer_)].realIOR) {
+            if(phaseAC)
+                s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::BoundaryPhaseTransmission};
+            else if(projected)
+                s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,beam ?
+                    ForwardAngularReason::ProjectedComplexTransmission : ForwardAngularReason::ProjectedParticleTransmission};
+            else if(fan&&s.particle_.semiMinorMetres==s.particle_.semiMajorMetres)
+                s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::PointSourceSphereTransmission};
+            else if(fan&&o.realIOR<layers_[static_cast<std::size_t>(s.layer_)].realIOR)
+                s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::PointSourceLowIndexTransmission};
+            else
+                s.angularLineage_={ForwardAngularClass::UnclassifiedSingular,ForwardAngularReason::RetainedCurvedTransmission};
+            s.angularSupport_.untouchedComplexProjectedBeam=false;
+        }
+        s.angularSupport_.boundaryPositionAreaAC=s.complexActive_ ? phaseAC : pointAC;
+        s.angularSupport_.cosinePointSourceChord=false;
         s.independentProjectedChord_=false;
         ++s.counters_.particleExits;
         if(s.complexActive_) {
@@ -418,7 +457,15 @@ void HyLIoSForwardTransport::Perturb(ForwardState& s,ISampler& rng) const {
         if(Dot(direction,V(s.exitNormal_))>=0) return; // one conditional-inward proposal
         s.direction_=direction;
         SurfaceExit(s.particle_,s.particlePoint_,direction,s.chordDistance_,s.particleExit_,s.exitNormal_);
-        s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::ReflectedCosine};
+        // Fresh conditional angle density times a proved area-density point
+        // gives P4. Otherwise retain only the point-source Fan certificate.
+        const bool phaseAC=s.angularSupport_.boundaryPhaseAC||s.angularSupport_.boundaryPositionAreaAC;
+        s.angularSupport_.boundaryPhaseAC=phaseAC;
+        s.angularSupport_.boundaryPositionAreaAC=phaseAC;
+        s.angularSupport_.cosinePointSourceChord=true;
+        s.angularSupport_.untouchedComplexProjectedBeam=false;
+        s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,phaseAC ?
+            ForwardAngularReason::ReflectedCosinePhaseAcquired : ForwardAngularReason::ReflectedCosine};
         s.independentProjectedChord_=false;s.phase_=ForwardPhase::ParticleChord;return;
     }
     if(s.phase_==ForwardPhase::FiberPerturbation) {
@@ -449,6 +496,10 @@ void HyLIoSForwardTransport::FinishForwardScatter(ForwardState& s) const {
         s.particle_={};s.particlePoint_={};s.particleExit_={};s.exitNormal_={};
         s.chordDistance_=0;s.perturbationAxis_={};s.complexLayout_.reset();
     }
+    // The autonomous body no longer owns the ray. Its frame-specific support
+    // cannot authorize future host/candidate geometry, including diagnostic
+    // outward completion. An unresolved diagnostic reentry returned above.
+    s.angularSupport_={};s.independentProjectedChord_=false;
     s.phase_=ForwardPhase::BulkFlight;
 }
 ForwardAdvanceResult HyLIoSForwardTransport::Advance(ForwardState& s,ISampler& rng,std::size_t quantum) const {
