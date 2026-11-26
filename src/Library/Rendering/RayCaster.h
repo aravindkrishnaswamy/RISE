@@ -20,6 +20,7 @@
 #include "../Utilities/Reference.h"
 #include <atomic>
 #include <string>
+#include "SpectralSourceDomain.h"
 
 namespace RISE
 {
@@ -43,6 +44,8 @@ namespace RISE
 			const IShader&				pDefaultShader;
 			ILuminaryManager*			pLuminaryManager;
 			LightSampler*				pLightSampler;
+            // Per-pass immutable domain; scene lifetime is retained by this caster.
+            std::shared_ptr<const SpectralSourceDomain> spectralSourceDomain;
 			ISampling2D*				pLumSampling;
 
 			bool						bConsiderRMapAsBackground;
@@ -103,6 +106,7 @@ namespace RISE
 			//! `pScene` is non-null and already set; increments the
 			//! process-wide sampler-rebuild diagnostic counter.
 			void RebuildLightSamplers();
+            void RebuildEnvironmentSampler(LightSampler& sampler);
 
 			//! When true, the unidirectional path tracer's DELTA-light NEE
 			//! shadow tests (omni / spot / directional) walk clear
@@ -585,6 +589,10 @@ namespace RISE
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  Must be called after AttachScene().
+            // Single-threaded preparation seam, not a production radiometric
+            // integrator switch. Rebuilds all dependent tables if attached.
+            void SetSpectralSourceDomain(std::shared_ptr<const SpectralSourceDomain> domain);
+            const SpectralSourceDomain* GetSpectralSourceDomain() const { return spectralSourceDomain.get(); }
 			void SetRISCandidates( const unsigned int M );
 
 			/// Sets the threshold for light-sample Russian roulette.
@@ -612,6 +620,8 @@ namespace RISE
 			/// override (revert to the radiance map's own scale).  Takes
 			/// effect on the NEXT AttachScene, which rebuilds the
 			/// environment importance sampler.  Set before a render.
+            /// Spectral-domain preparation requires a nonnegative override to
+            /// match the actual map scale; update both, as the Job wrapper does.
 			void SetRadianceScale( const Scalar scale ) { dRadianceScaleOverride = scale; }
 
 			/// \return The current radiance-scale override, or a negative

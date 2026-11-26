@@ -48,6 +48,9 @@
 
 namespace
 {
+    template<class T> struct ReleaseReference {
+        void operator()(T* value) const { if (value) value->release(); }
+    };
 	// DL-315: stack guard for a nested cast.  Every cast recurses in C++
 	// (an SSS continuation nests CastRay -> shader -> integrator -> CastRay;
 	// a legacy shader-op bounce and a medium phase continuation nest too),
@@ -649,44 +652,48 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 // be non-null and already set by the caller.
 void RayCaster::RebuildLightSamplers()
 {
+    try {
+
 	s_samplerRebuildCount.fetch_add( 1, std::memory_order_relaxed );
 
-	safe_release( pLuminaryManager );
 
-	LuminaryManager* pConcreteLumMgr = new LuminaryManager();
-	pLuminaryManager = pConcreteLumMgr;
-	GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
-	pLuminaryManager->AttachScene( pScene );
+	std::unique_ptr<LuminaryManager,ReleaseReference<LuminaryManager>> newLuminaries(new LuminaryManager());
+    LuminaryManager* pConcreteLumMgr = newLuminaries.get();
+	GlobalLog()->PrintNew( pConcreteLumMgr, __FILE__, __LINE__, "luminary manager" );
+	pConcreteLumMgr->AttachScene( pScene );
 
 	if( pLumSampling ) {
-		pLuminaryManager->SetLuminaireSampling( pLumSampling );
+		pConcreteLumMgr->SetLuminaireSampling( pLumSampling );
 	}
 
 	// Create and prepare the unified light sampler
-	safe_release( pLightSampler );
-	pLightSampler = new LightSampler();
-	GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
+    std::unique_ptr<LightSampler,ReleaseReference<LightSampler>> replacement(new LightSampler());
+    LightSampler* prepared = replacement.get();
+    if (spectralSourceDomain && pLightSampler) prepared->CopyMotionSweepFrom(*pLightSampler,*pScene);
+	GlobalLog()->PrintNew( prepared, __FILE__, __LINE__, "light sampler" );
+
+	prepared->SetSpectralSourceDomain(spectralSourceDomain);
 
 	// Apply pending settings before Prepare() which builds
 	// internal data structures that depend on them.
 	if( bPendingUseLightBVH )
 	{
-		pLightSampler->SetUseLightBVH( true );
+		prepared->SetUseLightBVH( true );
 	}
 
-	pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
+	prepared->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
 
 	// Apply any pending light-sample RR threshold
 	if( dPendingLightRRThreshold > 0 )
 	{
-		pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
+		prepared->SetLightSampleRRThreshold( dPendingLightRRThreshold );
 	}
 
 	// Re-apply any previously-set RIS candidate count so a same-pointer
 	// rebuild doesn't silently drop it (the fresh LightSampler defaults to 0).
 	if( iPendingRISCandidates >= 0 )
 	{
-		pLightSampler->SetRISCandidates( (unsigned int)iPendingRISCandidates );
+		prepared->SetRISCandidates( (unsigned int)iPendingRISCandidates );
 	}
 
 	// Re-apply any previously-set light-solo target so a same-pointer
@@ -696,17 +703,43 @@ void RayCaster::RebuildLightSamplers()
 	// anything the LightSampler itself allocates.
 	if( iPendingSoloKind == 1 )
 	{
-		pLightSampler->SetSoloLight( pendingSoloLight );
+		prepared->SetSoloLight( pendingSoloLight );
 	}
 	else if( iPendingSoloKind == 2 )
 	{
-		pLightSampler->SetSoloLuminary( pendingSoloLuminary );
+		prepared->SetSoloLuminary( pendingSoloLuminary );
 	}
 	else if( iPendingSoloKind == 3 )
 	{
-		pLightSampler->SetSoloEnvironment();
+		prepared->SetSoloEnvironment();
 	}
 
+    RebuildEnvironmentSampler(*prepared);
+    // Publish only after finite preparation and environment construction succeed.
+    safe_release(pLightSampler);
+    safe_release(pLuminaryManager);
+    pLuminaryManager = newLuminaries.release();
+    pLightSampler = replacement.release();
+    } catch (...) {
+        // The caller may already have edited/replaced the scene. Old prepared
+        // tables cannot safely be retained as a renderable fallback.
+        safe_release(pLightSampler);
+        safe_release(pLuminaryManager);
+        forceLightSamplerRebuild = true;
+        throw;
+    }
+}
+
+void RayCaster::SetSpectralSourceDomain(std::shared_ptr<const SpectralSourceDomain> domain)
+{
+    spectralSourceDomain = std::move(domain);
+    if (pScene) RebuildLightSamplers();
+    else forceLightSamplerRebuild = true;
+}
+
+void RayCaster::RebuildEnvironmentSampler(LightSampler& sampler)
+{
+    sampler.SetEnvironmentSampler(nullptr,nullptr);
 	// Build environment importance sampler if a global radiance map exists
 	const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
 	if( pEnvMap )
@@ -723,18 +756,22 @@ void RayCaster::RebuildLightSamplers()
 		const Scalar dEnvScale =
 			( dRadianceScaleOverride >= 0.0 ) ? dRadianceScaleOverride : pEnvMap->GetScale();
 
-		EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
-			pEnvMap->GetPainter(),
-			dEnvScale,
-			pEnvMap->GetTransform(),
-			64
-			);
-		GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
+        // Spectral evaluation queries the actual map rather than its RGB
+        // painter. A caster-only override cannot redefine an arbitrary map
+        // (especially a zero-scale map); require the normal dual-write contract.
+        if (spectralSourceDomain && (!std::isfinite(dRadianceScaleOverride) ||
+            (dRadianceScaleOverride >= 0 && dRadianceScaleOverride != pEnvMap->GetScale())))
+            throw std::invalid_argument("spectral source domain requires the radiance scale override to match the actual environment map scale");
+
+		std::unique_ptr<EnvironmentSampler,ReleaseReference<EnvironmentSampler>> pEnvSampler(spectralSourceDomain ?
+            new EnvironmentSampler(*pEnvMap,spectralSourceDomain) : new EnvironmentSampler(
+            pEnvMap->GetPainter(),dEnvScale,pEnvMap->GetTransform(),64));
+		GlobalLog()->PrintNew( pEnvSampler.get(), __FILE__, __LINE__, "environment sampler" );
 		pEnvSampler->Build();
 
 		if( pEnvSampler->IsValid() )
 		{
-			pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
+			sampler.SetEnvironmentSampler( pEnvMap, pEnvSampler.get() );
 			GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
 		}
 		else
@@ -744,7 +781,7 @@ void RayCaster::RebuildLightSamplers()
 
 		// LightSampler::SetEnvironmentSampler addrefs if valid, so
 		// release our local reference.
-		safe_release( pEnvSampler );
+
 	}
 }
 
@@ -760,6 +797,10 @@ void RayCaster::AccumulateLightMotionSample()
 
 void RayCaster::RefreshLightSamplers()
 {
+    if (spectralSourceDomain && pScene) {
+        RebuildLightSamplers();
+        return;
+    }
 	// DL-463: rebuild the selection tables IN PLACE from the scene's
 	// current state (plus any motion sweep).  The luminary list itself is
 	// structural and cannot change mid-animation; the environment sampler

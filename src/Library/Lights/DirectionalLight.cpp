@@ -26,9 +26,11 @@ using namespace RISE::Implementation;
 DirectionalLight::DirectionalLight( Scalar radiantEnergy_, const RISEPel& c, const Vector3& vDir, std::shared_ptr<const PhysicalLightSpectrum> physical ) :
   radiantEnergy( radiantEnergy_ ),
   cColor( c ),
-  vDirection( Vector3Ops::Normalize(vDir) ),
+  vDirection( vDir ),
   physicalSpectrum( std::move(physical) )
 {
+    if (physicalSpectrum) PhysicalLightSpectrum::NormalizeDirection(vDir,vDirection);
+    else vDirection=Vector3Ops::Normalize(vDir);
 	RefreshSpectrum();
 }
 
@@ -150,7 +152,7 @@ void DirectionalLight::ComputeDirectLightingSampled(
 		}
 	}
 
-	if (physicalSpectrum) amount=(physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vDirection,ri,pIORStack))*fDot*shadowT;
+	if (physicalSpectrum) amount=physicalSpectrum->VisibleProduct(brdf.valueStateful(vDirection,ri,pIORStack),{radiantEnergy,fDot},{},shadowT);
     else amount = (cColor * brdf.valueStateful( vDirection, ri , pIORStack)) * (fDot * radiantEnergy) * shadowT;
 }
 
@@ -200,7 +202,7 @@ Scalar DirectionalLight::ComputeDirectLightingSampledNM(
 
 	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
 	// luma projection.  See PointLight::ComputeDirectLightingNM.
-	if (physicalSpectrum) return ScaledSourceSpectrumNM(nm)*brdf.valueStatefulNM(vDirection,ri,nm,pIORStack)*fDot*shadowT;
+	if (physicalSpectrum) return physicalSpectrum->EvalProduct(nm,{radiantEnergy,brdf.valueStatefulNM(vDirection,ri,nm,pIORStack),fDot,shadowT});
 	const Scalar lightSpec = cSpectrum.Eval( nm );
 	return lightSpec * brdf.valueStatefulNM( vDirection, ri, nm , pIORStack) * fDot * radiantEnergy * shadowT;
 }
@@ -218,8 +220,8 @@ IKeyframeParameter* DirectionalLight::KeyframeFromParameters( const String& name
 		double d[3];
 		if( ParseStrictVec3( value, d ) ) {
             if (physicalSpectrum) {
-                const Scalar magnitude=Vector3Ops::Magnitude(Vector3(d));
-                if (!RISE::IsFiniteDouble(magnitude) || !(magnitude>0)) return nullptr;
+                Vector3 unit;
+                if (!PhysicalLightSpectrum::NormalizeDirection(Vector3(d),unit)) return nullptr;
             }
 			p = new Vector3Keyframe( Vector3( d[0], d[1], d[2] ), DIRECTION_ID );
 		}
@@ -252,14 +254,13 @@ void DirectionalLight::SetIntermediateValue( const IKeyframeParameter& val )
 		{
 			const Vector3 direction=*(const Vector3*)val.getValue();
             if (physicalSpectrum) {
-                const Scalar magnitude=Vector3Ops::Magnitude(direction);
-                if (!RISE::IsFiniteDouble(direction.x) || !RISE::IsFiniteDouble(direction.y) || !RISE::IsFiniteDouble(direction.z) ||
-                    !RISE::IsFiniteDouble(magnitude) || !(magnitude>0)) {
+                Vector3 unit;
+                if (!PhysicalLightSpectrum::NormalizeDirection(direction,unit)) {
                     GlobalLog()->PrintEasyError("physical directional light: invalid direction keyframe; previous axis retained");
                     return;
                 }
-            }
-            vDirection = Vector3Ops::Normalize(direction);
+                vDirection=unit;
+            } else vDirection=Vector3Ops::Normalize(direction);
 		}
 		break;
 	case COLOR_ID:

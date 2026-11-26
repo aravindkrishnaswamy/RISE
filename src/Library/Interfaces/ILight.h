@@ -112,7 +112,10 @@ namespace RISE
 		//! through `LightIntrospection`.  Default impls return
 		//! sentinel values (white / unit / zero) so subclasses that
 		//! haven't opted in yet still link.  Concrete light types
-		//! override to return their stored color / energy fields.
+		//! override to return their stored color / energy fields. Physical-SPD
+        //! lights return the current scale-applied finite visible preview as
+        //! emissionColor; it is bookkeeping, not an RGB reconstruction of SPD.
+        //! emissionEnergy remains the separately authored dimensionless scale.
 		virtual RISEPel emissionColor() const { return RISEPel( 1, 1, 1 ); }
 		virtual Scalar  emissionEnergy() const { return Scalar( 1 ); }
 

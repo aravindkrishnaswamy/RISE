@@ -172,8 +172,9 @@ historical 2026-06-19 snapshot, not present-day ground truth.
   implementation design, scientific validation gates, PT integration and spatial
   transport roadmap; [research notes](HYLIOS_RESEARCH_NOTES.md) record sources,
   optical-data gaps and unresolved publication conventions; the experimental
-  [measurement CLI](HYLIOS_MEASUREMENT.md) reports individual-particle forward
-  diagnostics and unresolved power explicitly
+  [measurement CLI](HYLIOS_MEASUREMENT.md) reports individual and explicit-complex
+  forward diagnostics and unresolved power explicitly; [spectral source proposals](SPECTRAL_SOURCE_PROPOSALS.md)
+  document the per-caster preparation capability and its integration limits
 - [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md): current fire/smoke state,
   open problems and operating rules; start here
 - [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md): r82

@@ -107,6 +107,15 @@ namespace RISE
 			//! the cached illuminant spectrum instead of the ILight
 			//! default's per-call LUT uplift for RGB lights. Physical sources
 			//! instead evaluate their immutable authored SPD without RGB uplift.
+            // Prepared NEE calls this nonvirtual evaluator without resolving the
+            // source before geometry, selection, and shadow factors are applied.
+            Scalar PhysicalEmissionProductNM(const Vector3& vLightOut,const Scalar nm,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm> factors,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm> divisors) const
+            { RISE_TIME_INDEXED_FORWARD(PointLight,PhysicalEmissionProductNM(vLightOut,nm,factors,divisors));
+                return physicalSpectrum ? physicalSpectrum->EvalProduct(nm,factors,divisors,{radiantEnergy}) : 0;
+            }
+
 			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
 			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
 				return ScaledSourceSpectrumNM( nm );
@@ -117,7 +126,7 @@ namespace RISE
 				return ptPosition;
 			}
 
-			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( PointLight, emissionColor() ); return cColor; }
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( PointLight, emissionColor() ); return physicalSpectrum ? physicalSpectrum->ScaledVisibleRGB(radiantEnergy) : cColor; }
 			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( PointLight, emissionEnergy() ); return radiantEnergy; }
 			inline LightType lightType() const override      { return LightType::Point; }
 

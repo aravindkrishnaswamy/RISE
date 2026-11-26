@@ -107,7 +107,14 @@ void PointLight::ComputeDirectLightingSampled(
 
 	// Vector to the light from the surface
 	Vector3	vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	const Scalar fDistFromLight = Vector3Ops::NormalizeMag(vToLight);
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical PointLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return;
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	// This dot product tells us the angle of incidence between the light ray
 	// and the surface normal.  This angle tells us what illumination this surface
@@ -151,10 +158,12 @@ void PointLight::ComputeDirectLightingSampled(
 	// Physically-based inverse-square falloff.
 	// emittedRadiance = cColor * radiantEnergy [watts/sr]
 	// Irradiance at surface = emittedRadiance * cos / d^2
-	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
-
-	if (physicalSpectrum) amount = (physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vToLight,ri,pIORStack))*(invDistSq*fDot)*shadowT;
-    else amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
+	if (physicalSpectrum) {
+        amount=physicalSpectrum->VisibleProduct(brdf.valueStateful(vToLight,ri,pIORStack),{radiantEnergy,fDot},{distance,distance},shadowT);
+        return;
+    }
+    const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
+    amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 }
 
 Scalar PointLight::ComputeDirectLightingSampledNM(
@@ -178,7 +187,14 @@ Scalar PointLight::ComputeDirectLightingSampledNM(
 	// IOR rather than the representative RGB IOR.  VOLUME RECEIVER: see the
 	// RGB overload above.
 	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical PointLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return Scalar(0);
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
@@ -201,12 +217,12 @@ Scalar PointLight::ComputeDirectLightingSampledNM(
 		}
 	}
 
+	if (physicalSpectrum) return physicalSpectrum->EvalProduct(nm,{radiantEnergy,brdf.valueStatefulNM(vToLight,ri,nm,pIORStack),fDot,shadowT},{distance,distance});
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 	// Stage C slice 2: the light's own spectrum at `nm`, NOT a Rec.709 luma
 	// projection of its RGB colour used flat at every wavelength.  The luma
 	// collapse made every coloured point light spectrally grey and tinted
 	// even a white one by the flat-spectrum chromaticity.
-	if (physicalSpectrum) return ScaledSourceSpectrumNM(nm)*brdf.valueStatefulNM(vToLight,ri,nm,pIORStack)*invDistSq*fDot*shadowT;
 	const Scalar lightSpec = cSpectrum.Eval( nm );
 	return lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
 }

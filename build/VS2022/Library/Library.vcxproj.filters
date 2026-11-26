@@ -3857,6 +3857,9 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\EnvironmentSampler.h">
       <Filter>Rendering</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\SpectralSourceDomain.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\Film.h">
       <Filter>Rendering</Filter>
     </ClInclude>

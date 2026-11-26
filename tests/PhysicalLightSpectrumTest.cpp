@@ -12,6 +12,9 @@
 #include "../src/Library/SceneEditor/LightIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Scene.h"
+#include "../src/Library/Managers/LightManager.h"
+#include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Cst/Cst.h"
 #include "TestTempDir.h"
 #include "CstRenderEquivalence.h"
@@ -27,11 +30,23 @@ namespace RISE { bool RISE_CreateJobPriv(IJobPriv** ppi); }
 namespace {
 int failures = 0;
 void Check(bool ok, const char* label) { if (!ok) { ++failures; std::printf("FAIL: %s\n",label); } }
-void Near(double a, double b, const char* label) { Check(std::isfinite(a) && std::fabs(a-b) < 1e-11*std::fmax(1.0,std::fabs(b)),label); }
+void Near(double a, double b, const char* label) {
+    const bool ok=std::isfinite(a) && std::fabs(a-b)<1e-11*std::fmax(1.0,std::fabs(b));
+    if(!ok) std::printf("actual %.17g expected %.17g: ",a,b);
+    Check(ok,label);
+}
+// Never compare subnormals by a potentially overflowed fast-math reciprocal.
+void Relative(double a,double b,const char* label) {
+    int ae=0,be=0;
+    const double af=std::frexp(a,&ae),bf=std::frexp(b,&be);
+    Near(std::ldexp(af/bf,ae-be),1,label);
+}
 class UnitBSDF final : public IBSDF, public Reference {
+    Scalar response;
 public:
-    RISEPel value(const Vector3&, const RayIntersectionGeometric&) const override { return RISEPel(.25,.25,.25); }
-    Scalar valueNM(const Vector3&, const RayIntersectionGeometric&, Scalar) const override { return .25; }
+    explicit UnitBSDF(Scalar r=.25):response(r) {}
+    RISEPel value(const Vector3&, const RayIntersectionGeometric&) const override { return RISEPel(response,response,response); }
+    Scalar valueNM(const Vector3&, const RayIntersectionGeometric&, Scalar) const override { return response; }
 };
 IJobPriv* Load(const std::string& body) {
     const std::string path = TestSupport::ScratchBaseDir()+"/physical_source.RISEscene";
@@ -312,12 +327,12 @@ void ScaledSourceReviewControls() {
     ILightPriv* directional=nullptr;
     Check(RISE_API_CreatePhysicalDirectionalLight(&directional,2,visibleNm,unit,"zero",1,Vector3(0,0,1)),"directional edit fixture");
     if(directional) {
-        for(const char* invalid : {"0 0 0","1e308 0 0"}) {
+        for(const char* invalid : {"0 0 0","inf 0 0"}) {
             auto* key=directional->KeyframeFromParameters("direction",invalid);
             Check(!key,"physical directional rejects invalid direction key [physical-directional-key]");
             if(key)key->release();
         }
-        for(const Vector3& invalid : {Vector3(0,0,0),Vector3(1e308,0,0)}) {
+        for(const Vector3& invalid : {Vector3(0,0,0),Vector3(std::numeric_limits<double>::infinity(),0,0)}) { // HYGIENE-OK: intentional invalid direction input.
             auto* key=directional->KeyframeFromParameters("direction","0 1 0");
             Check(key!=nullptr,"valid directional key fixture");
             if(key) {Vector3 value=invalid;key->setValue(&value);directional->SetIntermediateValue(*key);key->release();}
@@ -327,6 +342,148 @@ void ScaledSourceReviewControls() {
         directional->release();
     }
     bsdf->release();caster->release();shader->release();
+}
+void PhysicalRangeReviewControls() {
+    IShader* shader=nullptr;RISE_API_CreateStandardShader(&shader,{});
+    IRayCaster* caster=nullptr;RISE_API_CreateRayCaster(&caster,false,4,*shader,false);
+    auto* bsdf=new UnitBSDF;
+    const double swir[]={1100,1300},one[]={1,1};
+    const double diagonal=1/std::sqrt(3.0);
+    for(const double magnitude : {1.0,1.6e-162,std::numeric_limits<double>::denorm_min(),1e308}) {
+        ILightPriv* light=nullptr;
+        const Vector3 authored(magnitude,magnitude,magnitude);
+        Check(RISE_API_CreatePhysicalDirectionalLight(&light,2,swir,one,"zero",1,authored),"finite nonzero physical axis magnitude accepted [physical-axis-scale]");
+        if(light) {
+            const Vector3 axis=light->emissionDirection();
+            Near(axis.x,diagonal,"directional normalization invariant to finite axis magnitude");
+            Near(Vector3Ops::Dot(axis,axis),1,"directional physical axis remains unit length");
+            RayIntersectionGeometric ri(Ray(Point3(0,0,0),-Vector3(diagonal,diagonal,diagonal)),nullRasterizerState);
+            ri.vNormal=Vector3(diagonal,diagonal,diagonal);ri.vGeomNormal=ri.vNormal;
+            Near(light->ComputeDirectLightingNM(ri,*caster,*bsdf,false,1200),.25,"directional lighting invariant to axis magnitude");
+            char value[128];std::snprintf(value,sizeof(value),"%.17g %.17g %.17g",magnitude,magnitude,magnitude);
+            auto* key=light->KeyframeFromParameters("direction",value);
+            Check(key!=nullptr,"magnitude-invariant physical direction key accepted");
+            if(key){light->SetIntermediateValue(*key);key->release();}
+            Near(light->emissionDirection().x,diagonal,"physical direction key uses scaled normalization");
+            light->release();
+        }
+        light=nullptr;
+        Check(RISE_API_CreatePhysicalPointSpotLight(&light,2,swir,one,"zero",1,Point3(0,0,0),Point3(authored.x,authored.y,authored.z),.4,.8,false),
+            "spot axis accepts finite nonzero magnitude");
+        if(light) {
+            Near(light->emissionDirection().x,diagonal,"spot physical axis uses shared scaled normalization");
+            char value[128];std::snprintf(value,sizeof(value),"%.17g %.17g %.17g",magnitude,magnitude,magnitude);
+            auto* key=light->KeyframeFromParameters("target",value);Check(key!=nullptr,"scaled spot target key accepted");
+            if(key){light->SetIntermediateValue(*key);key->release();light->RegenerateData();}
+            Near(light->emissionDirection().x,diagonal,"spot target key preserves unit axis");light->release();
+        }
+    }
+    const double visible[]={380,780},large[]={1.5e308,1.5e308},referenceValues[]={1.5,1.5};
+    for(int kind=0;kind<3;++kind) {
+        ILightPriv *light=nullptr,*reference=nullptr;
+        const auto create=[&](ILightPriv** out,const double* values,double scale) {
+            return kind==0 ? RISE_API_CreatePhysicalPointOmniLight(out,2,visible,values,"zero",scale,false) :
+                kind==1 ? RISE_API_CreatePhysicalPointSpotLight(out,2,visible,values,"zero",scale,Point3(0,0,2),Point3(0,0,0),.4,.8,false) :
+                RISE_API_CreatePhysicalDirectionalLight(out,2,visible,values,"zero",scale,Vector3(0,0,1));
+        };
+        Check(create(&light,large,1e-308)&&create(&reference,referenceValues,1),
+            "overflowing unscaled visible projection does not reject finite physical source [physical-visible-overflow]");
+        if(light&&reference) {
+            const RISEPel actual=light->emittedRadiance(Vector3(0,0,-1)),expected=reference->emittedRadiance(Vector3(0,0,-1));
+            Near(actual.r/expected.r,1,"compensating visible source RGB projection matches finite reference");
+            Near(light->emittedRadianceNM(Vector3(0,0,-1),500),1.5,"compensating visible source NM amplitude");
+            const RISEPel color=light->emissionColor();
+            Check(std::isfinite(color.r)&&std::isfinite(color.g)&&std::isfinite(color.b),"physical bookkeeping preview always finite");
+            Near(color.r/actual.r,1,"physical emissionColor is scale-applied preview");
+            const ILight* clone=CloneLightForSnapshot(light);
+            Check(clone!=nullptr,"compensating source snapshot clones");
+            if(clone){Near(clone->emittedRadiance(Vector3(0,0,-1)).r/expected.r,1,"snapshot never resolves unscaled overflow preview");clone->release();}
+        }
+        safe_release(light);safe_release(reference);
+    }
+    RayIntersectionGeometric ri(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+    ri.ptIntersection=Point3(0,0,0);ri.vNormal=Vector3(0,0,1);ri.vGeomNormal=ri.vNormal;
+    const double faint[]={1e-300,1e-300};
+    for(int kind=0;kind<2;++kind) for(int control=0;control<3;++control) {
+        const double distance=control==0 ? 1e-10 : control==1 ? 1e-200 : 1e200;
+        const double scale=control==0 ? 1e-30 : control==1 ? 1e-100 : 1;
+        const double huge[]={1e308,1e308};const double* values=control==2 ? huge:faint;
+        const double expected=control==0 ? 2.5e-311 : control==1 ? .25:2.5e-93;
+        ILightPriv* light=nullptr;
+        const bool ok=kind==0 ? RISE_API_CreatePhysicalPointOmniLight(&light,2,swir,values,"zero",scale,false) :
+            RISE_API_CreatePhysicalPointSpotLight(&light,2,swir,values,"zero",scale,Point3(0,0,distance),Point3(0,0,0),.4,.8,false);
+        Check(ok&&light,"physical extreme distance fixture");
+        if(light) {
+            if(kind==0){light->SetPosition(Point3(0,0,distance));light->FinalizeTransformations();}
+            const double actual=light->ComputeDirectLightingNM(ri,*caster,*bsdf,false,1200);
+            Check(actual>0&&std::isfinite(actual),"recoverable physical direct NM stays finite and nonzero [physical-direct-product]");
+            Relative(actual,expected,"source, scale and separate distance divisors round only at final direct result");
+            light->release();
+        }
+    }
+    for(int kind=0;kind<3;++kind) {
+        ILightPriv *light=nullptr,*reference=nullptr;
+        const auto create=[&](ILightPriv** out,const double* samples,double scale) {
+            return kind==0 ? RISE_API_CreatePhysicalPointOmniLight(out,2,visible,samples,"zero",scale,false) :
+                kind==1 ? RISE_API_CreatePhysicalPointSpotLight(out,2,visible,samples,"zero",scale,Point3(0,0,1e-10),Point3(0,0,0),.4,.8,false) :
+                RISE_API_CreatePhysicalDirectionalLight(out,2,visible,samples,"zero",scale,Vector3(0,0,1));
+        };
+        Check(create(&light,faint,1e-30)&&create(&reference,one,1),"RGB recoverable direct product fixture");
+        auto* response=kind==2 ? new UnitBSDF(1e20):new UnitBSDF;
+        if(light&&reference) {
+            if(kind==0){light->SetPosition(Point3(0,0,1e-10));light->FinalizeTransformations();}
+            RISEPel actual;light->ComputeDirectLighting(ri,*caster,*response,false,actual);
+            const double multiplier=kind==2 ? 1e-310 : 2.5e-311;
+            const RISEPel expected=reference->emittedRadiance(Vector3(0,0,-1))*multiplier;
+            Check(actual.r>0&&actual.g>0&&actual.b>0,"RGB direct projection is not rounded before response/geometric amplification");
+            Relative(actual.r,expected.r,"RGB direct complete product red");Relative(actual.g,expected.g,"RGB direct complete product green");Relative(actual.b,expected.b,"RGB direct complete product blue");
+            if(kind==2) {
+                const double actualNM=light->ComputeDirectLightingNM(ri,*caster,*response,false,500);
+                Check(actualNM>0,"directional direct NM keeps source parts through response");
+                Relative(actualNM,1e-310,"directional direct product analytic oracle");
+            }
+        }
+        response->release();safe_release(light);safe_release(reference);
+    }
+    bsdf->release();caster->release();shader->release();
+}
+void SelectedPhysicalProductControls() {
+    class Samples final: public ISampler {
+    public:
+        Scalar Get1D() override {return .37;}
+        Point2 Get2D() override {return Point2(.37,.37);}
+    } samples;
+    auto* scene=new Scene;
+    auto* lights=new LightManager;
+    IObjectManager* objects=nullptr;RISE_API_CreateObjectManager(&objects,false,false,4,32);
+    scene->SetObjectManager(objects);scene->SetLightManager(lights);
+    IShader* shader=nullptr;RISE_API_CreateStandardShader(&shader,{});
+    auto* bsdf=new UnitBSDF;
+    RayIntersectionGeometric ri(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+    ri.ptIntersection=Point3(0,0,0);ri.vNormal=Vector3(0,0,1);ri.vGeomNormal=ri.vNormal;ri.onb.CreateFromW(ri.vNormal);
+    const double swir[]={1100,1300},faint[]={1e-300,1e-300};
+    for(int kind=0;kind<2;++kind) for(int count : {1,2}) {
+        for(int i=0;i<count;++i) {
+            ILightPriv* light=nullptr;
+            const bool ok=kind==0 ? RISE_API_CreatePhysicalPointOmniLight(&light,2,swir,faint,"zero",1e-30,false) :
+                RISE_API_CreatePhysicalPointSpotLight(&light,2,swir,faint,"zero",1e-30,Point3(0,0,1e-10),Point3(0,0,0),.4,.8,false);
+            Check(ok&&light,"actual selected physical source fixture");
+            if(light) {
+                if(kind==0) {light->SetPosition(Point3(0,0,1e-10));light->FinalizeTransformations();}
+                lights->AddItem(light,i==0 ? "first":"second");light->release();
+            }
+        }
+        auto* caster=new RayCaster(false,4,*shader,false);
+        caster->SetLightSampleRRThreshold(1e9);
+        caster->SetSpectralSourceDomain(SpectralSourceDomain::Create({{1200,1}}));
+        caster->AttachScene(scene);
+        const auto* sampler=caster->GetLightSampler();
+        const double actual=sampler->EvaluateDirectLightingNM(ri,*bsdf,nullptr,1200,*caster,samples,nullptr,nullptr,false,nullptr);
+        Check(actual>0&&std::isfinite(actual),"selected physical NEE retains subnormal source until geometry and selection [physical-selected-product]");
+        Relative(actual,count*2.5e-311,"selected physical NEE analytic product including exact source probability");
+        caster->release();lights->RemoveItem("first");if(count==2) lights->RemoveItem("second");
+    }
+    bsdf->release();shader->release();objects->release();lights->release();scene->release();
 }
 void SceneControls() {
     const char* kinds[] = {"omni_light","spot_light","directional_light"};
@@ -400,4 +557,4 @@ void SceneControls() {
     }
 }
 }
-int main() { SourceControls(); DeltaControls(); PhysicalRuntimeControls(); ScaledSourceReviewControls(); SceneControls(); std::printf("PhysicalLightSpectrumTest: %d failures\n",failures); return failures ? 1 : 0; }
+int main() { SourceControls(); DeltaControls(); PhysicalRuntimeControls(); ScaledSourceReviewControls(); PhysicalRangeReviewControls();SelectedPhysicalProductControls(); SceneControls(); std::printf("PhysicalLightSpectrumTest: %d failures\n",failures); return failures ? 1 : 0; }

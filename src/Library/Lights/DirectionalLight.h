@@ -116,7 +116,7 @@ namespace RISE
 				return Point3( 0, 0, 0 );
 			}
 
-			inline RISEPel   emissionColor() const  { RISE_TIME_INDEXED_FORWARD( DirectionalLight, emissionColor() ); return cColor; }
+			inline RISEPel   emissionColor() const  { RISE_TIME_INDEXED_FORWARD( DirectionalLight, emissionColor() ); return physicalSpectrum ? physicalSpectrum->ScaledVisibleRGB(radiantEnergy) : cColor; }
 			inline Scalar    emissionEnergy() const { RISE_TIME_INDEXED_FORWARD( DirectionalLight, emissionEnergy() ); return radiantEnergy; }
 			inline LightType lightType() const      { return LightType::Directional; }
 			//! ILight's default `emissionDirection()` returns

@@ -29,6 +29,7 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Reference.h"
 #include <vector>
+#include "SpectralSourceDomain.h"
 
 namespace RISE
 {
@@ -43,6 +44,10 @@ namespace RISE
 			Scalar					dScale;			///< Radiance scale factor
 			Matrix4					mxtransform;	///< World-to-map transform
 			Matrix4					mxInvTransform;	///< Map-to-world transform (inverse)
+
+			std::shared_ptr<const SpectralSourceDomain> spectralDomain;
+			const IRadianceMap* spectralMap = nullptr;
+			SpectralSourceDomain::Mass spectralPower;
 
 			unsigned int			width;			///< CDF resolution (columns)
 			unsigned int			height;			///< CDF resolution (rows)
@@ -88,6 +93,13 @@ namespace RISE
 				const unsigned int resolution
 				);
 
+            // Correctness baseline: uniform WORLD-SPHERE proposal. Estimate
+            // root-selection power through the actual NM map (scale/orientation
+            // and any current time adapter included). No spectral CDF claim.
+            EnvironmentSampler(const IRadianceMap& map,
+                std::shared_ptr<const SpectralSourceDomain> domain);
+            const SpectralSourceDomain::Mass& SpectralPower() const { return spectralPower; }
+
 			/// Build the 2D importance map from the HDR texture.
 			/// Must be called once before Sample() or Pdf().
 			void Build();
@@ -106,7 +118,7 @@ namespace RISE
 				) const;
 
 			/// \return True if the importance map has been built and is valid.
-			bool IsValid() const { return totalLuminance > 0; }
+			bool IsValid() const { return spectralDomain ? spectralMap != nullptr : totalLuminance > 0; }
 
 			/// \return The integrated luminance over the env map texels
 			/// (solid-angle-weighted).  Used by LightSampler to compute

@@ -39,9 +39,20 @@ EnvironmentSampler::EnvironmentSampler(
 	mxInvTransform = Matrix4Ops::Transpose( mxtransform );
 }
 
+EnvironmentSampler::EnvironmentSampler(const IRadianceMap& map,
+    std::shared_ptr<const SpectralSourceDomain> domain) :
+    EnvironmentSampler(map.GetPainter(),map.GetScale(),map.GetTransform(),8)
+{
+    if (!domain) throw std::invalid_argument("missing spectral environment domain");
+    spectralDomain = std::move(domain);
+    spectralMap = &map;
+    spectralMap->addref();
+}
+
 EnvironmentSampler::~EnvironmentSampler()
 {
 	painter.release();
+    if (spectralMap) spectralMap->release();
 }
 
 void EnvironmentSampler::DirectionToTexCoord(
@@ -132,6 +143,23 @@ unsigned int EnvironmentSampler::SampleCDF(
 
 void EnvironmentSampler::Build()
 {
+    if (spectralDomain) {
+        spectralPower = SpectralSourceDomain::Mass();
+        // Equal-solid-angle world-space cell centres. A missed patch cannot
+        // remove support: Sample/Pdf remain uniform everywhere.
+        for (unsigned int y=0;y<8;++y) for (unsigned int x=0;x<16;++x) {
+            const Scalar z = 1-2*(Scalar(y)+.5)/8;
+            const Scalar phi = TWO_PI*(Scalar(x)+.5)/16;
+            const Scalar r = sqrt(r_max(Scalar(0),1-z*z));
+            const Ray ray(Point3(0,0,0),Vector3(r*cos(phi),r*sin(phi),z));
+            const auto m = spectralDomain->Integrate([&](double nm) {
+                return spectralMap->GetRadianceNM(ray,nullRasterizerState,nm);
+            });
+            if (m.positive) spectralPower.AddLog(m.logarithm);
+        }
+        spectralPower.Multiply(4*PI/128);
+        return;
+    }
 	// Allocate CDF arrays
 	conditionalCDF.resize( height );
 	for( unsigned int v = 0; v < height; v++ )
@@ -241,6 +269,14 @@ void EnvironmentSampler::Sample(
 	Scalar& pdf
 	) const
 {
+    if (spectralDomain) {
+        const Scalar z = 1-2*u1;
+        const Scalar phi = TWO_PI*u2;
+        const Scalar r = sqrt(r_max(Scalar(0),1-z*z));
+        direction = Vector3(r*cos(phi),r*sin(phi),z);
+        pdf = 1/(4*PI);
+        return;
+    }
 	if( totalLuminance <= 0 )
 	{
 		direction = Vector3( 0, 0, 1 );
@@ -302,6 +338,7 @@ Scalar EnvironmentSampler::Pdf(
 	const Vector3& direction
 	) const
 {
+    if (spectralDomain) return 1/(4*PI);
 	if( totalLuminance <= 0 )
 	{
 		return 0;

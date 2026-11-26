@@ -1006,6 +1006,7 @@
 		F24C54362F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
 		F24C54392F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */; };
 		F24C543A2F7B30B3009AF16D /* EnvironmentSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */; };
+		A6D60202A1B2C3D4E5F60102 /* SpectralSourceDomain.h in Headers */ = {isa = PBXBuildFile; fileRef = A6D60201A1B2C3D4E5F60101 /* SpectralSourceDomain.h */; };
 		F24C543B2F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */; };
 		F24C543E2F7C107E009AF16D /* BSSRDFSampling.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */; };
 		D1291E0A0000000000000001 /* ExteriorIndexCache.h in Headers */ = {isa = PBXBuildFile; fileRef = D1291E0B0000000000000001 /* ExteriorIndexCache.h */; };
@@ -2538,6 +2539,7 @@
 		F24C54322F79FFF1009AF16D /* CompletePathGuide.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompletePathGuide.h; sourceTree = "<group>"; };
 		F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompletePathGuide.cpp; sourceTree = "<group>"; };
 		F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EnvironmentSampler.h; sourceTree = "<group>"; };
+		A6D60201A1B2C3D4E5F60101 /* SpectralSourceDomain.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SpectralSourceDomain.h; sourceTree = "<group>"; };
 		F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = EnvironmentSampler.cpp; sourceTree = "<group>"; };
 		F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSSRDFSampling.h; sourceTree = "<group>"; };
 		D1291E0B0000000000000001 /* ExteriorIndexCache.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ExteriorIndexCache.h; sourceTree = "<group>"; };
@@ -4665,6 +4667,7 @@
 				F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */,
 				F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */,
 				F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */,
+				A6D60201A1B2C3D4E5F60101 /* SpectralSourceDomain.h */,
 				F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */,
 				F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */,
 				F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */,
@@ -5898,6 +5901,7 @@
 				F27F0C14069C42910069C9E5 /* CookPixelFilter.h in Headers */,
 				F27F0C15069C42910069C9E5 /* CubicBSplinePixelFilter.h in Headers */,
 				F24C543A2F7B30B3009AF16D /* EnvironmentSampler.h in Headers */,
+				A6D60202A1B2C3D4E5F60102 /* SpectralSourceDomain.h in Headers */,
 				F27F0C16069C42910069C9E5 /* GaussianPixelFilter.h in Headers */,
 				F27F0C18069C42910069C9E5 /* JitteredSampling1D.h in Headers */,
 				F27F0C19069C42910069C9E5 /* LanczosPixelFilter.h in Headers */,

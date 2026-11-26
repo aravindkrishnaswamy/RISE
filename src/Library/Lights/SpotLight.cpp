@@ -41,8 +41,10 @@ SpotLight::SpotLight(
   physicalSpectrum( std::move(physical) )
 {
     if (physicalSpectrum) {
-        physicalPoseValid = ValidPhysicalAxis(ptTarget) && IsSupportedPhysicalCone(dInnerAngle,dOuterAngle);
-        vDirection = physicalPoseValid ? Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition)) : Vector3(0,0,0);
+        PhysicalLightSpectrum::ProductTerm distance;
+        Scalar queryDistance;
+        physicalPoseValid = PhysicalLightSpectrum::DirectionBetween(ptTarget,ptPosition,vDirection,distance,queryDistance) && IsSupportedPhysicalCone(dInnerAngle,dOuterAngle);
+        if (!physicalPoseValid) vDirection=Vector3(0,0,0);
     } else {
         vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
     }
@@ -51,10 +53,10 @@ SpotLight::SpotLight(
 
 bool SpotLight::ValidPhysicalAxis(const Point3& target) const
 {
-    if (!RISE::IsFiniteDouble(target.x) || !RISE::IsFiniteDouble(target.y) || !RISE::IsFiniteDouble(target.z) ||
-        !RISE::IsFiniteDouble(ptPosition.x) || !RISE::IsFiniteDouble(ptPosition.y) || !RISE::IsFiniteDouble(ptPosition.z)) return false;
-    const Scalar length = Vector3Ops::Magnitude(Vector3Ops::mkVector3(target,ptPosition));
-    return RISE::IsFiniteDouble(length) && length > 0;
+    Vector3 unit;
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar queryDistance;
+    return PhysicalLightSpectrum::DirectionBetween(target,ptPosition,unit,distance,queryDistance);
 }
 
 bool SpotLight::IsSupportedPhysicalCone(const Scalar inner, const Scalar outer)
@@ -104,7 +106,14 @@ void SpotLight::ComputeDirectLightingSampled(
 
 	// Vector to the light from the surface
 	Vector3	vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	Scalar fDistFromLight = Vector3Ops::NormalizeMag(vToLight);
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical SpotLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return;
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	// This dot product tells us the angle of incidence between the light ray
 	// and the surface normal.  This angle tells us what illumination this surface
@@ -151,17 +160,24 @@ void SpotLight::ComputeDirectLightingSampled(
 			}
 		}
 
+        if (physicalSpectrum) {
+            const RISEPel response=brdf.valueStateful(vToLight,ri,pIORStack);
+            if (fAngleOfIncidence<=dInnerAngle/2) amount=physicalSpectrum->VisibleProduct(response,{radiantEnergy,fDot},{distance,distance},shadowT);
+            else {
+                const Scalar t=(dOuterAngle/2-fAngleOfIncidence)/(dOuterAngle/2-dInnerAngle/2);
+                amount=physicalSpectrum->VisibleProduct(response,{radiantEnergy,fDot,t,t},{distance,distance},shadowT);
+            }
+            return;
+        }
 		// Physically-based inverse-square falloff
 		const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
-			if (physicalSpectrum) amount=(physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vToLight,ri,pIORStack))*(invDistSq * fDot)*shadowT;
-            else amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
+            amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 		} else {
 			// Quadratic falloff between inner and outer half-angles
 			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
-			if (physicalSpectrum) amount=(physicalSpectrum->ScaledVisibleRGB(radiantEnergy)*brdf.valueStateful(vToLight,ri,pIORStack))*(invDistSq * t * t * fDot)*shadowT;
-            else amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
+            amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
 		}
 	}
 }
@@ -186,7 +202,14 @@ Scalar SpotLight::ComputeDirectLightingSampledNM(
 	// BSDF eval and the shadow Fresnel are per-wavelength (brdf.valueNM,
 	// CastShadowRayAuto bNM=true).  VOLUME RECEIVER: see the RGB overload.
 	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical SpotLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return Scalar(0);
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
@@ -215,12 +238,16 @@ Scalar SpotLight::ComputeDirectLightingSampledNM(
 		}
 	}
 
-	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
 	// luma projection of its RGB colour.  See PointLight::ComputeDirectLightingNM.
-	const Scalar base = physicalSpectrum
-        ? ScaledSourceSpectrumNM(nm)*brdf.valueStatefulNM(vToLight,ri,nm,pIORStack)*invDistSq*fDot*shadowT
-        : cSpectrum.Eval(nm) * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
+    if (physicalSpectrum) {
+        const Scalar f=brdf.valueStatefulNM(vToLight,ri,nm,pIORStack);
+        if (fAngleOfIncidence<=dInnerAngle/2) return physicalSpectrum->EvalProduct(nm,{radiantEnergy,f,fDot,shadowT},{distance,distance});
+        const Scalar t=(dOuterAngle/2-fAngleOfIncidence)/(dOuterAngle/2-dInnerAngle/2);
+        return physicalSpectrum->EvalProduct(nm,{radiantEnergy,f,fDot,shadowT,t,t},{distance,distance});
+    }
+    const Scalar invDistSq=1.0/(fDistFromLight*fDistFromLight);
+    const Scalar base=cSpectrum.Eval(nm)*brdf.valueStatefulNM(vToLight,ri,nm,pIORStack)*invDistSq*fDot*radiantEnergy*shadowT;
 
 	if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
 		return base;
@@ -238,8 +265,10 @@ void SpotLight::FinalizeTransformations( const Matrix4& parentWorld )
 	// Then calculate the real-world position of this light...
 	ptPosition = Point3Ops::Transform( m_mxFinalTrans, Point3( 0, 0, 0 ) );
 	if (physicalSpectrum) {
-        physicalPoseValid = ValidPhysicalAxis(ptTarget) && IsSupportedPhysicalCone(dInnerAngle,dOuterAngle);
-        vDirection = physicalPoseValid ? Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition)) : Vector3(0,0,0);
+        PhysicalLightSpectrum::ProductTerm distance;
+        Scalar queryDistance;
+        physicalPoseValid = PhysicalLightSpectrum::DirectionBetween(ptTarget,ptPosition,vDirection,distance,queryDistance) && IsSupportedPhysicalCone(dInnerAngle,dOuterAngle);
+        if (!physicalPoseValid) vDirection=Vector3(0,0,0);
         if (!physicalPoseValid) GlobalLog()->PrintEasyError("physical spot: invalid finalized axis or cone; emission disabled until a valid pose is finalized");
     } else {
         vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));

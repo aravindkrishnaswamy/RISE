@@ -46,12 +46,41 @@ Parts Add(const Parts a, const Parts b)
     return Normalize(std::ldexp(a.fraction,a.exponent-exponent)+
         std::ldexp(b.fraction,b.exponent-exponent),exponent);
 }
+Parts ApplyProduct(Parts value,std::initializer_list<PhysicalLightSpectrum::ProductTerm> numerators,
+    std::initializer_list<PhysicalLightSpectrum::ProductTerm> denominators)
+{
+    for(const auto term:numerators) {
+        value=Multiply(value,term.value);
+        value.exponent+=term.exponent;
+    }
+    for(const auto term:denominators) {
+        const Parts d=Decompose(term.value);
+        value=Normalize(value.fraction/d.fraction,value.exponent-d.exponent-term.exponent);
+    }
+    return value;
+}
+bool UnitAndMagnitude(const Vector3& authored,Vector3& unit,Parts& magnitude)
+{
+    if(!RISE::IsFiniteDouble(authored.x)||!RISE::IsFiniteDouble(authored.y)||!RISE::IsFiniteDouble(authored.z)) return false;
+    const double largest=std::max({std::fabs(authored.x),std::fabs(authored.y),std::fabs(authored.z)});
+    if(!(largest>0)) return false;
+    // Scaling by an exponent never forms 1/largest (which fast-math may
+    // introduce for repeated division by a subnormal maximum).
+    int exponent=0;
+    std::frexp(largest,&exponent);
+    const Vector3 scaled(std::ldexp(authored.x,-exponent),std::ldexp(authored.y,-exponent),std::ldexp(authored.z,-exponent));
+    const double length=std::sqrt(Vector3Ops::Dot(scaled,scaled));
+    unit=scaled*(1/length);
+    magnitude=Normalize(length,exponent);
+    return true;
+}
+
 double Resolve(const Parts value) { return std::ldexp(value.fraction,value.exponent); }
 }
 
 PhysicalLightSpectrum::PhysicalLightSpectrum(
     const double* nm, const double* samples, const unsigned int count)
-    : wavelengths(nm,nm+count),values(samples,samples+count),visibleRGB(0,0,0),visibleFraction(0,0,0)
+    : wavelengths(nm,nm+count),values(samples,samples+count),visibleFraction(0,0,0)
 {
     // Match the existing visible source projection's 1nm CIE grid and Y
     // normalization. Normalize the projected VISIBLE terms, not a global SPD
@@ -86,7 +115,6 @@ PhysicalLightSpectrum::PhysicalLightSpectrum(
         visibleFraction[channel]=projected.fraction;
         visibleExponent[channel]=projected.exponent;
     }
-    visibleRGB=ScaledVisibleRGB(1);
 }
 
 std::shared_ptr<const PhysicalLightSpectrum> PhysicalLightSpectrum::Create(
@@ -98,19 +126,51 @@ std::shared_ptr<const PhysicalLightSpectrum> PhysicalLightSpectrum::Create(
             nm[i] <= 0 || samples[i] < 0 || (i && nm[i] <= nm[i-1])) return {};
     }
     auto spectrum = std::shared_ptr<const PhysicalLightSpectrum>(new PhysicalLightSpectrum(nm, samples, count));
-    const RISEPel& rgb = spectrum->VisibleRGB();
-    if (!RISE::IsFiniteDouble(rgb.r) || !RISE::IsFiniteDouble(rgb.g) || !RISE::IsFiniteDouble(rgb.b)) return {};
     return spectrum;
 }
 
-RISEPel PhysicalLightSpectrum::ScaledVisibleRGB(const Scalar scale, const Scalar angularFactor) const
+bool PhysicalLightSpectrum::NormalizeDirection(const Vector3& authored,Vector3& unit)
+{
+    Parts magnitude;
+    return UnitAndMagnitude(authored,unit,magnitude);
+}
+
+bool PhysicalLightSpectrum::DirectionBetween(const Point3& destination,const Point3& origin,
+    Vector3& unit,ProductTerm& distance,Scalar& queryDistance)
+{
+    if(!RISE::IsFiniteDouble(destination.x)||!RISE::IsFiniteDouble(destination.y)||!RISE::IsFiniteDouble(destination.z)||
+        !RISE::IsFiniteDouble(origin.x)||!RISE::IsFiniteDouble(origin.y)||!RISE::IsFiniteDouble(origin.z)) return false;
+    Parts magnitude;
+    if(!UnitAndMagnitude(Vector3Ops::mkVector3(destination,origin),unit,magnitude)) return false;
+    queryDistance=Resolve(magnitude);
+    if(!RISE::IsFiniteDouble(queryDistance)||!(queryDistance>0)) return false;
+    distance=ProductTerm(magnitude.fraction,magnitude.exponent);
+    return true;
+}
+
+RISEPel PhysicalLightSpectrum::VisibleProduct(const RISEPel& response,
+    std::initializer_list<ProductTerm> numerators,std::initializer_list<ProductTerm> denominators,const RISEPel& channelFactors) const
 {
     RISEPel result(0,0,0);
     for(unsigned int channel=0;channel<3;++channel) {
         const Parts projected{visibleFraction[channel],visibleExponent[channel]};
-        result[channel]=Resolve(Multiply(Multiply(projected,scale),angularFactor));
+        result[channel]=Resolve(ApplyProduct(Multiply(Multiply(projected,response[channel]),channelFactors[channel]),numerators,denominators));
     }
     return result;
+}
+
+Scalar PhysicalLightSpectrum::EvalProduct(const Scalar nm,
+    std::initializer_list<ProductTerm> numerators,std::initializer_list<ProductTerm> denominators,
+    std::initializer_list<ProductTerm> sourceFactors) const
+{
+    Parts value;
+    EvalParts(nm,value.fraction,value.exponent);
+    return Resolve(ApplyProduct(ApplyProduct(value,sourceFactors,{}),numerators,denominators));
+}
+
+RISEPel PhysicalLightSpectrum::ScaledVisibleRGB(const Scalar scale,const Scalar angularFactor) const
+{
+    return VisibleProduct(RISEPel(1,1,1),{scale,angularFactor});
 }
 
 bool PhysicalLightSpectrum::CanScale(const Scalar scale, const Scalar angularBound) const
@@ -139,11 +199,9 @@ void PhysicalLightSpectrum::EvalParts(const Scalar nm, double& fraction, int& ex
     fraction=result.fraction;exponent=result.exponent;
 }
 
-Scalar PhysicalLightSpectrum::EvalScaled(const Scalar nm, const Scalar scale) const
+Scalar PhysicalLightSpectrum::EvalScaled(const Scalar nm,const Scalar scale) const
 {
-    Parts value;
-    EvalParts(nm,value.fraction,value.exponent);
-    return Resolve(Multiply(value,scale));
+    return EvalProduct(nm,{scale});
 }
 
 Scalar PhysicalLightSpectrum::Eval(const Scalar nm) const { return EvalScaled(nm,1); }

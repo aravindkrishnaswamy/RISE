@@ -1414,6 +1414,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\BidirectionalRasterizerBase.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\EnvironmentSampler.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\SpectralSourceDomain.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\FrameStoreColorSpace.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\TargetFormat.h" />
